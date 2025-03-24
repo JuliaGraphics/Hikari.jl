@@ -1,14 +1,13 @@
 using Trace: Pixel, get_sample_bounds, diagonal, FilmTilePixel, RGBSpectrum, to_XYZ
 using StructArrays
-using GLMakie
 using Trace, GeometryBasics
 using Trace: u_int32, Bounds2, inclusive_sides
 using Trace
 using Trace: XYZ_to_RGB, to_XYZ
-using Trace: li_iterative, get_camera_sample, generate_ray_differential, scale_differentials
+using Trace: li_iterative, get_camera_sample, generates_ray_differential, scale_differentials
 import KernelAbstractions as KA
 using KernelAbstractions
-using AMDGPU
+using CUDA
 
 
 function generate_filter_table(filter)

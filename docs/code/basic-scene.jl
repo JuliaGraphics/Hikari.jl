@@ -1,8 +1,5 @@
 using GeometryBasics
 using Trace
-using FileIO
-using ImageCore
-using BenchmarkTools
 using FileIO, ImageShow
 
 function tmesh(prim, material)
