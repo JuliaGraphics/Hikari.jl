@@ -9,7 +9,7 @@ struct WhittedIntegrator{C<: Camera, S <: AbstractSampler} <: SamplerIntegrator
     max_depth::Int64
 end
 
-function sample_kernel_inner!(
+@inline function sample_kernel_inner!(
         tiles, tile, tile_column::Int32, resolution::Point2f, max_depth::Int32,
         scene, sampler, camera, pixel, spp_sqr, filter_table,
         filter_radius::Point2f
@@ -17,17 +17,17 @@ function sample_kernel_inner!(
     campix = Point2f(pixel[2], resolution[1] - pixel[1])
     for _ in 1:sampler.samples_per_pixel
         camera_sample = @inline get_camera_sample(sampler, campix)
-        ray, ω = generate_ray_differential(camera, camera_sample)
-        ray = scale_differentials(ray, spp_sqr)
+        ray, ω = @inline generate_ray_differential(camera, camera_sample)
+        ray = @inline scale_differentials(ray, spp_sqr)
         l = RGBSpectrum(0.0f0)
         if ω > 0.0f0
-            l = li_iterative(sampler, max_depth, ray, scene)
+            l = @inline li_iterative(sampler, max_depth, ray, scene)
         end
         # TODO check l for invalid values
         if isnan(l)
             l = RGBSpectrum(0.0f0)
         end
-        add_sample!(
+        @inline add_sample!(
             tiles, tile, tile_column, pixel, l,
             filter_table, filter_radius, ω,
         )
@@ -47,14 +47,18 @@ end
     tile_bounds = Bounds2(tb_min, tb_max)
     spp_sqr = 1.0f0 / √Float32(sampler.samples_per_pixel)
 
-    for pixel in tile_bounds
-        sample_kernel_inner!(
-            tiles, tile_bounds, tile_column, Point2f(size(pixels)),
-            max_depth, scene, sampler, camera,
-            pixel, spp_sqr, filter_table, filter_radius
-        )
+    # Explicit loop instead of iterating over Bounds2 to avoid GPU allocation issues
+    for py in Int32(tb_min[2]):Int32(tb_max[2])
+        for px in Int32(tb_min[1]):Int32(tb_max[1])
+            pixel = Point2f(px, py)
+            @inline sample_kernel_inner!(
+                tiles, tile_bounds, tile_column, Point2f(size(pixels)),
+                max_depth, scene, sampler, camera,
+                pixel, spp_sqr, filter_table, filter_radius
+            )
+        end
     end
-    merge_film_tile!(pixels, crop_bounds, tiles, tile_bounds, Int32(tile_column))
+    @inline merge_film_tile!(pixels, crop_bounds, tiles, tile_bounds, Int32(tile_column))
 end
 
 """
@@ -118,12 +122,15 @@ function integrator_threaded(i::SamplerIntegrator, scene::Scene, film, camera)
                 tile_bounds = Bounds2(tb_min, tb_max)
 
                 # Process all pixels in this tile
-                for pixel in tile_bounds
-                    sample_kernel_inner!(
-                        tiles, tile_bounds, tile_column, Point2f(size(pixels)),
-                        max_depth, scene, sampler, camera,
-                        pixel, spp_sqr, filter_table, filter_radius
-                    )
+                for py in Int32(tb_min[2]):Int32(tb_max[2])
+                    for px in Int32(tb_min[1]):Int32(tb_max[1])
+                        pixel = Point2f(px, py)
+                        sample_kernel_inner!(
+                            tiles, tile_bounds, tile_column, Point2f(size(pixels)),
+                            max_depth, scene, sampler, camera,
+                            pixel, spp_sqr, filter_table, filter_radius
+                        )
+                    end
                 end
 
                 # Merge this tile into the film
@@ -157,12 +164,12 @@ function get_material(ms::MaterialScene, shape::Triangle)
     end
 end
 
-function only_light(lights, ray)
+@inline function only_light(lights, ray)
     l = RGBSpectrum(0.0f0)
     Base.Cartesian.@nexprs 8 i -> begin
         if i <= length(lights)
             light = lights[i]
-            l += le(light, ray)
+            l += @inline le(light, ray)
         end
     end
     return l
@@ -176,10 +183,10 @@ end
     Base.Cartesian.@nexprs 8 i -> begin
         if i <= length(lights)
             @_inbounds light = lights[i]
-            sampled_li, wi, pdf, tester = sample_li(light, core, get_2d(sampler))
+            sampled_li, wi, pdf, tester = @inline sample_li(light, core, get_2d(sampler))
             if !(is_black(sampled_li) || pdf ≈ 0.0f0)
-                f = bsdf(wo, wi)
-                if !is_black(f) && unoccluded(tester, scene)
+                f = @inline bsdf(wo, wi)
+                if !is_black(f) && @inline unoccluded(tester, scene)
                     l += f * sampled_li * abs(wi ⋅ n) / pdf
                 end
             end
@@ -386,18 +393,18 @@ end
             continue
         end
 
-        bsdf = m(si, false, Radiance)
-        accumulated_l += le(si, wo)
-        accumulated_l = light_contribution(accumulated_l, lights, wo, scene, bsdf, sampler, si)
+        bsdf = @inline m(si, false, Radiance)
+        accumulated_l += @inline le(si, wo)
+        accumulated_l = @inline light_contribution(accumulated_l, lights, wo, scene, bsdf, sampler, si)
 
         if depth + 1 <= max_depth
-            rd_reflect, reflect_l = specular(Reflect, bsdf, sampler, ray, si)
+            rd_reflect, reflect_l = @inline specular(Reflect, bsdf, sampler, ray, si)
             if rd_reflect !== ray && pos < 8
                 pos += Int32(1)
                 @setindex 8 stack[pos] = (rd_reflect, depth + Int32(1), reflect_l * accumulated_l)
                 # stack[pos] = (rd_reflect, depth + Int32(1), reflect_l * accumulated_l)
             end
-            rd_transmit, transmit_l = specular(Transmit, bsdf, sampler, ray, si)
+            rd_transmit, transmit_l = @inline specular(Transmit, bsdf, sampler, ray, si)
             if rd_transmit !== ray && pos < 8
                 pos += Int32(1)
                 @setindex 8 stack[pos] = (rd_transmit, depth + Int32(1), transmit_l * accumulated_l)
@@ -418,7 +425,7 @@ end
     )::Tuple{RayDifferentials, RGBSpectrum}
 
     wo = si.core.wo
-    wi, f, pdf, sampled_type = sample_f(bsdf, wo, get_2d(sampler), get_type(type))
+    wi, f, pdf, sampled_type = @inline sample_f(bsdf, wo, get_2d(sampler), get_type(type))
 
     ns = si.shading.n
     if !(pdf > 0.0f0 && !is_black(f) && abs(wi ⋅ ns) != 0.0f0)
@@ -427,7 +434,7 @@ end
 
     rd = RayDifferentials(spawn_ray(si, wi))
     if ray.has_differentials
-        rd = specular_differentials(type, rd, bsdf, si, ray, wo, wi)
+        rd = @inline specular_differentials(type, rd, bsdf, si, ray, wo, wi)
     end
     return rd, f * abs(wi ⋅ ns) / pdf
 end

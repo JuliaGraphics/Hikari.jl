@@ -239,7 +239,20 @@ function UberMaterial(type;
 end
 
 const NO_MATERIAL = UInt8(0)
-NoMaterial() = UberMaterial(NO_MATERIAL)
+
+# GPU-compatible NoMaterial constructor - avoids dynamic allocation
+function NoMaterial()
+    # Create a fully static NoMaterial without using map/collect
+    no_tex_s = NoTexture()
+    no_tex_f = NoTexture()
+    return UberMaterial{Matrix{RGBSpectrum}, Matrix{Float32}}(
+        no_tex_s, no_tex_s, no_tex_s, no_tex_s,  # Kd, Ks, Kr, Kt
+        no_tex_f, no_tex_f, no_tex_f, no_tex_f, no_tex_f,  # σ, roughness, u_roughness, v_roughness, index
+        false,  # remap_roughness
+        NO_MATERIAL  # type
+    )
+end
+
 const NO_MAT = NoMaterial()
 
 
