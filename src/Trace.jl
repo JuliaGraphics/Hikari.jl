@@ -218,6 +218,30 @@ end
     intersect_p(scene.aggregate, ray)
 end
 
+# Pretty printing for Scene
+function Base.show(io::IO, ::MIME"text/plain", scene::Scene)
+    n_lights = length(scene.lights)
+
+    println(io, "Scene:")
+    println(io, "  Lights:     ", n_lights)
+    if n_lights > 0
+        for (i, light) in enumerate(scene.lights)
+            println(io, "    [", i, "] ", typeof(light).name.name)
+        end
+    end
+    println(io, "  Aggregate:  ", typeof(scene.aggregate).name.name)
+    print(io,   "  Bounds:     ", scene.bound.p_min, " to ", scene.bound.p_max)
+end
+
+function Base.show(io::IO, scene::Scene)
+    if get(io, :compact, false)
+        n_lights = length(scene.lights)
+        print(io, "Scene(lights=", n_lights, ", aggregate=", typeof(scene.aggregate).name.name, ")")
+    else
+        show(io, MIME("text/plain"), scene)
+    end
+end
+
 # spawn_ray functions are now in RayCaster, but we need versions for our SurfaceInteraction
 # RayCaster only has spawn_ray for its simpler Interaction type
 
@@ -298,7 +322,7 @@ function triangle_to_surface_interaction(triangle::Triangle, ray::AbstractRay, b
     end
 
     # Calculate shading bitangent
-    shading_bitangent = shading_normal × shading_tangent
+    shading_bitangent = Vec3f(shading_normal × shading_tangent)
 
     if (shading_bitangent ⋅ shading_bitangent) > 0f0
         shading_bitangent = Vec3f(normalize(shading_bitangent))
@@ -317,12 +341,13 @@ function triangle_to_surface_interaction(triangle::Triangle, ray::AbstractRay, b
     )
 end
 
+
 # Intersect function for MaterialScene - returns material and SurfaceInteraction
 @inline function intersect!(ms::MaterialScene, ray::AbstractRay)
-    hit_found, triangle, distance, bary_coords = closest_hit(ms.bvh, ray)
+    hit_found, triangle, distance, bary_coords = closest_hit(ms.bvh, ray)::Tuple{Bool,Triangle,Float32,Point3f}
 
     if !hit_found
-        return false, nothing, SurfaceInteraction()
+        return false, NoMaterial(), SurfaceInteraction()
     end
 
     # Convert to SurfaceInteraction
@@ -337,6 +362,42 @@ end
 @inline function intersect_p(ms::MaterialScene, ray::AbstractRay)
     hit_found, _, _, _ = any_hit(ms.bvh, ray)
     return hit_found
+end
+
+# Pretty printing for MaterialScene
+function Base.show(io::IO, ::MIME"text/plain", ms::MaterialScene)
+    n_triangles = length(ms.bvh.primitives)
+    n_materials = length(ms.materials)
+    n_nodes = length(ms.bvh.nodes)
+    bounds = world_bound(ms.bvh)
+
+    # Count leaf vs interior nodes
+    n_leaves = count(node -> !node.is_interior, ms.bvh.nodes)
+    n_interior = n_nodes - n_leaves
+
+    println(io, "MaterialScene:")
+    println(io, "  Triangles:  ", n_triangles)
+    println(io, "  Materials:  ", n_materials)
+    println(io, "  BVH nodes:  ", n_nodes, " (", n_interior, " interior, ", n_leaves, " leaves)")
+    println(io, "  Bounds:     ", bounds.p_min, " to ", bounds.p_max)
+    print(io,   "  Max prims:  ", Int(ms.bvh.max_node_primitives), " per leaf")
+end
+
+function Base.show(io::IO, ms::MaterialScene)
+    if get(io, :compact, false)
+        n_triangles = length(ms.bvh.primitives)
+        n_materials = length(ms.materials)
+        n_nodes = length(ms.bvh.nodes)
+        n_leaves = count(node -> !node.is_interior, ms.bvh.nodes)
+        n_interior = n_nodes - n_leaves
+        print(io, "MaterialScene(")
+        print(io, "triangles=", n_triangles, ", ")
+        print(io, "materials=", n_materials, ", ")
+        print(io, "nodes=", n_nodes, " (", n_interior, " interior, ", n_leaves, " leaves)")
+        print(io, ")")
+    else
+        show(io, MIME("text/plain"), ms)
+    end
 end
 
 # Helper function for basic-scene.jl compatibility

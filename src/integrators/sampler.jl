@@ -58,7 +58,7 @@ end
 end
 
 """
-Render scene.
+Render scene using KernelAbstractions.
 """
 function (i::SamplerIntegrator)(scene::Scene, film, camera)
     # TODO visualize tile bounds to see if they overlap
@@ -80,6 +80,58 @@ function (i::SamplerIntegrator)(scene::Scene, film, camera)
         ndrange=film.ntiles
     )
     KA.synchronize(backend)
+    to_framebuffer!(film, 1f0)
+end
+
+"""
+Render scene using Julia threads (one thread per tile).
+"""
+function integrator_threaded(i::SamplerIntegrator, scene::Scene, film, camera)
+    sample_bounds = get_sample_bounds(film)
+    tile_size = film.tile_size
+    filter_radius = film.filter_radius
+    filter_table = film.filter_table
+    tiles = film.tiles
+    sampler = i.sampler
+    max_depth = Int32(i.max_depth)
+    pixels = film.pixels
+    crop_bounds = film.crop_bounds
+    spp_sqr = 1.0f0 / √Float32(sampler.samples_per_pixel)
+
+    # Calculate tile grid dimensions
+    ntiles_x, ntiles_y = film.ntiles
+
+    # Process all tiles in parallel using threads
+    @sync for tile_j in 1:ntiles_y
+        for tile_i in 1:ntiles_x
+            Threads.@spawn begin
+                # Calculate tile index and bounds
+                linear_idx = (tile_j - 1) * ntiles_x + tile_i
+                tile_column = Int32(linear_idx)
+
+                i_idx = Int32(tile_i - 1)
+                j_idx = Int32(tile_j - 1)
+                tile_start = Point2f(i_idx, j_idx)
+
+                tb_min = (sample_bounds.p_min .+ tile_start .* tile_size) .+ Int32(1)
+                tb_max = min.(tb_min .+ (tile_size .- Int32(1)), sample_bounds.p_max)
+                tile_bounds = Bounds2(tb_min, tb_max)
+
+                # Process all pixels in this tile
+                for pixel in tile_bounds
+                    sample_kernel_inner!(
+                        tiles, tile_bounds, tile_column, Point2f(size(pixels)),
+                        max_depth, scene, sampler, camera,
+                        pixel, spp_sqr, filter_table, filter_radius
+                    )
+                end
+
+                # Merge this tile into the film
+                merge_film_tile!(pixels, crop_bounds, tiles, tile_bounds, tile_column)
+            end
+        end
+    end
+
     to_framebuffer!(film, 1f0)
 end
 

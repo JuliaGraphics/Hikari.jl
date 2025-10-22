@@ -69,16 +69,85 @@ begin
         screen_window, 0.0f0, 1.0f0, 0.0f0, 1.0f6, 45.0f0, film,
     )
 end
-using GeometryBasics
 
+using RayCaster
+using PProf, Profile
 
 begin
     Trace.clear!(film)
     integrator = Trace.WhittedIntegrator(cam, Trace.UniformSampler(8), 5)
     @time integrator(scene, film, cam)
-    img = reverse(film.framebuffer, dims=1)
+    img = reverse(film.framebuffer, dims=1);
+    summary(img)
 end
-img
+@profview_allocs integrator(scene, film, cam)
+
+@edit integrator(scene, film, cam)
+
+# Setup for profiling sample_kernel_inner!
+begin
+    tiles = film.tiles
+    tile_size = film.tile_size
+    filter_radius = film.filter_radius
+    filter_table = film.filter_table
+    pixels = film.pixels
+    tile_bounds = Trace.Bounds2(Point2f(1, 1), Point2f(16, 16))
+    tile_column = Int32(1)
+    max_depth = Int32(5)
+    sampler = Trace.UniformSampler(8)
+    camera = cam
+    pixel = Point2f(8, 8)
+    spp_sqr = 1.0f0 / √Float32(sampler.samples_per_pixel)
+    Trace.sample_kernel_inner!(
+        tiles, tile_bounds, tile_column, Point2f(size(pixels)),
+        max_depth, scene, sampler, camera,
+        pixel, spp_sqr, filter_table, filter_radius
+    )
+end
+
+
+
+begin
+    Profile.Allocs.clear()
+    Profile.Allocs.@profview_allocs integrator(scene, film, cam)
+    PProf.Allocs.pprof()
+end
+
+@btime Trace.NoMaterial()
+
+bvh = scene.aggregate.bvh
+ray = RayCaster.Ray(o=Point3f(0, 4, 2), d=Point3f(0, -4, -1))
+args = Trace.intersect!(scene, ray)
+camera_sample = @inline get_camera_sample(sampler, campix)
+ray, ω = Trace.generate_ray_differential(cam, camera_sample)
+ray = scale_differentials(ray, spp_sqr)
+l = RGBSpectrum(0.0f0)
+
+
+function testo(sampler, max_depth, ray, scene)
+    l = Trace.RGBSpectrum(0.0f0)
+    for depth in 1:1000
+        # For demonstration, we just accumulate some dummy value
+        l += Trace.li_iterative(sampler, max_depth, ray, scene)
+    end
+    return l
+end
+
+@allocated testo(sampler, max_depth, ray, scene)
+
+@btime Trace.li_iterative(sampler, max_depth, ray, scene)
+t1 = scene.aggregate.bvh.primitives[1]
+si = Trace.triangle_to_surface_interaction(t1, ray, Point3f(0))
+m = scene.aggregate.materials[1]
+
+@edit m(si, false, Trace.Radiance)
+
+bsdf = Trace.matte_material(m, si, false, Trace.Radiance)
+m.type == Trace.MATTE_MATERIAL
+Trace.BSDF()
+
+
+@code_warntype Trace.specular(Trace.Transmit, bsdf, sampler, ray, si)
 using JET
 
 # begin

@@ -240,6 +240,8 @@ end
 
 const NO_MATERIAL = UInt8(0)
 NoMaterial() = UberMaterial(NO_MATERIAL)
+const NO_MAT = NoMaterial()
+
 
 Base.Base.@propagate_inbounds function (m::UberMaterial)(si::SurfaceInteraction, allow_multiple_lobes::Bool, transport)
     if m.type === MATTE_MATERIAL
