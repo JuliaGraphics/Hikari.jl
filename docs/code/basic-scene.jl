@@ -2,8 +2,8 @@ using GeometryBasics
 using Trace
 using FileIO
 using ImageCore
-using BenchmarkTools
-using FileIO, ImageShow
+# using BenchmarkTools
+# using FileIO, ImageShow
 
 function tmesh(prim, material)
     prim =  prim isa Sphere ? Tesselation(prim, 64) : prim
@@ -48,7 +48,7 @@ begin
     l = tmesh(Rect3f(Vec3f(-2, -5, 0), Vec3f(0.01, 10, 10)), material_red)
     r = tmesh(Rect3f(Vec3f(2, -5, 0), Vec3f(0.01, 10, 10)), material_blue)
 
-    bvh = Trace.BVHAccel([s1, s2, s3, s4, #=ground, back, l, r=#], 1);
+    bvh = Trace.no_material_bvh([s1, s2, s3, s4, #=ground, back, l, r=#]);
 
     lights = (
         # Trace.PointLight(Vec3f(0, -1, 2), Trace.RGBSpectrum(22.0f0)),
@@ -72,12 +72,14 @@ end
 using GeometryBasics
 
 
-# begin
-#     Trace.clear!(film)
-#     integrator = Trace.WhittedIntegrator(cam, Trace.UniformSampler(8), 5)
-#     @time integrator(scene, film)
-#     img = reverse(film.framebuffer, dims=1)
-# end
+begin
+    Trace.clear!(film)
+    integrator = Trace.WhittedIntegrator(cam, Trace.UniformSampler(8), 5)
+    @time integrator(scene, film, cam)
+    img = reverse(film.framebuffer, dims=1)
+end
+img
+using JET
 
 # begin
 #     resolution = Point2f(1024)

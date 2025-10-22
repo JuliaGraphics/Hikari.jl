@@ -10,10 +10,21 @@ using ProgressMeter
 using StructArrays
 using Atomix
 using KernelAbstractions
+using RayCaster
 
-abstract type AbstractRay end
+# Re-export RayCaster types and functions that Trace uses
+import RayCaster: AbstractRay, Ray, RayDifferentials, apply, check_direction, scale_differentials
+import RayCaster: Bounds2, Bounds3, surface_area, diagonal, maximum_extent, offset, is_valid, inclusive_sides
+import RayCaster: distance, distance_squared, bounding_sphere
+# Note: lerp is defined in spectrum.jl for Spectrum, Float32, and Point3f
+import RayCaster: Transformation, translate, scale, rotate, rotate_x, rotate_y, rotate_z, look_at, perspective
+import RayCaster: swaps_handedness, has_scale
+import RayCaster: AbstractShape, Triangle, TriangleMesh, create_triangle_mesh
+import RayCaster: BVHAccel, world_bound, closest_hit, any_hit
+import RayCaster: Normal3f, ShapeCore, intersect, intersect_p
+import RayCaster: is_dir_negative, increase_hit, intersect_p!
+
 abstract type Spectrum end
-abstract type AbstractShape end
 abstract type Primitive end
 abstract type Light end
 abstract type Material end
@@ -44,7 +55,7 @@ end
 
 
 # GeometryBasics.@fixed_vector Normal StaticVector
-include("typeNormal3f.jl")
+# Normal3f is now imported from RayCaster
 include("mempool.jl")
 
 
@@ -181,9 +192,7 @@ Flip normal `n` so that it lies in the same hemisphere as `v`.
 """
 @inline face_forward(n, v) = (n ⋅ v) < 0 ? -n : n
 
-include("ray.jl")
-include("bounds.jl")
-include("transformations.jl")
+# Don't include ray.jl, bounds.jl, transformations.jl - now from RayCaster
 include("spectrum.jl")
 include("surface_interaction.jl")
 
@@ -209,27 +218,137 @@ end
     intersect_p(scene.aggregate, ray)
 end
 
-@inline function spawn_ray(
-        p0::Interaction, p1::Interaction, δ::Float32 = 1f-6,
-    )::Ray
-    direction = p1.p - p0.p
-    origin = p0.p .+ δ .* direction
-    return Ray(origin, direction, Inf32, p0.time)
+# spawn_ray functions are now in RayCaster, but we need versions for our SurfaceInteraction
+# RayCaster only has spawn_ray for its simpler Interaction type
+
+# Don't include shapes/Shape.jl or accel/bvh.jl - now from RayCaster
+# We'll create a MaterialScene wrapper below
+
+# MaterialScene: wraps RayCaster.BVHAccel with materials
+# RayCaster.BVH only stores triangles, we map triangle.material_idx -> material
+struct MaterialScene{BVH<:BVHAccel, M<:AbstractVector{<:Material}} <: Primitive
+    bvh::BVH
+    materials::M
 end
 
-@inline function spawn_ray(p0::SurfaceInteraction, p1::Interaction)::Ray
-    spawn_ray(p0.core, p1)
+@inline world_bound(ms::MaterialScene) = world_bound(ms.bvh)
+
+# Convert RayCaster.Triangle intersection result to Trace SurfaceInteraction
+function triangle_to_surface_interaction(triangle::Triangle, ray::AbstractRay, bary_coords::Point3f)::SurfaceInteraction
+    # Get triangle data
+    verts = RayCaster.vertices(triangle)
+    tex_coords = RayCaster.uvs(triangle)
+
+    # Calculate partial derivatives
+    function partial_derivatives(vs::AbstractVector{Point3f}, uv::AbstractVector{Point2f})
+        δuv_13, δuv_23 = uv[1] - uv[3], uv[2] - uv[3]
+        δp_13, δp_23 = Vec3f(vs[1] - vs[3]), Vec3f(vs[2] - vs[3])
+        det = δuv_13[1] * δuv_23[2] - δuv_13[2] * δuv_23[1]
+        if det ≈ 0f0
+            v = normalize((vs[3] - vs[1]) × (vs[2] - vs[1]))
+            _, ∂p∂u, ∂p∂v = coordinate_system(Vec3f(v))
+            return ∂p∂u, ∂p∂v
+        end
+        inv_det = 1f0 / det
+        ∂p∂u = Vec3f(δuv_23[2] * δp_13 - δuv_13[2] * δp_23) * inv_det
+        ∂p∂v = Vec3f(-δuv_23[1] * δp_13 + δuv_13[1] * δp_23) * inv_det
+        ∂p∂u, ∂p∂v
+    end
+
+    pos_deriv_u, pos_deriv_v = partial_derivatives(verts, tex_coords)
+
+    # Interpolate hit point and texture coordinates using barycentric coordinates
+    hit_point = sum_mul(bary_coords, verts)
+    hit_uv = sum_mul(bary_coords, tex_coords)
+
+    # Calculate surface normal from triangle edges
+    edge1 = verts[2] - verts[1]
+    edge2 = verts[3] - verts[1]
+    normal = normalize(edge1 × edge2)
+
+    # Create surface interaction data at hit point
+    surf_interact = SurfaceInteraction(
+        normal, hit_point, ray.time, -ray.d, hit_uv,
+        pos_deriv_u, pos_deriv_v, Normal3f(0f0), Normal3f(0f0)
+    )
+
+    # Initialize shading geometry from triangle normals/tangents if available
+    t_normals = RayCaster.normals(triangle)
+    t_tangents = RayCaster.tangents(triangle)
+
+    has_normals = !all(x -> all(isnan, x), t_normals)
+    has_tangents = !all(x -> all(isnan, x), t_tangents)
+
+    if !has_normals && !has_tangents
+        return surf_interact
+    end
+
+    # Initialize shading normal
+    shading_normal = surf_interact.core.n
+    if has_normals
+        shading_normal = normalize(sum_mul(bary_coords, t_normals))
+    end
+
+    # Calculate shading tangent
+    shading_tangent = Vec3f(0)
+    if has_tangents
+        shading_tangent = normalize(sum_mul(bary_coords, t_tangents))
+    else
+        shading_tangent = normalize(pos_deriv_u)
+    end
+
+    # Calculate shading bitangent
+    shading_bitangent = shading_normal × shading_tangent
+
+    if (shading_bitangent ⋅ shading_bitangent) > 0f0
+        shading_bitangent = Vec3f(normalize(shading_bitangent))
+        shading_tangent = Vec3f(shading_bitangent × shading_normal)
+    else
+        _, shading_tangent, shading_bitangent = coordinate_system(Vec3f(shading_normal))
+    end
+
+    return set_shading_geometry(
+        surf_interact,
+        shading_tangent,
+        shading_bitangent,
+        Normal3f(0f0),
+        Normal3f(0f0),
+        true
+    )
 end
 
-@inline function spawn_ray(
-        si::SurfaceInteraction, direction::Vec3f, δ::Float32 = 1f-6,
-    )::Ray
-    origin = si.core.p .+ δ .* direction
-    return Ray(o=origin, d=direction, time=si.core.time)
+# Intersect function for MaterialScene - returns material and SurfaceInteraction
+@inline function intersect!(ms::MaterialScene, ray::AbstractRay)
+    hit_found, triangle, distance, bary_coords = closest_hit(ms.bvh, ray)
+
+    if !hit_found
+        return false, nothing, SurfaceInteraction()
+    end
+
+    # Convert to SurfaceInteraction
+    interaction = triangle_to_surface_interaction(triangle, ray, bary_coords)
+
+    # Get material from triangle's material_idx
+    material = ms.materials[triangle.material_idx]
+
+    return true, material, interaction
 end
 
-include("shapes/Shape.jl")
-include("accel/bvh.jl")
+@inline function intersect_p(ms::MaterialScene, ray::AbstractRay)
+    hit_found, _, _, _ = any_hit(ms.bvh, ray)
+    return hit_found
+end
+
+# Helper function for basic-scene.jl compatibility
+function no_material_bvh(geometric_primitives::Vector)
+    meshes = [gp.shape for gp in geometric_primitives]
+    materials = [gp.material for gp in geometric_primitives]
+
+    # Build BVH with material indices
+    bvh = BVHAccel(meshes)
+
+    return MaterialScene(bvh, materials)
+end
 
 include("filter.jl")
 include("film.jl")

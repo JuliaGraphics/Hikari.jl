@@ -83,6 +83,8 @@ function (i::SamplerIntegrator)(scene::Scene, film, camera)
     to_framebuffer!(film, 1f0)
 end
 
+# MaterialScene now returns material directly from intersect!
+# These functions are kept for backward compatibility but not used anymore
 function get_material(bvh::BVHAccel, shape::Triangle)
     materials = bvh.materials
     @_inbounds if shape.material_idx == 0
@@ -93,6 +95,14 @@ function get_material(bvh::BVHAccel, shape::Triangle)
 end
 function get_material(scene::Scene, shape::Triangle)
     get_material(scene.aggregate, shape)
+end
+function get_material(ms::MaterialScene, shape::Triangle)
+    materials = ms.materials
+    @_inbounds if shape.material_idx == 0
+        return materials[1]
+    else
+        return materials[shape.material_idx]
+    end
 end
 
 function only_light(lights, ray)
@@ -132,7 +142,7 @@ function li(
 
     l = RGBSpectrum(0.0f0)
     # Find closest ray intersection or return background radiance.
-    hit, shape, si = intersect!(scene, ray)
+    hit, material, si = intersect!(scene, ray)
     lights = scene.lights
     if !hit
         return only_light(lights, ray)
@@ -144,7 +154,7 @@ function li(
     wo = core.wo
     # Compute scattering functions for surface interaction.
     si = compute_differentials(si, ray)
-    m = get_material(scene, shape)
+    m = material
     if m.type === NO_MATERIAL
         return li(
             sampler, max_depth, RayDifferentials(spawn_ray(si, ray.d)),
@@ -304,7 +314,7 @@ end
         if depth == max_depth
             continue
         end
-        hit, shape, si = intersect!(scene, ray)
+        hit, material, si = intersect!(scene, ray)
         lights = scene.lights
 
         if !hit
@@ -315,7 +325,7 @@ end
         core = si.core
         wo = core.wo
         si = compute_differentials(si, ray)
-        m = get_material(scene, shape)
+        m = material
         if m.type === NO_MATERIAL
             new_ray = RayDifferentials(spawn_ray(si, ray.d))
             pos += Int32(1)

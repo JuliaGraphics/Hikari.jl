@@ -219,3 +219,24 @@ end
         si.∂u∂x, si.∂u∂y, si.∂v∂x, si.∂v∂y, ∂p∂x, ∂p∂y
     )
 end
+
+# Trace-specific spawn_ray functions for SurfaceInteraction
+# RayCaster has spawn_ray for its Interaction type, but we need these for our SurfaceInteraction
+@inline function spawn_ray(
+        p0::Interaction, p1::Interaction, δ::Float32 = 1f-6,
+    )::Ray
+    direction = p1.p - p0.p
+    origin = p0.p .+ δ .* direction
+    return Ray(origin, direction, Inf32, p0.time)
+end
+
+@inline function spawn_ray(p0::SurfaceInteraction, p1::Interaction)::Ray
+    spawn_ray(p0.core, p1)
+end
+
+@inline function spawn_ray(
+        si::SurfaceInteraction, direction::Vec3f, δ::Float32 = 1f-6,
+    )::Ray
+    origin = si.core.p .+ δ .* direction
+    return Ray(o=origin, d=direction, time=si.core.time)
+end

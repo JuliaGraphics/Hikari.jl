@@ -29,6 +29,9 @@ Base.sqrt(c::C) where C<:Spectrum = C(sqrt.(c.c))
 Base.:^(c::C, e::Number) where C<:Spectrum = C(c.c .^ e)
 Base.exp(c::C) where C<:Spectrum = C(exp.(c.c))
 lerp(c1::C, c2::C, t::Float32) where C<:Spectrum = (1f0 - t) * c1 + t * c2
+# Also define lerp for Float32 and Point3f (originally in bounds.jl, now needed here)
+lerp(v1::Float32, v2::Float32, t::Float32) = (1 - t) * v1 + t * v2
+lerp(p0::Point3f, p1::Point3f, t::Float32) = (1 - t) .* p0 .+ t .* p1
 
 Base.getindex(c::C, i) where C<:Spectrum = c.c[i]
 
