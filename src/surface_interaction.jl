@@ -178,7 +178,7 @@ at the point.
         allow_multiple_lobes::Bool = false, transport = Radiance,
     )
     si = compute_differentials(si, ray)
-    return si, compute_scattering!(primitive, si, allow_multiple_lobes, transport)
+    return si, primitive(si, allow_multiple_lobes, transport)
 end
 
 @inline function le(::SurfaceInteraction, ::Vec3f)::RGBSpectrum

@@ -192,7 +192,6 @@ Flip normal `n` so that it lies in the same hemisphere as `v`.
 """
 @inline face_forward(n, v) = (n ⋅ v) < 0 ? -n : n
 
-# Don't include ray.jl, bounds.jl, transformations.jl - now from RayCaster
 include("spectrum.jl")
 include("surface_interaction.jl")
 
@@ -245,7 +244,6 @@ end
 # spawn_ray functions are now in RayCaster, but we need versions for our SurfaceInteraction
 # RayCaster only has spawn_ray for its simpler Interaction type
 
-# Don't include shapes/Shape.jl or accel/bvh.jl - now from RayCaster
 # We'll create a MaterialScene wrapper below
 
 # MaterialScene: wraps RayCaster.BVHAccel with materials

@@ -38,8 +38,8 @@ end
     _tile_xy = @index(Global, Cartesian)
     linear_idx = @index(Global)
 
-    tile_xy = u_int32.(Tuple(_tile_xy))
-    tile_column = linear_idx % Int32
+    tile_xy = map(u_int32, Tuple(_tile_xy))
+    tile_column = u_int32(linear_idx)
     i, j = tile_xy .- Int32(1)
     tile_start = Point2f(i, j)
     tb_min = (sample_bounds.p_min .+ tile_start .* tile_size) .+ Int32(1)
@@ -48,11 +48,12 @@ end
     spp_sqr = 1.0f0 / √Float32(sampler.samples_per_pixel)
 
     # Explicit loop instead of iterating over Bounds2 to avoid GPU allocation issues
-    for py in Int32(tb_min[2]):Int32(tb_max[2])
-        for px in Int32(tb_min[1]):Int32(tb_max[1])
+    px_size = Point2f(size(pixels))
+    for py in u_int32(tb_min[2]):u_int32(tb_max[2])
+        for px in u_int32(tb_min[1]):u_int32(tb_max[1])
             pixel = Point2f(px, py)
             @inline sample_kernel_inner!(
-                tiles, tile_bounds, tile_column, Point2f(size(pixels)),
+                tiles, tile_bounds, tile_column, px_size,
                 max_depth, scene, sampler, camera,
                 pixel, spp_sqr, filter_table, filter_radius
             )

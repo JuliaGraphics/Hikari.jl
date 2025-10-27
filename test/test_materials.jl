@@ -12,22 +12,22 @@ end
 end
 
 @testset "SpecularReflection" begin
-    sr = Trace.SpecularReflection(Trace.RGBSpectrum(1f0), Trace.FresnelNoOp())
+    sr = Trace.SpecularReflection(true, Trace.RGBSpectrum(1f0), Trace.FresnelNoOp())
     @test sr & (Trace.BSDF_SPECULAR | Trace.BSDF_REFLECTION)
 end
 
 @testset "SpecularTransmission" begin
     st = Trace.SpecularTransmission(
-        Trace.RGBSpectrum(1f0), 1f0, 1f0,
-        Trace.Radiance,
+        true, Trace.RGBSpectrum(1f0), 1f0, 1f0,
+        Trace.UInt8(1),
     )
     @test st & (Trace.BSDF_SPECULAR | Trace.BSDF_TRANSMISSION)
 end
 
 @testset "FresnelSpecular" begin
     f = Trace.FresnelSpecular(
-        Trace.RGBSpectrum(1f0), Trace.RGBSpectrum(1f0),
-        1f0, 1f0, Trace.Radiance,
+        true, Trace.RGBSpectrum(1f0), Trace.RGBSpectrum(1f0),
+        1f0, 1f0, Trace.UInt8(1),
     )
     @test f & (Trace.BSDF_SPECULAR | Trace.BSDF_REFLECTION | Trace.BSDF_TRANSMISSION)
 
@@ -41,10 +41,10 @@ end
 
 @testset "MicrofacetReflection" begin
     m = Trace.MicrofacetReflection(
-        Trace.RGBSpectrum(1f0),
+        true, Trace.RGBSpectrum(1f0),
         Trace.TrowbridgeReitzDistribution(1f0, 1f0),
         Trace.FresnelNoOp(),
-        Trace.Radiance,
+        Trace.UInt8(1),
     )
     @test m & (Trace.BSDF_REFLECTION | Trace.BSDF_GLOSSY)
     wo = Vec3f(0, 0, 1)
@@ -55,10 +55,10 @@ end
 
 @testset "MicrofacetTransmission" begin
     m = Trace.MicrofacetTransmission(
-        Trace.RGBSpectrum(1f0),
+        true, Trace.RGBSpectrum(1f0),
         Trace.TrowbridgeReitzDistribution(1f0, 1f0),
         1f0, 2f0,
-        Trace.Radiance,
+        Trace.UInt8(1),
     )
     @test m & (Trace.BSDF_TRANSMISSION | Trace.BSDF_GLOSSY)
     wo = Vec3f(0, 0, 1)

@@ -39,16 +39,16 @@ begin
     )
 
     s1 = tmesh(LowSphere(0.5f0), material_white)
-    s2 = tmesh(LowSphere(0.3f0, Point3f(0.5, 0.5, 0)), material_blue)
-    s3 = tmesh(LowSphere(0.3f0, Point3f(-0.5, 0.5, 0)), mirror)
-    s4 = tmesh(LowSphere(0.4f0, Point3f(0, 1.0, 0)), glass)
+    s2 = tmesh(LowSphere(0.3f0, Point3f(0.5, 0.5, 0)), material_white)
+    s3 = tmesh(LowSphere(0.3f0, Point3f(-0.5, 0.5, 0)), material_white)
+    s4 = tmesh(LowSphere(0.4f0, Point3f(0, 1.0, 0)), material_white)
 
-    ground = tmesh(Rect3f(Vec3f(-5, -5, 0), Vec3f(10, 10, 0.01)), mirror)
+    ground = tmesh(Rect3f(Vec3f(-5, -5, 0), Vec3f(10, 10, 0.01)), material_white)
     back = tmesh(Rect3f(Vec3f(-5, -3, 0), Vec3f(10, 0.01, 10)), material_white)
-    l = tmesh(Rect3f(Vec3f(-2, -5, 0), Vec3f(0.01, 10, 10)), material_red)
-    r = tmesh(Rect3f(Vec3f(2, -5, 0), Vec3f(0.01, 10, 10)), material_blue)
+    l = tmesh(Rect3f(Vec3f(-2, -5, 0), Vec3f(0.01, 10, 10)), material_white)
+    r = tmesh(Rect3f(Vec3f(2, -5, 0), Vec3f(0.01, 10, 10)), material_white)
 
-    bvh = Trace.no_material_bvh([s1, s2, s3, s4, #=ground, back, l, r=#]);
+    bvh = Trace.no_material_bvh([s1, s2, s3, s4, ground, back, l, r]);
 
     lights = (
         # Trace.PointLight(Vec3f(0, -1, 2), Trace.RGBSpectrum(22.0f0)),
@@ -72,19 +72,55 @@ end
 
 using RayCaster
 using PProf, Profile
+using AMDGPU
 
-begin
-    Trace.clear!(film)
-    integrator = Trace.WhittedIntegrator(cam, Trace.UniformSampler(8), 5)
-    @time integrator(scene, film, cam)
-    img = reverse(film.framebuffer, dims=1);
-    summary(img)
-end
-@profview_allocs integrator(scene, film, cam)
+# begin
+#     Trace.clear!(film)
+#     integrator = Trace.WhittedIntegrator(cam, Trace.UniformSampler(8), 5)
+#     @time integrator(scene, film, cam)
+# end
+pres = []
+g_scene = Trace.to_gpu(ROCArray, scene; preserve=pres);
+g_film = Trace.to_gpu(ROCArray, film; preserve=pres);
+integrator = Trace.WhittedIntegrator(cam, Trace.UniformSampler(8), 5)
+AMDGPU.@device_code_warntype interactive = true integrator(g_scene, g_film, cam);
+@time integrator(scene, film, cam);
+@time Trace.integrator_threaded(integrator, scene, film, cam);
+using OpenCL
 
-@edit integrator(scene, film, cam)
+cl_scene = Trace.to_gpu(CLArray, scene)
+cl_film = Trace.to_gpu(CLArray, film);
 
+@time integrator(cl_scene, cl_film, cam);
+OpenCL.@device_code_warntype interactive = true integrator(cl_scene, cl_film, cam)
 # Setup for profiling sample_kernel_inner!
+
+function profile_kernel(film, scene, cam)
+    tiles = film.tiles
+    tile_size = film.tile_size
+    filter_radius = film.filter_radius
+    filter_table = film.filter_table
+    pixels = film.pixels
+    tile_bounds = Trace.Bounds2(Point2f(1, 1), Point2f(16, 16))
+    tile_column = Int32(1)
+    max_depth = Int32(5)
+    sampler = Trace.UniformSampler(8)
+    camera = cam
+    spp_sqr = 1.0f0 / √Float32(sampler.samples_per_pixel)
+    @sync for i in 1:1024
+        for j in 1:1024
+            pixel = Point2f(i, j)
+            Threads.@spawn Trace.sample_kernel_inner!(
+                tiles, tile_bounds, tile_column, Point2f(size(pixels)),
+                max_depth, scene, sampler, camera,
+                pixel, spp_sqr, filter_table, filter_radius
+            )
+        end
+    end
+    return
+end
+@time Trace.integrator_threaded(integrator, scene,film, cam)
+
 begin
     tiles = film.tiles
     tile_size = film.tile_size
@@ -140,9 +176,9 @@ t1 = scene.aggregate.bvh.primitives[1]
 si = Trace.triangle_to_surface_interaction(t1, ray, Point3f(0))
 m = scene.aggregate.materials[1]
 
-@edit m(si, false, Trace.Radiance)
+@edit m(si, false, Trace.UInt8(1))
 
-bsdf = Trace.matte_material(m, si, false, Trace.Radiance)
+bsdf = Trace.matte_material(m, si, false, Trace.UInt8(1))
 m.type == Trace.MATTE_MATERIAL
 Trace.BSDF()
 

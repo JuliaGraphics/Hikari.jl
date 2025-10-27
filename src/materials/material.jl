@@ -1,4 +1,4 @@
-const MATTE_MATERIAL = UInt8(1)
+const MATTE_MATERIAL = Radiance
 
 
 """

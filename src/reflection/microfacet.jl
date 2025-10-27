@@ -95,11 +95,11 @@ with the surface normal `w`.
 function D(trd::TrowbridgeReitzDistribution, w::Vec3f)::Float32
     tan_θ² = tan_θ(w)^2
     isinf(tan_θ²) && return 0f0
-    
+
     # Calculate cos_θ⁴ without using ^4
     cos_θ² = cos_θ(w) * cos_θ(w)
     cos_θ⁴ = cos_θ² * cos_θ²
-    
+
     e = (cos_ϕ(w)^2 / (trd.α_x^2) + sin_ϕ(w)^2 / (trd.α_y^2)) * tan_θ²
     1f0 / (π * trd.α_x * trd.α_y * cos_θ⁴ * (1f0 + e)^2)
 end
