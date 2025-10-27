@@ -115,13 +115,9 @@ function (i::SPPMIntegrator)(scene::Scene, film::Film)
             n_pixels,
         )
         _update_pixels!(pixels, visible_points, γ)
-        # Periodically store SPPM image in film and save it.
-        if iteration % i.write_frequency == 0 || iteration == i.n_iterations
-            image = _sppm_to_image(i, pixels, iteration)
-            set_image!(film, image)
-            save(film)
-        end
     end
+    # Convert to framebuffer at the end
+    to_framebuffer!(film, 1f0)
 end
 
 
@@ -146,17 +142,19 @@ function inner_kernel(
     specular_bounce = false
     depth = 1
     while depth ≤ max_depth
-        hit, primitive, si = intersect!(scene, rayd)
+        hit, material, si = intersect!(scene, rayd)
         if !hit # Accumulate light contributions to the background.
             for light in scene.lights
-                Ld[pixel_idx...] += β * le(light, rayd)
+                light_emission = β * le(light, rayd)
+                if !isnan(light_emission) && !isinf(light_emission)
+                    Ld[pixel_idx...] += light_emission
+                end
             end
             return
         end
         # Process SPPM camera ray intersection.
         # Compute BSDF at SPPM camera ray intersection.
         si = compute_differentials(si, rayd)
-        material = get_material(scene, primitive)
         bsdf = material(si, true, Radiance)
         if bsdf.bxdfs.last == 0
             rayd = RayDifferentials(spawn_ray(si, rayd.d))
@@ -166,11 +164,17 @@ function inner_kernel(
         # SPPM camera-ray intersection.
         wo = -rayd.d
         if depth == 1 || specular_bounce
-            Ld[pixel_idx...] += β * le(si, wo)
+            emission = β * le(si, wo)
+            if !isnan(emission) && !isinf(emission)
+                Ld[pixel_idx...] += emission
+            end
         end
-        Ld[pixel_idx...] += uniform_sample_one_light(
+        light_contrib = β * uniform_sample_one_light(
             bsdf, si, scene, tile_sampler,
         )
+        if !isnan(light_contrib) && !isinf(light_contrib)
+            Ld[pixel_idx...] += light_contrib
+        end
         # Possibly create visible point and end camera path.
         is_diffuse = num_components(bsdf,
             BSDF_DIFFUSE | BSDF_REFLECTION | BSDF_TRANSMISSION,
@@ -199,6 +203,8 @@ function inner_kernel(
         specular_bounce = (sampled_type & BSDF_SPECULAR) != 0
         β *= f * abs(wi ⋅ si.shading.n) / pdf
         @real_assert !isnan(β)
+        # Guard against NaN/Inf in β
+        (isnan(β) || isinf(β)) && return
         βy = to_Y(β)
         if βy < 0.25f0
             continue_probability = min(1f0, βy)
@@ -365,7 +371,7 @@ function _trace_photons!(
         depth = 1
         while depth ≤ i.max_depth
             # put it back after free
-            hit, primitive, si = intersect!(scene, photon_ray)
+            hit, material, si = intersect!(scene, photon_ray)
             !hit && break
             if depth > 1
                 # Add photon contribution to nearby visible points.
@@ -397,7 +403,6 @@ function _trace_photons!(
             # Sample new photon direction.
             # Compute BSDF at photon intersection point.
             si = compute_differentials(si, photon_ray)
-            material = get_material(scene, primitive)
             bsdf = material(si, true, Importance)
             if bsdf.bxdfs.last == 0
                 photon_ray = RayDifferentials(spawn_ray(si, photon_ray.d))
@@ -449,13 +454,17 @@ function _update_pixels!(pixels::AbstractMatrix{SPPMPixel}, vps::AbstractMatrix{
             n = pN[pixel_idx]
             N_new = n + γ * M
             radius = pradius[pixel_idx]
-            radius_new = radius * √(N_new / (n + M))
-            pτ[pixel_idx] = (pτ[pixel_idx] + ϕ) * (radius_new / radius)^2
-            # TODO do not multiply by beta?
-            # (pixel.τ + pixel.vp.β * pixel.ϕ)
+            # Guard against division by zero
+            denom = n + M
+            if denom > 0f0 && radius > 0f0
+                radius_new = radius * √(N_new / denom)
+                pτ[pixel_idx] = (pτ[pixel_idx] + ϕ) * (radius_new / radius)^2
+                # TODO do not multiply by beta?
+                # (pixel.τ + pixel.vp.β * pixel.ϕ)
 
-            pradius[pixel_idx] = radius_new
-            pN[pixel_idx] = N_new
+                pradius[pixel_idx] = radius_new
+                pN[pixel_idx] = N_new
+            end
             pϕ_x[pixel_idx] = 0.0f0
             pϕ_y[pixel_idx] = 0.0f0
             pϕ_z[pixel_idx] = 0.0f0
@@ -474,7 +483,13 @@ function _sppm_to_image(
     image = fill(RGBSpectrum(0f0), size(pixels))
     @_inbounds for (i, p) in enumerate(pixels)
         # Combine direct and indirect radiance estimates.
-        image[i] = (p.Ld / iteration) + (p.τ / (Np * (p.radius^2)))
+        # Guard against division by zero when radius is very small
+        indirect = if p.radius > 1f-6
+            p.τ / (Np * (p.radius^2))
+        else
+            RGBSpectrum(0f0)
+        end
+        image[i] = (p.Ld / iteration) + indirect
     end
     image
 end

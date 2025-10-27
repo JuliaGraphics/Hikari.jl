@@ -14,7 +14,7 @@ using RayCaster
 
 # Re-export RayCaster types and functions that Trace uses
 import RayCaster: AbstractRay, Ray, RayDifferentials, apply, check_direction, scale_differentials
-import RayCaster: Bounds2, Bounds3, surface_area, diagonal, maximum_extent, offset, is_valid, inclusive_sides
+import RayCaster: Bounds2, Bounds3, area, surface_area, diagonal, maximum_extent, offset, is_valid, inclusive_sides, expand
 import RayCaster: distance, distance_squared, bounding_sphere
 # Note: lerp is defined in spectrum.jl for Spectrum, Float32, and Point3f
 import RayCaster: Transformation, translate, scale, rotate, rotate_x, rotate_y, rotate_z, look_at, perspective
