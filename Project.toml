@@ -29,3 +29,10 @@ ProgressMeter = "1.10"
 RandomNumbers = "1.6.0"
 StaticArrays = "1.9.7"
 StructArrays = "0.6.18"
+
+[extras]
+JET = "c3a54625-cd67-489e-a8e7-0a5a0ff4e31b"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test", "JET"]

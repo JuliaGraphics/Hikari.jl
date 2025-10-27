@@ -19,7 +19,7 @@ import RayCaster: distance, distance_squared, bounding_sphere
 # Note: lerp is defined in spectrum.jl for Spectrum, Float32, and Point3f
 import RayCaster: Transformation, translate, scale, rotate, rotate_x, rotate_y, rotate_z, look_at, perspective
 import RayCaster: swaps_handedness, has_scale
-import RayCaster: AbstractShape, Triangle, TriangleMesh, create_triangle_mesh
+import RayCaster: AbstractShape, Triangle, TriangleMesh
 import RayCaster: BVHAccel, world_bound, closest_hit, any_hit
 import RayCaster: Normal3f, ShapeCore, intersect, intersect_p
 import RayCaster: is_dir_negative, increase_hit, intersect_p!
