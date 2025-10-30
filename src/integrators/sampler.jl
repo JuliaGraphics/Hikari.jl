@@ -108,35 +108,32 @@ function integrator_threaded(i::SamplerIntegrator, scene::Scene, film, camera)
 
     # Process all tiles in parallel using threads
     @sync for tile_j in 1:ntiles_y
-        for tile_i in 1:ntiles_x
-            Threads.@spawn begin
-                # Calculate tile index and bounds
-                linear_idx = (tile_j - 1) * ntiles_x + tile_i
-                tile_column = Int32(linear_idx)
+        Threads.@spawn for tile_i in 1:ntiles_x
+            # Calculate tile index and bounds
+            linear_idx = (tile_j - 1) * ntiles_x + tile_i
+            tile_column = Int32(linear_idx)
 
-                i_idx = Int32(tile_i - 1)
-                j_idx = Int32(tile_j - 1)
-                tile_start = Point2f(i_idx, j_idx)
+            i_idx = Int32(tile_i - 1)
+            j_idx = Int32(tile_j - 1)
+            tile_start = Point2f(i_idx, j_idx)
 
-                tb_min = (sample_bounds.p_min .+ tile_start .* tile_size) .+ Int32(1)
-                tb_max = min.(tb_min .+ (tile_size .- Int32(1)), sample_bounds.p_max)
-                tile_bounds = Bounds2(tb_min, tb_max)
+            tb_min = (sample_bounds.p_min .+ tile_start .* tile_size) .+ Int32(1)
+            tb_max = min.(tb_min .+ (tile_size .- Int32(1)), sample_bounds.p_max)
+            tile_bounds = Bounds2(tb_min, tb_max)
 
-                # Process all pixels in this tile
-                for py in Int32(tb_min[2]):Int32(tb_max[2])
-                    for px in Int32(tb_min[1]):Int32(tb_max[1])
-                        pixel = Point2f(px, py)
-                        sample_kernel_inner!(
-                            tiles, tile_bounds, tile_column, Point2f(size(pixels)),
-                            max_depth, scene, sampler, camera,
-                            pixel, spp_sqr, filter_table, filter_radius
-                        )
-                    end
+            # Process all pixels in this tile
+            for py in Int32(tb_min[2]):Int32(tb_max[2])
+                for px in Int32(tb_min[1]):Int32(tb_max[1])
+                    pixel = Point2f(px, py)
+                    sample_kernel_inner!(
+                        tiles, tile_bounds, tile_column, Point2f(size(pixels)),
+                        max_depth, scene, sampler, camera,
+                        pixel, spp_sqr, filter_table, filter_radius
+                    )
                 end
-
-                # Merge this tile into the film
-                merge_film_tile!(pixels, crop_bounds, tiles, tile_bounds, tile_column)
             end
+            # Merge this tile into the film
+            merge_film_tile!(pixels, crop_bounds, tiles, tile_bounds, tile_column)
         end
     end
 

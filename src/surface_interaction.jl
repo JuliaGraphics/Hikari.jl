@@ -221,7 +221,7 @@ end
 end
 
 # Trace-specific spawn_ray functions for SurfaceInteraction
-# RayCaster has spawn_ray for its Interaction type, but we need these for our SurfaceInteraction
+# Raycore has spawn_ray for its Interaction type, but we need these for our SurfaceInteraction
 @inline function spawn_ray(
         p0::Interaction, p1::Interaction, δ::Float32 = 1f-6,
     )::Ray

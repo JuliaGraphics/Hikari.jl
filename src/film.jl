@@ -247,21 +247,23 @@ end
 
 @kernel function film_to_rgb!(image, xyz, filter_weight_sum, splat_xyz, scale, splat_scale)
     idx = @index(Global)
-    rgb = XYZ_to_RGB(xyz[idx])
-    # Normalize pixel with weight sum.
-    fws = filter_weight_sum[idx]
-    if fws != 0
-        inv_weight = 1.0f0 / fws
-        rgb = max.(0.0f0, rgb .* inv_weight)
+    @inbounds begin
+        rgb = XYZ_to_RGB(xyz[idx])
+        # Normalize pixel with weight sum.
+        fws = filter_weight_sum[idx]
+        if fws != 0
+            inv_weight = 1.0f0 / fws
+            rgb = max.(0.0f0, rgb .* inv_weight)
+        end
+        # Add splat value at pixel & scale.
+        splat_rgb = XYZ_to_RGB(splat_xyz[idx])
+        rgb = rgb .+ splat_scale .* splat_rgb
+        rgb = rgb .* scale
+        rgb = map(rgb) do c
+            ifelse(isfinite(c), c, 0.0f0)
+        end
+        image[idx] = RGB(rgb...)
     end
-    # Add splat value at pixel & scale.
-    splat_rgb = XYZ_to_RGB(splat_xyz[idx])
-    rgb = rgb .+ splat_scale .* splat_rgb
-    rgb = rgb .* scale
-    rgb = map(rgb) do c
-        ifelse(isfinite(c), c, 0.0f0)
-    end
-    image[idx] = RGB(rgb...)
     nothing
 end
 

@@ -10,22 +10,22 @@ using ProgressMeter
 using StructArrays
 using Atomix
 using KernelAbstractions
-using RayCaster
+using Raycore
 
-# Re-export RayCaster types and functions that Trace uses
-import RayCaster: AbstractRay, Ray, RayDifferentials, apply, check_direction, scale_differentials
-import RayCaster: Bounds2, Bounds3, area, surface_area, diagonal, maximum_extent, offset, is_valid, inclusive_sides, expand
-import RayCaster: distance, distance_squared, bounding_sphere
+# Re-export Raycore types and functions that Trace uses
+import Raycore: AbstractRay, Ray, RayDifferentials, apply, check_direction, scale_differentials
+import Raycore: Bounds2, Bounds3, area, surface_area, diagonal, maximum_extent, offset, is_valid, inclusive_sides, expand
+import Raycore: distance, distance_squared, bounding_sphere
 # Note: lerp is defined in spectrum.jl for Spectrum, Float32, and Point3f
-import RayCaster: Transformation, translate, scale, rotate, rotate_x, rotate_y, rotate_z, look_at, perspective
-import RayCaster: swaps_handedness, has_scale
-import RayCaster: AbstractShape, Triangle, TriangleMesh
-import RayCaster: BVHAccel, world_bound, closest_hit, any_hit
-import RayCaster: Normal3f, ShapeCore, intersect, intersect_p
-import RayCaster: is_dir_negative, increase_hit, intersect_p!
+import Raycore: Transformation, translate, scale, rotate, rotate_x, rotate_y, rotate_z, look_at, perspective
+import Raycore: swaps_handedness, has_scale
+import Raycore: AbstractShape, Triangle, TriangleMesh
+import Raycore: AccelPrimitive, BVHAccel, world_bound, closest_hit, any_hit
+import Raycore: Normal3f, intersect, intersect_p
+import Raycore: is_dir_negative, increase_hit, intersect_p!
+import Raycore: to_gpu
 
 abstract type Spectrum end
-abstract type Primitive end
 abstract type Light end
 abstract type Material end
 abstract type BxDF end
@@ -55,7 +55,7 @@ end
 
 
 # GeometryBasics.@fixed_vector Normal StaticVector
-# Normal3f is now imported from RayCaster
+# Normal3f is now imported from Raycore
 include("mempool.jl")
 
 
@@ -195,7 +195,7 @@ Flip normal `n` so that it lies in the same hemisphere as `v`.
 include("spectrum.jl")
 include("surface_interaction.jl")
 
-struct Scene{P<:Primitive, L<:NTuple{N, Light} where N}
+struct Scene{P, L<:NTuple{N, Light} where N}
     lights::L
     aggregate::P
     bound::Bounds3
@@ -203,7 +203,7 @@ end
 
 function Scene(
         lights::Union{Tuple,AbstractVector}, aggregate::P,
-    ) where {P<:Primitive}
+    ) where {P}
     # TODO preprocess for lights
     ltuple = Tuple(lights)
     Scene{P,typeof(ltuple)}(ltuple, aggregate, world_bound(aggregate))
@@ -241,25 +241,25 @@ function Base.show(io::IO, scene::Scene)
     end
 end
 
-# spawn_ray functions are now in RayCaster, but we need versions for our SurfaceInteraction
-# RayCaster only has spawn_ray for its simpler Interaction type
+# spawn_ray functions are now in Raycore, but we need versions for our SurfaceInteraction
+# Raycore only has spawn_ray for its simpler Interaction type
 
 # We'll create a MaterialScene wrapper below
 
-# MaterialScene: wraps RayCaster.BVHAccel with materials
-# RayCaster.BVH only stores triangles, we map triangle.material_idx -> material
-struct MaterialScene{BVH<:BVHAccel, M<:AbstractVector{<:Material}} <: Primitive
+# MaterialScene: wraps Raycore.BVHAccel with materials
+# Raycore.BVH only stores triangles, we map triangle.material_idx -> material
+struct MaterialScene{BVH<:AccelPrimitive, M<:AbstractVector{<:Material}}
     bvh::BVH
     materials::M
 end
 
 @inline world_bound(ms::MaterialScene) = world_bound(ms.bvh)
 
-# Convert RayCaster.Triangle intersection result to Trace SurfaceInteraction
+# Convert Raycore.Triangle intersection result to Trace SurfaceInteraction
 function triangle_to_surface_interaction(triangle::Triangle, ray::AbstractRay, bary_coords::Point3f)::SurfaceInteraction
     # Get triangle data
-    verts = RayCaster.vertices(triangle)
-    tex_coords = RayCaster.uvs(triangle)
+    verts = Raycore.vertices(triangle)
+    tex_coords = Raycore.uvs(triangle)
 
     # Calculate partial derivatives
     function partial_derivatives(vs::AbstractVector{Point3f}, uv::AbstractVector{Point2f})
@@ -295,8 +295,8 @@ function triangle_to_surface_interaction(triangle::Triangle, ray::AbstractRay, b
     )
 
     # Initialize shading geometry from triangle normals/tangents if available
-    t_normals = RayCaster.normals(triangle)
-    t_tangents = RayCaster.tangents(triangle)
+    t_normals = Raycore.normals(triangle)
+    t_tangents = Raycore.tangents(triangle)
 
     has_normals = !all(x -> all(isnan, x), t_normals)
     has_tangents = !all(x -> all(isnan, x), t_tangents)

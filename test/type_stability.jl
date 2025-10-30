@@ -18,7 +18,7 @@ function gen_triangle()
     uv1 = Point2f(0.0f0, 0.0f0)
     uv2 = Point2f(1.0f0, 0.0f0)
     uv3 = Point2f(0.0f0, 1.0f0)
-    RayCaster.Triangle(
+    Raycore.Triangle(
         SVector(v1, v2, v3),
         SVector(n1, n1, n1),
         SVector(Vec3f(NaN), Vec3f(NaN), Vec3f(NaN)),
@@ -42,7 +42,7 @@ function gen_material_scene()
     material = Trace.MatteMaterial(kd, sigma)
 
     # Create MaterialScene using build_material_scene helper
-    mesh_material_pairs = Tuple{RayCaster.TriangleMesh, typeof(material)}[(tri_mesh, material)]
+    mesh_material_pairs = Tuple{Raycore.TriangleMesh, typeof(material)}[(tri_mesh, material)]
     Trace.build_material_scene(mesh_material_pairs)
 end
 

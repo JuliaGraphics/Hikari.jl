@@ -3,7 +3,7 @@ using Trace
 using GeometryBasics
 using LinearAlgebra
 using StaticArrays
-using RayCaster
+using Raycore
 using JET
 
 include("materials.jl")
