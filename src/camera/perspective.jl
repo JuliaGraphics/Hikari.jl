@@ -86,10 +86,12 @@ end
     )::Tuple{Ray,Float32}
     # Compute raster & camera sample positions.
     # p_film -> in pixels
-    p_pixel = Point3f(sample.film..., 0f0)
+    # Explicit indexing to avoid tuple iteration/splatting in SPIR-V
+    p_pixel = Point3f(sample.film[1], sample.film[2], 0f0)
     p_camera = camera.core.raster_to_camera(p_pixel)
     o = Point3f(0)
-    d = normalize(Vec3f(p_camera))
+    # Explicit indexing to avoid tuple iteration in SPIR-V
+    d = normalize(Vec3f(p_camera[1], p_camera[2], p_camera[3]))
     # Modify ray for depth of field.
     if camera.core.lens_radius > 0
         # Sample points on lens.
@@ -99,7 +101,9 @@ end
         p_focus = o .+ d * t
         # Update ray for effects of lens.
         o = Point3f(p_lens[1], p_lens[2], 0f0)
-        d = normalize(Vec3f(p_focus .- o))
+        # Explicit indexing to avoid tuple iteration in SPIR-V
+        p_diff = p_focus .- o
+        d = normalize(Vec3f(p_diff[1], p_diff[2], p_diff[3]))
     end
 
     time = lerp(

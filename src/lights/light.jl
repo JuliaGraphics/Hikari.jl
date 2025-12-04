@@ -15,7 +15,10 @@ struct VisibilityTester
 end
 
 @inline function unoccluded(t::VisibilityTester, scene::Scene)::Bool
-    if isinf(t.p0.p) && isinf(t.p1.p)
+    # Explicit isinf check to avoid tuple iteration in SPIR-V (any() causes PHI node errors)
+    p0_inf = isinf(t.p0.p[1]) || isinf(t.p0.p[2]) || isinf(t.p0.p[3])
+    p1_inf = isinf(t.p1.p[1]) || isinf(t.p1.p[2]) || isinf(t.p1.p[3])
+    if p0_inf && p1_inf
         return true
     end
     !intersect_p(scene, spawn_ray(t.p0, t.p1))

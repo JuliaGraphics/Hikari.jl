@@ -12,7 +12,7 @@ function build_material_scene(mesh_material_pairs::Vector{Tuple{TriangleMesh, M}
     end
 
     # Build BVH with material indices
-    bvh = BVHAccel(meshes)
+    bvh = BVH(meshes)
 
     return MaterialScene(bvh, materials)
 end

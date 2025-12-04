@@ -79,7 +79,7 @@ function render()
     triangle_primitive3 = Trace.GeometricPrimitive(triangles[3], material_white)
     triangle_primitive4 = Trace.GeometricPrimitive(triangles[4], material_white)
 
-    bvh = Trace.BVHAccel([
+    bvh = Trace.BVH([
         primitive, primitive2, primitive3, primitive4,
         triangle_primitive, triangle_primitive2,
         triangle_primitive3, triangle_primitive4,

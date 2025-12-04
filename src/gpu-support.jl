@@ -53,11 +53,11 @@ end
 
 # Conversion constructor for e.g. GPU arrays
 # TODO, create tree on GPU? Not sure if that will gain much though...
-function to_gpu(ArrayType, bvh::Trace.BVHAccel; preserve=[])
+function to_gpu(ArrayType, bvh::Trace.BVH; preserve=[])
     primitives = to_gpu(ArrayType, bvh.primitives; preserve=preserve)
     nodes = to_gpu(ArrayType, bvh.nodes; preserve=preserve)
     materials = to_gpu(ArrayType, to_gpu.((ArrayType,), bvh.materials; preserve=preserve); preserve=preserve)
-    return Trace.BVHAccel(primitives, materials, bvh.max_node_primitives, nodes)
+    return Trace.BVH(primitives, materials, bvh.max_node_primitives, nodes)
 end
 
 function to_gpu(ArrayType, scene::Trace.Scene; preserve=[])

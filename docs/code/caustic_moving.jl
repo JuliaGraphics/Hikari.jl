@@ -44,7 +44,7 @@ function render()
         push!(primitives, Trace.GeometricPrimitive(t, plastic))
     end
 
-    bvh = Trace.BVHAccel(primitives, 1)
+    bvh = Trace.BVH(primitives, 1)
 
     resolution = Point2f(1024)
     ray_depth = 5

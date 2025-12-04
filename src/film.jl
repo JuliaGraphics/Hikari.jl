@@ -184,11 +184,22 @@ end
     f_xyz = f.xyz
     f_filter_weight_sum = f.filter_weight_sum
     linear = Int32(1)
-    @_inbounds for pixel in tile
-        f_idx = get_pixel_index(crop_bounds, pixel)
-        f_xyz[f_idx] += to_XYZ(ft_contrib_sum[linear, tile_col])
-        f_filter_weight_sum[f_idx] += ft_filter_weight_sum[linear, tile_col]
-        linear += Int32(1)
+
+    # Use while loops to avoid iterate() protocol (causes PHI node errors in SPIR-V)
+    py = u_int32(tile.p_min[2])
+    py_max = u_int32(tile.p_max[2])
+    @_inbounds while py <= py_max
+        px = u_int32(tile.p_min[1])
+        px_max = u_int32(tile.p_max[1])
+        while px <= px_max
+            pixel = Point2f(px, py)
+            f_idx = get_pixel_index(crop_bounds, pixel)
+            f_xyz[f_idx] += to_XYZ(ft_contrib_sum[linear, tile_col])
+            f_filter_weight_sum[f_idx] += ft_filter_weight_sum[linear, tile_col]
+            linear += Int32(1)
+            px += Int32(1)
+        end
+        py += Int32(1)
     end
     return
 end
@@ -220,13 +231,21 @@ end
     yrange = p0[2]:p1[2]
     xn = length(xrange) % Int32
     yn = length(yrange) % Int32
-    @_inbounds for i in Int32(1):xn, j in Int32(1):yn
-        x = xrange[i]
-        y = yrange[j]
-        w = filter_table[i, j]
-        idx = get_tile_index(tile, Point2(x, y))
-        contrib_sum[idx, tile_column] += spectrum * sample_weight * w
-        filter_weight_sum[idx, tile_column] += w
+
+    # Use while loops to avoid iterate() protocol (causes PHI node errors in SPIR-V)
+    i = Int32(1)
+    @_inbounds while i <= xn
+        j = Int32(1)
+        while j <= yn
+            x = xrange[i]
+            y = yrange[j]
+            w = filter_table[i, j]
+            idx = get_tile_index(tile, Point2(x, y))
+            contrib_sum[idx, tile_column] += spectrum * sample_weight * w
+            filter_weight_sum[idx, tile_column] += w
+            j += Int32(1)
+        end
+        i += Int32(1)
     end
 end
 

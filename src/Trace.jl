@@ -20,7 +20,7 @@ import Raycore: distance, distance_squared, bounding_sphere
 import Raycore: Transformation, translate, scale, rotate, rotate_x, rotate_y, rotate_z, look_at, perspective
 import Raycore: swaps_handedness, has_scale
 import Raycore: AbstractShape, Triangle, TriangleMesh
-import Raycore: AccelPrimitive, BVHAccel, world_bound, closest_hit, any_hit
+import Raycore: AccelPrimitive, BVH, world_bound, closest_hit, any_hit
 import Raycore: Normal3f, intersect, intersect_p
 import Raycore: is_dir_negative, increase_hit, intersect_p!
 import Raycore: to_gpu
@@ -70,19 +70,28 @@ end
 
 @inline maybe_copy(v::Maybe)::Maybe = v isa Nothing ? v : copy(v)
 
-function concentric_sample_disk(u::Point2f)::Point2f
+@inline function concentric_sample_disk(u::Point2f)::Point2f
     # Map uniform random numbers to [-1, 1].
-    offset = 2f0 * u - Vec2f(1f0)
-    # Handle degeneracy at the origin.
-    offset[1] ≈ 0f0 && offset[2] ≈ 0f0 && return Point2f(0)
-    if abs(offset[1]) > abs(offset[2])
-        r = offset[1]
-        θ = (offset[2] / offset[1]) * π / 4f0
-    else
-        r = offset[2]
-        θ = π / 2f0 - (offset[1] / offset[2]) * π / 4f0
-    end
-    r * Point2f(cos(θ), sin(θ))
+    offset_x = 2f0 * u[1] - 1f0
+    offset_y = 2f0 * u[2] - 1f0
+
+    # Compute r and θ - avoid zero check, just compute through
+    # (The zero case is extremely rare and the math will naturally produce ~0)
+    abs_x = abs(offset_x)
+    abs_y = abs(offset_y)
+
+    # Add tiny epsilon to avoid division by zero without branching
+    safe_offset_x = offset_x + 1.0f-10
+    safe_offset_y = offset_y + 1.0f-10
+
+    is_x_larger = abs_x > abs_y
+    r = ifelse(is_x_larger, offset_x, offset_y)
+    θ = ifelse(is_x_larger,
+               (offset_y / safe_offset_x) * π / 4f0,
+               π / 2f0 - (offset_x / safe_offset_y) * π / 4f0)
+
+    # Direct computation and return - no conditional selection
+    return Point2f(r * cos(θ), r * sin(θ))
 end
 
 function cosine_sample_hemisphere(u::Point2f)::Vec3f
@@ -246,7 +255,7 @@ end
 
 # We'll create a MaterialScene wrapper below
 
-# MaterialScene: wraps Raycore.BVHAccel with materials
+# MaterialScene: wraps Raycore.BVH with materials
 # Raycore.BVH only stores triangles, we map triangle.material_idx -> material
 struct MaterialScene{BVH<:AccelPrimitive, M<:AbstractVector{<:Material}}
     bvh::BVH
@@ -256,7 +265,7 @@ end
 @inline world_bound(ms::MaterialScene) = world_bound(ms.bvh)
 
 # Convert Raycore.Triangle intersection result to Trace SurfaceInteraction
-function triangle_to_surface_interaction(triangle::Triangle, ray::AbstractRay, bary_coords::Point3f)::SurfaceInteraction
+function triangle_to_surface_interaction(triangle::Triangle, ray::AbstractRay, bary_coords::StaticVector{3,Float32})::SurfaceInteraction
     # Get triangle data
     verts = Raycore.vertices(triangle)
     tex_coords = Raycore.uvs(triangle)
@@ -342,7 +351,7 @@ end
 
 # Intersect function for MaterialScene - returns material and SurfaceInteraction
 @inline function intersect!(ms::MaterialScene, ray::AbstractRay)
-    hit_found, triangle, distance, bary_coords = closest_hit(ms.bvh, ray)::Tuple{Bool,Triangle,Float32,Point3f}
+    hit_found, triangle, distance, bary_coords = closest_hit(ms.bvh, ray)
 
     if !hit_found
         return false, NoMaterial(), SurfaceInteraction()
@@ -404,7 +413,7 @@ function no_material_bvh(geometric_primitives::Vector)
     materials = [gp.material for gp in geometric_primitives]
 
     # Build BVH with material indices
-    bvh = BVHAccel(meshes)
+    bvh = BVH(meshes)
 
     return MaterialScene(bvh, materials)
 end

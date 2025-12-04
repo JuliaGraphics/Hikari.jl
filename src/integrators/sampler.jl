@@ -15,7 +15,10 @@ end
         filter_radius::Point2f
     )
     campix = Point2f(pixel[2], resolution[1] - pixel[1])
-    for _ in 1:sampler.samples_per_pixel
+
+    # Use while loop to avoid iterate() protocol (causes PHI node errors in SPIR-V)
+    sample_idx = Int32(1)
+    while sample_idx <= sampler.samples_per_pixel
         camera_sample = @inline get_camera_sample(sampler, campix)
         ray, ω = @inline generate_ray_differential(camera, camera_sample)
         ray = @inline scale_differentials(ray, spp_sqr)
@@ -31,6 +34,7 @@ end
             tiles, tile, tile_column, pixel, l,
             filter_table, filter_radius, ω,
         )
+        sample_idx += Int32(1)
     end
 end
 
@@ -38,9 +42,13 @@ end
     _tile_xy = @index(Global, Cartesian)
     linear_idx = @index(Global)
 
-    tile_xy = map(u_int32, Tuple(_tile_xy))
+    # Explicit unpacking to avoid tuple iteration (causes PHI node errors in SPIR-V)
+    _txy_tuple = Tuple(_tile_xy)
+    tile_xy = (u_int32(_txy_tuple[1]), u_int32(_txy_tuple[2]))
     tile_column = u_int32(linear_idx)
-    i, j = tile_xy .- Int32(1)
+    # Explicit unpacking instead of broadcasting to avoid iteration
+    i = tile_xy[1] - Int32(1)
+    j = tile_xy[2] - Int32(1)
     tile_start = Point2f(i, j)
     tb_min = (sample_bounds.p_min .+ tile_start .* tile_size) .+ Int32(1)
     tb_max = min.(tb_min .+ (tile_size .- Int32(1)), sample_bounds.p_max)
@@ -48,16 +56,26 @@ end
     spp_sqr = 1.0f0 / √Float32(sampler.samples_per_pixel)
 
     # Explicit loop instead of iterating over Bounds2 to avoid GPU allocation issues
-    px_size = Point2f(size(pixels))
-    for py in u_int32(tb_min[2]):u_int32(tb_max[2])
-        for px in u_int32(tb_min[1]):u_int32(tb_max[1])
+    # Explicitly unpack size to avoid tuple iteration in SPIR-V
+    px_size = Point2f(size(pixels, 1), size(pixels, 2))
+
+    # Use while loops instead of for loops to avoid iterate() protocol
+    # which returns Union{Nothing, Tuple{Int32, Int32}} causing PHI node errors in SPIR-V
+    py = u_int32(tb_min[2])
+    py_max = u_int32(tb_max[2])
+    while py <= py_max
+        px = u_int32(tb_min[1])
+        px_max = u_int32(tb_max[1])
+        while px <= px_max
             pixel = Point2f(px, py)
             @inline sample_kernel_inner!(
                 tiles, tile_bounds, tile_column, px_size,
                 max_depth, scene, sampler, camera,
                 pixel, spp_sqr, filter_table, filter_radius
             )
+            px += Int32(1)
         end
+        py += Int32(1)
     end
     @inline merge_film_tile!(pixels, crop_bounds, tiles, tile_bounds, Int32(tile_column))
 end
@@ -75,7 +93,7 @@ function (i::SamplerIntegrator)(scene::Scene, film, camera)
     sampler = i.sampler
     max_depth = Int32(i.max_depth)
     backend = KA.get_backend(film.tiles.contrib_sum)
-    kernel! = whitten_kernel!(backend, (Int(tile_size), Int(tile_size)))
+    kernel! = whitten_kernel!(backend, (8, 8))  # Optimized for wavefront size 32 (2 wavefronts)
     s_filter_table = Mat{size(filter_table)...}(filter_table)
     kernel!(
         film.pixels, film.crop_bounds, sample_bounds,
@@ -142,7 +160,7 @@ end
 
 # MaterialScene now returns material directly from intersect!
 # These functions are kept for backward compatibility but not used anymore
-function get_material(bvh::BVHAccel, shape::Triangle)
+function get_material(bvh::BVH, shape::Triangle)
     materials = bvh.materials
     @_inbounds if shape.material_idx == 0
         return materials[1]
@@ -361,10 +379,10 @@ end
         sampler, max_depth::Int32, initial_ray::RayDifferentials, scene::S
     )::RGBSpectrum where {S<:Scene}
     accumulated_l = RGBSpectrum(0.0f0)
-    # stack = MVector{8,Tuple{Trace.RayDifferentials,Int32,Trace.RGBSpectrum}}(undef)
-    stack = @ntuple(8, (initial_ray, Int32(0), accumulated_l))
+    # Direct MVector for type stability and to avoid LLVM select instructions in SPIR-V
+    stack = MVector{8,Tuple{RayDifferentials,Int32,RGBSpectrum}}(undef)
     pos = Int32(1)
-    # stack[pos] = (initial_ray, Int32(0), accumulated_l)
+    stack[pos] = (initial_ray, Int32(0), accumulated_l)
     @_inbounds while pos > Int32(0)
         (ray, depth, accumulated_l) = stack[pos]
         pos -= Int32(1)
@@ -386,8 +404,7 @@ end
         if m.type === NO_MATERIAL
             new_ray = RayDifferentials(spawn_ray(si, ray.d))
             pos += Int32(1)
-            @setindex 8 stack[pos] = (new_ray, depth, accumulated_l)
-            # stack[pos] = (new_ray, depth, accumulated_l)
+            stack[pos] = (new_ray, depth, accumulated_l)
             continue
         end
 
@@ -399,14 +416,12 @@ end
             rd_reflect, reflect_l = @inline specular(Reflect, bsdf, sampler, ray, si)
             if rd_reflect !== ray && pos < 8
                 pos += Int32(1)
-                @setindex 8 stack[pos] = (rd_reflect, depth + Int32(1), reflect_l * accumulated_l)
-                # stack[pos] = (rd_reflect, depth + Int32(1), reflect_l * accumulated_l)
+                stack[pos] = (rd_reflect, depth + Int32(1), reflect_l * accumulated_l)
             end
             rd_transmit, transmit_l = @inline specular(Transmit, bsdf, sampler, ray, si)
             if rd_transmit !== ray && pos < 8
                 pos += Int32(1)
-                @setindex 8 stack[pos] = (rd_transmit, depth + Int32(1), transmit_l * accumulated_l)
-                # stack[pos] = (rd_transmit, depth + Int32(1), transmit_l * accumulated_l)
+                stack[pos] = (rd_transmit, depth + Int32(1), transmit_l * accumulated_l)
             end
         end
     end

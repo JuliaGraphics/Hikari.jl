@@ -42,17 +42,13 @@ function Base.clamp(
 end
 
 function Base.isnan(c::C) where C<:Spectrum
-    for v in c.c
-        isnan(v) && return true
-    end
-    false
+    # Explicit checks to avoid tuple iteration (causes PHI node errors in SPIR-V)
+    isnan(c.c[1]) || isnan(c.c[2]) || isnan(c.c[3])
 end
 
 function Base.isinf(c::C) where C<:Spectrum
-    for v in c.c
-        isinf(v) && return true
-    end
-    false
+    # Explicit checks to avoid tuple iteration (causes PHI node errors in SPIR-V)
+    isinf(c.c[1]) || isinf(c.c[2]) || isinf(c.c[3])
 end
 
 is_black(c::C) where C<:Spectrum = iszero(c.c)

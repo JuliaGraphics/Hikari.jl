@@ -116,7 +116,9 @@ function (i::SPPMIntegrator)(scene::Scene, film::Film)
         )
         _update_pixels!(pixels, visible_points, γ)
     end
-    # Convert to framebuffer at the end
+    # Convert SPPM pixels to image and write to framebuffer
+    image = _sppm_to_image(i, pixels, i.n_iterations)
+    set_image!(film, image)
     to_framebuffer!(film, 1f0)
 end
 
