@@ -25,7 +25,7 @@ function Sampler(samples_per_pixel::Integer)
     )
 end
 
-function get_camera_sample(sampler::AbstractSampler, p_raster::Point2f)
+@inline function get_camera_sample(sampler::AbstractSampler, p_raster::Point2f)
     p_film = p_raster .+ get_2d(sampler)
     time = get_1d(sampler)
     p_lens = get_2d(sampler)
@@ -126,16 +126,44 @@ function get_2d(ps::PixelSampler)::Point2f
 end
 
 
-mutable struct UniformSampler <: AbstractSampler
+struct UniformSampler <: AbstractSampler
     current_sample::Int64
     samples_per_pixel::Int64
     UniformSampler(samples_per_pixel::Integer) = new(1, samples_per_pixel)
 end
 
-function get_camera_sample(sampler::UniformSampler, p_raster::Point2f)
-    p_film = p_raster .+ rand(Point2f)
-    p_lens = rand(Point2f)
-    CameraSample(p_film, p_lens, rand())
+# Simple GPU-friendly hash-based RNG for camera ray dithering
+# Uses Wang hash for good distribution
+@inline function wang_hash(seed::UInt32)::UInt32
+    seed = (seed ⊻ UInt32(61)) ⊻ (seed >> UInt32(16))
+    seed = seed * UInt32(9)
+    seed = seed ⊻ (seed >> UInt32(4))
+    seed = seed * UInt32(0x27d4eb2d)
+    seed = seed ⊻ (seed >> UInt32(15))
+    seed
+end
+
+@inline function gpu_rand_float(x::UInt32, y::UInt32, offset::UInt32)::Float32
+    hash_val = wang_hash(x ⊻ wang_hash(y ⊻ wang_hash(offset)))
+    Float32(hash_val) / Float32(typemax(UInt32))
+end
+
+@inline function get_camera_sample(::UniformSampler, p_raster::Point2f)
+    # Use pixel coordinates as seed for deterministic but pseudo-random values
+    px = UInt32(floor(p_raster[1]))
+    py = UInt32(floor(p_raster[2]))
+
+    # Generate pseudo-random offsets for jittering
+    p_x = gpu_rand_float(px, py, UInt32(0))
+    p_y = gpu_rand_float(px, py, UInt32(1))
+    p_film = Point2f(p_raster[1] + p_x, p_raster[2] + p_y)
+
+    lens_x = gpu_rand_float(px, py, UInt32(2))
+    lens_y = gpu_rand_float(px, py, UInt32(3))
+    p_lens = Point2f(lens_x, lens_y)
+
+    time = gpu_rand_float(px, py, UInt32(4))
+    CameraSample(p_film, p_lens, time)
 end
 
 @inline function has_next_sample(u::UniformSampler)::Bool
@@ -147,7 +175,19 @@ end
 @inline function start_pixel!(u::UniformSampler, ::Point2f)
     u.current_sample = 1
 end
-@inline get_1d(u::UniformSampler)::Float32 = rand(Float32)
-@inline get_2d(u::UniformSampler)::Point2f = rand(Point2f)
+# GPU-friendly RNG using simple hash - returns quasi-random values
+# Note: UniformSampler is immutable so we use sample count as seed
+@inline function get_1d(u::UniformSampler)::Float32
+    # Use sample index to generate deterministic pseudo-random value
+    hash_val = wang_hash(UInt32(u.current_sample))
+    Float32(hash_val) / Float32(typemax(UInt32))
+end
+
+@inline function get_2d(u::UniformSampler)::Point2f
+    # Use sample index with different offsets for x and y
+    x = gpu_rand_float(UInt32(u.current_sample), UInt32(0), UInt32(5))
+    y = gpu_rand_float(UInt32(u.current_sample), UInt32(1), UInt32(6))
+    Point2f(x, y)
+end
 
 # include("stratified.jl")

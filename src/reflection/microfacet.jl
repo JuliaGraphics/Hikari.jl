@@ -1,24 +1,41 @@
-"""
-Describes rough surfaces by V-shaped microfacets described by a spherical
-Gaussian distribution with parameter `σ` --- the standard deviation
-of the microfacet angle.
-"""
-struct OrenNayar{S<:Spectrum} <: BxDF
-    r::S
-    a::Float32
-    b::Float32
-    type::UInt8
+const MICROFACET_REFLECTION = UInt8(7)
 
-    function OrenNayar(r::S, σ::Float32) where S<:Spectrum
-        σ = deg2rad(σ)
-        σ2 = σ * σ
-        a = 1f0 - (σ2 / (2f0 * (σ2 + 0.33f0)))
-        b = 0.45f0 * σ2 / (σ2 + 0.09f0)
-        new{S}(r, a, b, BSDF_DIFFUSE | BSDF_REFLECTION)
-    end
+function MicrofacetReflection(
+    active::Bool, r::S, distribution::Union{Nothing, MicrofacetDistribution}, fresnel::Fresnel, transport,
+    ) where {S<:Spectrum}
+
+    UberBxDF{S}(
+        active, MICROFACET_REFLECTION; r=r, distribution=distribution,
+        fresnel=fresnel, type=BSDF_REFLECTION | BSDF_GLOSSY, transport=transport
+    )
 end
 
-function (o::OrenNayar)(wo::Vec3f, wi::Vec3f)::RGBSpectrum
+const MICROFACET_TRANSMISSION = UInt8(8)
+
+function MicrofacetTransmission(
+        active::Bool, t::S, distribution::Union{Nothing, MicrofacetDistribution}, η_a::Float32, η_b::Float32, transport,
+    ) where {S<:Spectrum}
+
+    UberBxDF{S}(
+        active, MICROFACET_TRANSMISSION;
+        t=t, distribution=distribution, η_a=η_a, η_b=η_b, fresnel=FresnelDielectric(η_a, η_b),
+        type=BSDF_TRANSMISSION | BSDF_GLOSSY, transport=transport
+    )
+end
+
+const OREN_NAYAR = UInt8(6)
+
+function OrenNayar(active::Bool, r::S, σ::Float32) where {S<:Spectrum}
+
+    σ = deg2rad(σ)
+    σ2 = σ * σ
+    a = 1.0f0 - (σ2 / (2.0f0 * (σ2 + 0.33f0)))
+    b = 0.45f0 * σ2 / (σ2 + 0.09f0)
+
+    return UberBxDF{S}(active, OREN_NAYAR; r=r, a=a, b=b, type=BSDF_DIFFUSE | BSDF_REFLECTION)
+end
+
+function distribution_orennayar(o::UberBxDF{S}, wo::Vec3f, wi::Vec3f)::S where {S}
     sin_θi = sin_θ(wi)
     sin_θo = sin_θ(wo)
     # Compute cosine term of Oren-Nayar model.
@@ -38,29 +55,9 @@ function (o::OrenNayar)(wo::Vec3f, wi::Vec3f)::RGBSpectrum
         sin_α = sin_θi
         tan_β = sin_θo / abs(cos_θ(wo))
     end
-    o.r * (1f0 / π) * (o.a + o.b * max_cos * sin_α * tan_β)
+    return o.r * (1f0 / π) * (o.a + o.b * max_cos * sin_α * tan_β)
 end
 
-
-abstract type MicrofacetDistribution end
-
-"""
-Microfacet distribution function based on Gaussian distribution of
-microfacet slopes.
-Distribution has higher tails, it falls off to zero more slowly for
-directions far from the surface normal.
-"""
-struct TrowbridgeReitzDistribution <: MicrofacetDistribution
-    α_x::Float32
-    α_y::Float32
-    sample_visible_area::Bool
-
-    function TrowbridgeReitzDistribution(
-        α_x::Float32, α_y::Float32, sample_visible_area::Bool = true,
-    )
-        new(max(1f-3, α_x), max(1f-3, α_y), sample_visible_area)
-    end
-end
 
 function λ(trd::TrowbridgeReitzDistribution, w::Vec3f)::Float32
     θ = abs(tan_θ(w))
@@ -79,8 +76,8 @@ correspond to near-perfect specular reflection, rather than by specifying
 @inline function roughness_to_α(roughness::Float32)::Float32
     roughness = max(1f-3, roughness)
     x = log(roughness)
-    1.62142f0 + 0.819955f0 * x + 0.1734f0 * x^2 +
-    0.0171201f0 * x^3 + 0.000640711f0 * x^4
+    1.62142f0 + 0.819955f0 * x + 0.1734f0 * x*x +
+    0.0171201f0 * x*x*x + 0.000640711f0 * x*x*x*x
 end
 
 @inline function G1(m::MicrofacetDistribution, w::Vec3f)::Float32
@@ -99,7 +96,10 @@ function D(trd::TrowbridgeReitzDistribution, w::Vec3f)::Float32
     tan_θ² = tan_θ(w)^2
     isinf(tan_θ²) && return 0f0
 
-    cos_θ⁴ = cos_θ(w)^4
+    # Calculate cos_θ⁴ without using ^4
+    cos_θ² = cos_θ(w) * cos_θ(w)
+    cos_θ⁴ = cos_θ² * cos_θ²
+
     e = (cos_ϕ(w)^2 / (trd.α_x^2) + sin_ϕ(w)^2 / (trd.α_y^2)) * tan_θ²
     1f0 / (π * trd.α_x * trd.α_y * cos_θ⁴ * (1f0 + e)^2)
 end
@@ -110,9 +110,11 @@ function compute_pdf(m::MicrofacetDistribution, wo::Vec3f, wh::Vec3f)::Float32
 end
 
 function _trowbridge_reitz_sample(
-    cosθ::Float32, u1::Float32, u2::Float32,
-)::Tuple{Float32,Float32}
-    if cosθ > 0.9999f0 # Special case -- normal incidence.
+        cosθ::Float32, u1::Float32, u2::Float32,
+    )::Tuple{Float32,Float32}
+
+    # Special case -- normal incidence.
+    if cosθ > 0.9999f0
         r = √(u1 / (1f0 - u1))
         ϕ = 6.28318530718 * u2
         return r * cos(ϕ), r * sin(ϕ)
@@ -153,9 +155,11 @@ function _trowbridge_reitz_sample(
 end
 
 function trowbridge_reitz_sample(
-    wi::Vec3f, α_x::Float32, α_y::Float32, u1::Float32, u2::Float32,
-)::Vec3f
+        wi::Vec3f, α_x::Float32, α_y::Float32, u1::Float32, u2::Float32,
+    )::Vec3f
+
     # Stretch wi.
+
     wi_stretch = normalize(Vec3f(wi[1] * α_x, wi[2] * α_y, wi[3]))
     slope_x, slope_y = _trowbridge_reitz_sample(cos_θ(wi_stretch), u1, u2)
     # Rotate.
@@ -171,8 +175,9 @@ function trowbridge_reitz_sample(
 end
 
 function sample_wh(
-    trd::TrowbridgeReitzDistribution, wo::Vec3f, u::Point2f,
-)::Vec3f
+        trd::TrowbridgeReitzDistribution, wo::Vec3f, u::Point2f,
+    )::Vec3f
+
     if trd.sample_visible_area
         flip = wo[3] < 0f0
         wh = trowbridge_reitz_sample(
@@ -201,89 +206,56 @@ function sample_wh(
 end
 
 
-struct MicrofacetReflection{S<:Spectrum,T<:TransportMode} <: BxDF
-    r::S
-    distribution::D where D<:MicrofacetDistribution
-    fresnel::F where F<:Fresnel
+function distribution_microfacet_reflection(m::UberBxDF{S}, wo::Vec3f, wi::Vec3f)::S where {S<:Spectrum}
 
-    type::UInt8
-
-    function MicrofacetReflection(
-        r::S, distribution::D, fresnel::F, ::Type{T},
-    ) where {
-        S<:Spectrum,D<:MicrofacetDistribution,
-        F<:Fresnel,T<:TransportMode,
-    }
-        new{S,T}(r, distribution, fresnel, BSDF_REFLECTION | BSDF_GLOSSY)
-    end
-end
-
-function (m::MicrofacetReflection{S,T})(
-    wo::Vec3f, wi::Vec3f,
-)::RGBSpectrum where {S<:Spectrum,T<:TransportMode}
     cosθo = abs(cos_θ(wo))
     cosθi = abs(cos_θ(wi))
     wh = wi + wo
     # Degenerate cases for microfacet reflection.
-    (cosθi ≈ 0 || cosθo ≈ 0) && return S(0f0)
+
+    (cosθi ≈ 0f0 || cosθo ≈ 0f0) && return S(0f0)
     wh ≈ Vec3f(0) && return S(0f0)
     wh = normalize(wh)
     f = m.fresnel(wi ⋅ face_forward(wh, Vec3f(0, 0, 1)))
-    m.r * D(m.distribution, wh) * G(m.distribution, wo, wi) *
-    f / (4f0 * cosθi * cosθo)
+    return m.r * D(m.distribution, wh) * G(m.distribution, wo, wi) *
+        f / (4f0 * cosθi * cosθo)
 end
 
-@inline function sample_f(
-    m::MicrofacetReflection{S,T}, wo::Vec3f, u::Point2f,
-)::Tuple{Vec3f,Float32,RGBSpectrum,Maybe{UInt8}} where {S<:Spectrum,T<:TransportMode}
-    wo[3] ≈ 0 && return Vec3f(0f0), 0f0, S(0f0), nothing
+@inline function sample_microfacet_reflection(
+        m::UberBxDF{S}, wo::Vec3f, u::Point2f,
+    )::Tuple{Vec3f,Float32,RGBSpectrum,UInt8} where {S<:Spectrum}
+
+    wo[3] ≈ 0f0 && return Vec3f(0.0f0), 0.0f0, S(0.0f0), UInt8(0)
 
     # Sample microfacet orientation `wh` and reflected direction `wi`.
+
     wh = sample_wh(m.distribution, wo, u)
-    (wo ⋅ wh) < 0 && return Vec3f(0f0), 0f0, S(0f0), nothing
+    (wo ⋅ wh) < 0f0 && return Vec3f(0.0f0), 0.0f0, S(0.0f0), UInt8(0)
 
     wi = reflect(wo, wh)
-    !same_hemisphere(wo, wi) && return Vec3f(0f0), 0f0, S(0f0), nothing
+    !same_hemisphere(wo, wi) && return Vec3f(0.0f0), 0.0f0, S(0.0f0), UInt8(0)
     # Copmute PDF of `wi` for microfacet reflection.
-    pdf = compute_pdf(m, wo, wh)
-    wi, pdf, m(wo, wi), nothing
+
+    pdf = pdf_microfacet_reflection(m, wo, wh)
+    wi, pdf, m(wo, wi), UInt8(0)
 end
 
-@inline function compute_pdf(
-    m::MicrofacetReflection, wo::Vec3f, wi::Vec3f,
-)::Float32
+@inline function pdf_microfacet_reflection(
+        m::UberBxDF, wo::Vec3f, wi::Vec3f,
+    )::Float32
+
     !same_hemisphere(wo, wi) && return 0f0
     wh = normalize((wo + wi))
     compute_pdf(m.distribution, wo, wh) / (4f0 * wo ⋅ wh)
 end
 
+function distribution_microfacet_transmission(m::UberBxDF{S}, wo::Vec3f, wi::Vec3f)::S where {S<:Spectrum}
+    # Only transmission.
 
-struct MicrofacetTransmission{S<:Spectrum,T<:TransportMode} <: BxDF
-    t::S
-    distribution::D where D<:MicrofacetDistribution
-    η_a::Float32
-    η_b::Float32
-    fresnel::FresnelDielectric
-
-    type::UInt8
-
-    function MicrofacetTransmission(
-        t::S, distribution::D, η_a::Float32, η_b::Float32, ::Type{T},
-    ) where {S<:Spectrum,D<:MicrofacetDistribution,T<:TransportMode}
-        new{S,T}(
-            t, distribution, η_a, η_b, FresnelDielectric(η_a, η_b),
-            BSDF_TRANSMISSION | BSDF_GLOSSY,
-        )
-    end
-end
-
-function (m::MicrofacetTransmission{S,T})(
-    wo::Vec3f, wi::Vec3f,
-)::RGBSpectrum where {S<:Spectrum,T<:TransportMode}
-    same_hemisphere(wo, wi) && return S(0f0) # Only transmission.
+    same_hemisphere(wo, wi) && return S(0f0)
 
     cosθo, cosθi = cos_θ(wo), cos_θ(wi)
-    (cosθo ≈ 0 || cosθi ≈ 0) && return S(0f0)
+    (cosθo ≈ 0f0 || cosθi ≈ 0f0) && return S(0f0)
     # Compute `wh` from `wo` & `wi` for microfacet transmission.
     η = cos_θ(wo) > 0f0 ? (m.η_b / m.η_a) : (m.η_a / m.η_b)
     wh = normalize((wo + wi * η))
@@ -294,34 +266,34 @@ function (m::MicrofacetTransmission{S,T})(
 
     f = m.fresnel(d_o)
     denom = d_o + η * d_i
-    factor = T isa Radiance ? (1f0 / η) : 1f0
+    factor = m.transport === Radiance ? (1.0f0 / η) : 1.0f0
 
     dd, dg = D(m.distribution, wh), G(m.distribution, wo, wi)
-    (S(1f0) - f) * m.t * abs(
+    return (S(1f0) - f) * m.t * abs(
         dd * dg * d_o * d_i * η^2 * factor^2
         /
         (cosθi * cosθo * denom^2),
     )
 end
 
-@inline function sample_f(
-    m::MicrofacetTransmission{S,T}, wo::Vec3f, u::Point2f,
-)::Tuple{Vec3f,Float32,RGBSpectrum,Maybe{UInt8}} where {S<:Spectrum,T<:TransportMode}
-    wo[3] ≈ 0 && return Vec3f(0f0), 0f0, S(0f0), nothing
+@inline function sample_microfacet_transmission(m::UberBxDF{S}, wo::Vec3f, u::Point2f) where {S<:Spectrum}
+
+    wo[3] ≈ 0f0 && return Vec3f(0f0), 0f0, S(0f0), UInt8(0)
     wh = sample_wh(m.distribution, wo, u)
-    (wo ⋅ wh) < 0 && return Vec3f(0f0), 0f0, S(0f0), nothing
+    (wo ⋅ wh) < 0 && return Vec3f(0f0), 0f0, S(0f0), UInt8(0)
 
     η = cos_θ(wo) > 0f0 ? (m.η_b / m.η_a) : (m.η_a / m.η_b)
     refracted, wi = refract(wo, Normal3f(wh), η)
-    !refracted && return Vec3f(0f0), 0f0, S(0f0), nothing
+    !refracted && return Vec3f(0f0), 0f0, S(0f0), UInt8(0)
 
-    pdf = compute_pdf(m, wo, wi)
-    wi, pdf, m(wo, wi), nothing
+    pdf = pdf_microfacet_transmission(m, wo, wi)
+    wi, pdf, m(wo, wi), UInt8(0)
 end
 
-function compute_pdf(
-    m::MicrofacetTransmission, wo::Vec3f, wi::Vec3f,
-)::Float32
+function pdf_microfacet_transmission(
+        m::UberBxDF, wo::Vec3f, wi::Vec3f,
+    )::Float32
+
     same_hemisphere(wo, wi) && return 0f0
 
     η = cos_θ(wo) > 0f0 ? (m.η_b / m.η_a) : (m.η_a / m.η_b)
@@ -329,9 +301,8 @@ function compute_pdf(
     @real_assert !isnan(wh)
     d_o, d_i = wo ⋅ wh, wi ⋅ wh
     (d_o * d_i) > 0 && return 0f0
-
     # Compute change of variables `∂wh∂wi` for microfacet transmission.
     denom = d_o + η * d_i
     ∂wh∂wi = abs(d_i * η^2 / (denom^2))
-    compute_pdf(m.distribution, wo, wh) * ∂wh∂wi
+    return compute_pdf(m.distribution, wo, wh) * ∂wh∂wi
 end

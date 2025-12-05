@@ -10,17 +10,17 @@ struct Distribution1D
         cdf = Vector{Float32}(undef, n + 1)
         # Compute integral of step function at `xᵢ`.
         cdf[1] = 0f0
-        @inbounds for i in 2:length(cdf)
+        @_inbounds for i in 2:length(cdf)
             cdf[i] = cdf[i-1] + func[i-1] / n
         end
         # Transform step function integral into CDF.
         func_int = cdf[n+1]
         if func_int ≈ 0f0
-            @inbounds for i in 2:n+1
+            @_inbounds for i in 2:n+1
                 cdf[i] = i / n
             end
         else
-            @inbounds for i in 2:n+1
+            @_inbounds for i in 2:n+1
                 cdf[i] /= func_int
             end
         end

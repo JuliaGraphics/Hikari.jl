@@ -6,39 +6,9 @@ const BSDF_GLOSSY = UInt8(0b01000)
 const BSDF_SPECULAR = UInt8(0b10000)
 const BSDF_ALL = UInt8(0b11111)
 
-function Base.:&(b::B, type::UInt8)::Bool where B<:BxDF
-    (b.type & type) == b.type
-end
 
 @inline function same_hemisphere(w::Vec3f, wp::Union{Vec3f,Normal3f})::Bool
     w[3] * wp[3] > 0
-end
-
-"""
-Compute PDF value for the given directions.
-In comparison, `sample_f` computes PDF value for the incident directions *it*
-chooses given the outgoing direction, while this returns a value of PDF
-for the given pair of directions.
-"""
-@inline function compute_pdf(::B, wo::Vec3f, wi::Vec3f)::Float32 where B<:BxDF
-    same_hemisphere(wo, wi) ? abs(cos_θ(wi)) * (1f0 / π) : 0f0
-end
-
-"""
-Compute the direction of incident light wi, given an outgoing direction wo
-and return the value of BxDF for the pair of directions.
-
-**Note** all BxDFs that implement this method,
-have to implement `compute_pdf` as well.
-"""
-@inline function sample_f(
-    b::B, wo::Vec3f, sample::Point2f,
-)::Tuple{Vec3f,Float32,RGBSpectrum,Maybe{UInt8}} where B<:BxDF
-    wi::Vec3f = cosine_sample_hemisphere(sample)
-    # Flipping the direction if necessary.
-    wo[3] < 0 && (wi = Vec3f(wi[1], wi[2], -wi[3]))
-    pdf::Float32 = compute_pdf(b, wo, wi)
-    wi, pdf, b(wo, wi), nothing
 end
 
 """
@@ -87,11 +57,12 @@ function fresnel_dielectric(cos_θi::Float32, ηi::Float32, ηt::Float32)
         (ηt * cos_θi - ηi * cos_θt) /
         (ηt * cos_θi + ηi * cos_θt)
     )
+
     r_perp = (
         (ηi * cos_θi - ηt * cos_θt) /
         (ηi * cos_θi + ηt * cos_θt)
     )
-    0.5f0 * (r_parallel^2 + r_perp^2)
+    return 0.5f0 * (r_parallel^2 + r_perp^2)
 end
 
 """
@@ -121,20 +92,5 @@ function fresnel_conductor(
     t3 = cos_θi2 * a2_plus_b2 + sin_θi2 * sin_θi2
     t4 = t2 * sin_θi2
     r_parallel = r_perp * (t3 - t4) / (t3 + t4)
-    0.5f0 * (r_parallel + r_perp)
+    return 0.5f0 * (r_parallel + r_perp)
 end
-
-abstract type Fresnel end
-struct FresnelConductor{S<:Spectrum} <: Fresnel
-    ηi::S
-    ηt::S
-    k::S
-end
-struct FresnelDielectric <: Fresnel
-    ηi::Float32
-    ηt::Float32
-end
-struct FresnelNoOp <: Fresnel end
-(f::FresnelConductor)(cos_θi::Float32) = fresnel_conductor(cos_θi, f.ηi, f.ηt, f.k)
-(f::FresnelDielectric)(cos_θi::Float32) = fresnel_dielectric(cos_θi, f.ηi, f.ηt)
-(f::FresnelNoOp)(::Float32) = RGBSpectrum(1f0)

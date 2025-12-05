@@ -9,26 +9,24 @@ struct ProjectiveCamera <: Camera
     focal_distance::Float32
 
     function ProjectiveCamera(
-        camera_to_world::Transformation, camera_to_screen::Transformation,
-        screen_window::Bounds2,
-        shutter_open::Float32, shutter_close::Float32,
-        lens_radius::Float32, focal_distance::Float32,
-        film::Film,
-    )
-        core = CameraCore(camera_to_world, shutter_open, shutter_close, film)
-        # Computer projective camera transformations.
-        screen_to_raster = (
-            scale(film.resolution[1], film.resolution[2], 1)
-            * scale(
-                1f0 / (screen_window.p_max[1] - screen_window.p_min[1]),
-                1f0 / (screen_window.p_max[2] - screen_window.p_min[2]),
-                1,
-            )
-            * translate(Vec3f(
-                -screen_window.p_min[1], -screen_window.p_max[2], 0f0,
-            ))
+            camera_to_world::Transformation, camera_to_screen::Transformation,
+            screen_window::Bounds2,
+            shutter_open::Float32, shutter_close::Float32,
+            lens_radius::Float32, focal_distance::Float32,
+            film::Film,
         )
-        raster_to_screen = inv(screen_to_raster)
+        core = CameraCore(camera_to_world, shutter_open, shutter_close)
+        # Computer projective camera transformations.
+        resolution = scale(film.resolution..., 1)
+        window_width = screen_window.p_max .- screen_window.p_min
+        inv_bounds = scale((1f0 ./ window_width)..., 1)
+
+        offset = translate(Vec3f(
+            (-screen_window.p_min)..., 0f0,
+        ))
+
+        screen_to_raster = resolution * inv_bounds * offset
+        raster_to_screen = inv(offset) * inv(inv_bounds) * inv(resolution)
         raster_to_camera = inv(camera_to_screen) * raster_to_screen
 
         new(
@@ -62,7 +60,8 @@ struct PerspectiveCamera <: Camera
         fov::Float32, film::Film,
     )
         pc = ProjectiveCamera(
-            camera_to_world, perspective(fov, 0.01f0, 1000f0),
+            inv(camera_to_world),
+            perspective(fov, 0.01f0, 1000.0f0),
             screen_window, shutter_open, shutter_close,
             lens_radius, focal_distance, film,
         )
@@ -82,33 +81,39 @@ end
 
 @inline get_film(c::PerspectiveCamera)::Film = c.core.core.film
 
-function generate_ray(
-    camera::PerspectiveCamera, sample::CameraSample,
-)::Tuple{Ray,Float32}
+@inline function generate_ray(
+        camera::PerspectiveCamera, sample::CameraSample,
+    )::Tuple{Ray,Float32}
     # Compute raster & camera sample positions.
-    p_film = Point3f(sample.film[1], sample.film[2], 0f0)
-    p_camera = camera.core.raster_to_camera(p_film)
-
-    ray = Ray(o = Point3f(0), d = normalize(Vec3f(p_camera)))
+    # p_film -> in pixels
+    # Explicit indexing to avoid tuple iteration/splatting in SPIR-V
+    p_pixel = Point3f(sample.film[1], sample.film[2], 0f0)
+    p_camera = camera.core.raster_to_camera(p_pixel)
+    o = Point3f(0)
+    # Explicit indexing to avoid tuple iteration in SPIR-V
+    d = normalize(Vec3f(p_camera[1], p_camera[2], p_camera[3]))
     # Modify ray for depth of field.
     if camera.core.lens_radius > 0
         # Sample points on lens.
         p_lens = camera.core.lens_radius * concentric_sample_disk(sample.lens)
         # Compute point on plane of focus.
-        t = camera.core.focal_distance / ray.d[3]
-        p_focus = ray(t)
+        t = camera.core.focal_distance / d[3]
+        p_focus = o .+ d * t
         # Update ray for effects of lens.
-        ray.o = Point3f(p_lens[1], p_lens[2], 0f0)
-        ray.d = normalize(Vec3f(p_focus - ray.o))
+        o = Point3f(p_lens[1], p_lens[2], 0f0)
+        # Explicit indexing to avoid tuple iteration in SPIR-V
+        p_diff = p_focus .- o
+        d = normalize(Vec3f(p_diff[1], p_diff[2], p_diff[3]))
     end
 
-    ray.time = lerp(
+    time = lerp(
         camera.core.core.shutter_open,
         camera.core.core.shutter_close,
         sample.time,
     )
     # TODO add medium
-    ray = camera.core.core.camera_to_world(ray)
-    ray.d = normalize(ray.d)
-    ray, 1f0
+    ctw = camera.core.core.camera_to_world
+    o = ctw(o)
+    d = ctw(d)
+    return Ray(d=normalize(d), o=o, time=time), 1.0f0
 end

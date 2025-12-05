@@ -15,6 +15,12 @@ struct VisibilityTester
 end
 
 @inline function unoccluded(t::VisibilityTester, scene::Scene)::Bool
+    # Explicit isinf check to avoid tuple iteration in SPIR-V (any() causes PHI node errors)
+    p0_inf = isinf(t.p0.p[1]) || isinf(t.p0.p[2]) || isinf(t.p0.p[3])
+    p1_inf = isinf(t.p1.p[1]) || isinf(t.p1.p[2]) || isinf(t.p1.p[3])
+    if p0_inf && p1_inf
+        return true
+    end
     !intersect_p(scene, spawn_ray(t.p0, t.p1))
 end
 
@@ -22,9 +28,9 @@ function trace(t::VisibilityTester, scene::Scene)::RGBSpectrum
     ray = spawn_ray(t.p0, t.p1)
     s = RGBSpectrum(1f0)
     while true
-        hit, interaction = intersect!(scene, ray)
+        hit, primitive, interaction = intersect!(scene, ray)
         # Handle opaque surface.
-        if hit && interaction.primitive.material isa Nothing
+        if hit && primitive.material isa Nothing
             return RGBSpectrum(0f0)
         end
         # TODO update transmittance in presence of media in ray

@@ -29,7 +29,7 @@ pixel `x` & `y` coordinates.
         Texture coordinates at the shading point, estimated changes
         in `(s, t)` w.r.t. pixel `x` & `y` coordinates.
 """
-function map(m::UVMapping2D, si::SurfaceInteraction)::Tuple{Point2f,Vec2f,Vec2f}
+function Base.map(m::UVMapping2D, si::SurfaceInteraction)::Tuple{Point2f,Vec2f,Vec2f}
     ∂st∂x = Vec2f(m.su * si.∂u∂x, m.sv * si.∂v∂x)
     ∂st∂y = Vec2f(m.su * si.∂u∂y, m.sv * si.∂v∂y)
     t = Point2f(m.su * si.uv[1] + m.du, m.sv * si.uv[2] + m.dv)
@@ -50,7 +50,7 @@ struct TransformMapping3D <: Mapping3D
     world_to_texture::Transformation
 end
 
-function map(m::TransformMapping3D, si::SurfaceInteraction)::Tuple{Point3f,Vec3f,Vec3f}
+function Base.map(m::TransformMapping3D, si::SurfaceInteraction)::Tuple{Point3f,Vec3f,Vec3f}
     ∂p∂x = m.world_to_texture(si.∂p∂x)
     ∂p∂y = m.world_to_texture(si.∂p∂y)
     t = m.world_to_texture(si.core.p)
