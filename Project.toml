@@ -1,6 +1,6 @@
-name = "Trace"
+name = "Hikari"
 uuid = "afc56b53-c9a9-482a-a956-d1d800e05558"
-authors = ["Anton Smirnov <tonysmn97@gmail.com>"]
+authors = ["Anton Smirnov <tonysmn97@gmail.com>", "Simon Danisch <sdanisch@proton.me>"]
 version = "0.1.0"
 
 [deps]

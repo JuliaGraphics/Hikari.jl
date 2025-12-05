@@ -118,7 +118,7 @@ function Film(
     end
 
     sample_bounds = get_sample_bounds(crop_bounds, filter.radius)
-    sample_extent = Trace.diagonal(sample_bounds)
+    sample_extent = Hikari.diagonal(sample_bounds)
     resolution = resolution
     n_tiles = Int64.(floor.((sample_extent .+ tile_size) ./ tile_size))
     wtiles, htiles = n_tiles .- 1

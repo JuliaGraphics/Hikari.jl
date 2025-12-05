@@ -1,22 +1,22 @@
 using GeometryBasics, ImageShow
 using LinearAlgebra
-using Trace, FileIO, MeshIO
+using Hikari, FileIO, MeshIO
 using TraceMakie, GLMakie
 
 model = load(joinpath(@__DIR__, "..", "..", "src", "assets", "models", "caustic-glass.ply"))
 
-glass = Trace.GlassMaterial(
-    Trace.ConstantTexture(Trace.RGBSpectrum(1f0)),
-    Trace.ConstantTexture(Trace.RGBSpectrum(1f0)),
-    Trace.ConstantTexture(0f0),
-    Trace.ConstantTexture(0f0),
-    Trace.ConstantTexture(1.25f0),
+glass = Hikari.GlassMaterial(
+    Hikari.ConstantTexture(Hikari.RGBSpectrum(1f0)),
+    Hikari.ConstantTexture(Hikari.RGBSpectrum(1f0)),
+    Hikari.ConstantTexture(0f0),
+    Hikari.ConstantTexture(0f0),
+    Hikari.ConstantTexture(1.25f0),
     true,
 )
-plastic = Trace.PlasticMaterial(
-    Trace.ConstantTexture(Trace.RGBSpectrum(0.6399999857f0, 0.6399999857f0, 0.6399999857f0)),
-    Trace.ConstantTexture(Trace.RGBSpectrum(0.1000000015f0, 0.1000000015f0, 0.1000000015f0)),
-    Trace.ConstantTexture(0.010408001f0),
+plastic = Hikari.PlasticMaterial(
+    Hikari.ConstantTexture(Hikari.RGBSpectrum(0.6399999857f0, 0.6399999857f0, 0.6399999857f0)),
+    Hikari.ConstantTexture(Hikari.RGBSpectrum(0.1000000015f0, 0.1000000015f0, 0.1000000015f0)),
+    Hikari.ConstantTexture(0.010408001f0),
     true,
 )
 

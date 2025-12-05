@@ -194,7 +194,7 @@ end
 @inline function light_contribution(l, lights, wo, scene, bsdf, sampler, si)
     core = si.core
     n = si.shading.n
-    # Why can't I use KernelAbstraction.@unroll here, when in Trace.jl?
+    # Why can't I use KernelAbstraction.@unroll here, when in Hikari.jl?
     # Worked just fined when the function was defined outside
     Base.Cartesian.@nexprs 8 i -> begin
         if i <= length(lights)
@@ -556,7 +556,7 @@ struct Whitten5{TMat<:AbstractMatrix{FilmTilePixel},PMat<:AbstractMatrix{Pixel}}
     tile_size::Int32
     fiter_table::Matrix{Float32}
     filter_radius::Point2f
-    sampler::Trace.UniformSampler
+    sampler::Hikari.UniformSampler
     max_depth::Int32
 end
 
@@ -573,7 +573,7 @@ function Whitten5(film; samples_per_pixel=8, tile_size=4, max_depth=5)
     contrib_sum = RGBSpectrum.(zeros(Vec3f, tile_size_l, ntiles))
     filter_weight_sum = zeros(Float32, tile_size_l, ntiles)
     tiles = StructArray{FilmTilePixel}(; contrib_sum, filter_weight_sum)
-    sampler = Trace.UniformSampler(samples_per_pixel)
+    sampler = Hikari.UniformSampler(samples_per_pixel)
     li = LinearIndices((wtiles, htiles))
     @assert length(li) == ntiles
     Whitten5(tiles, film.pixels, sample_bounds, film.crop_bounds, resolution, Int32.((wtiles, htiles)), Int32(tile_size), filter_table, filter_radius, sampler, Int32(max_depth))
@@ -582,7 +582,7 @@ end
 """
 Render scene.
 """
-function (w::Whitten5)(scene::Trace.Scene, camera)
+function (w::Whitten5)(scene::Hikari.Scene, camera)
     tiles = w.tiles
     resolution = w.resolution
     filter_table = w.fiter_table

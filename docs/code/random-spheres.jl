@@ -1,5 +1,5 @@
 using GeometryBasics
-using Trace
+using Hikari
 using FileIO
 using Colors
 
@@ -7,29 +7,29 @@ function tmesh(prim, material)
     prim = prim isa Sphere ? Tesselation(prim, 64) : prim
     mesh = normal_mesh(prim)
     m = Raycore.TriangleMesh(mesh)
-    return Trace.GeometricPrimitive(m, material)
+    return Hikari.GeometricPrimitive(m, material)
 end
 
 
 function random_spheres()
     primitives = []
-    push!(primitives, tmesh(Sphere(Point3(0, -1000, 0), 1000.0), Trace.MirrorMaterial(Trace.ConstantTexture(Trace.RGBSpectrum(0.5f0)))))
+    push!(primitives, tmesh(Sphere(Point3(0, -1000, 0), 1000.0), Hikari.MirrorMaterial(Hikari.ConstantTexture(Hikari.RGBSpectrum(0.5f0)))))
 
     function rand_material()
         p = rand()
         if p < 0.8
-            Trace.MatteMaterial(
-                Trace.ConstantTexture(Trace.RGBSpectrum(0.796f0, 0.235f0, 0.2f0)),
-                Trace.ConstantTexture(0.0f0),
+            Hikari.MatteMaterial(
+                Hikari.ConstantTexture(Hikari.RGBSpectrum(0.796f0, 0.235f0, 0.2f0)),
+                Hikari.ConstantTexture(0.0f0),
             )
         elseif p < 0.95
             rf = rand(Float32)
-            Trace.MirrorMaterial(Trace.ConstantTexture(Trace.RGBSpectrum(rf)))
+            Hikari.MirrorMaterial(Hikari.ConstantTexture(Hikari.RGBSpectrum(rf)))
         else
-            Trace.PlasticMaterial(
-                Trace.ConstantTexture(Trace.RGBSpectrum(0.6399999857f0, 0.6399999857f0, 0.6399999857f0)),
-                Trace.ConstantTexture(Trace.RGBSpectrum(0.1000000015f0, 0.1000000015f0, 0.1000000015f0)),
-                Trace.ConstantTexture(0.010408001f0),
+            Hikari.PlasticMaterial(
+                Hikari.ConstantTexture(Hikari.RGBSpectrum(0.6399999857f0, 0.6399999857f0, 0.6399999857f0)),
+                Hikari.ConstantTexture(Hikari.RGBSpectrum(0.1000000015f0, 0.1000000015f0, 0.1000000015f0)),
+                Hikari.ConstantTexture(0.010408001f0),
                 true,
             )
         end
@@ -41,12 +41,12 @@ function random_spheres()
             push!(primitives, tmesh(Sphere(center, 0.2), rand_material()))
         end
     end
-    glass = Trace.GlassMaterial(
-        Trace.ConstantTexture(Trace.RGBSpectrum(1.0f0)),
-        Trace.ConstantTexture(Trace.RGBSpectrum(1.0f0)),
-        Trace.ConstantTexture(0.0f0),
-        Trace.ConstantTexture(0.0f0),
-        Trace.ConstantTexture(1.5f0),
+    glass = Hikari.GlassMaterial(
+        Hikari.ConstantTexture(Hikari.RGBSpectrum(1.0f0)),
+        Hikari.ConstantTexture(Hikari.RGBSpectrum(1.0f0)),
+        Hikari.ConstantTexture(0.0f0),
+        Hikari.ConstantTexture(0.0f0),
+        Hikari.ConstantTexture(1.5f0),
         true,
     )
 
@@ -59,30 +59,30 @@ end
 
 
 begin
-    bvh = Trace.no_material_bvh(random_spheres())
+    bvh = Hikari.no_material_bvh(random_spheres())
 
     lights = (
-        Trace.PointLight(Vec3f(0, 0, 2), Trace.RGBSpectrum(10.0f0)),
-        Trace.PointLight(Vec3f(0, 3, 3), Trace.RGBSpectrum(15.0f0)),
+        Hikari.PointLight(Vec3f(0, 0, 2), Hikari.RGBSpectrum(10.0f0)),
+        Hikari.PointLight(Vec3f(0, 3, 3), Hikari.RGBSpectrum(15.0f0)),
     )
-    scene = Trace.Scene([lights...], bvh)
+    scene = Hikari.Scene([lights...], bvh)
 
     resolution = Point2f(1024)
-    f = Trace.LanczosSincFilter(Point2f(1.0f0), 3.0f0)
-    film = Trace.Film(
+    f = Hikari.LanczosSincFilter(Point2f(1.0f0), 3.0f0)
+    film = Hikari.Film(
         resolution,
-        Trace.Bounds2(Point2f(0.0f0), Point2f(1.0f0)),
+        Hikari.Bounds2(Point2f(0.0f0), Point2f(1.0f0)),
         f, 1.0f0, 1.0f0,
     )
-    screen_window = Trace.Bounds2(Point2f(-1), Point2f(1))
-    cam = Trace.PerspectiveCamera(
-        Trace.look_at(Point3f(0, 4, 2), Point3f(0, -4, -1), Vec3f(0, 0, 1)),
+    screen_window = Hikari.Bounds2(Point2f(-1), Point2f(1))
+    cam = Hikari.PerspectiveCamera(
+        Hikari.look_at(Point3f(0, 4, 2), Point3f(0, -4, -1), Vec3f(0, 0, 1)),
         screen_window, 0.0f0, 1.0f0, 0.0f0, 1.0f6, 45.0f0, film,
     )
 
     # Render with WhittedIntegrator
-    integrator = Trace.WhittedIntegrator(cam, Trace.UniformSampler(8), 10)
-    @time Trace.integrator_threaded(integrator, scene, film, cam)
+    integrator = Hikari.WhittedIntegrator(cam, Hikari.UniformSampler(8), 10)
+    @time Hikari.integrator_threaded(integrator, scene, film, cam)
 
     # Save the result
     image_01 = map(c -> mapc(x -> clamp(x, 0f0, 1f0), c), film.framebuffer)

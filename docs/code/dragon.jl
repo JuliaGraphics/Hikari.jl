@@ -1,19 +1,19 @@
-using Trace, ImageShow, Colors, FileIO, LinearAlgebra, GeometryBasics
+using Hikari, ImageShow, Colors, FileIO, LinearAlgebra, GeometryBasics
 using TraceMakie, GLMakie
 
-glass = Trace.GlassMaterial(
-    Trace.ConstantTexture(Trace.RGBSpectrum(1.0f0)),
-    Trace.ConstantTexture(Trace.RGBSpectrum(1.0f0)),
-    Trace.ConstantTexture(0.0f0),
-    Trace.ConstantTexture(0.0f0),
-    Trace.ConstantTexture(1.25f0),
+glass = Hikari.GlassMaterial(
+    Hikari.ConstantTexture(Hikari.RGBSpectrum(1.0f0)),
+    Hikari.ConstantTexture(Hikari.RGBSpectrum(1.0f0)),
+    Hikari.ConstantTexture(0.0f0),
+    Hikari.ConstantTexture(0.0f0),
+    Hikari.ConstantTexture(1.25f0),
     true,
 )
-mirror = Trace.MirrorMaterial(Trace.ConstantTexture(Trace.RGBSpectrum(1.0f0)))
-plastic = Trace.PlasticMaterial(
-    Trace.ConstantTexture(Trace.RGBSpectrum(0.6399999857f0, 0.6399999857f0, 0.6399999857f0)),
-    Trace.ConstantTexture(Trace.RGBSpectrum(0.1000000015f0, 0.1000000015f0, 0.1000000015f0)),
-    Trace.ConstantTexture(0.010408001f0),
+mirror = Hikari.MirrorMaterial(Hikari.ConstantTexture(Hikari.RGBSpectrum(1.0f0)))
+plastic = Hikari.PlasticMaterial(
+    Hikari.ConstantTexture(Hikari.RGBSpectrum(0.6399999857f0, 0.6399999857f0, 0.6399999857f0)),
+    Hikari.ConstantTexture(Hikari.RGBSpectrum(0.1000000015f0, 0.1000000015f0, 0.1000000015f0)),
+    Hikari.ConstantTexture(0.010408001f0),
     true,
 )
 

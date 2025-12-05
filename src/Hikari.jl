@@ -1,4 +1,4 @@
-module Trace
+module Hikari
 
 import FileIO
 using ImageCore

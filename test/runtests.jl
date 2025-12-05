@@ -1,5 +1,5 @@
 using Test
-using Trace
+using Hikari
 using GeometryBasics
 using LinearAlgebra
 using StaticArrays
