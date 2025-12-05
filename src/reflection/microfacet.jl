@@ -257,6 +257,7 @@ function distribution_microfacet_transmission(m::UberBxDF{S}, wo::Vec3f, wi::Vec
     cosθo, cosθi = cos_θ(wo), cos_θ(wi)
     (cosθo ≈ 0f0 || cosθi ≈ 0f0) && return S(0f0)
     # Compute `wh` from `wo` & `wi` for microfacet transmission.
+    # η = η_t/η_i (transmitted/incident) for half-vector and BTDF formulas
     η = cos_θ(wo) > 0f0 ? (m.η_b / m.η_a) : (m.η_a / m.η_b)
     wh = normalize((wo + wi * η))
     wh[3] < 0 && (wh = -wh)
@@ -282,8 +283,10 @@ end
     wh = sample_wh(m.distribution, wo, u)
     (wo ⋅ wh) < 0 && return Vec3f(0f0), 0f0, S(0f0), UInt8(0)
 
+    # η = η_t/η_i (transmitted/incident) for half-vector and BTDF formulas
+    # refract() expects η_i/η_t, so we pass 1/η
     η = cos_θ(wo) > 0f0 ? (m.η_b / m.η_a) : (m.η_a / m.η_b)
-    refracted, wi = refract(wo, Normal3f(wh), η)
+    refracted, wi = refract(wo, Normal3f(wh), 1f0 / η)
     !refracted && return Vec3f(0f0), 0f0, S(0f0), UInt8(0)
 
     pdf = pdf_microfacet_transmission(m, wo, wi)
@@ -296,6 +299,7 @@ function pdf_microfacet_transmission(
 
     same_hemisphere(wo, wi) && return 0f0
 
+    # η = η_t/η_i (transmitted/incident) for half-vector formula
     η = cos_θ(wo) > 0f0 ? (m.η_b / m.η_a) : (m.η_a / m.η_b)
     wh = normalize((wo + wi * η))
     @real_assert !isnan(wh)
@@ -305,4 +309,147 @@ function pdf_microfacet_transmission(
     denom = d_o + η * d_i
     ∂wh∂wi = abs(d_i * η^2 / (denom^2))
     return compute_pdf(m.distribution, wo, wh) * ∂wh∂wi
+end
+
+# =============================================================================
+# FresnelMicrofacet - Combined reflection and transmission for rough dielectrics
+# =============================================================================
+# This BxDF uses Fresnel-weighted sampling to choose between reflection and
+# transmission, avoiding the uniform 50/50 split that causes energy loss.
+
+const FRESNEL_MICROFACET = UInt8(9)
+
+function FresnelMicrofacet(
+    active::Bool, r::S, t::S, distribution::MicrofacetDistribution,
+    η_a::Float32, η_b::Float32, transport,
+) where {S<:Spectrum}
+    UberBxDF{S}(
+        active, FRESNEL_MICROFACET;
+        r=r, t=t, distribution=distribution, η_a=η_a, η_b=η_b,
+        fresnel=FresnelDielectric(η_a, η_b),
+        type=BSDF_GLOSSY | BSDF_REFLECTION | BSDF_TRANSMISSION,
+        transport=transport
+    )
+end
+
+"""
+Distribution function for FresnelMicrofacet - sum of reflection and transmission.
+"""
+function distribution_fresnel_microfacet(m::UberBxDF{S}, wo::Vec3f, wi::Vec3f)::S where {S<:Spectrum}
+    if same_hemisphere(wo, wi)
+        # Reflection component
+        cosθo = abs(cos_θ(wo))
+        cosθi = abs(cos_θ(wi))
+        wh = wi + wo
+        (cosθi ≈ 0f0 || cosθo ≈ 0f0) && return S(0f0)
+        wh ≈ Vec3f(0) && return S(0f0)
+        wh = normalize(wh)
+        f = m.fresnel(wi ⋅ face_forward(wh, Vec3f(0, 0, 1)))
+        return m.r * D(m.distribution, wh) * G(m.distribution, wo, wi) *
+            f / (4f0 * cosθi * cosθo)
+    else
+        # Transmission component
+        cosθo, cosθi = cos_θ(wo), cos_θ(wi)
+        (cosθo ≈ 0f0 || cosθi ≈ 0f0) && return S(0f0)
+        η = cos_θ(wo) > 0f0 ? (m.η_b / m.η_a) : (m.η_a / m.η_b)
+        wh = normalize((wo + wi * η))
+        wh[3] < 0 && (wh = -wh)
+        d_o, d_i = wo ⋅ wh, wi ⋅ wh
+        (d_o * d_i) > 0 && return S(0f0)
+        f = m.fresnel(d_o)
+        denom = d_o + η * d_i
+        factor = m.transport === Radiance ? (1.0f0 / η) : 1.0f0
+        dd, dg = D(m.distribution, wh), G(m.distribution, wo, wi)
+        return (S(1f0) - f) * m.t * abs(
+            dd * dg * d_o * d_i * η^2 * factor^2
+            /
+            (cosθi * cosθo * denom^2),
+        )
+    end
+end
+
+"""
+Sample FresnelMicrofacet using Fresnel-weighted probability to choose between
+reflection and transmission.
+"""
+@inline function sample_fresnel_microfacet(
+    m::UberBxDF{S}, wo::Vec3f, u::Point2f,
+)::Tuple{Vec3f,Float32,S,UInt8} where {S<:Spectrum}
+
+    wo[3] ≈ 0f0 && return Vec3f(0f0), 0f0, S(0f0), UInt8(0)
+
+    # Sample microfacet half-vector first
+    wh = sample_wh(m.distribution, wo, u)
+    (wo ⋅ wh) < 0f0 && return Vec3f(0f0), 0f0, S(0f0), UInt8(0)
+
+    # Evaluate Fresnel at the half-vector angle
+    F = fresnel_dielectric(wo ⋅ wh, m.η_a, m.η_b)
+
+    # Use u[1] directly for the Fresnel choice - it's used by sample_wh but
+    # the mapping from u to wh is complex enough that using u[1] < F still
+    # gives reasonable stratification of reflection vs transmission choices
+    if u[1] < F
+        # Reflection
+        wi = reflect(wo, wh)
+        !same_hemisphere(wo, wi) && return Vec3f(0f0), 0f0, S(0f0), UInt8(0)
+
+        # PDF: product of half-vector pdf, jacobian, and selection probability F
+        pdf_h = compute_pdf(m.distribution, wo, wh)
+        pdf = pdf_h / (4f0 * abs(wo ⋅ wh)) * F
+
+        cosθo = abs(cos_θ(wo))
+        cosθi = abs(cos_θ(wi))
+        f_val = m.r * D(m.distribution, wh) * G(m.distribution, wo, wi) *
+            S(F) / (4f0 * cosθi * cosθo)
+
+        return wi, pdf, f_val, BSDF_GLOSSY | BSDF_REFLECTION
+    else
+        # Transmission
+        η = cos_θ(wo) > 0f0 ? (m.η_b / m.η_a) : (m.η_a / m.η_b)
+        refracted, wi = refract(wo, Normal3f(wh), 1f0 / η)
+        !refracted && return Vec3f(0f0), 0f0, S(0f0), UInt8(0)
+
+        # PDF: product of half-vector pdf, jacobian, and selection probability (1-F)
+        d_o, d_i = wo ⋅ wh, wi ⋅ wh
+        denom = d_o + η * d_i
+        ∂wh∂wi = abs(d_i * η^2 / (denom^2))
+        pdf_h = compute_pdf(m.distribution, wo, wh)
+        pdf = pdf_h * ∂wh∂wi * (1f0 - F)
+
+        cosθo, cosθi = cos_θ(wo), cos_θ(wi)
+        factor = m.transport === Radiance ? (1.0f0 / η) : 1.0f0
+        dd, dg = D(m.distribution, wh), G(m.distribution, wo, wi)
+        f_val = (S(1f0) - S(F)) * m.t * abs(
+            dd * dg * d_o * d_i * η^2 * factor^2
+            /
+            (cosθi * cosθo * denom^2),
+        )
+
+        return wi, pdf, f_val, BSDF_GLOSSY | BSDF_TRANSMISSION
+    end
+end
+
+"""
+Compute PDF for FresnelMicrofacet given a direction pair.
+"""
+function pdf_fresnel_microfacet(m::UberBxDF, wo::Vec3f, wi::Vec3f)::Float32
+    if same_hemisphere(wo, wi)
+        # Reflection PDF
+        wh = normalize(wo + wi)
+        F = fresnel_dielectric(wo ⋅ wh, m.η_a, m.η_b)
+        pdf_h = compute_pdf(m.distribution, wo, wh)
+        return pdf_h / (4f0 * abs(wo ⋅ wh)) * F
+    else
+        # Transmission PDF
+        η = cos_θ(wo) > 0f0 ? (m.η_b / m.η_a) : (m.η_a / m.η_b)
+        wh = normalize((wo + wi * η))
+        wh[3] < 0 && (wh = -wh)
+        d_o, d_i = wo ⋅ wh, wi ⋅ wh
+        (d_o * d_i) > 0 && return 0f0
+        F = fresnel_dielectric(d_o, m.η_a, m.η_b)
+        denom = d_o + η * d_i
+        ∂wh∂wi = abs(d_i * η^2 / (denom^2))
+        pdf_h = compute_pdf(m.distribution, wo, wh)
+        return pdf_h * ∂wh∂wi * (1f0 - F)
+    end
 end

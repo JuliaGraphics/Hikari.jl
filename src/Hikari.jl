@@ -407,14 +407,27 @@ function Base.show(io::IO, ms::MaterialScene)
     end
 end
 
-# Helper function for basic-scene.jl compatibility
-function no_material_bvh(geometric_primitives::Vector)
+"""
+    MaterialScene(geometric_primitives::Vector{<:GeometricPrimitive})
+
+Construct a MaterialScene from a vector of GeometricPrimitives.
+
+Each GeometricPrimitive contains a shape (TriangleMesh) and a material.
+This constructor extracts the meshes, builds a BVH acceleration structure,
+and associates materials with their corresponding triangles.
+
+# Example
+```julia
+material = MatteMaterial(ConstantTexture(RGBSpectrum(0.5f0)), ConstantTexture(0f0))
+mesh = Raycore.TriangleMesh(some_geometry)
+prim = GeometricPrimitive(mesh, material)
+scene = MaterialScene([prim])
+```
+"""
+function MaterialScene(geometric_primitives::Vector)
     meshes = [gp.shape for gp in geometric_primitives]
     materials = [gp.material for gp in geometric_primitives]
-
-    # Build BVH with material indices
     bvh = BVH(meshes)
-
     return MaterialScene(bvh, materials)
 end
 
@@ -427,6 +440,7 @@ include("sampler/sampling.jl")
 include("sampler/sampler.jl")
 include("textures/mapping.jl")
 include("textures/basic.jl")
+include("textures/environment_map.jl")
 include("materials/uber-material.jl")
 include("reflection/Reflection.jl")
 include("materials/bsdf.jl")

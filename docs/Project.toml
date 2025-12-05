@@ -4,18 +4,15 @@ Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
 DocumenterVitepress = "4710194d-e776-4893-9690-8d956a29c365"
 FileIO = "5789e2e9-d7fb-5bc7-8068-2c6fae9b9549"
 GeometryBasics = "5c1252a2-5f33-56bf-86c9-59e7332b4326"
-ImageCore = "a09fc81d-aa75-5fe9-8630-4744c3626534"
 ImageShow = "4e3cecfd-b093-5904-9786-8bbb286a6a31"
 KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
-Literate = "98b081ad-f1c9-55d3-8b20-4c87d4299306"
 Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
-Metal = "dde4c033-4e86-420c-a63e-0dd931031962"
 Hikari = "afc56b53-c9a9-482a-a956-d1d800e05558"
 
 [compat]
 Documenter = "1.5"
 DocumenterVitepress = "0.1"
 FileIO = "1.16"
-GeometryBasics = "0.4"
-ImageCore = "0.10"
-Literate = "2.19"
+
+[sources]
+Hikari = {path = ".."}

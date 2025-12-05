@@ -40,6 +40,99 @@ function sample_discrete(d::Distribution1D, u::Float32)
     offset, pdf, u_remapped
 end
 
+"""
+Sample continuous value from Distribution1D.
+Returns (sampled value in [0,1], pdf, offset index).
+"""
+function sample_continuous(d::Distribution1D, u::Float32)
+    # Find interval using binary search
+    offset = findlast(i -> d.cdf[i] ≤ u, 1:length(d.cdf))
+    offset = clamp(offset, 1, length(d.cdf) - 1)
+
+    # Compute offset within CDF segment
+    du = u - d.cdf[offset]
+    denom = d.cdf[offset + 1] - d.cdf[offset]
+    if denom > 0
+        du /= denom
+    end
+
+    # Compute continuous position
+    n = length(d.func)
+    sampled = (offset - 1 + du) / n
+
+    # Compute PDF: for piecewise-constant over [0,1], pdf = f[i] / func_int
+    pdf = d.func_int > 0 ? d.func[offset] / d.func_int : 0f0
+
+    sampled, pdf, offset
+end
+
+"""
+Compute PDF for sampling a specific value from Distribution1D.
+"""
+function pdf(d::Distribution1D, u::Float32)::Float32
+    n = length(d.func)
+    offset = clamp(Int(floor(u * n)) + 1, 1, n)
+    d.func_int > 0 ? d.func[offset] / d.func_int : 0f0
+end
+
+"""
+2D piecewise-constant distribution for importance sampling.
+Built from a 2D function (e.g., environment map luminance).
+"""
+struct Distribution2D
+    """Conditional distributions p(v|u) for each row."""
+    p_conditional_v::Vector{Distribution1D}
+    """Marginal distribution p(u) over rows."""
+    p_marginal::Distribution1D
+
+    function Distribution2D(func::Matrix{Float32})
+        nv, nu = size(func)  # nv = height (rows), nu = width (columns)
+
+        # Build conditional distributions for each row
+        p_conditional_v = Vector{Distribution1D}(undef, nv)
+        marginal_func = Vector{Float32}(undef, nv)
+
+        for v in 1:nv
+            # Extract row and create distribution
+            row = Float32[func[v, u] for u in 1:nu]
+            p_conditional_v[v] = Distribution1D(row)
+            # Marginal is the integral of each row
+            marginal_func[v] = p_conditional_v[v].func_int
+        end
+
+        p_marginal = Distribution1D(marginal_func)
+        new(p_conditional_v, p_marginal)
+    end
+end
+
+"""
+Sample a 2D point from the distribution.
+Returns (Point2f(u, v), pdf).
+"""
+function sample_continuous(d::Distribution2D, u::Point2f)
+    # Sample v (row) from marginal distribution
+    v_sampled, pdf_v, v_offset = sample_continuous(d.p_marginal, u[2])
+
+    # Sample u (column) from conditional distribution for that row
+    u_sampled, pdf_u, _ = sample_continuous(d.p_conditional_v[v_offset], u[1])
+
+    Point2f(u_sampled, v_sampled), pdf_u * pdf_v
+end
+
+"""
+Compute PDF for sampling a specific 2D point.
+"""
+function pdf(d::Distribution2D, uv::Point2f)::Float32
+    nu = length(d.p_conditional_v[1].func)
+    nv = length(d.p_marginal.func)
+
+    # Find indices
+    iu = clamp(Int(floor(uv[1] * nu)) + 1, 1, nu)
+    iv = clamp(Int(floor(uv[2] * nv)) + 1, 1, nv)
+
+    d.p_conditional_v[iv].func[iu] / d.p_marginal.func_int
+end
+
 function radical_inverse(base_index::Int64, a::UInt64)::Float32
     @real_assert base_index < 1024 "Limit for radical inverse is 1023"
     base_index == 0 && return reverse_bits(a) * 5.4210108624275222e-20

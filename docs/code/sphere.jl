@@ -31,7 +31,7 @@ function render()
     wall_quad = Rect3f(Vec3f(0, 0, -3), Vec3f(1, 1, 0))
     wall_primitive = tmesh(wall_quad, material_white)
 
-    bvh = Hikari.no_material_bvh([
+    bvh = Hikari.MaterialScene([
         primitive3,
         floor_primitive,
         wall_primitive,

@@ -59,7 +59,7 @@ end
 
 
 begin
-    bvh = Hikari.no_material_bvh(random_spheres())
+    bvh = Hikari.MaterialScene(random_spheres())
 
     lights = (
         Hikari.PointLight(Vec3f(0, 0, 2), Hikari.RGBSpectrum(10.0f0)),

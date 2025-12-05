@@ -84,7 +84,7 @@ end
 UberBxDF{S}() where {S} = UberBxDF{S}(false, UInt8(0))
 
 function UberBxDF{S}(active::Bool, bxdf_type::UInt8;
-        r=Trace.RGBSpectrum(1f0), t=Trace.RGBSpectrum(1f0),
+        r=RGBSpectrum(1f0), t=RGBSpectrum(1f0),
         a=0f0, b=0f0, η_a=0f0, η_b=0f0,
         distribution=TrowbridgeReitzDistribution(),
         fresnel=FresnelNoOp(),
@@ -108,6 +108,8 @@ end
         return sample_microfacet_reflection(s, wo, sample)
     elseif s.bxdf_type === MICROFACET_TRANSMISSION
         return sample_microfacet_transmission(s, wo, sample)
+    elseif s.bxdf_type === FRESNEL_MICROFACET
+        return sample_fresnel_microfacet(s, wo, sample)
     end
     wi::Vec3f = cosine_sample_hemisphere(sample)
     # Flipping the direction if necessary.
@@ -124,14 +126,17 @@ for the given pair of directions.
 """
 @inline function compute_pdf(s::UberBxDF, wo::Vec3f, wi::Vec3f)::Float32
     if s.bxdf_type === FRESNEL_SPECULAR
-        pdf_fresnel_specular(s, wo, wi)
+        return pdf_fresnel_specular(s, wo, wi)
     elseif s.bxdf_type === LAMENTIAN_TRANSMISSION
-        pdf_lambertian_transmission(s, wo, wi)
+        return pdf_lambertian_transmission(s, wo, wi)
     elseif s.bxdf_type === MICROFACET_REFLECTION
-        pdf_microfacet_reflection(s, wo, wi)
+        return pdf_microfacet_reflection(s, wo, wi)
     elseif s.bxdf_type === MICROFACET_TRANSMISSION
-        pdf_microfacet_transmission(s, wo, wi)
+        return pdf_microfacet_transmission(s, wo, wi)
+    elseif s.bxdf_type === FRESNEL_MICROFACET
+        return pdf_fresnel_microfacet(s, wo, wi)
     end
+    # Default fallback for Lambertian reflection (and other diffuse BxDFs)
     return same_hemisphere(wo, wi) ? abs(cos_θ(wi)) * (1.0f0 / π) : 0.0f0
 end
 
@@ -152,6 +157,8 @@ end
         return distribution_microfacet_reflection(s, wo, wi)
     elseif s.bxdf_type === MICROFACET_TRANSMISSION
         return distribution_microfacet_transmission(s, wo, wi)
+    elseif s.bxdf_type === FRESNEL_MICROFACET
+        return distribution_fresnel_microfacet(s, wo, wi)
     end
     return RGBSpectrum(0.0f0)
     # error("Unknown BxDF type $(s.bxdf_type)")

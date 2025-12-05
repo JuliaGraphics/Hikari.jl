@@ -55,7 +55,7 @@ function render()
     wall1 = tmesh(wall_quad, material_white)
     wall2 = tmesh(wall_quad, material_white)  # Two triangles
 
-    bvh = Hikari.no_material_bvh([
+    bvh = Hikari.MaterialScene([
         primitive1, primitive2, primitive3, primitive4,
         floor1, wall1,
     ])

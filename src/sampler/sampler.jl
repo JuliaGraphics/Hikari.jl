@@ -149,20 +149,10 @@ end
 end
 
 @inline function get_camera_sample(::UniformSampler, p_raster::Point2f)
-    # Use pixel coordinates as seed for deterministic but pseudo-random values
-    px = UInt32(floor(p_raster[1]))
-    py = UInt32(floor(p_raster[2]))
-
-    # Generate pseudo-random offsets for jittering
-    p_x = gpu_rand_float(px, py, UInt32(0))
-    p_y = gpu_rand_float(px, py, UInt32(1))
-    p_film = Point2f(p_raster[1] + p_x, p_raster[2] + p_y)
-
-    lens_x = gpu_rand_float(px, py, UInt32(2))
-    lens_y = gpu_rand_float(px, py, UInt32(3))
-    p_lens = Point2f(lens_x, lens_y)
-
-    time = gpu_rand_float(px, py, UInt32(4))
+    # Use rand() for jittering - simpler and works correctly with any resolution
+    p_film = p_raster .+ rand(Point2f)
+    p_lens = rand(Point2f)
+    time = rand(Float32)
     CameraSample(p_film, p_lens, time)
 end
 

@@ -128,10 +128,16 @@ end
         inv_sqrt_spp::Float32,
         vps::AbstractMatrix{VisiblePoint},
         pixel_point::Point2f, camera::C, max_depth::Int,
-        Ld::AbstractMatrix{RGBSpectrum}
+        Ld::AbstractMatrix{RGBSpectrum},
+        height::Float32,
     ) where {SC<:Scene, S<:AbstractSampler, C<:Camera}
 
-    camera_sample = get_camera_sample(tile_sampler, pixel_point)
+    # Flip y-coordinate for camera sample to match Julia array convention
+    # pixel_point is in (x, y) format where y=1 is top row in Julia's array convention
+    # Camera expects y increasing downward (y=0 at top, y=height at bottom)
+    # Map: Julia row 1 → camera y = height-1, Julia row height → camera y = 0
+    camera_pixel = Point2f(pixel_point[1], height - pixel_point[2])
+    camera_sample = get_camera_sample(tile_sampler, camera_pixel)
     rayd, _β = generate_ray_differential(camera, camera_sample)
     _β ≈ 0.0f0 && return
 
@@ -197,6 +203,7 @@ end
             continue
         end
         # Spawn ray from SPPM camera path vertex.
+        # Try multiple samples if needed to handle failed microfacet samples
         wi, f, pdf, sampled_type = sample_f(
             bsdf, wo,
             get_2d(tile_sampler), BSDF_ALL,
@@ -229,6 +236,8 @@ function _generate_visible_sppm_points!(
 
     width, height = n_tiles
     total_tiles = width * height - 1
+    # Get image height for y-flip (pixel_bounds.p_max[2] is the max y coordinate)
+    image_height = Float32(pixel_bounds.p_max[2])
 
     bar = get_progress_bar(total_tiles, "Camera pass: ")
     Ld = pixels.Ld
@@ -248,7 +257,8 @@ function _generate_visible_sppm_points!(
                 inv_sqrt_spp,
                 vps,
                 pixel_point, camera, max_depth,
-                Ld
+                Ld,
+                image_height,
             )
         end
         next!(bar)

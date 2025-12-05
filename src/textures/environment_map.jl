@@ -1,0 +1,139 @@
+"""
+Environment map texture for HDR image-based lighting.
+Supports sampling by direction vector (for environment lights).
+Includes importance sampling distribution based on luminance.
+"""
+struct EnvironmentMap{S<:Spectrum, T<:AbstractMatrix{S}}
+    """HDR image data (lat-long / equirectangular format)."""
+    data::T
+
+    """Rotation around Y axis (radians)."""
+    rotation::Float32
+
+    """2D distribution for importance sampling based on luminance."""
+    distribution::Distribution2D
+
+    function EnvironmentMap(data::AbstractMatrix{S}, rotation::Float32=0f0) where {S<:Spectrum}
+        # Build luminance-weighted distribution for importance sampling
+        # Weight by sin(θ) to account for solid angle distortion in equirectangular maps
+        h, w = size(data)
+        luminance = Matrix{Float32}(undef, h, w)
+        for v in 1:h
+            # θ goes from 0 (top, +Y) to π (bottom, -Y)
+            θ = π * (v - 0.5f0) / h
+            sin_θ = sin(θ)
+            for u in 1:w
+                luminance[v, u] = to_Y(data[v, u]) * sin_θ
+            end
+        end
+        distribution = Distribution2D(luminance)
+        new{S, typeof(data)}(data, rotation, distribution)
+    end
+end
+
+"""
+Convert a direction vector to equirectangular UV coordinates.
+Uses standard lat-long mapping where:
+- U (horizontal) maps to longitude: 0 at +X, increases counter-clockwise
+- V (vertical) maps to latitude: 0 at top (+Y), 1 at bottom (-Y)
+"""
+@inline function direction_to_uv(dir::Vec3f, rotation::Float32=0f0)::Point2f
+    # Compute spherical coordinates
+    # θ (theta) is the polar angle from +Y axis
+    # φ (phi) is the azimuthal angle in XZ plane from +X axis
+    θ = acos(clamp(dir[2], -1f0, 1f0))  # Y is up
+    φ = atan(dir[3], dir[1])  # atan2(z, x)
+
+    # Apply rotation
+    φ = φ + rotation
+
+    # Convert to UV coordinates [0,1]
+    # U: longitude, φ ∈ [-π, π] -> [0, 1]
+    u = (φ + π) / (2f0 * π)
+    # V: latitude, θ ∈ [0, π] -> [0, 1]
+    v = θ / π
+
+    # Wrap U to [0,1]
+    u = mod(u, 1f0)
+
+    Point2f(u, v)
+end
+
+"""
+Convert equirectangular UV coordinates to a direction vector.
+Inverse of direction_to_uv.
+"""
+@inline function uv_to_direction(uv::Point2f, rotation::Float32=0f0)::Vec3f
+    # Convert UV to spherical coordinates
+    # U: [0, 1] -> φ ∈ [-π, π]
+    φ = uv[1] * 2f0 * π - π
+    # V: [0, 1] -> θ ∈ [0, π]
+    θ = uv[2] * π
+
+    # Remove rotation
+    φ = φ - rotation
+
+    # Convert to Cartesian (Y-up)
+    sin_θ = sin(θ)
+    Vec3f(sin_θ * cos(φ), cos(θ), sin_θ * sin(φ))
+end
+
+"""
+Sample the environment map by direction vector.
+"""
+@inline function (env::EnvironmentMap{S})(dir::Vec3f)::S where {S<:Spectrum}
+    uv = direction_to_uv(dir, env.rotation)
+
+    # Bilinear interpolation
+    h, w = size(env.data)
+
+    # Convert to pixel coordinates
+    x = uv[1] * (w - 1) + 1
+    y = uv[2] * (h - 1) + 1
+
+    # Get integer pixel coordinates
+    x0 = floor(Int32, x)
+    y0 = floor(Int32, y)
+    x1 = x0 + Int32(1)
+    y1 = y0 + Int32(1)
+
+    # Clamp to valid range
+    x0 = clamp(x0, Int32(1), Int32(w))
+    x1 = clamp(x1, Int32(1), Int32(w))
+    y0 = clamp(y0, Int32(1), Int32(h))
+    y1 = clamp(y1, Int32(1), Int32(h))
+
+    # Wrap x coordinates for seamless horizontal tiling
+    x1 = x1 > w ? Int32(1) : x1
+
+    # Interpolation weights
+    fx = x - floor(x)
+    fy = y - floor(y)
+
+    # Bilinear interpolation
+    c00 = env.data[y0, x0]
+    c10 = env.data[y0, x1]
+    c01 = env.data[y1, x0]
+    c11 = env.data[y1, x1]
+
+    c0 = c00 * (1f0 - fx) + c10 * fx
+    c1 = c01 * (1f0 - fx) + c11 * fx
+
+    c0 * (1f0 - fy) + c1 * fy
+end
+
+"""
+Sample method alias for compatibility.
+"""
+@inline sample(env::EnvironmentMap, dir::Vec3f) = env(dir)
+
+"""
+Load an environment map from an HDR/EXR file.
+Converts the image to RGBSpectrum format.
+"""
+function load_environment_map(path::String; rotation::Float32=0f0)
+    img = FileIO.load(path)
+    # Convert to RGBSpectrum matrix
+    data = map(c -> RGBSpectrum(Float32(c.r), Float32(c.g), Float32(c.b)), img)
+    EnvironmentMap(data, rotation)
+end

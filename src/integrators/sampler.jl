@@ -14,7 +14,11 @@ end
         scene, sampler, camera, pixel, spp_sqr, filter_table,
         filter_radius::Point2f
     )
-    campix = Point2f(pixel[2], resolution[1] - pixel[1])
+    # resolution is (height, width) from size(pixels) in Julia convention
+    # pixel is (px, py) where px=x (column), py=y (row)
+    # Camera expects raster coords with y increasing downward, so flip y
+    # Use height (resolution[1]) for y-flip
+    campix = Point2f(pixel[1], resolution[1] - pixel[2])
 
     # Use while loop to avoid iterate() protocol (causes PHI node errors in SPIR-V)
     sample_idx = Int32(1)
@@ -56,8 +60,8 @@ end
     spp_sqr = 1.0f0 / √Float32(sampler.samples_per_pixel)
 
     # Explicit loop instead of iterating over Bounds2 to avoid GPU allocation issues
-    # Explicitly unpack size to avoid tuple iteration in SPIR-V
-    px_size = Point2f(size(pixels, 1), size(pixels, 2))
+    # size(pixels) returns (rows, cols) = (height, width) in Julia convention
+    resolution = Point2f(size(pixels)...)
 
     # Use while loops instead of for loops to avoid iterate() protocol
     # which returns Union{Nothing, Tuple{Int32, Int32}} causing PHI node errors in SPIR-V
@@ -69,7 +73,7 @@ end
         while px <= px_max
             pixel = Point2f(px, py)
             @inline sample_kernel_inner!(
-                tiles, tile_bounds, tile_column, px_size,
+                tiles, tile_bounds, tile_column, resolution,
                 max_depth, scene, sampler, camera,
                 pixel, spp_sqr, filter_table, filter_radius
             )
@@ -140,11 +144,13 @@ function integrator_threaded(i::SamplerIntegrator, scene::Scene, film, camera)
             tile_bounds = Bounds2(tb_min, tb_max)
 
             # Process all pixels in this tile
+            # size(pixels) returns (rows, cols) = (height, width) in Julia convention
+            px_resolution = Point2f(size(pixels)...)
             for py in Int32(tb_min[2]):Int32(tb_max[2])
                 for px in Int32(tb_min[1]):Int32(tb_max[1])
                     pixel = Point2f(px, py)
                     sample_kernel_inner!(
-                        tiles, tile_bounds, tile_column, Point2f(size(pixels)),
+                        tiles, tile_bounds, tile_column, px_resolution,
                         max_depth, scene, sampler, camera,
                         pixel, spp_sqr, filter_table, filter_radius
                     )

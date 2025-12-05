@@ -50,7 +50,7 @@ begin
     l = tmesh(Rect3f(Vec3f(-2, -5, 0), Vec3f(0.01, 10, 10)), material_white)
     r = tmesh(Rect3f(Vec3f(2, -5, 0), Vec3f(0.01, 10, 10)), material_white)
 
-    bvh = Hikari.no_material_bvh([s1, s2, s3, s4, ground, back, l, r]);
+    bvh = Hikari.MaterialScene([s1, s2, s3, s4, ground, back, l, r]);
 
     lights = (
         # Hikari.PointLight(Vec3f(0, -1, 2), Hikari.RGBSpectrum(22.0f0)),

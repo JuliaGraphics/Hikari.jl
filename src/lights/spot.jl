@@ -19,6 +19,55 @@ struct SpotLight{S<:Spectrum} <: Light
     end
 end
 
+"""
+    SpotLight(position, target, intensity, cone_angle, falloff_angle)
+
+Convenience constructor for SpotLight that takes position and target points.
+
+# Arguments
+- `position::Point3f`: World-space position of the spotlight
+- `target::Point3f`: Point the spotlight is aimed at
+- `i::Spectrum`: Light intensity/color
+- `total_width::Float32`: Total cone angle in degrees
+- `falloff_start::Float32`: Angle where intensity falloff begins (degrees)
+
+# Example
+```julia
+# Spotlight at (0, 5, 0) pointing at origin with 30° cone
+light = SpotLight(Point3f(0, 5, 0), Point3f(0, 0, 0), RGBSpectrum(100f0), 30f0, 25f0)
+```
+"""
+function SpotLight(
+    position::Point3f, target::Point3f, i::S,
+    total_width::Float32, falloff_start::Float32,
+) where S<:Spectrum
+    light_to_world = _spotlight_transform(position, target)
+    SpotLight(light_to_world, i, total_width, falloff_start)
+end
+
+"""
+Create a transformation that positions a spotlight and orients it to point at a target.
+The spotlight points in +Z direction in local space.
+"""
+function _spotlight_transform(position::Point3f, target::Point3f)
+    dir = normalize(Vec3f(target - position))
+    # Choose up vector that's not parallel to dir
+    up = abs(dir[2]) < 0.99f0 ? Vec3f(0f0, 1f0, 0f0) : Vec3f(1f0, 0f0, 0f0)
+    x_axis = normalize(up × dir)
+    y_axis = dir × x_axis
+    z_axis = dir
+
+    # Rotation matrix: columns are where local axes map to in world space
+    rot = Mat4f(
+        x_axis[1], x_axis[2], x_axis[3], 0f0,
+        y_axis[1], y_axis[2], y_axis[3], 0f0,
+        z_axis[1], z_axis[2], z_axis[3], 0f0,
+        0f0, 0f0, 0f0, 1f0
+    )
+
+    translate(Vec3f(position)) * Transformation(rot, inv(rot))
+end
+
 function sample_li(s::SpotLight, ref::Interaction, ::Point2f)
     wi = normalize(Vec3f(s.position - ref.p))
     pdf = 1f0

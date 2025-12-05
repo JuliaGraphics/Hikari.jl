@@ -60,6 +60,8 @@ Base.Base.@propagate_inbounds function glass_material(g::UberMaterial, si::Surfa
     r_black && t_black && return BSDF(si, η)
 
     is_specular = u_roughness ≈ 0f0 && v_roughness ≈ 0f0
+
+    # For specular glass with multiple lobes, use FresnelSpecular
     if is_specular && allow_multiple_lobes
         return BSDF(si, η, FresnelSpecular(true, r, t, 1.0f0, η, transport))
     end
@@ -68,7 +70,17 @@ Base.Base.@propagate_inbounds function glass_material(g::UberMaterial, si::Surfa
         u_roughness = roughness_to_α(u_roughness)
         v_roughness = roughness_to_α(v_roughness)
     end
-    distribution = is_specular ? nothing : TrowbridgeReitzDistribution(
+
+    # For rough glass, use FresnelMicrofacet which combines reflection and transmission
+    # with Fresnel-weighted sampling (avoids uniform 50/50 split that wastes samples)
+    if !is_specular && allow_multiple_lobes
+        distribution = TrowbridgeReitzDistribution(u_roughness, v_roughness)
+        # Use combined color for FresnelMicrofacet (r for reflection, t for transmission)
+        return BSDF(si, η, FresnelMicrofacet(true, r, t, distribution, 1.0f0, η, transport))
+    end
+
+    # Fallback: separate BxDFs for specular-only or when multiple lobes not allowed
+    distribution = is_specular ? TrowbridgeReitzDistribution() : TrowbridgeReitzDistribution(
         u_roughness, v_roughness,
     )
     fresnel = FresnelDielectric(1f0, η)

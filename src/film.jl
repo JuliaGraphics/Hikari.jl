@@ -171,11 +171,12 @@ end
 
 
 """
-Point in (x, y) format.
+Point p is in (x, y) format.
+Returns CartesianIndex in (row, col) = (y, x) format for Julia array indexing.
 """
 @inline function get_pixel_index(crop_bounds, p::Point2)
-    i1, i2 = u_int32.((p .- crop_bounds.p_min .+ 1.0f0))
-    return CartesianIndex(i1, i2)
+    ix, iy = u_int32.((p .- crop_bounds.p_min .+ 1.0f0))
+    return CartesianIndex(iy, ix)  # (row, col) = (y, x) for Julia arrays
 end
 
 @inline function merge_film_tile!(f::AbstractMatrix{Pixel}, crop_bounds::Bounds2, ft::AbstractMatrix{FilmTilePixel}, tile::Bounds2, tile_col::Int32)
