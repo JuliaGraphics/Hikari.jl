@@ -98,7 +98,7 @@ function (i::SPPMIntegrator)(scene::Scene, film::Film)
 
     tile_size = 16
     pixel_extent = diagonal(pixel_bounds)
-    n_tiles::Point2 = Int64.(floor.((pixel_extent .+ tile_size) ./ tile_size))
+    n_tiles = Int64.(floor.((pixel_extent .+ tile_size) ./ tile_size))
 
     sampler = UniformSampler(1)
     for iteration in 1:i.n_iterations
@@ -123,13 +123,13 @@ function (i::SPPMIntegrator)(scene::Scene, film::Film)
 end
 
 
-function inner_kernel(
-        scene::Scene, tile_sampler::S,
+@inline function inner_kernel(
+        scene::SC, tile_sampler::S,
         inv_sqrt_spp::Float32,
         vps::AbstractMatrix{VisiblePoint},
-        pixel_point::Point2f, camera, max_depth,
-        Ld
-    ) where S<:AbstractSampler
+        pixel_point::Point2f, camera::C, max_depth::Int,
+        Ld::AbstractMatrix{RGBSpectrum}
+    ) where {SC<:Scene, S<:AbstractSampler, C<:Camera}
 
     camera_sample = get_camera_sample(tile_sampler, pixel_point)
     rayd, _β = generate_ray_differential(camera, camera_sample)
