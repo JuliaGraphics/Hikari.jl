@@ -186,6 +186,12 @@ end
     f_filter_weight_sum = f.filter_weight_sum
     linear = Int32(1)
 
+    # Clamp tile bounds to crop bounds to avoid out-of-bounds access
+    crop_min_x = u_int32(crop_bounds.p_min[1])
+    crop_min_y = u_int32(crop_bounds.p_min[2])
+    crop_max_x = u_int32(crop_bounds.p_max[1])
+    crop_max_y = u_int32(crop_bounds.p_max[2])
+
     # Use while loops to avoid iterate() protocol (causes PHI node errors in SPIR-V)
     py = u_int32(tile.p_min[2])
     py_max = u_int32(tile.p_max[2])
@@ -193,10 +199,13 @@ end
         px = u_int32(tile.p_min[1])
         px_max = u_int32(tile.p_max[1])
         while px <= px_max
-            pixel = Point2f(px, py)
-            f_idx = get_pixel_index(crop_bounds, pixel)
-            f_xyz[f_idx] += to_XYZ(ft_contrib_sum[linear, tile_col])
-            f_filter_weight_sum[f_idx] += ft_filter_weight_sum[linear, tile_col]
+            # Only process pixels within crop bounds
+            if px >= crop_min_x && px <= crop_max_x && py >= crop_min_y && py <= crop_max_y
+                pixel = Point2f(px, py)
+                f_idx = get_pixel_index(crop_bounds, pixel)
+                f_xyz[f_idx] += to_XYZ(ft_contrib_sum[linear, tile_col])
+                f_filter_weight_sum[f_idx] += ft_filter_weight_sum[linear, tile_col]
+            end
             linear += Int32(1)
             px += Int32(1)
         end

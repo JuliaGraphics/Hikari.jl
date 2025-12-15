@@ -12,15 +12,11 @@ struct EnvironmentLight{S<:Spectrum} <: Light
     """Scale factor for the light intensity."""
     scale::S
 
-    """World radius for positioning the light at infinity."""
-    world_radius::Float32
-
     function EnvironmentLight(
         env_map::EnvironmentMap{S},
         scale::S=RGBSpectrum(1f0);
-        world_radius::Float32=1000f0
     ) where {S<:Spectrum}
-        new{S}(LightInfinite, env_map, scale, world_radius)
+        new{S}(LightInfinite, env_map, scale)
     end
 end
 
@@ -31,10 +27,9 @@ function EnvironmentLight(
     path::String;
     scale::RGBSpectrum=RGBSpectrum(1f0),
     rotation::Float32=0f0,
-    world_radius::Float32=1000f0
 )
     env_map = load_environment_map(path; rotation=rotation)
-    EnvironmentLight(env_map, scale; world_radius=world_radius)
+    EnvironmentLight(env_map, scale)
 end
 
 """
@@ -49,7 +44,7 @@ Uses importance sampling based on environment map luminance.
 # Returns
 Tuple of (radiance, incident direction, pdf, visibility tester)
 """
-function sample_li(e::EnvironmentLight{S}, i::Interaction, u::Point2f) where {S}
+function sample_li(e::EnvironmentLight{S}, i::Interaction, u::Point2f, scene::Scene) where {S}
     # Importance sample the environment map based on luminance
     uv, map_pdf = sample_continuous(e.env_map.distribution, u)
 
@@ -66,7 +61,8 @@ function sample_li(e::EnvironmentLight{S}, i::Interaction, u::Point2f) where {S}
     radiance = e.scale * e.env_map(wi)
 
     # Create visibility tester - the light is at "infinity"
-    p_light = i.p + wi * e.world_radius
+    # Use 2x scene_radius to ensure we're far enough away
+    p_light = i.p + wi * (2f0 * scene.world_radius)
     visibility = VisibilityTester(
         i,
         Interaction(p_light, i.time, wi, Normal3f(0f0))
@@ -81,48 +77,50 @@ Uses importance sampling based on environment map luminance.
 
 The ray is sampled by:
 1. Importance sampling a direction from the environment map
-2. Placing a disk of radius world_radius centered at the scene origin,
+2. Placing a disk of radius scene_radius centered at scene_center,
    perpendicular to that direction
-3. Sampling a point on the disk and shooting a ray in direction -wi
+3. Sampling a point on the disk and shooting a ray inward
 """
 function sample_le(
-    e::EnvironmentLight{S}, u1::Point2f, u2::Point2f, ::Float32
+    e::EnvironmentLight{S}, u1::Point2f, u2::Point2f, ::Float32, scene::Scene
 )::Tuple{S,Ray,Normal3f,Float32,Float32} where {S}
     # Importance sample direction from environment map
+    # wi is the direction light comes FROM (pointing outward from scene)
     uv, map_pdf = sample_continuous(e.env_map.distribution, u1)
     wi = uv_to_direction(uv, e.env_map.rotation)
 
     # Convert PDF from image space to solid angle
+    # For equirectangular: pdf_solidangle = pdf_image / (2π² sin(θ))
     θ = uv[2] * π
     sin_θ = sin(θ)
     pdf_dir = sin_θ > 0f0 ? map_pdf / (2f0 * π * π * sin_θ) : 0f0
 
-    # Sample a point on a disk perpendicular to the incoming direction
-    # The disk is centered at the scene origin (0,0,0) and has radius world_radius
-    d = concentric_sample_disk(u2)
+    # Ray direction is -wi (pointing into the scene)
+    ray_dir = -wi
 
-    # Create coordinate frame with wi as the z-axis
-    w = wi
-    if abs(w[1]) > 0.1f0
+    # Create coordinate frame with ray_dir as the z-axis (following pbrt)
+    # This frame is used to offset the disk sampling point
+    w = -ray_dir  # = wi, the outward direction
+    if abs(w[2]) < 0.99f0
         v = normalize(Vec3f(0f0, 1f0, 0f0) × w)
     else
         v = normalize(Vec3f(1f0, 0f0, 0f0) × w)
     end
     u_axis = w × v
 
-    # Disk point in world space (centered at origin, perpendicular to wi)
-    p_disk = (d[1] * e.world_radius) * u_axis + (d[2] * e.world_radius) * v
+    # Sample point on disk centered at scene_center, perpendicular to ray direction
+    d = concentric_sample_disk(u2)
+    p_disk = scene.world_center + scene.world_radius * (d[1] * u_axis + d[2] * v)
 
-    # Ray origin: start from far away (world_radius distance) along wi direction,
-    # offset by the disk point
-    origin = Point3f(p_disk) + e.world_radius * w
+    # Ray origin: start from disk point, go outward by scene_radius, then shoot inward
+    origin = p_disk + scene.world_radius * w
 
-    ray = Ray(o=origin, d=-wi)
-    # Light normal points outward from the light (toward environment)
+    ray = Ray(o=origin, d=ray_dir)
+    # Light normal points outward (toward environment)
     light_normal = Normal3f(wi)
 
     # PDF for position on disk
-    pdf_pos = 1f0 / (π * e.world_radius^2)
+    pdf_pos = 1f0 / (π * scene.world_radius^2)
 
     # Sample radiance in the direction wi (the direction light comes FROM)
     radiance = e.scale * e.env_map(wi)
@@ -161,9 +159,8 @@ Total power emitted by the environment light.
 For an environment light, this is approximated as the average radiance times
 the surface area of the bounding sphere.
 """
-@inline function power(e::EnvironmentLight{S})::S where {S<:Spectrum}
+@inline function power(e::EnvironmentLight{S}, scene::Scene)::S where {S<:Spectrum}
     # Approximate power as average radiance * 4π * r²
-    # For simplicity, sample a few directions and average
-    # A more accurate method would integrate over the entire environment map
-    e.scale * S(4f0 * π * e.world_radius^2)
+    # This is a rough approximation - more accurate would integrate over the map
+    e.scale * S(4f0 * π * scene.world_radius^2)
 end

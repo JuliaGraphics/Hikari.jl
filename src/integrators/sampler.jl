@@ -164,37 +164,13 @@ function integrator_threaded(i::SamplerIntegrator, scene::Scene, film, camera)
     to_framebuffer!(film, 1f0)
 end
 
-# MaterialScene now returns material directly from intersect!
-# These functions are kept for backward compatibility but not used anymore
-function get_material(bvh::BVH, shape::Triangle)
-    materials = bvh.materials
-    @_inbounds if shape.material_idx == 0
-        return materials[1]
-    else
-        return materials[shape.material_idx]
-    end
-end
-function get_material(scene::Scene, shape::Triangle)
-    get_material(scene.aggregate, shape)
-end
+# Get material from MaterialScene using triangle's metadata
 function get_material(ms::MaterialScene, shape::Triangle)
-    materials = ms.materials
-    @_inbounds if shape.material_idx == 0
-        return materials[1]
-    else
-        return materials[shape.material_idx]
-    end
+    return get_material(ms.materials, shape.metadata)
 end
 
 @inline function only_light(lights, ray)
-    l = RGBSpectrum(0.0f0)
-    Base.Cartesian.@nexprs 8 i -> begin
-        if i <= length(lights)
-            light = lights[i]
-            l += @inline le(light, ray)
-        end
-    end
-    return l
+    return sum(map(l-> le(l, ray), lights))
 end
 
 @inline function light_contribution(l, lights, wo, scene, bsdf, sampler, si)
@@ -205,7 +181,7 @@ end
     Base.Cartesian.@nexprs 8 i -> begin
         if i <= length(lights)
             @_inbounds light = lights[i]
-            sampled_li, wi, pdf, tester = @inline sample_li(light, core, get_2d(sampler))
+            sampled_li, wi, pdf, tester = @inline sample_li(light, core, get_2d(sampler), scene)
             if !(is_black(sampled_li) || pdf ≈ 0.0f0)
                 f = @inline bsdf(wo, wi)
                 if !is_black(f) && @inline unoccluded(tester, scene)
@@ -356,8 +332,7 @@ end
 end
 
 
-struct Reflect end
-struct Transmit end
+
 
 macro ntuple(N, value)
     expr = :(())
@@ -384,125 +359,22 @@ end
 @inline function li_iterative(
         sampler, max_depth::Int32, initial_ray::RayDifferentials, scene::S
     )::RGBSpectrum where {S<:Scene}
-    accumulated_l = RGBSpectrum(0.0f0)
-    # Direct MVector for type stability and to avoid LLVM select instructions in SPIR-V
-    stack = MVector{8,Tuple{RayDifferentials,Int32,RGBSpectrum}}(undef)
-    pos = Int32(1)
-    stack[pos] = (initial_ray, Int32(0), accumulated_l)
-    @_inbounds while pos > Int32(0)
-        (ray, depth, accumulated_l) = stack[pos]
-        pos -= Int32(1)
-        if depth == max_depth
-            continue
-        end
-        hit, material, si = intersect!(scene, ray)
-        lights = scene.lights
+    # Trace primary ray
+    hit, primitive, si = intersect!(scene, initial_ray)
 
-        if !hit
-            accumulated_l += only_light(lights, ray)
-            continue
-        end
-
-        core = si.core
-        wo = core.wo
-        si = compute_differentials(si, ray)
-        m = material
-        if m.type === NO_MATERIAL
-            new_ray = RayDifferentials(spawn_ray(si, ray.d))
-            pos += Int32(1)
-            stack[pos] = (new_ray, depth, accumulated_l)
-            continue
-        end
-
-        bsdf = @inline m(si, false, Radiance)
-        accumulated_l += @inline le(si, wo)
-        accumulated_l = @inline light_contribution(accumulated_l, lights, wo, scene, bsdf, sampler, si)
-
-        if depth + 1 <= max_depth
-            rd_reflect, reflect_l = @inline specular(Reflect, bsdf, sampler, ray, si)
-            if rd_reflect !== ray && pos < 8
-                pos += Int32(1)
-                stack[pos] = (rd_reflect, depth + Int32(1), reflect_l * accumulated_l)
-            end
-            rd_transmit, transmit_l = @inline specular(Transmit, bsdf, sampler, ray, si)
-            if rd_transmit !== ray && pos < 8
-                pos += Int32(1)
-                stack[pos] = (rd_transmit, depth + Int32(1), transmit_l * accumulated_l)
-            end
-        end
-    end
-    return accumulated_l
-end
-
-
-@inline get_type(::Type{Transmit}) = BSDF_TRANSMISSION | BSDF_SPECULAR
-@inline get_type(::Type{Reflect}) = BSDF_REFLECTION | BSDF_SPECULAR
-
-@inline function specular(
-        type, bsdf, sampler, ray::RayDifferentials,
-        si::SurfaceInteraction,
-    )::Tuple{RayDifferentials, RGBSpectrum}
-
-    wo = si.core.wo
-    wi, f, pdf, sampled_type = @inline sample_f(bsdf, wo, get_2d(sampler), get_type(type))
-
-    ns = si.shading.n
-    if !(pdf > 0.0f0 && !is_black(f) && abs(wi ⋅ ns) != 0.0f0)
-        return (ray, RGBSpectrum(0.0f0))
+    if !hit
+        # No hit - return light contribution (e.g. environment map)
+        return only_light(scene.lights, initial_ray)
     end
 
-    rd = RayDifferentials(spawn_ray(si, wi))
-    if ray.has_differentials
-        rd = @inline specular_differentials(type, rd, bsdf, si, ray, wo, wi)
-    end
-    return rd, f * abs(wi ⋅ ns) / pdf
-end
+    # Compute ray differentials for texture filtering
+    si = compute_differentials(si, initial_ray)
 
-@inline function specular_differentials(::Type{Reflect}, rd, bsdf, si, ray, wo, wi)
-    ns = si.shading.n
-    rx_origin = si.core.p + si.∂p∂x
-    ry_origin = si.core.p + si.∂p∂y
-    # Compute differential reflected directions.
-    ∂n∂x = si.shading.∂n∂u * si.∂u∂x + si.shading.∂n∂v * si.∂v∂x
-    ∂n∂y = si.shading.∂n∂u * si.∂u∂y + si.shading.∂n∂v * si.∂v∂y
-    ∂wo∂x = -ray.rx_direction - wo
-    ∂wo∂y = -ray.ry_direction - wo
-    ∂dn∂x = ∂wo∂x ⋅ ns + wo ⋅ ∂n∂x
-    ∂dn∂y = ∂wo∂y ⋅ ns + wo ⋅ ∂n∂y
-    rx_direction = wi - ∂wo∂x + 2.0f0 * (wo ⋅ ns) * ∂n∂x + ∂dn∂x * ns
-    ry_direction = wi - ∂wo∂y + 2.0f0 * (wo ⋅ ns) * ∂n∂y + ∂dn∂y * ns
-    return RayDifferentials(rd, rx_origin=rx_origin, ry_origin=ry_origin, rx_direction=rx_direction, ry_direction=ry_direction)
-end
-
-@inline function specular_differentials(::Type{Transmit}, rd, bsdf, si, ray, wo, wi)
-
-    ns = si.shading.n
-    rx_origin = si.core.p + si.∂p∂x
-    ry_origin = si.core.p + si.∂p∂y
-    # Compute differential transmitted directions.
-    ∂n∂x = si.shading.∂n∂u * si.∂u∂x + si.shading.∂n∂v * si.∂v∂x
-    ∂n∂y = si.shading.∂n∂u * si.∂u∂y + si.shading.∂n∂v * si.∂v∂y
-    # The BSDF stores the IOR of the interior of the object being
-    # intersected. Compute the relative IOR by first out by assuming
-    # that the ray is entering the object.
-    η = 1.0f0 / bsdf.η
-    if (ns ⋅ ns) < 0.0f0
-        # If the ray isn't entering the object, then we need to invert
-        # the relative IOR and negate the normal and its derivatives.
-        η = 1.0f0 / η
-        ∂n∂x, ∂n∂y, ns = -∂n∂x, -∂n∂y, -ns
-    end
-    ∂wo∂x = -ray.rx_direction - wo
-    ∂wo∂y = -ray.ry_direction - wo
-    ∂dn∂x = ∂wo∂x ⋅ ns + wo ⋅ ∂n∂x
-    ∂dn∂y = ∂wo∂y ⋅ ns + wo ⋅ ∂n∂y
-    μ = η * (wo ⋅ ns) - abs(wi ⋅ ns)
-    ν = η - (η * η * (wo ⋅ ns)) / abs(wi ⋅ ns)
-    ∂μ∂x = ν * ∂dn∂x
-    ∂μ∂y = ν * ∂dn∂y
-    rx_direction = wi - η * ∂wo∂x + μ * ∂n∂x + ∂μ∂x * ns
-    ry_direction = wi - η * ∂wo∂y + μ * ∂n∂y + ∂μ∂y * ns
-    return RayDifferentials(rd, rx_origin=rx_origin, ry_origin=ry_origin, rx_direction=rx_direction, ry_direction=ry_direction)
+    # Shade the hit point - material handles direct lighting and recursive bounces
+    return shade_material(
+        scene.aggregate.materials, primitive.metadata,
+        initial_ray, si, scene, RGBSpectrum(1f0), Int32(0), max_depth
+    )
 end
 
 

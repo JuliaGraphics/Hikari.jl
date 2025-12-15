@@ -68,7 +68,7 @@ function _spotlight_transform(position::Point3f, target::Point3f)
     translate(Vec3f(position)) * Transformation(rot, inv(rot))
 end
 
-function sample_li(s::SpotLight, ref::Interaction, ::Point2f)
+function sample_li(s::SpotLight, ref::Interaction, ::Point2f, ::Scene)
     wi = normalize(Vec3f(s.position - ref.p))
     pdf = 1f0
     visibility = VisibilityTester(

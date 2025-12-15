@@ -132,6 +132,14 @@ ground = tmesh(Rect3f(Vec3f(-3, 0, -3), Vec3f(6, 0.01, 6)), floor_mat)
 primitives = [s1, s2, s3, s4, s5, s6, s7, s8, s9, ground]
 mat_scene = Hikari.MaterialScene(primitives)
 
+# HDRI Environment lighting with importance sampling
+# world_radius should be ~2-3x the scene extent for efficient photon mapping
+env_light = Hikari.EnvironmentLight(
+    joinpath(@__DIR__, "..", "..", "..", "RadeonProRender", "assets", "studio026.exr");
+    scale=Hikari.RGBSpectrum(0.5f0),  # Dimmed to let spotlights be visible
+    rotation=0f0,
+)
+
 # Add spotlights for dramatic lighting and to show specular highlights
 # Key light - warm spotlight from front-right
 key_light = Hikari.SpotLight(
@@ -157,7 +165,7 @@ rim_light = Hikari.SpotLight(
     45f0, 40f0
 )
 
-scene = Hikari.Scene([key_light, fill_light, rim_light], mat_scene)
+scene = Hikari.Scene([env_light, key_light, fill_light, rim_light], mat_scene)
 
 # Camera setup
 resolution = Point2f(1024)
@@ -173,8 +181,8 @@ camera = Hikari.PerspectiveCamera(
     screen, 0f0, 1f0, 0f0, 1f6, 40f0, film,
 )
 
-# Render with SPPM for best quality
-integrator = Hikari.SPPMIntegrator(camera, 0.075f0, 5, 1, film)
+# Render with Wavefront path tracer
+integrator = Hikari.WavefrontIntegrator(camera; max_depth=5, samples_per_pixel=16)
 integrator(scene, film)
 ```
 

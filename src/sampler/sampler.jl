@@ -165,19 +165,15 @@ end
 @inline function start_pixel!(u::UniformSampler, ::Point2f)
     u.current_sample = 1
 end
-# GPU-friendly RNG using simple hash - returns quasi-random values
-# Note: UniformSampler is immutable so we use sample count as seed
-@inline function get_1d(u::UniformSampler)::Float32
-    # Use sample index to generate deterministic pseudo-random value
-    hash_val = wang_hash(UInt32(u.current_sample))
-    Float32(hash_val) / Float32(typemax(UInt32))
+# Use rand() for proper Monte Carlo sampling
+# The deterministic hash-based approach was causing all calls to return
+# the same values, breaking light sampling in scenes with multiple lights
+@inline function get_1d(::UniformSampler)::Float32
+    rand(Float32)
 end
 
-@inline function get_2d(u::UniformSampler)::Point2f
-    # Use sample index with different offsets for x and y
-    x = gpu_rand_float(UInt32(u.current_sample), UInt32(0), UInt32(5))
-    y = gpu_rand_float(UInt32(u.current_sample), UInt32(1), UInt32(6))
-    Point2f(x, y)
+@inline function get_2d(::UniformSampler)::Point2f
+    rand(Point2f)
 end
 
 # include("stratified.jl")

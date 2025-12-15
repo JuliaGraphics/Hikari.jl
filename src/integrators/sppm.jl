@@ -439,7 +439,9 @@ function _trace_photons!(
                 break
             end
             halton_dim += 1
-            # β = β_new / (1f0 - q)
+            # Update β for next bounce, accounting for Russian roulette survival
+            β = β_new / (1f0 - q)
+            βy = to_Y(β)
             photon_ray = RayDifferentials(spawn_ray(si, wi))
             depth += 1
         end
@@ -554,7 +556,7 @@ function estimate_direct(
     bsdf_flags = specular ? BSDF_ALL : (BSDF_ALL & ~BSDF_SPECULAR)
     Ld = RGBSpectrum(0f0)
     # Sample light source with multiple importance sampling.
-    Li, wi, light_pdf, visibility = sample_li(light, interaction.core, u_light)
+    Li, wi, light_pdf, visibility = sample_li(light, interaction.core, u_light, scene)
     if light_pdf > 0 && !is_black(Li)
         # Evaluate BSDF for light sampling strategy.
         f = (

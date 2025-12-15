@@ -34,6 +34,9 @@ abstract type Integrator end
 const Radiance = UInt8(1)
 const Importance = UInt8(2)
 
+struct Reflect end
+struct Transmit end
+
 const DO_ASSERTS = false
 macro real_assert(expr, msg="")
     if DO_ASSERTS
@@ -208,15 +211,25 @@ struct Scene{P, L<:NTuple{N, Light} where N}
     lights::L
     aggregate::P
     bound::Bounds3
+    world_center::Point3f
+    world_radius::Float32
 end
 
 function Scene(
         lights::Union{Tuple,AbstractVector}, aggregate::P,
     ) where {P}
-    # TODO preprocess for lights
     ltuple = Tuple(lights)
-    Scene{P,typeof(ltuple)}(ltuple, aggregate, world_bound(aggregate))
+    bounds = world_bound(aggregate)
+    world_center, world_radius = bounding_sphere(bounds)
+    # Preprocess lights that need scene bounds (e.g., EnvironmentLight)
+    for light in ltuple
+        preprocess!(light, bounds)
+    end
+    Scene{P,typeof(ltuple)}(ltuple, aggregate, bounds, world_center, world_radius)
 end
+
+# Default preprocess! does nothing for lights that don't need it
+preprocess!(::Light, ::Bounds3) = nothing
 
 @inline function intersect!(scene::Scene, ray::AbstractRay)
     intersect!(scene.aggregate, ray)
@@ -255,36 +268,96 @@ end
 
 # We'll create a MaterialScene wrapper below
 
-# MaterialScene: wraps Raycore.BVH with materials
-# Raycore.BVH only stores triangles, we map triangle.material_idx -> material
-struct MaterialScene{BVH<:AccelPrimitive, M<:AbstractVector{<:Material}}
+"""
+    MaterialIndex
+
+Metadata type for triangles that stores material lookup information.
+- `material_type`: Which tuple slot (1-based) in the materials tuple
+- `material_idx`: Index within that material type's array
+"""
+struct MaterialIndex
+    material_type::UInt8
+    material_idx::UInt32
+end
+
+# MaterialScene: wraps Raycore.BVH with materials stored as a tuple of arrays
+# Each material type gets its own array, indexed by triangle.metadata::MaterialIndex
+struct MaterialScene{BVH<:AccelPrimitive, Materials<:Tuple}
     bvh::BVH
-    materials::M
+    materials::Materials  # Tuple of material arrays, e.g., (Vector{UberMaterial}, Vector{CloudVolume})
 end
 
 @inline world_bound(ms::MaterialScene) = world_bound(ms.bvh)
 
+# Generated function for type-stable material dispatch
+# Returns the material from the appropriate tuple slot
+@generated function get_material(materials::NTuple{N,Any}, idx::MaterialIndex) where N
+    branches = [quote
+        if idx.material_type === UInt8($i)
+            return @inbounds materials[$i][idx.material_idx]
+        end
+    end for i in 1:N]
+    quote
+        $(branches...)
+        error("Invalid material type: ", idx.material_type)
+    end
+end
+
+# Type-stable shade dispatch - each material type implements shade(material, ray, si, scene, beta, depth, max_depth)
+@generated function shade_material(
+    materials::NTuple{N}, idx::MaterialIndex,
+    ray, si, scene, beta, depth::Int32, max_depth::Int32
+) where N
+    branches = [quote
+        @inbounds if idx.material_type === UInt8($i)
+            return @inline shade(materials[$i][idx.material_idx], ray, si, scene, beta, depth, max_depth)
+        end
+    end for i in 1:N]
+    quote
+        $(branches...)
+        return RGBSpectrum(0f0)
+    end
+end
+
+# Type-stable bounce ray generation - materials implement sample_bounce(material, ray, si, scene, beta, depth)
+@generated function sample_material_bounce(
+    materials::NTuple{N,Any}, idx::MaterialIndex,
+    ray, si, scene, beta, depth
+) where N
+    branches = [quote
+        if idx.material_type === UInt8($i)
+            mat = @inbounds materials[$i][idx.material_idx]
+            return @inline sample_bounce(mat, ray, si, scene, beta, depth)
+        end
+    end for i in 1:N]
+    quote
+        $(branches...)
+        # No bounce
+        return (false, ray, RGBSpectrum(0f0), Int32(0))
+    end
+end
+
+# Calculate partial derivatives for texture mapping
+function partial_derivatives(vs::AbstractVector{Point3f}, uv::AbstractVector{Point2f})
+    δuv_13, δuv_23 = uv[1] - uv[3], uv[2] - uv[3]
+    δp_13, δp_23 = Vec3f(vs[1] - vs[3]), Vec3f(vs[2] - vs[3])
+    det = δuv_13[1] * δuv_23[2] - δuv_13[2] * δuv_23[1]
+    if det ≈ 0f0
+        v = normalize((vs[3] - vs[1]) × (vs[2] - vs[1]))
+        _, ∂p∂u, ∂p∂v = coordinate_system(Vec3f(v))
+        return ∂p∂u, ∂p∂v
+    end
+    inv_det = 1f0 / det
+    ∂p∂u = Vec3f(δuv_23[2] * δp_13 - δuv_13[2] * δp_23) * inv_det
+    ∂p∂v = Vec3f(-δuv_23[1] * δp_13 + δuv_13[1] * δp_23) * inv_det
+    return ∂p∂u, ∂p∂v
+end
+
 # Convert Raycore.Triangle intersection result to Trace SurfaceInteraction
-function triangle_to_surface_interaction(triangle::Triangle, ray::AbstractRay, bary_coords::StaticVector{3,Float32})::SurfaceInteraction
+@inline function triangle_to_surface_interaction(triangle::Triangle, ray::AbstractRay, bary_coords::StaticVector{3,Float32})::SurfaceInteraction
     # Get triangle data
     verts = Raycore.vertices(triangle)
     tex_coords = Raycore.uvs(triangle)
-
-    # Calculate partial derivatives
-    function partial_derivatives(vs::AbstractVector{Point3f}, uv::AbstractVector{Point2f})
-        δuv_13, δuv_23 = uv[1] - uv[3], uv[2] - uv[3]
-        δp_13, δp_23 = Vec3f(vs[1] - vs[3]), Vec3f(vs[2] - vs[3])
-        det = δuv_13[1] * δuv_23[2] - δuv_13[2] * δuv_23[1]
-        if det ≈ 0f0
-            v = normalize((vs[3] - vs[1]) × (vs[2] - vs[1]))
-            _, ∂p∂u, ∂p∂v = coordinate_system(Vec3f(v))
-            return ∂p∂u, ∂p∂v
-        end
-        inv_det = 1f0 / det
-        ∂p∂u = Vec3f(δuv_23[2] * δp_13 - δuv_13[2] * δp_23) * inv_det
-        ∂p∂v = Vec3f(-δuv_23[1] * δp_13 + δuv_13[1] * δp_23) * inv_det
-        ∂p∂u, ∂p∂v
-    end
 
     pos_deriv_u, pos_deriv_v = partial_derivatives(verts, tex_coords)
 
@@ -349,21 +422,20 @@ function triangle_to_surface_interaction(triangle::Triangle, ray::AbstractRay, b
 end
 
 
-# Intersect function for MaterialScene - returns material and SurfaceInteraction
+# Intersect function for MaterialScene - returns hit info, primitive, and SurfaceInteraction
+# The primitive (triangle) contains material_type and material_idx for dispatch
 @inline function intersect!(ms::MaterialScene, ray::AbstractRay)
     hit_found, triangle, distance, bary_coords = closest_hit(ms.bvh, ray)
 
     if !hit_found
-        return false, NoMaterial(), SurfaceInteraction()
+        return false, triangle, SurfaceInteraction()
     end
 
     # Convert to SurfaceInteraction
     interaction = triangle_to_surface_interaction(triangle, ray, bary_coords)
 
-    # Get material from triangle's material_idx
-    material = ms.materials[triangle.material_idx]
-
-    return true, material, interaction
+    # Return primitive so caller can access triangle.metadata (MaterialIndex)
+    return true, triangle, interaction
 end
 
 @inline function intersect_p(ms::MaterialScene, ray::AbstractRay)
@@ -374,7 +446,8 @@ end
 # Pretty printing for MaterialScene
 function Base.show(io::IO, ::MIME"text/plain", ms::MaterialScene)
     n_triangles = length(ms.bvh.primitives)
-    n_materials = length(ms.materials)
+    n_material_types = length(ms.materials)
+    n_materials_total = sum(length, ms.materials)
     n_nodes = length(ms.bvh.nodes)
     bounds = world_bound(ms.bvh)
 
@@ -383,23 +456,24 @@ function Base.show(io::IO, ::MIME"text/plain", ms::MaterialScene)
     n_interior = n_nodes - n_leaves
 
     println(io, "MaterialScene:")
-    println(io, "  Triangles:  ", n_triangles)
-    println(io, "  Materials:  ", n_materials)
-    println(io, "  BVH nodes:  ", n_nodes, " (", n_interior, " interior, ", n_leaves, " leaves)")
-    println(io, "  Bounds:     ", bounds.p_min, " to ", bounds.p_max)
-    print(io,   "  Max prims:  ", Int(ms.bvh.max_node_primitives), " per leaf")
+    println(io, "  Triangles:      ", n_triangles)
+    println(io, "  Material types: ", n_material_types)
+    println(io, "  Total materials:", n_materials_total)
+    println(io, "  BVH nodes:      ", n_nodes, " (", n_interior, " interior, ", n_leaves, " leaves)")
+    println(io, "  Bounds:         ", bounds.p_min, " to ", bounds.p_max)
+    print(io,   "  Max prims:      ", Int(ms.bvh.max_node_primitives), " per leaf")
 end
 
 function Base.show(io::IO, ms::MaterialScene)
     if get(io, :compact, false)
         n_triangles = length(ms.bvh.primitives)
-        n_materials = length(ms.materials)
+        n_material_types = length(ms.materials)
         n_nodes = length(ms.bvh.nodes)
         n_leaves = count(node -> !node.is_interior, ms.bvh.nodes)
         n_interior = n_nodes - n_leaves
         print(io, "MaterialScene(")
         print(io, "triangles=", n_triangles, ", ")
-        print(io, "materials=", n_materials, ", ")
+        print(io, "material_types=", n_material_types, ", ")
         print(io, "nodes=", n_nodes, " (", n_interior, " interior, ", n_leaves, " leaves)")
         print(io, ")")
     else
@@ -408,27 +482,127 @@ function Base.show(io::IO, ms::MaterialScene)
 end
 
 """
-    MaterialScene(geometric_primitives::Vector{<:GeometricPrimitive})
+    MaterialScene(meshes, material_types, material_indices, materials::Tuple)
 
-Construct a MaterialScene from a vector of GeometricPrimitives.
+Construct a MaterialScene with multiple material types.
 
-Each GeometricPrimitive contains a shape (TriangleMesh) and a material.
-This constructor extracts the meshes, builds a BVH acceleration structure,
-and associates materials with their corresponding triangles.
+# Arguments
+- `meshes`: Vector of TriangleMesh geometries
+- `material_types`: Vector{UInt8} specifying which tuple slot each mesh uses (1-based)
+- `material_indices`: Vector{UInt32} specifying index within that material type's array
+- `materials`: Tuple of material arrays, e.g., (Vector{UberMaterial}, Vector{CloudVolume})
 
 # Example
 ```julia
-material = MatteMaterial(ConstantTexture(RGBSpectrum(0.5f0)), ConstantTexture(0f0))
-mesh = Raycore.TriangleMesh(some_geometry)
-prim = GeometricPrimitive(mesh, material)
-scene = MaterialScene([prim])
+# Create materials
+uber_materials = [MatteMaterial(...), MirrorMaterial(...)]
+volumes = [CloudVolume(...)]
+
+# Create meshes
+ground_mesh = TriangleMesh(ground_geometry)
+cloud_box_mesh = TriangleMesh(box_geometry)
+
+# Build scene: ground uses UberMaterial[1], cloud uses CloudVolume[1]
+scene = MaterialScene(
+    [ground_mesh, cloud_box_mesh],
+    UInt8[1, 2],           # material types (1=uber, 2=volume)
+    UInt32[1, 1],          # indices within each type
+    (uber_materials, volumes)
+)
 ```
 """
-function MaterialScene(geometric_primitives::Vector)
-    meshes = [gp.shape for gp in geometric_primitives]
-    materials = [gp.material for gp in geometric_primitives]
-    bvh = BVH(meshes)
+function MaterialScene(
+    meshes::AbstractVector,
+    material_types::AbstractVector{UInt8},
+    material_indices::AbstractVector{<:Integer},
+    materials::Tuple
+)
+    # Create metadata function that returns MaterialIndex for each triangle
+    function metadata_fn(mesh_idx, _tri_idx)
+        MaterialIndex(material_types[mesh_idx], UInt32(material_indices[mesh_idx]))
+    end
+    bvh = BVH(meshes, metadata_fn)
     return MaterialScene(bvh, materials)
+end
+
+"""
+    MaterialScene(mesh_material_pairs::Vector{<:Tuple{Any, <:Material}})
+
+Construct a MaterialScene from a vector of (mesh, material) pairs.
+Automatically groups materials by type and assigns material_type/material_idx.
+
+# Example
+```julia
+ground_mesh = TriangleMesh(ground_geom)
+cloud_mesh = TriangleMesh(cloud_box_geom)
+ground_mat = MatteMaterial(...)
+cloud_vol = CloudVolume(data, extent)
+
+scene = MaterialScene([
+    (ground_mesh, ground_mat),
+    (cloud_mesh, cloud_vol),
+])
+```
+"""
+function MaterialScene(mesh_material_pairs::Vector{<:Tuple})
+    meshes = [pair[1] for pair in mesh_material_pairs]
+    materials_list = [pair[2] for pair in mesh_material_pairs]
+
+    # First pass: discover unique material types and their order
+    type_to_slot = Dict{DataType, UInt8}()
+    type_order = DataType[]  # Keep track of order types were discovered
+
+    for mat in materials_list
+        T = typeof(mat)
+        if !haskey(type_to_slot, T)
+            type_to_slot[T] = UInt8(length(type_to_slot) + 1)
+            push!(type_order, T)
+        end
+    end
+
+    # Second pass: count materials per type to pre-allocate
+    type_counts = Dict{DataType, Int}()
+    for mat in materials_list
+        T = typeof(mat)
+        type_counts[T] = get(type_counts, T, 0) + 1
+    end
+
+    # Create properly typed vectors for each material type
+    # We use a function barrier to ensure type stability
+    function create_typed_vectors(type_order, type_counts, materials_list, type_to_slot)
+        # Create typed vectors
+        typed_vectors = Dict{DataType, Any}()
+        type_current_idx = Dict{DataType, Int}()
+        for T in type_order
+            typed_vectors[T] = Vector{T}(undef, type_counts[T])
+            type_current_idx[T] = 0
+        end
+
+        material_types = Vector{UInt8}(undef, length(materials_list))
+        material_indices = Vector{UInt32}(undef, length(materials_list))
+
+        # Fill in materials
+        for (i, mat) in enumerate(materials_list)
+            T = typeof(mat)
+            slot = type_to_slot[T]
+            type_current_idx[T] += 1
+            idx = type_current_idx[T]
+            typed_vectors[T][idx] = mat
+            material_types[i] = slot
+            material_indices[i] = UInt32(idx)
+        end
+
+        # Build tuple in slot order
+        materials_arrays = [typed_vectors[type_order[i]] for i in 1:length(type_order)]
+        return Tuple(materials_arrays), material_types, material_indices
+    end
+
+    materials_tuple, material_types, material_indices = create_typed_vectors(
+        type_order, type_counts, materials_list, type_to_slot
+    )
+
+    # Use the first constructor which handles the metadata_fn
+    return MaterialScene(meshes, material_types, material_indices, materials_tuple)
 end
 
 include("filter.jl")
@@ -445,6 +619,7 @@ include("materials/uber-material.jl")
 include("reflection/Reflection.jl")
 include("materials/bsdf.jl")
 include("materials/material.jl")
+include("materials/volume.jl")
 include("primitive.jl")
 
 include("lights/emission.jl")
@@ -452,11 +627,14 @@ include("lights/light.jl")
 include("lights/point.jl")
 include("lights/spot.jl")
 include("lights/directional.jl")
+include("lights/sun.jl")
+include("lights/sun_sky.jl")
 include("lights/ambient.jl")
 include("lights/environment.jl")
 
 include("integrators/sampler.jl")
 include("integrators/sppm.jl")
+include("integrators/wavefront.jl")
 include("kernel-abstractions.jl")
 
 # include("model_loader.jl")

@@ -34,7 +34,7 @@ due to the ambient light.
         shadow ray that must be traced to verify that
         there are no occluding objects between the light and reference point.
 """
-function sample_li(a::AmbientLight, i::Interaction, ::Point2f)
+function sample_li(a::AmbientLight, i::Interaction, ::Point2f, ::Scene)
     pdf = 1.0f0
     radiance = a.i
     inew = Interaction()
