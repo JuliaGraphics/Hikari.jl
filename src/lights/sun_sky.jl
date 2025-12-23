@@ -220,7 +220,15 @@ end
 Return sky radiance for rays that escape the scene.
 This is what makes SunSkyLight provide the sky background.
 """
-function le(light::SunSkyLight, ray::Union{Ray,RayDifferentials})
+# Separate methods to avoid Union type allocation
+function le(light::SunSkyLight, ray::Ray)
+    dir = normalize(Vec3f(ray.d))
+    sky = sky_radiance(light, dir)
+    sun = sun_disk_radiance(light, dir)
+    sky + sun
+end
+
+function le(light::SunSkyLight, ray::RayDifferentials)
     dir = normalize(Vec3f(ray.d))
     sky = sky_radiance(light, dir)
     sun = sun_disk_radiance(light, dir)

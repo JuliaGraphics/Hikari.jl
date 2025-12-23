@@ -123,10 +123,15 @@ end
 # Material Interface: shade() and sample_bounce() for UberMaterial
 # ============================================================================
 
+# Non-allocating sum of le() over lights tuple (recursive for type stability)
+@inline sum_light_le(lights::Tuple{}, ray) = RGBSpectrum(0f0)
+@inline function sum_light_le(lights::Tuple, ray)
+    return le(first(lights), ray) + sum_light_le(Base.tail(lights), ray)
+end
 
-function shade_light(light, interaction, scene, hit_wo, bsdf, shading_n, beta)
+@inline function shade_light(light, interaction, scene, hit_wo, bsdf, shading_n, beta)
     u_light = rand(Point2f)
-    Li, wi, pdf, visibility = @inline Hikari.sample_li(light, interaction, u_light, scene)
+    Li, wi, pdf, visibility = @inline sample_li(light, interaction, u_light, scene)
     (is_black(Li) || pdf ≈ 0f0) && return RGBSpectrum(0f0)
     f = @inline bsdf(hit_wo, wi)
     is_black(f) && return RGBSpectrum(0f0)
@@ -135,13 +140,41 @@ function shade_light(light, interaction, scene, hit_wo, bsdf, shading_n, beta)
     return beta * f * Li * cos_theta / pdf
 end
 
+# Type-stable recursive light shading (handles heterogeneous tuple)
+@inline shade_lights(::Tuple{}, interaction, scene, hit_wo, bsdf, shading_n, beta) = RGBSpectrum(0f0)
+@inline function shade_lights(lights::Tuple, interaction, scene, hit_wo, bsdf, shading_n, beta)
+    first_contrib = shade_light(first(lights), interaction, scene, hit_wo, bsdf, shading_n, beta)
+    rest_contrib = shade_lights(Base.tail(lights), interaction, scene, hit_wo, bsdf, shading_n, beta)
+    return first_contrib + rest_contrib
+end
+
 """
     shade(material::UberMaterial, ray, si, scene, beta, depth, max_depth) -> RGBSpectrum
 
 Compute direct lighting and specular bounces for a surface hit with UberMaterial.
 """
-function shade(material::UberMaterial, ray::RayDifferentials, si::SurfaceInteraction,
-                       scene::Scene, beta::RGBSpectrum, depth::Int32, max_depth::Int32)
+@inline function shade(material::UberMaterial, ray::RayDifferentials, si::SurfaceInteraction,
+                       scene::S, beta::RGBSpectrum, depth::Int32, max_depth::Int32) where {S<:Scene}
+    # Check alpha cutoff - if texture is transparent, pass ray through
+    # Only do this if we haven't exceeded max depth
+    if depth < max_depth && !no_texture(material.Kd)
+        tex_color = material.Kd(si)
+        alpha = get_alpha(tex_color)
+        if alpha < 0.5f0  # Alpha threshold for transparency pass-through
+            # Continue ray through the surface (increment depth to prevent infinite recursion)
+            continuation_ray = RayDifferentials(spawn_ray(si, ray.d))
+            hit, primitive, next_si = intersect!(scene, continuation_ray)
+            if !hit
+                return sum_light_le(scene.lights, continuation_ray)
+            end
+            # Recursively shade the next hit with incremented depth
+            return shade_material(
+                scene.aggregate.materials, primitive.metadata,
+                continuation_ray, next_si, scene, beta, depth + Int32(1), max_depth
+            )
+        end
+    end
+
     # Compute BSDF from material
     bsdf = material(si, true, Radiance)
 
@@ -153,7 +186,7 @@ function shade(material::UberMaterial, ray::RayDifferentials, si::SurfaceInterac
 
     # Compute direct lighting from all lights
     interaction = Interaction(hit_p, 0f0, hit_wo, hit_n)
-    total = shade_light(scene.lights[1], interaction, scene, hit_wo, bsdf, shading_n, beta)
+    total = shade_lights(scene.lights, interaction, scene, hit_wo, bsdf, shading_n, beta)
     # Handle specular bounces if we haven't exceeded max depth
     if depth < max_depth
         # Specular reflection
@@ -165,20 +198,21 @@ function shade(material::UberMaterial, ray::RayDifferentials, si::SurfaceInterac
     return total
 end
 
-@inline specular_type(::Reflect) = BSDF_REFLECTION | BSDF_SPECULAR
-@inline specular_type(::Transmit) = BSDF_TRANSMISSION | BSDF_SPECULAR
+# Include GLOSSY to sample rough glass/plastic materials
+@inline specular_type(::Reflect) = BSDF_REFLECTION | BSDF_SPECULAR | BSDF_GLOSSY
+@inline specular_type(::Transmit) = BSDF_TRANSMISSION | BSDF_SPECULAR | BSDF_GLOSSY
 
 """
     specular_bounce(type, bsdf, ray, si, scene, beta, depth, max_depth) -> RGBSpectrum
 
-Compute specular reflection or transmission contribution by tracing a bounce ray.
+Compute specular/glossy reflection or transmission contribution by tracing a bounce ray.
 """
-@inline function specular_bounce(type, bsdf, ray::RayDifferentials, si::SurfaceInteraction,
-                                  scene::Scene, beta::RGBSpectrum, depth::Int32, max_depth::Int32)
+@inline function specular_bounce(type, bsdf::BSDF, ray::RayDifferentials, si::SurfaceInteraction,
+                                  scene::S, beta::RGBSpectrum, depth::Int32, max_depth::Int32) where {S<:Scene}
     wo = si.core.wo
     ns = si.shading.n
 
-    # Sample specular direction from BSDF
+    # Sample specular/glossy direction from BSDF
     u = rand(Point2f)
     wi, f, pdf, sampled_type = @inline sample_f(bsdf, wo, u, specular_type(type))
 
@@ -193,18 +227,20 @@ Compute specular reflection or transmission contribution by tracing a bounce ray
     # Spawn bounce ray
     bounce_ray = RayDifferentials(spawn_ray(si, wi))
 
-    # Add ray differentials if available
+    # Add ray differentials if available - use sampled_type to determine reflect vs transmit
     if ray.has_differentials
-        bounce_ray = specular_differentials(type, bounce_ray, bsdf, si, ray, wo, wi)
+        # Determine if this is reflection or transmission based on sampled_type
+        is_reflection = (sampled_type & BSDF_REFLECTION) != 0
+        diff_type = is_reflection ? Reflect() : Transmit()
+        bounce_ray = specular_differentials(diff_type, bounce_ray, bsdf, si, ray, wo, wi)
     end
 
     # Trace bounce ray through scene
     hit, primitive, bounce_si = intersect!(scene, bounce_ray)
 
     if !hit
-        # No hit - get background from lights
-        br = bounce_ray
-        result = sum(map(l -> le(l, br), scene.lights))
+        # No hit - get background from lights (use non-allocating sum)
+        result = sum_light_le(scene.lights, bounce_ray)
         return bounce_beta * result
     end
 
@@ -246,7 +282,8 @@ Compute ray differentials for specular transmission.
     ∂n∂y = si.shading.∂n∂u * si.∂u∂y + si.shading.∂n∂v * si.∂v∂y
     # The BSDF stores the IOR of the interior of the object
     η = 1f0 / bsdf.η
-    if (ns ⋅ ns) < 0f0
+    # Check if ray is exiting the object (wo on opposite side of normal)
+    if (wo ⋅ ns) < 0f0
         η = 1f0 / η
         ∂n∂x, ∂n∂y, ns = -∂n∂x, -∂n∂y, -ns
     end

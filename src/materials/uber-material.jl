@@ -78,7 +78,10 @@ struct UberBxDF{S<:Spectrum}
 end
 
 function Base.:&(b::UberBxDF, type::UInt8)::Bool
-    return b.active && ((b.type & type) == b.type)
+    # Check if ANY of the requested type bits overlap with the BxDF's type
+    # This allows combined BxDFs like FresnelSpecular (SPECULAR|REFLECTION|TRANSMISSION)
+    # to be sampled when querying just SPECULAR|REFLECTION or SPECULAR|TRANSMISSION
+    return b.active && ((b.type & type) != 0)
 end
 
 UberBxDF{S}() where {S} = UberBxDF{S}(false, UInt8(0))

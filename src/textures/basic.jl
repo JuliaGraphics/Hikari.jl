@@ -11,7 +11,7 @@ struct Texture{ElType, N, T<:AbstractArray{ElType, N}}
         new{T, N, typeof(data)}(data, const_value, isconst)
     end
 end
-Base.zero(::Type{RGBSpectrum}) = RGBSpectrum(0.0f0, 0.0f0, 0.0f0)
+Base.zero(::Type{RGBSpectrum}) = RGBSpectrum(0.0f0, 0.0f0, 0.0f0, 1.0f0)
 
 Texture(data::AbstractArray{ElType, N}) where {ElType, N} = Texture(data, zero(ElType), false)
 Texture(data::Eltype) where Eltype = Texture(Matrix{Eltype}(undef, 0, 0), data, true)

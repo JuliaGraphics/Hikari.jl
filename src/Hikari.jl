@@ -20,7 +20,7 @@ import Raycore: distance, distance_squared, bounding_sphere
 import Raycore: Transformation, translate, scale, rotate, rotate_x, rotate_y, rotate_z, look_at, perspective
 import Raycore: swaps_handedness, has_scale
 import Raycore: AbstractShape, Triangle, TriangleMesh
-import Raycore: AccelPrimitive, BVH, world_bound, closest_hit, any_hit
+import Raycore: AccelPrimitive, BVH, TLAS, Instance, InstanceHandle, world_bound, closest_hit, any_hit
 import Raycore: Normal3f, intersect, intersect_p
 import Raycore: is_dir_negative, increase_hit, intersect_p!
 import Raycore: to_gpu
@@ -280,14 +280,14 @@ struct MaterialIndex
     material_idx::UInt32
 end
 
-# MaterialScene: wraps Raycore.BVH with materials stored as a tuple of arrays
+# MaterialScene: wraps any accelerator (BVH, TLAS, etc.) with materials stored as a tuple of arrays
 # Each material type gets its own array, indexed by triangle.metadata::MaterialIndex
-struct MaterialScene{BVH<:AccelPrimitive, Materials<:Tuple}
-    bvh::BVH
+struct MaterialScene{Accel, Materials<:Tuple}
+    accel::Accel  # BVH, TLAS, or any accelerator supporting closest_hit/any_hit
     materials::Materials  # Tuple of material arrays, e.g., (Vector{UberMaterial}, Vector{CloudVolume})
 end
 
-@inline world_bound(ms::MaterialScene) = world_bound(ms.bvh)
+@inline world_bound(ms::MaterialScene) = world_bound(ms.accel)
 
 # Generated function for type-stable material dispatch
 # Returns the material from the appropriate tuple slot
@@ -304,10 +304,11 @@ end
 end
 
 # Type-stable shade dispatch - each material type implements shade(material, ray, si, scene, beta, depth, max_depth)
-@generated function shade_material(
+# IMPORTANT: Type annotations on ray, si, scene, beta prevent argument boxing in generated code
+@inline @generated function shade_material(
     materials::NTuple{N}, idx::MaterialIndex,
-    ray, si, scene, beta, depth::Int32, max_depth::Int32
-) where N
+    ray::RayDifferentials, si::SurfaceInteraction, scene::S, beta::RGBSpectrum, depth::Int32, max_depth::Int32
+) where {N, S<:Scene}
     branches = [quote
         @inbounds if idx.material_type === UInt8($i)
             return @inline shade(materials[$i][idx.material_idx], ray, si, scene, beta, depth, max_depth)
@@ -320,10 +321,11 @@ end
 end
 
 # Type-stable bounce ray generation - materials implement sample_bounce(material, ray, si, scene, beta, depth)
-@generated function sample_material_bounce(
-    materials::NTuple{N,Any}, idx::MaterialIndex,
-    ray, si, scene, beta, depth
-) where N
+# IMPORTANT: Type annotations prevent argument boxing in generated code
+@inline @generated function sample_material_bounce(
+    materials::NTuple{N}, idx::MaterialIndex,
+    ray::RayDifferentials, si::SurfaceInteraction, scene::S, beta::RGBSpectrum, depth::Int32
+) where {N, S<:Scene}
     branches = [quote
         if idx.material_type === UInt8($i)
             mat = @inbounds materials[$i][idx.material_idx]
@@ -425,7 +427,7 @@ end
 # Intersect function for MaterialScene - returns hit info, primitive, and SurfaceInteraction
 # The primitive (triangle) contains material_type and material_idx for dispatch
 @inline function intersect!(ms::MaterialScene, ray::AbstractRay)
-    hit_found, triangle, distance, bary_coords = closest_hit(ms.bvh, ray)
+    hit_found, triangle, distance, bary_coords = closest_hit(ms.accel, ray)
 
     if !hit_found
         return false, triangle, SurfaceInteraction()
@@ -439,43 +441,64 @@ end
 end
 
 @inline function intersect_p(ms::MaterialScene, ray::AbstractRay)
-    hit_found, _, _, _ = any_hit(ms.bvh, ray)
+    hit_found, _, _, _ = any_hit(ms.accel, ray)
     return hit_found
 end
 
 # Pretty printing for MaterialScene
 function Base.show(io::IO, ::MIME"text/plain", ms::MaterialScene)
-    n_triangles = length(ms.bvh.primitives)
+    accel = ms.accel
+    accel_type = nameof(typeof(accel))
     n_material_types = length(ms.materials)
     n_materials_total = sum(length, ms.materials)
-    n_nodes = length(ms.bvh.nodes)
-    bounds = world_bound(ms.bvh)
+    bounds = world_bound(accel)
 
-    # Count leaf vs interior nodes
-    n_leaves = count(node -> !node.is_interior, ms.bvh.nodes)
-    n_interior = n_nodes - n_leaves
+    println(io, "MaterialScene ($accel_type):")
 
-    println(io, "MaterialScene:")
-    println(io, "  Triangles:      ", n_triangles)
+    # Show accelerator-specific stats
+    if accel isa TLAS
+        n_instances = length(accel.instances)
+        n_geometries = length(accel.blas_array)
+        n_triangles = sum(blas -> length(blas.primitives), accel.blas_array)
+        n_top_nodes = length(accel.nodes)
+        n_top_leaves = count(node -> Raycore.is_leaf(node), accel.nodes)
+        n_top_interior = n_top_nodes - n_top_leaves
+
+        println(io, "  Geometries:     ", n_geometries)
+        println(io, "  Instances:      ", n_instances)
+        println(io, "  Triangles:      ", n_triangles, " (in BLAS)")
+        println(io, "  TLAS nodes:     ", n_top_nodes, " (", n_top_interior, " interior, ", n_top_leaves, " leaves)")
+    elseif accel isa BVH
+        n_triangles = length(accel.primitives)
+        n_nodes = length(accel.nodes)
+        println(io, "  Triangles:      ", n_triangles)
+        println(io, "  BVH nodes:      ", n_nodes)
+    else
+        # Generic fallback
+        println(io, "  Accelerator:    ", accel_type)
+    end
+
     println(io, "  Material types: ", n_material_types)
     println(io, "  Total materials:", n_materials_total)
-    println(io, "  BVH nodes:      ", n_nodes, " (", n_interior, " interior, ", n_leaves, " leaves)")
-    println(io, "  Bounds:         ", bounds.p_min, " to ", bounds.p_max)
-    print(io,   "  Max prims:      ", Int(ms.bvh.max_node_primitives), " per leaf")
+    print(io,   "  Bounds:         ", bounds.p_min, " to ", bounds.p_max)
 end
 
 function Base.show(io::IO, ms::MaterialScene)
     if get(io, :compact, false)
-        n_triangles = length(ms.bvh.primitives)
+        accel = ms.accel
+        accel_type = nameof(typeof(accel))
         n_material_types = length(ms.materials)
-        n_nodes = length(ms.bvh.nodes)
-        n_leaves = count(node -> !node.is_interior, ms.bvh.nodes)
-        n_interior = n_nodes - n_leaves
-        print(io, "MaterialScene(")
-        print(io, "triangles=", n_triangles, ", ")
-        print(io, "material_types=", n_material_types, ", ")
-        print(io, "nodes=", n_nodes, " (", n_interior, " interior, ", n_leaves, " leaves)")
-        print(io, ")")
+
+        if accel isa TLAS
+            n_instances = length(accel.instances)
+            n_geometries = length(accel.blas_array)
+            print(io, "MaterialScene($accel_type, geoms=$n_geometries, instances=$n_instances, materials=$n_material_types)")
+        elseif accel isa BVH
+            n_triangles = length(accel.primitives)
+            print(io, "MaterialScene($accel_type, triangles=$n_triangles, materials=$n_material_types)")
+        else
+            print(io, "MaterialScene($accel_type, materials=$n_material_types)")
+        end
     else
         show(io, MIME("text/plain"), ms)
     end
@@ -484,7 +507,7 @@ end
 """
     MaterialScene(meshes, material_types, material_indices, materials::Tuple)
 
-Construct a MaterialScene with multiple material types.
+Construct a MaterialScene with multiple material types using TLAS.
 
 # Arguments
 - `meshes`: Vector of TriangleMesh geometries
@@ -517,12 +540,13 @@ function MaterialScene(
     material_indices::AbstractVector{<:Integer},
     materials::Tuple
 )
-    # Create metadata function that returns MaterialIndex for each triangle
-    function metadata_fn(mesh_idx, _tri_idx)
-        MaterialIndex(material_types[mesh_idx], UInt32(material_indices[mesh_idx]))
-    end
-    bvh = BVH(meshes, metadata_fn)
-    return MaterialScene(bvh, materials)
+    # Create Instance objects with MaterialIndex metadata
+    instances = [
+        Instance(mesh; metadata=MaterialIndex(material_types[i], UInt32(material_indices[i])))
+        for (i, mesh) in enumerate(meshes)
+    ]
+    tlas, _handles = TLAS(instances)
+    return MaterialScene(tlas, materials)
 end
 
 """
@@ -601,7 +625,7 @@ function MaterialScene(mesh_material_pairs::Vector{<:Tuple})
         type_order, type_counts, materials_list, type_to_slot
     )
 
-    # Use the first constructor which handles the metadata_fn
+    # Use the first constructor which builds the TLAS
     return MaterialScene(meshes, material_types, material_indices, materials_tuple)
 end
 
@@ -621,6 +645,26 @@ include("materials/bsdf.jl")
 include("materials/material.jl")
 include("materials/volume.jl")
 include("primitive.jl")
+
+# GeometricPrimitive convenience constructor for MaterialScene
+# Must be after primitive.jl which defines GeometricPrimitive
+"""
+    MaterialScene(primitives::Vector{<:GeometricPrimitive})
+
+Construct a MaterialScene from a vector of GeometricPrimitive objects.
+Converts to (mesh, material) pairs and delegates to the tuple constructor.
+
+# Example
+```julia
+s1 = GeometricPrimitive(mesh1, MatteMaterial(...))
+s2 = GeometricPrimitive(mesh2, MirrorMaterial(...))
+scene = MaterialScene([s1, s2])
+```
+"""
+function MaterialScene(primitives::Vector{<:GeometricPrimitive})
+    pairs = [(p.shape, p.material) for p in primitives]
+    return MaterialScene(pairs)
+end
 
 include("lights/emission.jl")
 include("lights/light.jl")

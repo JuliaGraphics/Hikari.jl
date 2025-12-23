@@ -169,8 +169,10 @@ function get_material(ms::MaterialScene, shape::Triangle)
     return get_material(ms.materials, shape.metadata)
 end
 
-@inline function only_light(lights, ray)
-    return sum(map(l-> le(l, ray), lights))
+# Non-allocating sum over lights for tuples (recursive for type stability)
+@inline only_light(lights::Tuple{}, ray) = RGBSpectrum(0f0)
+@inline function only_light(lights::Tuple, ray)
+    return le(first(lights), ray) + only_light(Base.tail(lights), ray)
 end
 
 @inline function light_contribution(l, lights, wo, scene, bsdf, sampler, si)
@@ -307,10 +309,11 @@ end
             surface_intersect.shading.∂n∂v * surface_intersect.∂v∂y
         )
         # The BSDF stores the IOR of the interior of the object being
-        # intersected. Compute the relative IOR by first out by assuming
+        # intersected. Compute the relative IOR by first assuming
         # that the ray is entering the object.
         η = 1.0f0 / bsdf.η
-        if (ns ⋅ ns) < 0.0f0
+        # Check if ray is exiting the object (wo on opposite side of normal)
+        if (wo ⋅ ns) < 0.0f0
             # If the ray isn't entering the object, then we need to invert
             # the relative IOR and negate the normal and its derivatives.
             η = 1.0f0 / η

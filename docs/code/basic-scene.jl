@@ -74,15 +74,14 @@ begin
 end
 
 
-# begin
-#     Hikari.clear!(film)
-#     integrator = Hikari.WhittedIntegrator(cam, Hikari.UniformSampler(8), 5)
-#     @time integrator(scene, film, cam)
-# end
-pres = []
+begin
+    Hikari.clear!(film)
+    integrator = Hikari.WhittedIntegrator(cam, Hikari.UniformSampler(8), 5)
+    @btime integrator(scene, film, cam)
+end
 using AMDGPU
-g_scene = Hikari.to_gpu(ROCArray, scene; preserve=pres);
-g_film = Hikari.to_gpu(ROCArray, film; preserve=pres);
+g_scene = Hikari.to_gpu(ROCArray, scene);
+g_film = Hikari.to_gpu(ROCArray, film);
 integrator = Hikari.WhittedIntegrator(cam, Hikari.UniformSampler(8), 5)
 integrator(g_scene, g_film, cam);
 AMDGPU.@device_code_warntype interactive = true integrator(g_scene, g_film, cam);
