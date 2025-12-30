@@ -284,7 +284,7 @@ end
 # Each material type gets its own array, indexed by triangle.metadata::MaterialIndex
 struct MaterialScene{Accel, Materials<:Tuple}
     accel::Accel  # BVH, TLAS, or any accelerator supporting closest_hit/any_hit
-    materials::Materials  # Tuple of material arrays, e.g., (Vector{UberMaterial}, Vector{CloudVolume})
+    materials::Materials  # Tuple of material arrays, e.g., (Vector{MatteMaterial}, Vector{GlassMaterial})
 end
 
 @inline world_bound(ms::MaterialScene) = world_bound(ms.accel)
@@ -297,9 +297,11 @@ end
             return @inbounds materials[$i][idx.material_idx]
         end
     end for i in 1:N]
+    # Return first material type as fallback (GPU-compatible, no error() call)
+    # This should never happen in practice if material indices are valid
     quote
         $(branches...)
-        error("Invalid material type: ", idx.material_type)
+        return @inbounds materials[1][1]
     end
 end
 
@@ -513,7 +515,7 @@ Construct a MaterialScene with multiple material types using TLAS.
 - `meshes`: Vector of TriangleMesh geometries
 - `material_types`: Vector{UInt8} specifying which tuple slot each mesh uses (1-based)
 - `material_indices`: Vector{UInt32} specifying index within that material type's array
-- `materials`: Tuple of material arrays, e.g., (Vector{UberMaterial}, Vector{CloudVolume})
+- `materials`: Tuple of material arrays, e.g., (Vector{MatteMaterial}, Vector{GlassMaterial})
 
 # Example
 ```julia
@@ -525,7 +527,7 @@ volumes = [CloudVolume(...)]
 ground_mesh = TriangleMesh(ground_geometry)
 cloud_box_mesh = TriangleMesh(box_geometry)
 
-# Build scene: ground uses UberMaterial[1], cloud uses CloudVolume[1]
+# Build scene: ground uses MatteMaterial[1], cloud uses CloudVolume[1]
 scene = MaterialScene(
     [ground_mesh, cloud_box_mesh],
     UInt8[1, 2],           # material types (1=uber, 2=volume)

@@ -1,3 +1,6 @@
+# BxDF Infrastructure - shared by all materials
+# This file defines the low-level BxDF components used by all material types
+
 abstract type MicrofacetDistribution end
 
 """
@@ -35,9 +38,6 @@ FresnelDielectric(ni::Float32, nt::Float32) = Fresnel(RGBSpectrum(ni), RGBSpectr
 FresnelNoOp() = Fresnel(RGBSpectrum(0.0f0), RGBSpectrum(0.0f0), RGBSpectrum(0.0f0), FRESNEL_NO_OP)
 
 function (f::Fresnel)(cos_θi::Float32)::Float32
-    # if f.type === FRESNEL_CONDUCTOR
-    #     return fresnel_conductor(cos_θi, f.ηi, f.ηt, f.k)
-    # else
     if f.type === FRESNEL_DIELECTRIC
         return fresnel_dielectric(cos_θi, f.ηi[1], f.ηt[1])
     end
@@ -161,118 +161,105 @@ end
         return distribution_fresnel_microfacet(s, wo, wi)
     end
     return RGBSpectrum(0.0f0)
-    # error("Unknown BxDF type $(s.bxdf_type)")
 end
 
-struct UberMaterial{STAType,FTAType} <: Material
-    """
-    Spectral diffuse reflection value.
-    """
-    Kd::Texture{RGBSpectrum, 2, STAType}
-    """
-    Specular component. Spectrum texture.
-    """
-    Ks::Texture{RGBSpectrum,2,STAType}
-    """
-    Spectrum texture.
-    """
-    Kr::Texture{RGBSpectrum,2,STAType}
-    """
-    Spectrum texture.
-    """
-    Kt::Texture{RGBSpectrum,2,STAType}
+# ============================================================================
+# Clean Material Types - each is a data container with only necessary parameters
+# ============================================================================
 
-    """
-    Scalar roughness.
-    """
-    σ::Texture{Float32,2,FTAType}
+"""
+    MatteMaterial(Kd::Texture, σ::Texture)
 
-    """
-    Float texture
-    """
-    roughness::Texture{Float32,2,FTAType}
-    """
-    Float texture.
-    """
-    u_roughness::Texture{Float32,2,FTAType}
+Matte (diffuse) material with Lambertian or Oren-Nayar BRDF.
 
-    """
-    Float texture.
-    """
-    v_roughness::Texture{Float32,2,FTAType}
-    """
-    Float texture.
-    """
-    index::Texture{Float32,2,FTAType}
+* `Kd`: Spectral diffuse reflection (color texture)
+* `σ`: Scalar roughness for Oren-Nayar model (0 = Lambertian)
+"""
+struct MatteMaterial{KdType, σType} <: Material
+    Kd::Texture{RGBSpectrum, 2, KdType}
+    σ::Texture{Float32, 2, σType}
+end
 
+function MatteMaterial(Kd::Texture, σ::Texture)
+    KdType = typeof(Kd.data)
+    σType = typeof(σ.data)
+    MatteMaterial{KdType, σType}(Kd, σ)
+end
+
+"""
+    MirrorMaterial(Kr::Texture)
+
+Perfect mirror (specular reflection) material.
+
+* `Kr`: Spectral reflectance (color texture)
+"""
+struct MirrorMaterial{KrType} <: Material
+    Kr::Texture{RGBSpectrum, 2, KrType}
+end
+
+function MirrorMaterial(Kr::Texture)
+    KrType = typeof(Kr.data)
+    MirrorMaterial{KrType}(Kr)
+end
+
+"""
+    GlassMaterial(Kr, Kt, u_roughness, v_roughness, index, remap_roughness)
+
+Glass/dielectric material with reflection and transmission.
+
+* `Kr`: Spectral reflectance
+* `Kt`: Spectral transmittance
+* `u_roughness`: Roughness in u direction (0 = perfect specular)
+* `v_roughness`: Roughness in v direction (0 = perfect specular)
+* `index`: Index of refraction
+* `remap_roughness`: Whether to remap roughness to alpha
+"""
+struct GlassMaterial{KrType, KtType, RoughType, IndexType} <: Material
+    Kr::Texture{RGBSpectrum, 2, KrType}
+    Kt::Texture{RGBSpectrum, 2, KtType}
+    u_roughness::Texture{Float32, 2, RoughType}
+    v_roughness::Texture{Float32, 2, RoughType}
+    index::Texture{Float32, 2, IndexType}
     remap_roughness::Bool
-
-    type::UInt8
 end
 
-function UberMaterial(type;
-        remap_roughness=false,
-        args...
-    )
-    fields = [
-        :Kd,
-        :Ks,
-        :Kr,
-        :Kt,
-        :σ,
-        :roughness,
-        :u_roughness,
-        :v_roughness,
-        :index
-    ]
-
-    FType = Matrix{Float32}
-    SType = Matrix{RGBSpectrum}
-
-    values = map(fields) do field
-        if haskey(args, field)
-            arg = args[field]
-            if eltype(arg) === Float32
-                FType = typeof(arg)
-            elseif eltype(arg) === RGBSpectrum
-                SType = typeof(arg)
-            end
-            return arg
-        else
-            NoTexture()
-        end
-    end
-    return UberMaterial{SType,FType}(values..., remap_roughness, type)
-end
-
-const NO_MATERIAL = UInt8(0)
-
-# GPU-compatible NoMaterial constructor - avoids dynamic allocation
-function NoMaterial()
-    # Create a fully static NoMaterial without using map/collect
-    no_tex_s = NoTexture()
-    no_tex_f = NoTexture()
-    return UberMaterial{Matrix{RGBSpectrum}, Matrix{Float32}}(
-        no_tex_s, no_tex_s, no_tex_s, no_tex_s,  # Kd, Ks, Kr, Kt
-        no_tex_f, no_tex_f, no_tex_f, no_tex_f, no_tex_f,  # σ, roughness, u_roughness, v_roughness, index
-        false,  # remap_roughness
-        NO_MATERIAL  # type
+function GlassMaterial(
+    Kr::Texture, Kt::Texture,
+    u_roughness::Texture, v_roughness::Texture,
+    index::Texture, remap_roughness::Bool
+)
+    KrType = typeof(Kr.data)
+    KtType = typeof(Kt.data)
+    RoughType = typeof(u_roughness.data)
+    IndexType = typeof(index.data)
+    GlassMaterial{KrType, KtType, RoughType, IndexType}(
+        Kr, Kt, u_roughness, v_roughness, index, remap_roughness
     )
 end
 
-const NO_MAT = NoMaterial()
+"""
+    PlasticMaterial(Kd, Ks, roughness, remap_roughness)
 
+Plastic material with diffuse and glossy specular components.
 
-Base.Base.@propagate_inbounds function (m::UberMaterial)(si::SurfaceInteraction, allow_multiple_lobes::Bool, transport)
-    if m.type === MATTE_MATERIAL
-        return matte_material(m, si, allow_multiple_lobes, transport)
-    elseif m.type === MIRROR_MATERIAL
-        return mirror_material(m, si, allow_multiple_lobes, transport)
-    elseif m.type === GLASS_MATERIAL
-        return glass_material(m, si, allow_multiple_lobes, transport)
-    elseif m.type === PLASTIC_MATERIAL
-        return plastic_material(m, si, allow_multiple_lobes, transport)
-    else
-        return BSDF()
-    end
+* `Kd`: Diffuse reflectance
+* `Ks`: Specular reflectance
+* `roughness`: Surface roughness
+* `remap_roughness`: Whether to remap roughness to alpha
+"""
+struct PlasticMaterial{KdType, KsType, RoughType} <: Material
+    Kd::Texture{RGBSpectrum, 2, KdType}
+    Ks::Texture{RGBSpectrum, 2, KsType}
+    roughness::Texture{Float32, 2, RoughType}
+    remap_roughness::Bool
+end
+
+function PlasticMaterial(
+    Kd::Texture, Ks::Texture,
+    roughness::Texture, remap_roughness::Bool
+)
+    KdType = typeof(Kd.data)
+    KsType = typeof(Ks.data)
+    RoughType = typeof(roughness.data)
+    PlasticMaterial{KdType, KsType, RoughType}(Kd, Ks, roughness, remap_roughness)
 end

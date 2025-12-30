@@ -1,25 +1,14 @@
-const MATTE_MATERIAL = Radiance
+# Material Interface Implementation
+# Provides compute_bsdf(), shade(), and sample_bounce() for each material type
 
-
-"""
-    MatteMaterial(Kd::Texture, σ::Texture)
-
-* `Kd:` Spectral diffuse reflection value.
-* `σ:` Scalar roughness.
-"""
-function MatteMaterial(
-        Kd::Texture, σ::Texture,
-    )
-    return UberMaterial(MATTE_MATERIAL; Kd=Kd, σ=σ)
-end
-
+# ============================================================================
+# BSDF computation for each material type
+# ============================================================================
 
 """
-Compute scattering function.
+Compute BSDF for MatteMaterial.
 """
-Base.Base.@propagate_inbounds function matte_material(m::UberMaterial, si::SurfaceInteraction, ::Bool, transport)
-    # TODO perform bump mapping
-    # Evaluate textures and create BSDF.
+@inline function compute_bsdf(m::MatteMaterial, si::SurfaceInteraction, ::Bool, transport)
     r = clamp(m.Kd(si))
     is_black(r) && return BSDF(si)
     σ = clamp(m.σ(si), 0f0, 90f0)
@@ -27,28 +16,18 @@ Base.Base.@propagate_inbounds function matte_material(m::UberMaterial, si::Surfa
     return BSDF(si, LambertianReflection(lambertian, r), OrenNayar(!lambertian, r, σ))
 end
 
-const MIRROR_MATERIAL = UInt8(2)
-
-function MirrorMaterial(Kr::Texture)
-    return UberMaterial(MIRROR_MATERIAL; Kr=Kr)
-end
-
-Base.Base.@propagate_inbounds function mirror_material(m::UberMaterial, si::SurfaceInteraction, ::Bool, transport)
+"""
+Compute BSDF for MirrorMaterial.
+"""
+@inline function compute_bsdf(m::MirrorMaterial, si::SurfaceInteraction, ::Bool, transport)
     r = clamp(m.Kr(si))
     return BSDF(si, SpecularReflection(!is_black(r), r, FresnelNoOp()))
 end
 
-const GLASS_MATERIAL = UInt8(3)
-
-function GlassMaterial(
-        Kr::Texture, Kt::Texture, u_roughness::Texture, v_roughness::Texture, index::Texture,
-        remap_roughness::Bool,
-    )
-    return UberMaterial(GLASS_MATERIAL; Kr=Kr, Kt=Kt, u_roughness=u_roughness, v_roughness=v_roughness, index=index, remap_roughness=remap_roughness)
-end
-
-Base.Base.@propagate_inbounds function glass_material(g::UberMaterial, si::SurfaceInteraction, allow_multiple_lobes::Bool, transport)
-
+"""
+Compute BSDF for GlassMaterial.
+"""
+@inline function compute_bsdf(g::GlassMaterial, si::SurfaceInteraction, allow_multiple_lobes::Bool, transport)
     η = g.index(si)
     u_roughness = g.u_roughness(si)
     v_roughness = g.v_roughness(si)
@@ -72,10 +51,8 @@ Base.Base.@propagate_inbounds function glass_material(g::UberMaterial, si::Surfa
     end
 
     # For rough glass, use FresnelMicrofacet which combines reflection and transmission
-    # with Fresnel-weighted sampling (avoids uniform 50/50 split that wastes samples)
     if !is_specular && allow_multiple_lobes
         distribution = TrowbridgeReitzDistribution(u_roughness, v_roughness)
-        # Use combined color for FresnelMicrofacet (r for reflection, t for transmission)
         return BSDF(si, η, FresnelMicrofacet(true, r, t, distribution, 1.0f0, η, transport))
     end
 
@@ -93,24 +70,17 @@ Base.Base.@propagate_inbounds function glass_material(g::UberMaterial, si::Surfa
     )
 end
 
-const PLASTIC_MATERIAL = UInt8(4)
-
-function PlasticMaterial(
-        Kd::Texture, Ks::Texture, roughness::Texture, remap_roughness::Bool,
-    )
-    return UberMaterial(PLASTIC_MATERIAL; Kd=Kd, Ks=Ks, roughness=roughness, remap_roughness=remap_roughness)
-end
-
-Base.Base.@propagate_inbounds function plastic_material(p::UberMaterial,
-        si::SurfaceInteraction, ::Bool, transport,
-    )
-    # Initialize diffuse componen of plastic material.
+"""
+Compute BSDF for PlasticMaterial.
+"""
+@inline function compute_bsdf(p::PlasticMaterial, si::SurfaceInteraction, ::Bool, transport)
+    # Initialize diffuse component
     kd = clamp(p.Kd(si))
     bsdf_1 = LambertianReflection(!is_black(kd), kd)
-    # Initialize specular component.
+    # Initialize specular component
     ks = clamp(p.Ks(si))
     is_black(ks) && return BSDF(si, bsdf_1)
-    # Create microfacet distribution for plastic material.
+    # Create microfacet distribution for plastic material
     fresnel = FresnelDielectric(1.5f0, 1f0)
     rough = p.roughness(si)
     p.remap_roughness && (rough = roughness_to_α(rough))
@@ -120,7 +90,7 @@ Base.Base.@propagate_inbounds function plastic_material(p::UberMaterial,
 end
 
 # ============================================================================
-# Material Interface: shade() and sample_bounce() for UberMaterial
+# Material Interface: shade() for each material type
 # ============================================================================
 
 # Non-allocating sum of le() over lights tuple (recursive for type stability)
@@ -148,75 +118,20 @@ end
     return first_contrib + rest_contrib
 end
 
-"""
-    shade(material::UberMaterial, ray, si, scene, beta, depth, max_depth) -> RGBSpectrum
-
-Compute direct lighting and specular bounces for a surface hit with UberMaterial.
-"""
-@inline function shade(material::UberMaterial, ray::RayDifferentials, si::SurfaceInteraction,
-                       scene::S, beta::RGBSpectrum, depth::Int32, max_depth::Int32) where {S<:Scene}
-    # Check alpha cutoff - if texture is transparent, pass ray through
-    # Only do this if we haven't exceeded max depth
-    if depth < max_depth && !no_texture(material.Kd)
-        tex_color = material.Kd(si)
-        alpha = get_alpha(tex_color)
-        if alpha < 0.5f0  # Alpha threshold for transparency pass-through
-            # Continue ray through the surface (increment depth to prevent infinite recursion)
-            continuation_ray = RayDifferentials(spawn_ray(si, ray.d))
-            hit, primitive, next_si = intersect!(scene, continuation_ray)
-            if !hit
-                return sum_light_le(scene.lights, continuation_ray)
-            end
-            # Recursively shade the next hit with incremented depth
-            return shade_material(
-                scene.aggregate.materials, primitive.metadata,
-                continuation_ray, next_si, scene, beta, depth + Int32(1), max_depth
-            )
-        end
-    end
-
-    # Compute BSDF from material
-    # Use allow_multiple_lobes=false for Whitted-style integrator to get separate
-    # specular reflection/transmission BxDFs that can be sampled independently
-    bsdf = material(si, false, Radiance)
-
-    # Get hit info from SurfaceInteraction
-    hit_p = si.core.p
-    hit_wo = si.core.wo
-    hit_n = si.core.n
-    shading_n = si.shading.n
-
-    # Compute direct lighting from all lights
-    # Note: For specular BxDFs, bsdf(wo, wi) returns 0, so this naturally
-    # contributes nothing for purely specular materials like mirror/glass
-    interaction = Interaction(hit_p, 0f0, hit_wo, hit_n)
-    total = shade_lights(scene.lights, interaction, scene, hit_wo, bsdf, shading_n, beta)
-
-    # Handle specular bounces if we haven't exceeded max depth
-    if depth < max_depth
-        # Specular reflection
-        total += specular_bounce(Reflect(), bsdf, ray, si, scene, beta, depth, max_depth)
-        # Specular transmission
-        total += specular_bounce(Transmit(), bsdf, ray, si, scene, beta, depth, max_depth)
-    end
-
-    return total
-end
-
 @inline specular_type(::Reflect) = BSDF_REFLECTION | BSDF_SPECULAR
 @inline specular_type(::Transmit) = BSDF_TRANSMISSION | BSDF_SPECULAR
 
 """
     specular_bounce(type, bsdf, ray, si, scene, beta, depth, max_depth) -> RGBSpectrum
 
-Compute specular/glossy reflection or transmission contribution by tracing a bounce ray.
+Compute specular reflection or transmission contribution by tracing a bounce ray.
 """
 @inline function specular_bounce(type, bsdf::BSDF, ray::RayDifferentials, si::SurfaceInteraction,
                                   scene::S, beta::RGBSpectrum, depth::Int32, max_depth::Int32) where {S<:Scene}
     wo = si.core.wo
     ns = si.shading.n
 
-    # Sample specular/glossy direction from BSDF
+    # Sample specular direction from BSDF
     u = rand(Point2f)
     wi, f, pdf, sampled_type = @inline sample_f(bsdf, wo, u, specular_type(type))
 
@@ -233,7 +148,6 @@ Compute specular/glossy reflection or transmission contribution by tracing a bou
 
     # Add ray differentials if available - use sampled_type to determine reflect vs transmit
     if ray.has_differentials
-        # Determine if this is reflection or transmission based on sampled_type
         is_reflection = (sampled_type & BSDF_REFLECTION) != 0
         diff_type = is_reflection ? Reflect() : Transmit()
         bounce_ray = specular_differentials(diff_type, bounce_ray, bsdf, si, ray, wo, wi)
@@ -243,7 +157,6 @@ Compute specular/glossy reflection or transmission contribution by tracing a bou
     hit, primitive, bounce_si = intersect!(scene, bounce_ray)
 
     if !hit
-        # No hit - get background from lights (use non-allocating sum)
         result = sum_light_le(scene.lights, bounce_ray)
         return bounce_beta * result
     end
@@ -305,14 +218,50 @@ Compute ray differentials for specular transmission.
 end
 
 """
-    sample_bounce(material::UberMaterial, ray, si, scene, beta, depth) -> (should_bounce, new_ray, new_beta, new_depth)
+    shade(material::Material, ray, si, scene, beta, depth, max_depth) -> RGBSpectrum
+
+Compute direct lighting and specular bounces for a surface hit.
+This is the generic implementation that works for all material types.
+"""
+@inline function shade(material::Material, ray::RayDifferentials, si::SurfaceInteraction,
+                       scene::S, beta::RGBSpectrum, depth::Int32, max_depth::Int32) where {S<:Scene}
+    # Compute BSDF from material
+    bsdf = compute_bsdf(material, si, false, Radiance)
+
+    # Get hit info from SurfaceInteraction
+    hit_p = si.core.p
+    hit_wo = si.core.wo
+    hit_n = si.core.n
+    shading_n = si.shading.n
+
+    # Compute direct lighting from all lights
+    interaction = Interaction(hit_p, 0f0, hit_wo, hit_n)
+    total = shade_lights(scene.lights, interaction, scene, hit_wo, bsdf, shading_n, beta)
+
+    # Handle specular bounces if we haven't exceeded max depth
+    if depth < max_depth
+        # Specular reflection
+        total += specular_bounce(Reflect(), bsdf, ray, si, scene, beta, depth, max_depth)
+        # Specular transmission
+        total += specular_bounce(Transmit(), bsdf, ray, si, scene, beta, depth, max_depth)
+    end
+
+    return total
+end
+
+# ============================================================================
+# sample_bounce for path tracing
+# ============================================================================
+
+"""
+    sample_bounce(material::Material, ray, si, scene, beta, depth) -> (should_bounce, new_ray, new_beta, new_depth)
 
 Sample BSDF to generate a bounce ray for path continuation.
 """
-@inline function sample_bounce(material::UberMaterial, ray::RayDifferentials, si::SurfaceInteraction,
+@inline function sample_bounce(material::Material, ray::RayDifferentials, si::SurfaceInteraction,
                                scene::Scene, beta::RGBSpectrum, depth::Int32)
     # Compute BSDF
-    bsdf = material(si, true, Radiance)
+    bsdf = compute_bsdf(material, si, true, Radiance)
 
     hit_wo = si.core.wo
     shading_n = si.shading.n

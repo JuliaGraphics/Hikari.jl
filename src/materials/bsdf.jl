@@ -108,7 +108,8 @@ function (b::BSDF)(
     bxdfs = b.bxdfs
     bxdfs.last == 0 && return output
     Base.Cartesian.@nexprs 8 i -> begin
-        @assert i <= bxdfs.last
+        # GPU-compatible: use early return instead of @assert
+        i > bxdfs.last && return output
         bxdf = bxdfs[i]
         if ((bxdf & flags) && (
                 (reflect && (bxdf.type & BSDF_REFLECTION != 0)) ||
@@ -116,7 +117,6 @@ function (b::BSDF)(
             ))
             output += bxdf(wo, wi)
         end
-        bxdfs.last == i && return output
     end
     return output
 end

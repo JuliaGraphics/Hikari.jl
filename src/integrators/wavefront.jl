@@ -373,7 +373,7 @@ end
         shading_n, shading_dpdu, shading_dpdv, ray_time
     )
     # Compute BSDF
-    bsdf = @inline material(si, true, Radiance)
+    bsdf = @inline compute_bsdf(material, si, true, Radiance)
     # Compute direct lighting from all lights
     @inbounds return @inline shade_with_lights(
         scene.lights, hit_p, hit_wo, hit_n, shading_n, bsdf, scene, beta

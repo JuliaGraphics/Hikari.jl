@@ -155,29 +155,41 @@ function li(
     # Compute emmited & reflected light at ray intersection point.
     # Initialize common variables for Whitted integrator.
     core = si.core
-    n = si.shading.n
     wo = core.wo
     # Compute scattering functions for surface interaction.
     si = compute_differentials(si, ray)
-    # Get material from primitive's metadata
-    m = get_material(scene.aggregate.materials, primitive.metadata)
-    if m.type === NO_MATERIAL
-        return li(
-            sampler, max_depth, RayDifferentials(spawn_ray(si, ray.d)),
-            scene, depth,
-        )
-    end
-    bsdf = m(si, false, Radiance)
     # Compute emitted light if ray hit an area light source.
     l += le(si, wo)
-    # Add contribution of each light source.
-    l = light_contribution(l, lights, wo, scene, bsdf, sampler, si)
-    if depth + 1 ≤ max_depth
-        # Trace rays for specular reflection & refraction.
-        l += specular_reflect(bsdf, sampler, max_depth, ray, si, scene, depth)
-        l += specular_transmit(bsdf, sampler, max_depth, ray, si, scene, depth)
-    end
+    # Use type-stable dispatch for material-dependent computation
+    l += li_material(scene.aggregate.materials, primitive.metadata,
+                     sampler, max_depth, ray, si, scene, lights, wo, depth)
     l
+end
+
+# Type-stable material dispatch for li computation
+# Uses @generated to avoid union types from get_material flowing into BSDF computation
+@inline @generated function li_material(
+    materials::T, idx::MaterialIndex,
+    sampler, max_depth, ray::RayDifferentials, si::SurfaceInteraction,
+    scene::S, lights, wo, depth::Int32
+) where {T<:Tuple, S<:Scene}
+    N = length(T.parameters)
+    branches = [quote
+        @inbounds if idx.material_type === UInt8($i)
+            m = materials[$i][idx.material_idx]
+            bsdf = @inline compute_bsdf(m, si, false, Radiance)
+            l = @inline light_contribution(RGBSpectrum(0f0), lights, wo, scene, bsdf, sampler, si)
+            if depth + Int32(1) ≤ max_depth
+                l += @inline specular_reflect(bsdf, sampler, max_depth, ray, si, scene, depth)
+                l += @inline specular_transmit(bsdf, sampler, max_depth, ray, si, scene, depth)
+            end
+            return l
+        end
+    end for i in 1:N]
+    quote
+        $(branches...)
+        return RGBSpectrum(0f0)
+    end
 end
 
 @inline function specular_reflect(
