@@ -176,7 +176,9 @@ Compute direct lighting and specular bounces for a surface hit with UberMaterial
     end
 
     # Compute BSDF from material
-    bsdf = material(si, true, Radiance)
+    # Use allow_multiple_lobes=false for Whitted-style integrator to get separate
+    # specular reflection/transmission BxDFs that can be sampled independently
+    bsdf = material(si, false, Radiance)
 
     # Get hit info from SurfaceInteraction
     hit_p = si.core.p
@@ -185,8 +187,11 @@ Compute direct lighting and specular bounces for a surface hit with UberMaterial
     shading_n = si.shading.n
 
     # Compute direct lighting from all lights
+    # Note: For specular BxDFs, bsdf(wo, wi) returns 0, so this naturally
+    # contributes nothing for purely specular materials like mirror/glass
     interaction = Interaction(hit_p, 0f0, hit_wo, hit_n)
     total = shade_lights(scene.lights, interaction, scene, hit_wo, bsdf, shading_n, beta)
+
     # Handle specular bounces if we haven't exceeded max depth
     if depth < max_depth
         # Specular reflection
@@ -198,9 +203,8 @@ Compute direct lighting and specular bounces for a surface hit with UberMaterial
     return total
 end
 
-# Include GLOSSY to sample rough glass/plastic materials
-@inline specular_type(::Reflect) = BSDF_REFLECTION | BSDF_SPECULAR | BSDF_GLOSSY
-@inline specular_type(::Transmit) = BSDF_TRANSMISSION | BSDF_SPECULAR | BSDF_GLOSSY
+@inline specular_type(::Reflect) = BSDF_REFLECTION | BSDF_SPECULAR
+@inline specular_type(::Transmit) = BSDF_TRANSMISSION | BSDF_SPECULAR
 
 """
     specular_bounce(type, bsdf, ray, si, scene, beta, depth, max_depth) -> RGBSpectrum

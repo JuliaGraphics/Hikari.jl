@@ -110,60 +110,6 @@ function (i::SamplerIntegrator)(scene::Scene, film, camera)
     to_framebuffer!(film, 1f0)
 end
 
-"""
-Render scene using Julia threads (one thread per tile).
-"""
-function integrator_threaded(i::SamplerIntegrator, scene::Scene, film, camera)
-    sample_bounds = get_sample_bounds(film)
-    tile_size = film.tile_size
-    filter_radius = film.filter_radius
-    filter_table = film.filter_table
-    tiles = film.tiles
-    sampler = i.sampler
-    max_depth = Int32(i.max_depth)
-    pixels = film.pixels
-    crop_bounds = film.crop_bounds
-    spp_sqr = 1.0f0 / √Float32(sampler.samples_per_pixel)
-
-    # Calculate tile grid dimensions
-    ntiles_x, ntiles_y = film.ntiles
-
-    # Process all tiles in parallel using threads
-    @sync for tile_j in 1:ntiles_y
-        Threads.@spawn for tile_i in 1:ntiles_x
-            # Calculate tile index and bounds
-            linear_idx = (tile_j - 1) * ntiles_x + tile_i
-            tile_column = Int32(linear_idx)
-
-            i_idx = Int32(tile_i - 1)
-            j_idx = Int32(tile_j - 1)
-            tile_start = Point2f(i_idx, j_idx)
-
-            tb_min = (sample_bounds.p_min .+ tile_start .* tile_size) .+ Int32(1)
-            tb_max = min.(tb_min .+ (tile_size .- Int32(1)), sample_bounds.p_max)
-            tile_bounds = Bounds2(tb_min, tb_max)
-
-            # Process all pixels in this tile
-            # size(pixels) returns (rows, cols) = (height, width) in Julia convention
-            px_resolution = Point2f(size(pixels)...)
-            for py in Int32(tb_min[2]):Int32(tb_max[2])
-                for px in Int32(tb_min[1]):Int32(tb_max[1])
-                    pixel = Point2f(px, py)
-                    sample_kernel_inner!(
-                        tiles, tile_bounds, tile_column, px_resolution,
-                        max_depth, scene, sampler, camera,
-                        pixel, spp_sqr, filter_table, filter_radius
-                    )
-                end
-            end
-            # Merge this tile into the film
-            merge_film_tile!(pixels, crop_bounds, tiles, tile_bounds, tile_column)
-        end
-    end
-
-    to_framebuffer!(film, 1f0)
-end
-
 # Get material from MaterialScene using triangle's metadata
 function get_material(ms::MaterialScene, shape::Triangle)
     return get_material(ms.materials, shape.metadata)
@@ -201,7 +147,7 @@ function li(
 
     l = RGBSpectrum(0.0f0)
     # Find closest ray intersection or return background radiance.
-    hit, material, si = intersect!(scene, ray)
+    hit, primitive, si = intersect!(scene, ray)
     lights = scene.lights
     if !hit
         return only_light(lights, ray)
@@ -213,7 +159,8 @@ function li(
     wo = core.wo
     # Compute scattering functions for surface interaction.
     si = compute_differentials(si, ray)
-    m = material
+    # Get material from primitive's metadata
+    m = get_material(scene.aggregate.materials, primitive.metadata)
     if m.type === NO_MATERIAL
         return li(
             sampler, max_depth, RayDifferentials(spawn_ray(si, ray.d)),
@@ -362,22 +309,9 @@ end
 @inline function li_iterative(
         sampler, max_depth::Int32, initial_ray::RayDifferentials, scene::S
     )::RGBSpectrum where {S<:Scene}
-    # Trace primary ray
-    hit, primitive, si = intersect!(scene, initial_ray)
-
-    if !hit
-        # No hit - return light contribution (e.g. environment map)
-        return only_light(scene.lights, initial_ray)
-    end
-
-    # Compute ray differentials for texture filtering
-    si = compute_differentials(si, initial_ray)
-
-    # Shade the hit point - material handles direct lighting and recursive bounces
-    return shade_material(
-        scene.aggregate.materials, primitive.metadata,
-        initial_ray, si, scene, RGBSpectrum(1f0), Int32(0), max_depth
-    )
+    # Use the recursive li function which creates BSDF once per hit
+    # This is more allocation-efficient than the shade_material approach
+    return li(sampler, max_depth, initial_ray, scene, Int32(0))
 end
 
 

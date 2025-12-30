@@ -150,7 +150,7 @@ end
     specular_bounce = false
     depth = 1
     while depth ≤ max_depth
-        hit, material, si = intersect!(scene, rayd)
+        hit, primitive, si = intersect!(scene, rayd)
         if !hit # Accumulate light contributions to the background.
             for light in scene.lights
                 light_emission = β * le(light, rayd)
@@ -163,6 +163,7 @@ end
         # Process SPPM camera ray intersection.
         # Compute BSDF at SPPM camera ray intersection.
         si = compute_differentials(si, rayd)
+        material = get_material(scene.aggregate.materials, primitive.metadata)
         bsdf = material(si, true, Radiance)
         if bsdf.bxdfs.last == 0
             rayd = RayDifferentials(spawn_ray(si, rayd.d))
@@ -383,7 +384,7 @@ function _trace_photons!(
         depth = 1
         while depth ≤ i.max_depth
             # put it back after free
-            hit, material, si = intersect!(scene, photon_ray)
+            hit, primitive, si = intersect!(scene, photon_ray)
             !hit && break
             if depth > 1
                 # Add photon contribution to nearby visible points.
@@ -415,6 +416,7 @@ function _trace_photons!(
             # Sample new photon direction.
             # Compute BSDF at photon intersection point.
             si = compute_differentials(si, photon_ray)
+            material = get_material(scene.aggregate.materials, primitive.metadata)
             bsdf = material(si, true, Importance)
             if bsdf.bxdfs.last == 0
                 photon_ray = RayDifferentials(spawn_ray(si, photon_ray.d))
@@ -463,7 +465,7 @@ function _update_pixels!(pixels::AbstractMatrix{SPPMPixel}, vps::AbstractMatrix{
     for pixel_idx in eachindex(pixels)
         M = pM[pixel_idx]
         if M > 0
-            ϕ = Point3f(pϕ_x[pixel_idx], pϕ_y[pixel_idx], pϕ_z[pixel_idx])
+            ϕ = RGBSpectrum(pϕ_x[pixel_idx], pϕ_y[pixel_idx], pϕ_z[pixel_idx])
             # Update pixel photon count, search radius and τ from photons.
             n = pN[pixel_idx]
             N_new = n + γ * M
