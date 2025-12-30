@@ -263,3 +263,122 @@ function PlasticMaterial(
     RoughType = typeof(roughness.data)
     PlasticMaterial{KdType, KsType, RoughType}(Kd, Ks, roughness, remap_roughness)
 end
+
+# ============================================================================
+# User-friendly keyword constructors with auto texture wrapping
+# ============================================================================
+
+# Helper to wrap values in Texture if not already a Texture
+_to_texture(t::Texture) = t
+_to_texture(v::RGBSpectrum) = Texture(v)
+_to_texture(v::Float32) = Texture(v)
+_to_texture(v::Real) = Texture(Float32(v))
+# For color tuples/vectors (use Tuple{Real,Real,Real} to handle mixed Int/Float)
+_to_texture(v::Tuple{Real,Real,Real}) = Texture(RGBSpectrum(Float32(v[1]), Float32(v[2]), Float32(v[3])))
+_to_texture(v::AbstractVector{<:Real}) = length(v) == 3 ? Texture(RGBSpectrum(Float32.(v)...)) : error("Expected 3-element color")
+
+"""
+    MatteMaterial(; Kd=RGBSpectrum(0.5), σ=0.0)
+
+Create a matte (diffuse) material with optional Oren-Nayar roughness.
+
+# Arguments
+- `Kd`: Diffuse color - can be RGBSpectrum, (r,g,b) tuple, or Texture
+- `σ`: Roughness angle in degrees (0 = Lambertian, >0 = Oren-Nayar)
+
+# Examples
+```julia
+MatteMaterial(Kd=RGBSpectrum(0.8, 0.2, 0.2))  # Red matte
+MatteMaterial(Kd=(0.8, 0.2, 0.2), σ=20)       # Red with roughness
+MatteMaterial(Kd=my_texture)                   # Textured
+```
+"""
+function MatteMaterial(; Kd=RGBSpectrum(0.5f0), σ=0f0)
+    MatteMaterial(_to_texture(Kd), _to_texture(σ))
+end
+
+"""
+    MirrorMaterial(; Kr=RGBSpectrum(0.9))
+
+Create a perfect mirror (specular reflection) material.
+
+# Arguments
+- `Kr`: Reflectance color - can be RGBSpectrum, (r,g,b) tuple, or Texture
+
+# Examples
+```julia
+MirrorMaterial()                               # Default silver mirror
+MirrorMaterial(Kr=RGBSpectrum(0.95, 0.93, 0.88))  # Gold-tinted
+MirrorMaterial(Kr=(0.9, 0.9, 0.9))            # Using tuple
+```
+"""
+function MirrorMaterial(; Kr=RGBSpectrum(0.9f0))
+    MirrorMaterial(_to_texture(Kr))
+end
+
+"""
+    GlassMaterial(; Kr=RGBSpectrum(1), Kt=RGBSpectrum(1), roughness=0, index=1.5, remap_roughness=true)
+
+Create a glass/dielectric material with reflection and transmission.
+
+# Arguments
+- `Kr`: Reflectance color
+- `Kt`: Transmittance color
+- `roughness`: Surface roughness (0 = perfect specular, can be single value or (u,v) tuple)
+- `index`: Index of refraction (1.5 for glass, 1.33 for water, 2.4 for diamond)
+- `remap_roughness`: Whether to remap roughness to microfacet alpha
+
+# Examples
+```julia
+GlassMaterial()                                # Clear glass
+GlassMaterial(Kt=(1, 0.9, 0.8), index=1.5)    # Amber tinted
+GlassMaterial(roughness=0.1)                   # Frosted glass
+GlassMaterial(roughness=(0.1, 0.05))          # Anisotropic roughness
+```
+"""
+function GlassMaterial(;
+    Kr=RGBSpectrum(1f0),
+    Kt=RGBSpectrum(1f0),
+    roughness=0f0,
+    index=1.5f0,
+    remap_roughness=true
+)
+    # Handle roughness - can be single value or (u, v) tuple
+    if roughness isa Tuple
+        u_rough, v_rough = roughness
+    else
+        u_rough = v_rough = roughness
+    end
+    GlassMaterial(
+        _to_texture(Kr), _to_texture(Kt),
+        _to_texture(u_rough), _to_texture(v_rough),
+        _to_texture(index), remap_roughness
+    )
+end
+
+"""
+    PlasticMaterial(; Kd=RGBSpectrum(0.5), Ks=RGBSpectrum(0.5), roughness=0.1, remap_roughness=true)
+
+Create a plastic material with diffuse and glossy specular components.
+
+# Arguments
+- `Kd`: Diffuse color
+- `Ks`: Specular color (controls highlight intensity)
+- `roughness`: Surface roughness (lower = sharper highlights)
+- `remap_roughness`: Whether to remap roughness to microfacet alpha
+
+# Examples
+```julia
+PlasticMaterial(Kd=(0.8, 0.2, 0.6))           # Magenta plastic
+PlasticMaterial(Kd=(0.1, 0.1, 0.8), roughness=0.05)  # Shiny blue
+PlasticMaterial(Kd=wood_texture, roughness=0.3)      # Textured
+```
+"""
+function PlasticMaterial(;
+    Kd=RGBSpectrum(0.5f0),
+    Ks=RGBSpectrum(0.5f0),
+    roughness=0.1f0,
+    remap_roughness=true
+)
+    PlasticMaterial(_to_texture(Kd), _to_texture(Ks), _to_texture(roughness), remap_roughness)
+end

@@ -1,9 +1,14 @@
 include("primes.jl")
 
-struct Distribution1D
-    func::Vector{Float32}
-    cdf::Vector{Float32}
+struct Distribution1D{V<:AbstractVector{Float32}}
+    func::V
+    cdf::V
     func_int::Float32
+
+    """Inner constructor for pre-computed distributions (used by to_gpu)."""
+    function Distribution1D(func::V, cdf::V, func_int::Float32) where {V<:AbstractVector{Float32}}
+        new{V}(func, cdf, func_int)
+    end
 
     function Distribution1D(func::Vector{Float32})
         n = length(func)
@@ -25,7 +30,7 @@ struct Distribution1D
             end
         end
 
-        new(func, cdf, func_int)
+        new{typeof(func)}(func, cdf, func_int)
     end
 end
 
@@ -41,27 +46,47 @@ function sample_discrete(d::Distribution1D, u::Float32)
 end
 
 """
+GPU-compatible binary search to find last index where cdf[i] ≤ u.
+Returns index in [1, n] where n = length(cdf).
+"""
+@inline function find_interval_binary(cdf, u::Float32)
+    n = length(cdf)
+    lo = Int32(1)
+    hi = Int32(n)
+    # Binary search for last index where cdf[i] ≤ u
+    while lo < hi
+        mid = (lo + hi + Int32(1)) ÷ Int32(2)
+        if @inbounds cdf[mid] ≤ u
+            lo = mid
+        else
+            hi = mid - Int32(1)
+        end
+    end
+    return lo
+end
+
+"""
 Sample continuous value from Distribution1D.
 Returns (sampled value in [0,1], pdf, offset index).
 """
-function sample_continuous(d::Distribution1D, u::Float32)
-    # Find interval using binary search
-    offset = findlast(i -> d.cdf[i] ≤ u, 1:length(d.cdf))
-    offset = clamp(offset, 1, length(d.cdf) - 1)
+@inline function sample_continuous(d::Distribution1D, u::Float32)
+    # Find interval using GPU-compatible binary search
+    offset = find_interval_binary(d.cdf, u)
+    offset = clamp(offset, Int32(1), Int32(length(d.cdf) - 1))
 
     # Compute offset within CDF segment
-    du = u - d.cdf[offset]
-    denom = d.cdf[offset + 1] - d.cdf[offset]
-    if denom > 0
+    du = u - @inbounds d.cdf[offset]
+    denom = @inbounds d.cdf[offset + 1] - d.cdf[offset]
+    if denom > 0f0
         du /= denom
     end
 
     # Compute continuous position
     n = length(d.func)
-    sampled = (offset - 1 + du) / n
+    sampled = (offset - Int32(1) + du) / n
 
     # Compute PDF: for piecewise-constant over [0,1], pdf = f[i] / func_int
-    pdf = d.func_int > 0 ? d.func[offset] / d.func_int : 0f0
+    pdf = d.func_int > 0f0 ? (@inbounds d.func[offset]) / d.func_int : 0f0
 
     sampled, pdf, offset
 end
@@ -69,27 +94,32 @@ end
 """
 Compute PDF for sampling a specific value from Distribution1D.
 """
-function pdf(d::Distribution1D, u::Float32)::Float32
+@inline function pdf(d::Distribution1D, u::Float32)::Float32
     n = length(d.func)
-    offset = clamp(Int(floor(u * n)) + 1, 1, n)
-    d.func_int > 0 ? d.func[offset] / d.func_int : 0f0
+    offset = clamp(Int32(floor(u * n)) + Int32(1), Int32(1), Int32(n))
+    d.func_int > 0f0 ? (@inbounds d.func[offset]) / d.func_int : 0f0
 end
 
 """
 2D piecewise-constant distribution for importance sampling.
 Built from a 2D function (e.g., environment map luminance).
 """
-struct Distribution2D
+struct Distribution2D{D<:Distribution1D, VD<:AbstractVector{D}}
     """Conditional distributions p(v|u) for each row."""
-    p_conditional_v::Vector{Distribution1D}
+    p_conditional_v::VD
     """Marginal distribution p(u) over rows."""
-    p_marginal::Distribution1D
+    p_marginal::D
+
+    """Inner constructor for pre-computed distributions (used by to_gpu)."""
+    function Distribution2D(p_conditional_v::VD, p_marginal::D) where {D<:Distribution1D, VD<:AbstractVector{D}}
+        new{D, VD}(p_conditional_v, p_marginal)
+    end
 
     function Distribution2D(func::Matrix{Float32})
         nv, nu = size(func)  # nv = height (rows), nu = width (columns)
 
         # Build conditional distributions for each row
-        p_conditional_v = Vector{Distribution1D}(undef, nv)
+        p_conditional_v = Vector{Distribution1D{Vector{Float32}}}(undef, nv)
         marginal_func = Vector{Float32}(undef, nv)
 
         for v in 1:nv
@@ -101,7 +131,7 @@ struct Distribution2D
         end
 
         p_marginal = Distribution1D(marginal_func)
-        new(p_conditional_v, p_marginal)
+        new{Distribution1D{Vector{Float32}}, Vector{Distribution1D{Vector{Float32}}}}(p_conditional_v, p_marginal)
     end
 end
 
@@ -109,12 +139,12 @@ end
 Sample a 2D point from the distribution.
 Returns (Point2f(u, v), pdf).
 """
-function sample_continuous(d::Distribution2D, u::Point2f)
+@inline function sample_continuous(d::Distribution2D, u::Point2f)
     # Sample v (row) from marginal distribution
     v_sampled, pdf_v, v_offset = sample_continuous(d.p_marginal, u[2])
 
     # Sample u (column) from conditional distribution for that row
-    u_sampled, pdf_u, _ = sample_continuous(d.p_conditional_v[v_offset], u[1])
+    u_sampled, pdf_u, _ = sample_continuous(@inbounds(d.p_conditional_v[v_offset]), u[1])
 
     Point2f(u_sampled, v_sampled), pdf_u * pdf_v
 end
@@ -122,15 +152,15 @@ end
 """
 Compute PDF for sampling a specific 2D point.
 """
-function pdf(d::Distribution2D, uv::Point2f)::Float32
-    nu = length(d.p_conditional_v[1].func)
+@inline function pdf(d::Distribution2D, uv::Point2f)::Float32
+    nu = length(@inbounds(d.p_conditional_v[1]).func)
     nv = length(d.p_marginal.func)
 
     # Find indices
-    iu = clamp(Int(floor(uv[1] * nu)) + 1, 1, nu)
-    iv = clamp(Int(floor(uv[2] * nv)) + 1, 1, nv)
+    iu = clamp(Int32(floor(uv[1] * nu)) + Int32(1), Int32(1), Int32(nu))
+    iv = clamp(Int32(floor(uv[2] * nv)) + Int32(1), Int32(1), Int32(nv))
 
-    d.p_conditional_v[iv].func[iu] / d.p_marginal.func_int
+    @inbounds(d.p_conditional_v[iv]).func[iu] / d.p_marginal.func_int
 end
 
 function radical_inverse(base_index::Int64, a::UInt64)::Float32

@@ -1,5 +1,7 @@
 import KernelAbstractions as KA
 
+KA.@kernel some_kernel_f() = nothing
+
 function to_gpu(ArrayType, m::Hikari.Texture)
     @assert !Hikari.no_texture(m)
     return Hikari.Texture(
@@ -47,9 +49,60 @@ function to_gpu(ArrayType, ms::Hikari.MaterialScene)
     return Hikari.MaterialScene(accel, materials)
 end
 
+# Helper to convert array to GPU device array (bitstype)
+function array_to_device(ArrayType, arr::AbstractArray, preserve::Vector{Any})
+    gpu_arr = ArrayType(arr)
+    push!(preserve, gpu_arr)
+    kernel = some_kernel_f(KA.get_backend(gpu_arr))
+    return KA.argconvert(kernel, gpu_arr)
+end
+
+# GPU conversion for Distribution1D
+function to_gpu(ArrayType, d::Hikari.Distribution1D, preserve::Vector{Any})
+    func_gpu = array_to_device(ArrayType, d.func, preserve)
+    cdf_gpu = array_to_device(ArrayType, d.cdf, preserve)
+    return Hikari.Distribution1D(func_gpu, cdf_gpu, d.func_int)
+end
+
+# GPU conversion for Distribution2D
+function to_gpu(ArrayType, d::Hikari.Distribution2D, preserve::Vector{Any})
+    # Convert each conditional distribution to device arrays
+    p_conditional_gpu = [to_gpu(ArrayType, p, preserve) for p in d.p_conditional_v]
+    # The vector of Distribution1D structs also needs to be a device array
+    p_conditional_vec = array_to_device(ArrayType, p_conditional_gpu, preserve)
+    p_marginal_gpu = to_gpu(ArrayType, d.p_marginal, preserve)
+    return Hikari.Distribution2D(p_conditional_vec, p_marginal_gpu)
+end
+
+# GPU conversion for EnvironmentMap
+function to_gpu(ArrayType, env::Hikari.EnvironmentMap, preserve::Vector{Any})
+    data_gpu = array_to_device(ArrayType, env.data, preserve)
+    dist_gpu = to_gpu(ArrayType, env.distribution, preserve)
+    return Hikari.EnvironmentMap(data_gpu, env.rotation, dist_gpu)
+end
+
+# GPU conversion for EnvironmentLight
+function to_gpu(ArrayType, light::Hikari.EnvironmentLight, preserve::Vector{Any})
+    env_map_gpu = to_gpu(ArrayType, light.env_map, preserve)
+    return Hikari.EnvironmentLight(env_map_gpu, light.scale)
+end
+
+# GPU conversion for PointLight (already bitstype, no conversion needed)
+to_gpu(::Type, light::Hikari.PointLight, ::Vector{Any}) = light
+
+# GPU conversion for AmbientLight (already bitstype, no conversion needed)
+to_gpu(::Type, light::Hikari.AmbientLight, ::Vector{Any}) = light
+
+# Convert tuple of lights to GPU
+to_gpu_lights(ArrayType, lights::Tuple, preserve::Vector{Any}) = map(l -> to_gpu(ArrayType, l, preserve), lights)
+
+# Scene GPU conversion - returns (gpu_scene, preserve_array)
 function to_gpu(ArrayType, scene::Hikari.Scene)
     aggregate = to_gpu(ArrayType, scene.aggregate)
-    return Hikari.Scene(scene.lights, aggregate, scene.bound, scene.world_center, scene.world_radius)
+    # Lights need special handling - store GPU arrays in preserve to keep them alive
+    preserve = Any[]
+    lights = to_gpu_lights(ArrayType, scene.lights, preserve)
+    return Hikari.Scene(lights, aggregate, scene.bound, scene.world_center, scene.world_radius), preserve
 end
 
 @kernel function ka_trace_image!(img, camera, scene, sampler, max_depth)

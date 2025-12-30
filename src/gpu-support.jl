@@ -63,5 +63,45 @@ end
 
 function to_gpu(ArrayType, scene::Hikari.Scene; preserve=[])
     aggregate = to_gpu(ArrayType, scene.aggregate; preserve=preserve)
-    return Hikari.Scene(scene.lights, aggregate, scene.bound, scene.world_center, scene.world_radius)
+    lights = to_gpu_lights(ArrayType, scene.lights; preserve=preserve)
+    return Hikari.Scene(lights, aggregate, scene.bound, scene.world_center, scene.world_radius)
+end
+
+# GPU conversion for Distribution1D
+function to_gpu(ArrayType, d::Hikari.Distribution1D; preserve=[])
+    func_gpu = to_gpu(ArrayType, d.func; preserve=preserve)
+    cdf_gpu = to_gpu(ArrayType, d.cdf; preserve=preserve)
+    return Hikari.Distribution1D(func_gpu, cdf_gpu, d.func_int)
+end
+
+# GPU conversion for Distribution2D
+function to_gpu(ArrayType, d::Hikari.Distribution2D; preserve=[])
+    # Convert each conditional distribution
+    p_conditional_gpu = [to_gpu(ArrayType, p; preserve=preserve) for p in d.p_conditional_v]
+    p_conditional_vec = to_gpu(ArrayType, p_conditional_gpu; preserve=preserve)
+    p_marginal_gpu = to_gpu(ArrayType, d.p_marginal; preserve=preserve)
+    return Hikari.Distribution2D(p_conditional_vec, p_marginal_gpu)
+end
+
+# GPU conversion for EnvironmentMap
+function to_gpu(ArrayType, env::Hikari.EnvironmentMap; preserve=[])
+    data_gpu = to_gpu(ArrayType, env.data; preserve=preserve)
+    dist_gpu = to_gpu(ArrayType, env.distribution; preserve=preserve)
+    return Hikari.EnvironmentMap(data_gpu, env.rotation, dist_gpu)
+end
+
+# GPU conversion for EnvironmentLight
+function to_gpu(ArrayType, light::Hikari.EnvironmentLight; preserve=[])
+    env_map_gpu = to_gpu(ArrayType, light.env_map; preserve=preserve)
+    return Hikari.EnvironmentLight(env_map_gpu, light.scale)
+end
+
+# GPU conversion for PointLight (already bitstype, no conversion needed)
+function to_gpu(::Type, light::Hikari.PointLight; preserve=[])
+    return light
+end
+
+# Convert tuple of lights to GPU
+function to_gpu_lights(ArrayType, lights::Tuple; preserve=[])
+    return map(l -> to_gpu(ArrayType, l; preserve=preserve), lights)
 end

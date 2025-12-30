@@ -2,21 +2,21 @@
 Environment light that illuminates the scene from all directions using an HDR environment map.
 Uses equirectangular (lat-long) mapping.
 """
-struct EnvironmentLight{S<:Spectrum} <: Light
+struct EnvironmentLight{S<:Spectrum, E<:EnvironmentMap{S}} <: Light
     """LightInfinite flag - environment lights are at infinity."""
     flags::LightFlags
 
     """HDR environment map."""
-    env_map::EnvironmentMap{S}
+    env_map::E
 
     """Scale factor for the light intensity."""
     scale::S
 
     function EnvironmentLight(
-        env_map::EnvironmentMap{S},
+        env_map::E,
         scale::S=RGBSpectrum(1f0);
-    ) where {S<:Spectrum}
-        new{S}(LightInfinite, env_map, scale)
+    ) where {S<:Spectrum, E<:EnvironmentMap{S}}
+        new{S, E}(LightInfinite, env_map, scale)
     end
 end
 

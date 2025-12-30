@@ -3,7 +3,7 @@ Environment map texture for HDR image-based lighting.
 Supports sampling by direction vector (for environment lights).
 Includes importance sampling distribution based on luminance.
 """
-struct EnvironmentMap{S<:Spectrum, T<:AbstractMatrix{S}}
+struct EnvironmentMap{S<:Spectrum, T<:AbstractMatrix{S}, D<:Distribution2D}
     """HDR image data (lat-long / equirectangular format)."""
     data::T
 
@@ -11,7 +11,12 @@ struct EnvironmentMap{S<:Spectrum, T<:AbstractMatrix{S}}
     rotation::Float32
 
     """2D distribution for importance sampling based on luminance."""
-    distribution::Distribution2D
+    distribution::D
+
+    """Inner constructor for pre-computed environment maps (used by to_gpu)."""
+    function EnvironmentMap(data::T, rotation::Float32, distribution::D) where {S<:Spectrum, T<:AbstractMatrix{S}, D<:Distribution2D}
+        new{S, T, D}(data, rotation, distribution)
+    end
 
     function EnvironmentMap(data::AbstractMatrix{S}, rotation::Float32=0f0) where {S<:Spectrum}
         # Build luminance-weighted distribution for importance sampling
@@ -27,7 +32,7 @@ struct EnvironmentMap{S<:Spectrum, T<:AbstractMatrix{S}}
             end
         end
         distribution = Distribution2D(luminance)
-        new{S, typeof(data)}(data, rotation, distribution)
+        new{S, typeof(data), typeof(distribution)}(data, rotation, distribution)
     end
 end
 
@@ -81,7 +86,7 @@ end
 """
 Sample the environment map by direction vector.
 """
-@inline function (env::EnvironmentMap{S})(dir::Vec3f)::S where {S<:Spectrum}
+@inline function (env::EnvironmentMap{S, T, D})(dir::Vec3f)::S where {S<:Spectrum, T, D}
     uv = direction_to_uv(dir, env.rotation)
 
     # Bilinear interpolation
