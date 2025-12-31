@@ -540,15 +540,43 @@ function MaterialScene(
     meshes::AbstractVector,
     material_types::AbstractVector{UInt8},
     material_indices::AbstractVector{<:Integer},
-    materials::Tuple
+    materials::Tuple;
+    transforms::Union{Nothing, AbstractVector{Mat4f}} = nothing
+)
+    scene, _handles = material_scene_with_handles(meshes, material_types, material_indices, materials; transforms)
+    return scene
+end
+
+"""
+    material_scene_with_handles(meshes, material_types, material_indices, materials; transforms=nothing)
+
+Like `MaterialScene(...)` but also returns instance handles for dynamic updates.
+Returns `(scene::MaterialScene, handles::Vector{InstanceHandle})`.
+
+The handles can be used with `Raycore.update_transform!(tlas, handle, new_transform)`
+followed by `Raycore.refit_tlas!(tlas)` for animation.
+"""
+function material_scene_with_handles(
+    meshes::AbstractVector,
+    material_types::AbstractVector{UInt8},
+    material_indices::AbstractVector{<:Integer},
+    materials::Tuple;
+    transforms::Union{Nothing, AbstractVector{Mat4f}} = nothing
 )
     # Create Instance objects with MaterialIndex metadata
-    instances = [
-        Instance(mesh; metadata=MaterialIndex(material_types[i], UInt32(material_indices[i])))
-        for (i, mesh) in enumerate(meshes)
-    ]
-    tlas, _handles = TLAS(instances)
-    return MaterialScene(tlas, materials)
+    instances = if isnothing(transforms)
+        [
+            Instance(mesh; metadata=MaterialIndex(material_types[i], UInt32(material_indices[i])))
+            for (i, mesh) in enumerate(meshes)
+        ]
+    else
+        [
+            Instance(mesh, transforms[i], MaterialIndex(material_types[i], UInt32(material_indices[i])))
+            for (i, mesh) in enumerate(meshes)
+        ]
+    end
+    tlas, handles = TLAS(instances)
+    return MaterialScene(tlas, materials), handles
 end
 
 """
@@ -569,10 +597,17 @@ scene = MaterialScene([
     (cloud_mesh, cloud_vol),
 ])
 ```
+
+Also supports 3-tuples with transforms: `(mesh, material, transform::Mat4f)`.
+When transforms are provided, the returned scene's TLAS uses instanced transforms
+which can be updated via `Raycore.update_transform!` and `Raycore.refit_tlas!`.
 """
 function MaterialScene(mesh_material_pairs::Vector{<:Tuple})
+    # Extract components - handle both 2-tuples and 3-tuples
     meshes = [pair[1] for pair in mesh_material_pairs]
     materials_list = [pair[2] for pair in mesh_material_pairs]
+    has_transforms = length(mesh_material_pairs) > 0 && length(first(mesh_material_pairs)) >= 3
+    transforms = has_transforms ? [Mat4f(pair[3]) for pair in mesh_material_pairs] : nothing
 
     # First pass: discover unique material types and their order
     type_to_slot = Dict{DataType, UInt8}()
@@ -628,7 +663,67 @@ function MaterialScene(mesh_material_pairs::Vector{<:Tuple})
     )
 
     # Use the first constructor which builds the TLAS
-    return MaterialScene(meshes, material_types, material_indices, materials_tuple)
+    return MaterialScene(meshes, material_types, material_indices, materials_tuple; transforms)
+end
+
+"""
+    material_scene_with_handles(mesh_material_pairs::Vector{<:Tuple})
+
+Like `MaterialScene(pairs)` but also returns instance handles for dynamic updates.
+Accepts 2-tuples `(mesh, material)` or 3-tuples `(mesh, material, transform)`.
+Returns `(scene::MaterialScene, handles::Vector{InstanceHandle})`.
+"""
+function material_scene_with_handles(mesh_material_pairs::Vector{<:Tuple})
+    # Extract components - handle both 2-tuples and 3-tuples
+    meshes = [pair[1] for pair in mesh_material_pairs]
+    materials_list = [pair[2] for pair in mesh_material_pairs]
+    has_transforms = length(mesh_material_pairs) > 0 && length(first(mesh_material_pairs)) >= 3
+    transforms = has_transforms ? [Mat4f(pair[3]) for pair in mesh_material_pairs] : nothing
+
+    # First pass: discover unique material types and their order
+    type_to_slot = Dict{DataType, UInt8}()
+    type_order = DataType[]
+
+    for mat in materials_list
+        T = typeof(mat)
+        if !haskey(type_to_slot, T)
+            type_to_slot[T] = UInt8(length(type_to_slot) + 1)
+            push!(type_order, T)
+        end
+    end
+
+    # Second pass: count materials per type
+    type_counts = Dict{DataType, Int}()
+    for mat in materials_list
+        T = typeof(mat)
+        type_counts[T] = get(type_counts, T, 0) + 1
+    end
+
+    # Create typed vectors and indices
+    typed_vectors = Dict{DataType, Any}()
+    type_current_idx = Dict{DataType, Int}()
+    for T in type_order
+        typed_vectors[T] = Vector{T}(undef, type_counts[T])
+        type_current_idx[T] = 0
+    end
+
+    material_types = Vector{UInt8}(undef, length(materials_list))
+    material_indices = Vector{UInt32}(undef, length(materials_list))
+
+    for (i, mat) in enumerate(materials_list)
+        T = typeof(mat)
+        slot = type_to_slot[T]
+        type_current_idx[T] += 1
+        idx = type_current_idx[T]
+        typed_vectors[T][idx] = mat
+        material_types[i] = slot
+        material_indices[i] = UInt32(idx)
+    end
+
+    materials_arrays = [typed_vectors[type_order[i]] for i in 1:length(type_order)]
+    materials_tuple = Tuple(materials_arrays)
+
+    return material_scene_with_handles(meshes, material_types, material_indices, materials_tuple; transforms)
 end
 
 include("filter.jl")
