@@ -89,6 +89,35 @@ Compute BSDF for PlasticMaterial.
     return BSDF(si, bsdf_1, bsdf_2)
 end
 
+"""
+Compute BSDF for MetalMaterial - conductor with Fresnel reflectance.
+"""
+@inline function compute_bsdf(m::MetalMaterial, si::SurfaceInteraction, ::Bool, transport)
+    # Get material parameters
+    eta = clamp(m.eta(si))
+    k_val = clamp(m.k(si))
+    rough = m.roughness(si)
+    # Reflectance is a color tint that multiplies the Fresnel result
+    r = clamp(m.reflectance(si))
+
+    # Create Fresnel conductor (ni=1 for air, nt=eta, k=k_val)
+    fresnel = FresnelConductor(RGBSpectrum(1f0), eta, k_val)
+
+    # Check if effectively smooth BEFORE remapping (like pbrt's EffectivelySmooth)
+    # User roughness < 0.01 is considered a perfect mirror
+    is_smooth = rough < 0.01f0
+    if is_smooth
+        bsdf = SpecularReflection(true, r, fresnel)
+        return BSDF(si, bsdf)
+    else
+        # Remap roughness to alpha for microfacet distribution
+        m.remap_roughness && (rough = roughness_to_α(rough))
+        distribution = TrowbridgeReitzDistribution(rough, rough)
+        bsdf = MicrofacetReflection(true, r, distribution, fresnel, transport)
+        return BSDF(si, bsdf)
+    end
+end
+
 # ============================================================================
 # Material Interface: shade() for each material type
 # ============================================================================

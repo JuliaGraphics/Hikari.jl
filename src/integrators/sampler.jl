@@ -3,10 +3,12 @@ using KernelAbstractions.Extras.LoopInfo: @unroll
 
 abstract type SamplerIntegrator <: Integrator end
 
-struct WhittedIntegrator{C<: Camera, S <: AbstractSampler} <: SamplerIntegrator
-    camera::C
+struct WhittedIntegrator{S <: AbstractSampler} <: SamplerIntegrator
     sampler::S
     max_depth::Int64
+
+    WhittedIntegrator(sampler::S, max_depth::Integer = 5) where {S <: AbstractSampler} =
+        new{S}(sampler, Int64(max_depth))
 end
 
 @inline function sample_kernel_inner!(
@@ -88,7 +90,6 @@ end
 Render scene using KernelAbstractions.
 """
 function (i::SamplerIntegrator)(scene::Scene, film, camera)
-    # TODO visualize tile bounds to see if they overlap
     sample_bounds = get_sample_bounds(film)
     tile_size = film.tile_size
     filter_radius = film.filter_radius
@@ -97,7 +98,7 @@ function (i::SamplerIntegrator)(scene::Scene, film, camera)
     sampler = i.sampler
     max_depth = Int32(i.max_depth)
     backend = KA.get_backend(film.tiles.contrib_sum)
-    kernel! = whitten_kernel!(backend, (8, 8))  # Optimized for wavefront size 32 (2 wavefronts)
+    kernel! = whitten_kernel!(backend, (8, 8))
     s_filter_table = Mat{size(filter_table)...}(filter_table)
     kernel!(
         film.pixels, film.crop_bounds, sample_bounds,
@@ -159,9 +160,9 @@ function li(
     # Compute scattering functions for surface interaction.
     si = compute_differentials(si, ray)
     # Compute emitted light if ray hit an area light source.
-    l += le(si, wo)
+    l += @inline le(si, wo)
     # Use type-stable dispatch for material-dependent computation
-    l += li_material(scene.aggregate.materials, primitive.metadata,
+    l += @inline li_material(scene.aggregate.materials, primitive.metadata,
                      sampler, max_depth, ray, si, scene, lights, wo, depth)
     l
 end
@@ -176,8 +177,7 @@ end
     N = length(T.parameters)
     branches = [quote
         @inbounds if idx.material_type === UInt8($i)
-            m = materials[$i][idx.material_idx]
-            bsdf = @inline compute_bsdf(m, si, false, Radiance)
+            bsdf = @inline compute_bsdf(materials[$i][idx.material_idx], si, false, Radiance)
             l = @inline light_contribution(RGBSpectrum(0f0), lights, wo, scene, bsdf, sampler, si)
             if depth + Int32(1) ≤ max_depth
                 l += @inline specular_reflect(bsdf, sampler, max_depth, ray, si, scene, depth)
@@ -232,6 +232,36 @@ end
         ry_direction = wi - ∂wo∂y + 2.0f0 * (wo ⋅ ns) * ∂n∂y + ∂dn∂y * ns
         rd = RayDifferentials(rd, rx_origin=rx_origin, ry_origin=ry_origin, rx_direction=rx_direction, ry_direction=ry_direction)
     end
+    return f * li(sampler, max_depth, rd, scene, depth + Int32(1)) * abs(wi ⋅ ns) / pdf
+end
+
+"""
+Glossy reflection for microfacet materials (metals, glossy plastics).
+Uses sample_f for proper importance sampling of microfacet distribution.
+The microfacet distribution already handles roughness via its α parameters,
+so no additional perturbation is needed.
+"""
+@inline function glossy_reflect(
+        bsdf, sampler, max_depth, ray::RayDifferentials,
+        si::SurfaceInteraction, scene::Scene, depth::Int32,
+    )
+    # Check if BSDF has glossy reflection component
+    type = BSDF_REFLECTION | BSDF_GLOSSY
+    num_components(bsdf, type) > 0 || return RGBSpectrum(0.0f0)
+
+    wo = si.core.wo
+    ns = si.shading.n
+
+    # Use sample_f for proper microfacet importance sampling
+    # The microfacet distribution handles roughness internally
+    wi, f, pdf, sampled_type = sample_f(bsdf, wo, get_2d(sampler), type)
+
+    if !(pdf > 0.0f0 && !is_black(f) && abs(wi ⋅ ns) != 0.0f0)
+        return RGBSpectrum(0.0f0)
+    end
+
+    # Trace reflection ray
+    rd = RayDifferentials(spawn_ray(si, wi))
     return f * li(sampler, max_depth, rd, scene, depth + Int32(1)) * abs(wi ⋅ ns) / pdf
 end
 

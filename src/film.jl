@@ -58,7 +58,14 @@ struct FilmTilePixel{S<:Spectrum}
 end
 FilmTilePixel() = FilmTilePixel(RGBSpectrum(), 0.0f0)
 
-struct Film{Pixels<:AbstractMatrix{Pixel},Tiles<:AbstractMatrix{FilmTilePixel}, FB <: AbstractMatrix{RGB{Float32}}}
+struct Film{
+    Pixels<:AbstractMatrix{Pixel},
+    Tiles<:AbstractMatrix{FilmTilePixel},
+    FB<:AbstractMatrix{RGB{Float32}},
+    AB<:AbstractMatrix{RGB{Float32}},
+    NB<:AbstractMatrix{Vec3f},
+    DB<:AbstractMatrix{Float32},
+}
     resolution::Point2f
     """
     Subset of the image to render, bounds are inclusive and start from 1.
@@ -81,8 +88,17 @@ struct Film{Pixels<:AbstractMatrix{Pixel},Tiles<:AbstractMatrix{FilmTilePixel}, 
     filter_table_width::Int32
     filter_radius::Point2f
     scale::Float32
+
+    # Raw rendered output (HDR)
     framebuffer::FB
 
+    # Auxiliary buffers for denoising (first-hit data)
+    albedo::AB
+    normal::NB
+    depth::DB
+
+    # Postprocessed output (overwritten each postprocess! call)
+    postprocess::FB
 end
 
 
@@ -128,19 +144,33 @@ function Film(
     contrib_sum = RGBSpectrum.(zeros(Vec3f, tile_size_l, ntiles))
     filter_weight_sum = zeros(Float32, tile_size_l, ntiles)
     tiles = StructArray{FilmTilePixel}(; contrib_sum, filter_weight_sum)
-    framebuffer = Matrix{RGB{Float32}}(undef, size(pixels)...)
+
+    pixel_size = size(pixels)
+    framebuffer = Matrix{RGB{Float32}}(undef, pixel_size...)
+
+    # Auxiliary buffers for denoising
+    albedo = fill(RGB{Float32}(0, 0, 0), pixel_size...)
+    normal = fill(Vec3f(0, 0, 0), pixel_size...)
+    depth = fill(0.0f0, pixel_size...)
+
+    # Postprocess target buffer
+    postprocess = Matrix{RGB{Float32}}(undef, pixel_size...)
+
     return Film(
         resolution,
         crop_bounds,
         diagonal * 0.001f0,
         pixels,
         tiles, Int32(tile_size), (Int32(wtiles), Int32(htiles)),
-
         filter_table,
         Int32(filter_table_width),
         filter.radius,
         scale,
-        framebuffer
+        framebuffer,
+        albedo,
+        normal,
+        depth,
+        postprocess,
     )
 end
 
@@ -272,6 +302,11 @@ function clear!(film::Film)
     film.pixels.xyz .= (Point3f(0),)
     film.pixels.filter_weight_sum .= 0.0f0
     film.pixels.splat_xyz .= (Point3f(0),)
+
+    # Clear auxiliary buffers
+    film.albedo .= (RGB{Float32}(0, 0, 0),)
+    film.normal .= (Vec3f(0, 0, 0),)
+    film.depth .= 0.0f0
 end
 
 @kernel function film_to_rgb!(image, xyz, filter_weight_sum, splat_xyz, scale, splat_scale)
@@ -311,6 +346,89 @@ end
 function to_framebuffer!(film::Film, splat_scale::Float32 = 1f0)
     image = film.framebuffer
     to_framebuffer!(image, film.pixels, film.scale, splat_scale)
+end
+
+# ============================================================================
+# Auxiliary Buffer Filling
+# ============================================================================
+# Separate kernel to fill albedo/normal/depth from primary ray hits.
+# This is independent of the main integrator and can be called optionally.
+
+"""
+    fill_aux_buffers!(film, scene, camera)
+
+Fill auxiliary buffers (albedo, normal, depth) by tracing primary rays.
+Uses KernelAbstractions for GPU compatibility.
+
+This traces one ray per pixel (center of pixel) and stores first-hit data.
+Should be called before or after main rendering - the auxiliary buffers
+are used for denoising in postprocess!.
+"""
+function fill_aux_buffers!(film::Film, scene, camera)
+    albedo = film.albedo
+    normal = film.normal
+    depth = film.depth
+    resolution = film.resolution
+    crop_bounds = film.crop_bounds
+
+    backend = KA.get_backend(albedo)
+    kernel! = aux_buffer_kernel!(backend)
+    kernel!(
+        albedo, normal, depth,
+        resolution, crop_bounds,
+        scene, camera;
+        ndrange = length(albedo)
+    )
+    KA.synchronize(backend)
+    return film
+end
+
+@kernel function aux_buffer_kernel!(albedo, normal, depth, resolution, crop_bounds, scene, camera)
+    idx = @index(Global)
+
+    # Convert linear index to 2D pixel coordinates
+    # albedo is (height, width) = (rows, cols)
+    h, _ = size(albedo)
+    row = ((idx - 1) % h) + 1
+    col = ((idx - 1) ÷ h) + 1
+
+    # Pixel coords (x=col, y=row) - flip y for camera
+    px = Float32(col) + crop_bounds.p_min[1] - 1f0
+    py = resolution[1] - (Float32(row) + crop_bounds.p_min[2] - 1f0)
+    pixel = Point2f(px + 0.5f0, py + 0.5f0)  # Center of pixel
+
+    # Generate primary ray
+    camera_sample = CameraSample(pixel, Point2f(0.5f0), 0f0)
+    ray, ω = generate_ray_differential(camera, camera_sample)
+
+    @inbounds if ω > 0f0
+        # Trace primary ray
+        hit, _primitive, si = intersect!(scene, ray)
+
+        if hit
+            # Store normal (world space)
+            normal[idx] = Vec3f(si.core.n)
+
+            # Store depth (distance from camera)
+            cam_pos = ray.o
+            hit_pos = si.core.p
+            depth[idx] = sqrt(sum((hit_pos .- cam_pos) .^ 2))
+
+            # Get albedo from material
+            # Use white as default, material-specific albedo requires material dispatch
+            albedo[idx] = RGB{Float32}(0.8f0, 0.8f0, 0.8f0)
+        else
+            # No hit - background
+            normal[idx] = Vec3f(0f0, 0f0, 0f0)
+            depth[idx] = Inf32
+            albedo[idx] = RGB{Float32}(0f0, 0f0, 0f0)
+        end
+    else
+        # Invalid ray
+        normal[idx] = Vec3f(0f0, 0f0, 0f0)
+        depth[idx] = Inf32
+        albedo[idx] = RGB{Float32}(0f0, 0f0, 0f0)
+    end
 end
 
 function save(film::Film, splat_scale::Float32 = 1f0)

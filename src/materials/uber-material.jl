@@ -37,9 +37,11 @@ FresnelConductor(ni, nt, k) = Fresnel(ni, nt, k, FRESNEL_CONDUCTOR)
 FresnelDielectric(ni::Float32, nt::Float32) = Fresnel(RGBSpectrum(ni), RGBSpectrum(nt), RGBSpectrum(0.0f0), FRESNEL_DIELECTRIC)
 FresnelNoOp() = Fresnel(RGBSpectrum(0.0f0), RGBSpectrum(0.0f0), RGBSpectrum(0.0f0), FRESNEL_NO_OP)
 
-function (f::Fresnel)(cos_θi::Float32)::Float32
+function (f::Fresnel)(cos_θi::Float32)
     if f.type === FRESNEL_DIELECTRIC
         return fresnel_dielectric(cos_θi, f.ηi[1], f.ηt[1])
+    elseif f.type === FRESNEL_CONDUCTOR
+        return fresnel_conductor(cos_θi, f.ηi, f.ηt, f.k)
     end
     return 1f0
 end
@@ -381,4 +383,93 @@ function PlasticMaterial(;
     remap_roughness=true
 )
     PlasticMaterial(_to_texture(Kd), _to_texture(Ks), _to_texture(roughness), remap_roughness)
+end
+
+# ============================================================================
+# Metal Material - Conductor with Fresnel reflectance and microfacet roughness
+# ============================================================================
+
+"""
+    MetalMaterial{EtaType, KType, RoughType}
+
+A metal/conductor material with wavelength-dependent complex index of refraction.
+
+Metals reflect light based on Fresnel equations for conductors, characterized by:
+- η (eta): Real part of complex IOR
+- k: Imaginary part (extinction coefficient)
+- roughness: Surface roughness for microfacet model
+
+# Fields
+* `eta`: Real part of complex index of refraction (wavelength-dependent)
+* `k`: Extinction coefficient (wavelength-dependent)
+* `roughness`: Surface roughness
+* `reflectance`: Color multiplier for Fresnel reflectance (for tinting)
+* `remap_roughness`: Whether to remap roughness to alpha
+"""
+struct MetalMaterial{EtaType, KType, RoughType, ReflType} <: Material
+    eta::Texture{RGBSpectrum, 2, EtaType}
+    k::Texture{RGBSpectrum, 2, KType}
+    roughness::Texture{Float32, 2, RoughType}
+    reflectance::Texture{RGBSpectrum, 2, ReflType}
+    remap_roughness::Bool
+end
+
+function MetalMaterial(
+    eta::Texture, k::Texture, roughness::Texture, reflectance::Texture, remap_roughness::Bool
+)
+    EtaType = typeof(eta.data)
+    KType = typeof(k.data)
+    RoughType = typeof(roughness.data)
+    ReflType = typeof(reflectance.data)
+    MetalMaterial{EtaType, KType, RoughType, ReflType}(eta, k, roughness, reflectance, remap_roughness)
+end
+
+# Backwards-compatible constructor without reflectance (defaults to white = no tint)
+function MetalMaterial(
+    eta::Texture, k::Texture, roughness::Texture, remap_roughness::Bool
+)
+    reflectance = ConstantTexture(RGBSpectrum(1f0))
+    MetalMaterial(eta, k, roughness, reflectance, remap_roughness)
+end
+
+# Common metal presets (approximate values at 550nm)
+const METAL_COPPER = (eta=(0.27, 0.68, 1.22), k=(3.61, 2.63, 2.29))
+const METAL_GOLD = (eta=(0.14, 0.38, 1.44), k=(3.98, 2.75, 1.95))
+const METAL_SILVER = (eta=(0.16, 0.14, 0.13), k=(4.03, 3.59, 2.62))
+const METAL_ALUMINUM = (eta=(1.35, 0.97, 0.60), k=(7.47, 6.40, 5.30))
+const METAL_IRON = (eta=(2.95, 2.93, 2.59), k=(3.10, 2.99, 2.74))
+
+"""
+    MetalMaterial(; eta=(0.2, 0.2, 0.2), k=(3.9, 3.9, 3.9), roughness=0.1, remap_roughness=true)
+
+Create a metal/conductor material with Fresnel reflectance.
+
+# Arguments
+- `eta`: Real part of complex IOR - (r,g,b) tuple, RGBSpectrum, or Texture
+- `k`: Extinction coefficient - (r,g,b) tuple, RGBSpectrum, or Texture
+- `roughness`: Surface roughness (0 = mirror-like, higher = more diffuse)
+- `reflectance`: Color multiplier for tinting the metal (default white = no tint)
+- `remap_roughness`: Whether to remap roughness to microfacet alpha
+
+# Presets
+Use the provided metal constants for realistic materials:
+- `METAL_COPPER`, `METAL_GOLD`, `METAL_SILVER`, `METAL_ALUMINUM`, `METAL_IRON`
+
+# Examples
+```julia
+MetalMaterial()                                        # Generic metal
+MetalMaterial(; METAL_COPPER..., roughness=0.05)      # Polished copper
+MetalMaterial(; METAL_GOLD..., roughness=0.1)         # Brushed gold
+MetalMaterial(eta=(0.2, 0.8, 0.2), k=(3, 3, 3))       # Custom green-tinted metal
+MetalMaterial(; METAL_GOLD..., reflectance=(1, 0.5, 0.5))  # Gold tinted red
+```
+"""
+function MetalMaterial(;
+    eta=(0.2f0, 0.2f0, 0.2f0),
+    k=(3.9f0, 3.9f0, 3.9f0),
+    roughness=0.1f0,
+    reflectance=(1f0, 1f0, 1f0),
+    remap_roughness=true
+)
+    MetalMaterial(_to_texture(eta), _to_texture(k), _to_texture(roughness), _to_texture(reflectance), remap_roughness)
 end

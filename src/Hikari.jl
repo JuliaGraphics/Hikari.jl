@@ -329,9 +329,8 @@ end
     ray::RayDifferentials, si::SurfaceInteraction, scene::S, beta::RGBSpectrum, depth::Int32
 ) where {N, S<:Scene}
     branches = [quote
-        if idx.material_type === UInt8($i)
-            mat = @inbounds materials[$i][idx.material_idx]
-            return @inline sample_bounce(mat, ray, si, scene, beta, depth)
+        @inbounds if idx.material_type === UInt8($i)
+            return @inline sample_bounce(materials[$i][idx.material_idx], ray, si, scene, beta, depth)
         end
     end for i in 1:N]
     quote
@@ -429,17 +428,85 @@ end
 # Intersect function for MaterialScene - returns hit info, primitive, and SurfaceInteraction
 # The primitive (triangle) contains material_type and material_idx for dispatch
 @inline function intersect!(ms::MaterialScene, ray::AbstractRay)
-    hit_found, triangle, distance, bary_coords = closest_hit(ms.accel, ray)
+    accel = ms.accel
 
-    if !hit_found
-        return false, triangle, SurfaceInteraction()
+    # Handle TLAS (instanced) vs BVH (non-instanced) differently
+    if accel isa TLAS
+        hit_found, triangle, distance, bary_coords, instance_id = closest_hit(accel, ray)
+
+        if !hit_found
+            return false, triangle, SurfaceInteraction()
+        end
+
+        # Convert to SurfaceInteraction (in local/BLAS space)
+        interaction = triangle_to_surface_interaction(triangle, ray, bary_coords)
+
+        # Transform surface interaction to world space using instance transform
+        # instance_id is 1-based array index into accel.instances (set during TLAS construction)
+        # Use it directly instead of searching - this ensures we get the current transform
+        # even after updates via update_transform!
+        if instance_id >= 1 && instance_id <= length(accel.instances)
+            inst = accel.instances[instance_id]
+            transform = inst.transform
+            inv_transform = inst.inv_transform
+
+            # Transform hit point to world space
+            local_p = interaction.core.p
+            world_p = Point3f(transform * Vec4f(local_p..., 1f0))
+
+            # Transform normal to world space: n_world = normalize(transpose(inv_transform) * n_local)
+            # For a 4x4 matrix, we use the upper-left 3x3 for direction transforms
+            local_n = Vec3f(interaction.core.n)
+            # transpose(inv_transform) is equivalent to inverse-transpose of transform
+            inv_t_3x3 = Mat3f(inv_transform[1,1], inv_transform[2,1], inv_transform[3,1],
+                              inv_transform[1,2], inv_transform[2,2], inv_transform[3,2],
+                              inv_transform[1,3], inv_transform[2,3], inv_transform[3,3])
+            world_n = Normal3f(normalize(inv_t_3x3 * local_n))
+
+            # Transform shading normal similarly
+            local_sn = Vec3f(interaction.shading.n)
+            world_sn = Normal3f(normalize(inv_t_3x3 * local_sn))
+
+            # Transform tangent/bitangent (these transform like directions, using the forward transform)
+            t_3x3 = Mat3f(transform[1,1], transform[2,1], transform[3,1],
+                          transform[1,2], transform[2,2], transform[3,2],
+                          transform[1,3], transform[2,3], transform[3,3])
+            # ∂p∂u and ∂p∂v are on SurfaceInteraction directly, not on core
+            world_dpdu = normalize(t_3x3 * interaction.∂p∂u)
+            world_dpdv = normalize(t_3x3 * interaction.∂p∂v)
+            # Shading tangent/bitangent
+            world_st = normalize(t_3x3 * interaction.shading.∂p∂u)
+            world_sb = normalize(t_3x3 * interaction.shading.∂p∂v)
+
+            # Reconstruct SurfaceInteraction with world-space values
+            # Interaction fields: p, time, wo, n
+            core = Interaction(world_p, interaction.core.time, interaction.core.wo, world_n)
+            # ShadingInteraction fields: n, ∂p∂u, ∂p∂v, ∂n∂u, ∂n∂v
+            shading = ShadingInteraction(world_sn, world_st, world_sb, interaction.shading.∂n∂u, interaction.shading.∂n∂v)
+            # SurfaceInteraction constructor: core, shading, uv, ∂p∂u, ∂p∂v, ∂n∂u, ∂n∂v, ∂u∂x, ∂u∂y, ∂v∂x, ∂v∂y, ∂p∂x, ∂p∂y
+            interaction = SurfaceInteraction(
+                core, shading, interaction.uv,
+                world_dpdu, world_dpdv, interaction.∂n∂u, interaction.∂n∂v,
+                interaction.∂u∂x, interaction.∂u∂y, interaction.∂v∂x, interaction.∂v∂y,
+                interaction.∂p∂x, interaction.∂p∂y
+            )
+        end
+
+        return true, triangle, interaction
+    else
+        # Non-instanced BVH path (original behavior)
+        hit_found, triangle, distance, bary_coords = closest_hit(accel, ray)
+
+        if !hit_found
+            return false, triangle, SurfaceInteraction()
+        end
+
+        # Convert to SurfaceInteraction
+        interaction = triangle_to_surface_interaction(triangle, ray, bary_coords)
+
+        # Return primitive so caller can access triangle.metadata (MaterialIndex)
+        return true, triangle, interaction
     end
-
-    # Convert to SurfaceInteraction
-    interaction = triangle_to_surface_interaction(triangle, ray, bary_coords)
-
-    # Return primitive so caller can access triangle.metadata (MaterialIndex)
-    return true, triangle, interaction
 end
 
 @inline function intersect_p(ms::MaterialScene, ray::AbstractRay)
@@ -777,6 +844,9 @@ include("integrators/sampler.jl")
 include("integrators/sppm.jl")
 include("integrators/wavefront.jl")
 include("kernel-abstractions.jl")
+
+# Postprocessing pipeline
+include("postprocess.jl")
 
 # include("model_loader.jl")
 
