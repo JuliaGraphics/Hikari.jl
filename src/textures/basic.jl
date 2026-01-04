@@ -33,3 +33,13 @@ function (c::Texture{T})(si::SurfaceInteraction)::T where {T<:TextureType}
     idx = clamp.(idx, Int32(1), s)
     @_inbounds return c.data[idx...]
 end
+
+# UV-only texture evaluation (for FastWavefront and other simplified integrators)
+@inline function evaluate_texture(tex::Texture{T}, uv::Point2f)::T where T
+    tex.isconst && return tex.const_value
+    uv_adj = Vec2f(1f0 - uv[2], uv[1])
+    s = unsafe_trunc.(Int32, size(tex.data))
+    idx = Int32(1) .+ unsafe_trunc.(Int32, (s .- Int32(1)) .* uv_adj)
+    idx = clamp.(idx, Int32(1), s)
+    @_inbounds return tex.data[idx...]
+end

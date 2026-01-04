@@ -156,7 +156,7 @@ end
 Compute specular reflection or transmission contribution by tracing a bounce ray.
 """
 @inline function specular_bounce(type, bsdf::BSDF, ray::RayDifferentials, si::SurfaceInteraction,
-                                  scene::S, beta::RGBSpectrum, depth::Int32, max_depth::Int32) where {S<:Scene}
+                                  scene::S, beta::RGBSpectrum, depth::Int32, max_depth::Int32) where {S<:AbstractScene}
     wo = si.core.wo
     ns = si.shading.n
 
@@ -253,7 +253,7 @@ Compute direct lighting and specular bounces for a surface hit.
 This is the generic implementation that works for all material types.
 """
 @inline function shade(material::Material, ray::RayDifferentials, si::SurfaceInteraction,
-                       scene::S, beta::RGBSpectrum, depth::Int32, max_depth::Int32) where {S<:Scene}
+                       scene::S, beta::RGBSpectrum, depth::Int32, max_depth::Int32) where {S<:AbstractScene}
     # Compute BSDF from material
     bsdf = compute_bsdf(material, si, false, Radiance)
 

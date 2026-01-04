@@ -29,7 +29,7 @@ struct DirectionalLight{S<:Spectrum} <: Light
 end
 
 function sample_li(
-        d::DirectionalLight{S}, ref::Interaction, u::Point2f, scene::Scene,
+        d::DirectionalLight{S}, ref::Interaction, u::Point2f, scene::AbstractScene,
     )::Tuple{S,Vec3f,Float32,VisibilityTester} where S<:Spectrum
 
     # d.direction is the direction light TRAVELS (away from light source)
@@ -48,6 +48,6 @@ The total power emitted by the directional light is related to the
 spatial extent of the scene and equals the amount of power arriving at the
 inscribed by bounding sphere disk: `I * π * r^2`.
 """
-@inline function power(d::DirectionalLight{S}, scene::Scene)::S where S<:Spectrum
+@inline function power(d::DirectionalLight{S}, scene::AbstractScene)::S where S<:Spectrum
     d.i * π * scene.world_radius^2
 end

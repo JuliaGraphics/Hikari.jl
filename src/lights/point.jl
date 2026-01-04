@@ -51,7 +51,7 @@ due to that light, assuming there are no occluding objects between them.
         shadow ray that must be traced to verify that
         there are no occluding objects between the light and reference point.
 """
-function sample_li(p::PointLight, i::Interaction, ::Point2f, ::Scene)
+function sample_li(p::PointLight, i::Interaction, ::Point2f, ::AbstractScene)
     wi = normalize(Vec3f(p.position - i.p))
     pdf = 1f0
     visibility = VisibilityTester(

@@ -109,8 +109,10 @@ end
 - scale: scale factor that is applied to the samples when writing image.
 """
 function Film(
-        resolution::Point2f, crop_bounds::Bounds2, filter::Filter,
-        diagonal::Float32, scale::Float32;
+        resolution::Point2f;
+        filter=Hikari.LanczosSincFilter(Point2f(1f0), 3f0),
+        crop_bounds::Bounds2=Hikari.Bounds2(Point2f(0f0), Point2f(1f0)),
+        diagonal=1f0, scale=1f0,
         tile_size=4, filter_table_width=16,
     )
 

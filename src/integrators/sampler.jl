@@ -89,7 +89,7 @@ end
 """
 Render scene using KernelAbstractions.
 """
-function (i::SamplerIntegrator)(scene::Scene, film, camera)
+function (i::SamplerIntegrator)(scene::AbstractScene, film, camera)
     sample_bounds = get_sample_bounds(film)
     tile_size = film.tile_size
     filter_radius = film.filter_radius
@@ -100,10 +100,12 @@ function (i::SamplerIntegrator)(scene::Scene, film, camera)
     backend = KA.get_backend(film.tiles.contrib_sum)
     kernel! = whitten_kernel!(backend, (8, 8))
     s_filter_table = Mat{size(filter_table)...}(filter_table)
+    # Convert to ImmutableScene for GPU kernels (immutable, bitstype-compatible)
+    iscene = ImmutableScene(scene)
     kernel!(
         film.pixels, film.crop_bounds, sample_bounds,
         tiles, tile_size,
-        max_depth, scene, sampler,
+        max_depth, iscene, sampler,
         camera, s_filter_table, filter_radius;
         ndrange=film.ntiles
     )
@@ -143,7 +145,7 @@ end
 end
 
 function li(
-    sampler, max_depth, ray::RayDifferentials, scene::Scene, depth::Int32,
+    sampler, max_depth, ray::RayDifferentials, scene::AbstractScene, depth::Int32,
 )::RGBSpectrum
 
     l = RGBSpectrum(0.0f0)
@@ -173,7 +175,7 @@ end
     materials::T, idx::MaterialIndex,
     sampler, max_depth, ray::RayDifferentials, si::SurfaceInteraction,
     scene::S, lights, wo, depth::Int32
-) where {T<:Tuple, S<:Scene}
+) where {T<:Tuple, S<:AbstractScene}
     N = length(T.parameters)
     branches = [quote
         @inbounds if idx.material_type === UInt8($i)
@@ -194,7 +196,7 @@ end
 
 @inline function specular_reflect(
         bsdf, sampler, max_depth, ray::RayDifferentials,
-        si::SurfaceInteraction, scene::Scene, depth::Int32,
+        si::SurfaceInteraction, scene::AbstractScene, depth::Int32,
     )
 
     # Compute specular reflection direction `wi` and BSDF value.
@@ -243,7 +245,7 @@ so no additional perturbation is needed.
 """
 @inline function glossy_reflect(
         bsdf, sampler, max_depth, ray::RayDifferentials,
-        si::SurfaceInteraction, scene::Scene, depth::Int32,
+        si::SurfaceInteraction, scene::AbstractScene, depth::Int32,
     )
     # Check if BSDF has glossy reflection component
     type = BSDF_REFLECTION | BSDF_GLOSSY
@@ -267,7 +269,7 @@ end
 
 @inline function specular_transmit(
     bsdf, sampler, max_depth, ray::RayDifferentials,
-    surface_intersect::SurfaceInteraction, scene::Scene, depth::Int32,
+    surface_intersect::SurfaceInteraction, scene::AbstractScene, depth::Int32,
 )
 
     # Compute specular reflection direction `wi` and BSDF value.
@@ -350,7 +352,7 @@ end
 
 @inline function li_iterative(
         sampler, max_depth::Int32, initial_ray::RayDifferentials, scene::S
-    )::RGBSpectrum where {S<:Scene}
+    )::RGBSpectrum where {S<:AbstractScene}
     # Use the recursive li function which creates BSDF once per hit
     # This is more allocation-efficient than the shade_material approach
     return li(sampler, max_depth, initial_ray, scene, Int32(0))
@@ -401,65 +403,4 @@ function sample_tiled(scene::Scene, film)
         sample_kernel(i, camera, scene, film, film_tile, tile_bounds)
     end
     return film
-end
-
-struct Whitten5{TMat<:AbstractMatrix{FilmTilePixel},PMat<:AbstractMatrix{Pixel}}
-    tiles::TMat
-    pixel::PMat
-    sample_bounds::Bounds2
-    crop_bounds::Bounds2
-    resolution::Point2f
-    ntiles::NTuple{2,Int32}
-    tile_size::Int32
-    fiter_table::Matrix{Float32}
-    filter_radius::Point2f
-    sampler::Hikari.UniformSampler
-    max_depth::Int32
-end
-
-function Whitten5(film; samples_per_pixel=8, tile_size=4, max_depth=5)
-    sample_bounds = get_sample_bounds(film)
-    sample_extent = diagonal(sample_bounds)
-    resolution = film.resolution
-    n_tiles = Int64.(floor.((sample_extent .+ tile_size) ./ tile_size))
-    wtiles, htiles = n_tiles .- 1
-    filter_radius = film.filter.radius
-    filter_table = generate_filter_table(film.filter)
-    ntiles = (wtiles) * (htiles)
-    tile_size_l = tile_size * tile_size
-    contrib_sum = RGBSpectrum.(zeros(Vec3f, tile_size_l, ntiles))
-    filter_weight_sum = zeros(Float32, tile_size_l, ntiles)
-    tiles = StructArray{FilmTilePixel}(; contrib_sum, filter_weight_sum)
-    sampler = Hikari.UniformSampler(samples_per_pixel)
-    li = LinearIndices((wtiles, htiles))
-    @assert length(li) == ntiles
-    Whitten5(tiles, film.pixels, sample_bounds, film.crop_bounds, resolution, Int32.((wtiles, htiles)), Int32(tile_size), filter_table, filter_radius, sampler, Int32(max_depth))
-end
-
-"""
-Render scene.
-"""
-function (w::Whitten5)(scene::Hikari.Scene, camera)
-    tiles = w.tiles
-    resolution = w.resolution
-    filter_table = w.fiter_table
-    filter_radius = w.filter_radius
-    sampler = w.sampler
-    max_depth = w.max_depth
-    sample_bounds = w.sample_bounds
-    tile_linear = LinearIndices(w.ntiles)
-    spp_sqr = 1.0f0 / √Float32(sampler.samples_per_pixel)
-    Threads.@threads for tile_xy in CartesianIndices(w.ntiles)
-        i, j = Int32.(Tuple(tile_xy)) .- Int32(1)
-        tile_column = tile_linear[tile_xy]
-        tile_start = Point2f(i, j)
-        tb_min = (sample_bounds.p_min .+ tile_start .* w.tile_size) .+ 1
-        tb_max = min.(tb_min .+ (w.tile_size - 1), sample_bounds.p_max)
-        tile_bounds = Bounds2(tb_min, tb_max)
-        spp_sqr = 1.0f0 / √Float32(sampler.samples_per_pixel)
-        for pixel in tile_bounds
-            sample_kernel_inner!(tiles, tile_bounds, tile_column, max_depth, scene, sampler, camera, pixel, spp_sqr, filter_table, filter_radius, resolution)
-        end
-        merge_film_tile!(film.pixels, film.crop_bounds, tiles, tile_bounds, Int32(tile_column))
-    end
 end

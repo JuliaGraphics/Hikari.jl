@@ -39,7 +39,7 @@ function SunLight(l::S, direction::Vec3f; kwargs...) where S<:Spectrum
 end
 
 function sample_li(
-        s::SunLight{S}, ref::Interaction, u::Point2f, scene::Scene,
+        s::SunLight{S}, ref::Interaction, u::Point2f, scene::AbstractScene,
     )::Tuple{S,Vec3f,Float32,VisibilityTester} where S<:Spectrum
 
     # s.direction is the direction light TRAVELS (away from light source)
@@ -52,6 +52,6 @@ function sample_li(
     s.i, wi, 1f0, tester
 end
 
-@inline function power(s::SunLight{S}, scene::Scene)::S where S<:Spectrum
+@inline function power(s::SunLight{S}, scene::AbstractScene)::S where S<:Spectrum
     s.i * π * scene.world_radius^2
 end

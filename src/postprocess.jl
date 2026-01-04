@@ -92,8 +92,58 @@ Alternative filmic curve with good highlight rolloff.
 end
 
 # ============================================================================
-# Main Postprocessing Function
+# Main Postprocessing Function (KernelAbstractions for CPU/GPU)
 # ============================================================================
+
+# Tonemap mode constants for kernel dispatch
+const TONEMAP_NONE = UInt8(0)
+const TONEMAP_REINHARD = UInt8(1)
+const TONEMAP_REINHARD_EXT = UInt8(2)
+const TONEMAP_ACES = UInt8(3)
+const TONEMAP_UNCHARTED2 = UInt8(4)
+const TONEMAP_FILMIC = UInt8(5)
+
+@inline function _apply_tonemap(r::Float32, g::Float32, b::Float32, mode::UInt8, wp::Float32)
+    if mode == TONEMAP_REINHARD
+        return _tonemap_reinhard(r, g, b)
+    elseif mode == TONEMAP_REINHARD_EXT
+        return _tonemap_reinhard_extended(r, g, b, wp)
+    elseif mode == TONEMAP_ACES
+        return _tonemap_aces(r, g, b)
+    elseif mode == TONEMAP_UNCHARTED2
+        return _tonemap_uncharted2(r, g, b)
+    elseif mode == TONEMAP_FILMIC
+        return _tonemap_filmic(r, g, b)
+    else
+        # Linear clamp
+        return clamp(r, 0f0, 1f0), clamp(g, 0f0, 1f0), clamp(b, 0f0, 1f0)
+    end
+end
+
+@kernel function postprocess_kernel!(dst, @Const(src), exposure::Float32, tonemap_mode::UInt8,
+                                      inv_gamma::Float32, apply_gamma::Bool, white_point::Float32)
+    i = @index(Global, Linear)
+    @inbounds begin
+        c = src[i]
+
+        # Apply exposure
+        r = c.r * exposure
+        g = c.g * exposure
+        b = c.b * exposure
+
+        # Apply tonemapping
+        r, g, b = _apply_tonemap(r, g, b, tonemap_mode, white_point)
+
+        # Apply gamma correction
+        if apply_gamma
+            r = r^inv_gamma
+            g = g^inv_gamma
+            b = b^inv_gamma
+        end
+
+        dst[i] = RGB{Float32}(r, g, b)
+    end
+end
 
 """
     postprocess!(film::Film; exposure=1.0f0, tonemap=:aces, gamma=2.2f0, white_point=4.0f0)
@@ -102,6 +152,8 @@ Apply postprocessing to film.framebuffer and write result to film.postprocess.
 
 This function is non-destructive: the original framebuffer is preserved, allowing
 you to call postprocess! multiple times with different parameters.
+
+Works on both CPU and GPU arrays via KernelAbstractions.
 
 # Arguments
 - `film`: The Film containing rendered data
@@ -139,47 +191,32 @@ function postprocess!(film::Film;
     src = film.framebuffer
     dst = film.postprocess
 
-    # Convert to Float32
+    # Convert parameters
     exp_f32 = Float32(exposure)
     wp_f32 = Float32(white_point)
     inv_gamma = isnothing(gamma) ? 1.0f0 : 1f0 / Float32(gamma)
     apply_gamma = !isnothing(gamma)
 
-    @inbounds for i in eachindex(src)
-        c = src[i]
-
-        # Apply exposure
-        r = c.r * exp_f32
-        g = c.g * exp_f32
-        b = c.b * exp_f32
-
-        # Apply tonemapping
-        if tonemap === :reinhard
-            r, g, b = _tonemap_reinhard(r, g, b)
-        elseif tonemap === :reinhard_extended
-            r, g, b = _tonemap_reinhard_extended(r, g, b, wp_f32)
-        elseif tonemap === :aces
-            r, g, b = _tonemap_aces(r, g, b)
-        elseif tonemap === :uncharted2
-            r, g, b = _tonemap_uncharted2(r, g, b)
-        elseif tonemap === :filmic
-            r, g, b = _tonemap_filmic(r, g, b)
-        else
-            # Linear clamp
-            r = clamp(r, 0f0, 1f0)
-            g = clamp(g, 0f0, 1f0)
-            b = clamp(b, 0f0, 1f0)
-        end
-
-        # Apply gamma correction
-        if apply_gamma
-            r = r^inv_gamma
-            g = g^inv_gamma
-            b = b^inv_gamma
-        end
-
-        dst[i] = RGB{Float32}(r, g, b)
+    # Map tonemap symbol to mode constant
+    tonemap_mode = if tonemap === :reinhard
+        TONEMAP_REINHARD
+    elseif tonemap === :reinhard_extended
+        TONEMAP_REINHARD_EXT
+    elseif tonemap === :aces
+        TONEMAP_ACES
+    elseif tonemap === :uncharted2
+        TONEMAP_UNCHARTED2
+    elseif tonemap === :filmic
+        TONEMAP_FILMIC
+    else
+        TONEMAP_NONE
     end
+
+    # Get backend from array type and launch kernel
+    backend = KernelAbstractions.get_backend(src)
+    kernel! = postprocess_kernel!(backend)
+    kernel!(dst, src, exp_f32, tonemap_mode, inv_gamma, apply_gamma, wp_f32; ndrange=length(src))
+    KernelAbstractions.synchronize(backend)
 
     return film.postprocess
 end

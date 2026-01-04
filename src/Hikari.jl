@@ -157,10 +157,7 @@ end
     sinθ ≈ 0f0 ? 1f0 : clamp(w[2] / sinθ, -1f0, 1f0)
 end
 
-"""
-Reflect `wo` about `n`.
-"""
-@inline reflect(wo::Vec3f, n::Vec3f) = -wo + 2f0 * (wo ⋅ n) * n
+# reflect is defined in materials/spectral-eval.jl
 
 function partition!(x::Vector, range::UnitRange, predicate::Function)
     left = range[1]
@@ -173,14 +170,7 @@ function partition!(x::Vector, range::UnitRange, predicate::Function)
     left
 end
 
-function coordinate_system(v1::Vec3f)
-    if abs(v1[1]) > abs(v1[2])
-        v2 = Vec3f(-v1[3], 0, v1[1]) / sqrt(v1[1] * v1[1] + v1[3] * v1[3])
-    else
-        v2 = Vec3f(0, v1[3], -v1[2]) / sqrt(v1[2] * v1[2] + v1[3] * v1[3])
-    end
-    v1, v2, v1 × v2
-end
+# coordinate_system is defined in materials/spectral-eval.jl
 
 function spherical_direction(sin_θ::Float32, cos_θ::Float32, ϕ::Float32)
     Vec3f(sin_θ * cos(ϕ), sin_θ * sin(ϕ), cos_θ)
@@ -207,7 +197,20 @@ Flip normal `n` so that it lies in the same hemisphere as `v`.
 include("spectrum.jl")
 include("surface_interaction.jl")
 
-struct Scene{P, L<:NTuple{N, Light} where N}
+# Abstract scene type for dispatch - allows both mutable and immutable implementations
+abstract type AbstractScene end
+
+# Mutable scene for CPU use - allows updating lights after creation
+mutable struct Scene{P, L<:NTuple{N, Light} where N} <: AbstractScene
+    lights::L
+    aggregate::P
+    bound::Bounds3
+    world_center::Point3f
+    world_radius::Float32
+end
+
+# Immutable scene for e.g. GPU use - required for GPU kernels (must be bitstype)
+struct ImmutableScene{P, L<:NTuple{N, Light} where N} <: AbstractScene
     lights::L
     aggregate::P
     bound::Bounds3
@@ -221,21 +224,19 @@ function Scene(
     ltuple = Tuple(lights)
     bounds = world_bound(aggregate)
     world_center, world_radius = bounding_sphere(bounds)
-    # Preprocess lights that need scene bounds (e.g., EnvironmentLight)
-    for light in ltuple
-        preprocess!(light, bounds)
-    end
     Scene{P,typeof(ltuple)}(ltuple, aggregate, bounds, world_center, world_radius)
 end
 
-# Default preprocess! does nothing for lights that don't need it
-preprocess!(::Light, ::Bounds3) = nothing
+# Convert Scene to ImmutableScene for GPU rendering
+ImmutableScene(s::Scene) = ImmutableScene(s.lights, s.aggregate, s.bound, s.world_center, s.world_radius)
+ImmutableScene(s::ImmutableScene) = s  # Already immutable
 
-@inline function intersect!(scene::Scene, ray::AbstractRay)
+# Common interface for both scene types
+@inline function intersect!(scene::AbstractScene, ray::AbstractRay)
     intersect!(scene.aggregate, ray)
 end
 
-@inline function intersect_p(scene::Scene, ray::AbstractRay)
+@inline function intersect_p(scene::AbstractScene, ray::AbstractRay)
     intersect_p(scene.aggregate, ray)
 end
 
@@ -310,7 +311,7 @@ end
 @inline @generated function shade_material(
     materials::NTuple{N}, idx::MaterialIndex,
     ray::RayDifferentials, si::SurfaceInteraction, scene::S, beta::RGBSpectrum, depth::Int32, max_depth::Int32
-) where {N, S<:Scene}
+) where {N, S<:AbstractScene}
     branches = [quote
         @inbounds if idx.material_type === UInt8($i)
             return @inline shade(materials[$i][idx.material_idx], ray, si, scene, beta, depth, max_depth)
@@ -327,7 +328,7 @@ end
 @inline @generated function sample_material_bounce(
     materials::NTuple{N}, idx::MaterialIndex,
     ray::RayDifferentials, si::SurfaceInteraction, scene::S, beta::RGBSpectrum, depth::Int32
-) where {N, S<:Scene}
+) where {N, S<:AbstractScene}
     branches = [quote
         @inbounds if idx.material_type === UInt8($i)
             return @inline sample_bounce(materials[$i][idx.material_idx], ray, si, scene, beta, depth)
@@ -808,6 +809,13 @@ include("reflection/Reflection.jl")
 include("materials/bsdf.jl")
 include("materials/material.jl")
 include("materials/volume.jl")
+include("materials/emissive.jl")
+
+# Spectral rendering support (for PhysicalWavefront)
+include("spectral/spectral.jl")
+include("spectral/color.jl")
+include("spectral/uplift.jl")
+include("materials/spectral-eval.jl")
 include("primitive.jl")
 
 # GeometricPrimitive convenience constructor for MaterialScene
@@ -842,11 +850,26 @@ include("lights/environment.jl")
 
 include("integrators/sampler.jl")
 include("integrators/sppm.jl")
-include("integrators/wavefront.jl")
+include("integrators/fast-wavefront.jl")
+
+# PhysicalWavefront spectral path tracer
+include("integrators/physical-wavefront/workitems.jl")
+include("integrators/physical-wavefront/workqueue.jl")
+include("integrators/physical-wavefront/material-dispatch.jl")
+include("integrators/physical-wavefront/lights.jl")
+include("integrators/physical-wavefront/camera.jl")
+include("integrators/physical-wavefront/intersection.jl")
+include("integrators/physical-wavefront/material-eval.jl")
+include("integrators/physical-wavefront/film-update.jl")
+include("integrators/physical-wavefront/physical-wavefront.jl")
+
 include("kernel-abstractions.jl")
 
 # Postprocessing pipeline
 include("postprocess.jl")
+
+# Denoising
+include("denoise.jl")
 
 # include("model_loader.jl")
 

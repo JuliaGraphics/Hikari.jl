@@ -14,7 +14,7 @@ struct VisibilityTester
     p1::Interaction
 end
 
-@inline function unoccluded(t::VisibilityTester, scene::Scene)::Bool
+@inline function unoccluded(t::VisibilityTester, scene::AbstractScene)::Bool
     # Explicit isinf check to avoid tuple iteration in SPIR-V (any() causes PHI node errors)
     p0_inf = isinf(t.p0.p[1]) || isinf(t.p0.p[2]) || isinf(t.p0.p[3])
     p1_inf = isinf(t.p1.p[1]) || isinf(t.p1.p[2]) || isinf(t.p1.p[3])
@@ -24,7 +24,7 @@ end
     !intersect_p(scene, spawn_ray(t.p0, t.p1))
 end
 
-function trace(t::VisibilityTester, scene::Scene)::RGBSpectrum
+function trace(t::VisibilityTester, scene::AbstractScene)::RGBSpectrum
     ray = spawn_ray(t.p0, t.p1)
     s = RGBSpectrum(1f0)
     while true

@@ -79,6 +79,17 @@ struct PerspectiveCamera <: Camera
     end
 end
 
+
+function PerspectiveCamera(eyepos, lookat, film; up=Vec3f(0, 1, 0), fov=55)
+    screen = Hikari.Bounds2(Point2f(-1f0), Point2f(1f0))
+    # Camera positioned to match the original perspective
+    # Low angle view showing spheres with their reflections on the mirror floor
+    return PerspectiveCamera(
+        Hikari.look_at(eyepos, lookat, up),
+        screen, 0f0, 1f0, 0f0, 1f6, fov, film,
+    )
+end
+
 @inline get_film(c::PerspectiveCamera)::Film = c.core.core.film
 
 @inline function generate_ray(
@@ -86,12 +97,10 @@ end
     )::Tuple{Ray,Float32}
     # Compute raster & camera sample positions.
     # p_film -> in pixels
-    # Explicit indexing to avoid tuple iteration/splatting in SPIR-V
-    p_pixel = Point3f(sample.film[1], sample.film[2], 0f0)
+    p_pixel = Point3f(sample.film..., 0f0)
     p_camera = camera.core.raster_to_camera(p_pixel)
     o = Point3f(0)
-    # Explicit indexing to avoid tuple iteration in SPIR-V
-    d = normalize(Vec3f(p_camera[1], p_camera[2], p_camera[3]))
+    d = normalize(p_camera)
     # Modify ray for depth of field.
     if camera.core.lens_radius > 0
         # Sample points on lens.
@@ -101,9 +110,8 @@ end
         p_focus = o .+ d * t
         # Update ray for effects of lens.
         o = Point3f(p_lens[1], p_lens[2], 0f0)
-        # Explicit indexing to avoid tuple iteration in SPIR-V
         p_diff = p_focus .- o
-        d = normalize(Vec3f(p_diff[1], p_diff[2], p_diff[3]))
+        d = normalize(p_diff)
     end
 
     time = lerp(
@@ -114,6 +122,6 @@ end
     # TODO add medium
     ctw = camera.core.core.camera_to_world
     o = ctw(o)
-    d = ctw(d)
+    d = ctw(Vec3f(d))  # Convert to Vec3f for proper direction transformation
     return Ray(d=normalize(d), o=o, time=time), 1.0f0
 end
