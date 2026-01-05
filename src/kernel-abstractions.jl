@@ -2,49 +2,59 @@ import KernelAbstractions as KA
 
 KA.@kernel some_kernel_f() = nothing
 
-function to_gpu(ArrayType, m::Hikari.Texture)
-    @assert !Hikari.no_texture(m)
-    return Hikari.Texture(
-        to_gpu(ArrayType, m.data),
-        m.const_value,
-        m.isconst,
-    )
+# Helper to check if a texture has actual data that needs GPU conversion
+has_texture_data(t::Hikari.Texture) = isdefined(t, :data) && length(t.data) > 0
+
+function to_gpu(ArrayType, m::Hikari.Texture{ElType, N, ArrType}) where {ElType, N, ArrType}
+    if has_texture_data(m)
+        # Convert actual texture data to GPU device array
+        return Hikari.Texture(
+            Raycore.to_gpu(ArrayType, m.data),
+            m.const_value,
+            m.isconst,
+        )
+    else
+        # For constant textures, use SMatrix{0,0,T,0} as bitstype placeholder
+        # No GPU memory needed - the const_value is used directly via dispatch
+        return Hikari.Texture(SMatrix{0,0,ElType,0}(), m.const_value, true)
+    end
 end
 
 # GPU conversion for each material type
+# All textures are converted - to_gpu handles both data textures and constant textures
 
 function to_gpu(ArrayType, m::Hikari.MatteMaterial)
-    Kd = Hikari.no_texture(m.Kd) ? m.Kd : to_gpu(ArrayType, m.Kd)
-    σ = Hikari.no_texture(m.σ) ? m.σ : to_gpu(ArrayType, m.σ)
+    Kd = to_gpu(ArrayType, m.Kd)
+    σ = to_gpu(ArrayType, m.σ)
     return Hikari.MatteMaterial(Kd, σ)
 end
 
 function to_gpu(ArrayType, m::Hikari.MirrorMaterial)
-    Kr = Hikari.no_texture(m.Kr) ? m.Kr : to_gpu(ArrayType, m.Kr)
+    Kr = to_gpu(ArrayType, m.Kr)
     return Hikari.MirrorMaterial(Kr)
 end
 
 function to_gpu(ArrayType, m::Hikari.GlassMaterial)
-    Kr = Hikari.no_texture(m.Kr) ? m.Kr : to_gpu(ArrayType, m.Kr)
-    Kt = Hikari.no_texture(m.Kt) ? m.Kt : to_gpu(ArrayType, m.Kt)
-    u_roughness = Hikari.no_texture(m.u_roughness) ? m.u_roughness : to_gpu(ArrayType, m.u_roughness)
-    v_roughness = Hikari.no_texture(m.v_roughness) ? m.v_roughness : to_gpu(ArrayType, m.v_roughness)
-    index = Hikari.no_texture(m.index) ? m.index : to_gpu(ArrayType, m.index)
+    Kr = to_gpu(ArrayType, m.Kr)
+    Kt = to_gpu(ArrayType, m.Kt)
+    u_roughness = to_gpu(ArrayType, m.u_roughness)
+    v_roughness = to_gpu(ArrayType, m.v_roughness)
+    index = to_gpu(ArrayType, m.index)
     return Hikari.GlassMaterial(Kr, Kt, u_roughness, v_roughness, index, m.remap_roughness)
 end
 
 function to_gpu(ArrayType, m::Hikari.PlasticMaterial)
-    Kd = Hikari.no_texture(m.Kd) ? m.Kd : to_gpu(ArrayType, m.Kd)
-    Ks = Hikari.no_texture(m.Ks) ? m.Ks : to_gpu(ArrayType, m.Ks)
-    roughness = Hikari.no_texture(m.roughness) ? m.roughness : to_gpu(ArrayType, m.roughness)
+    Kd = to_gpu(ArrayType, m.Kd)
+    Ks = to_gpu(ArrayType, m.Ks)
+    roughness = to_gpu(ArrayType, m.roughness)
     return Hikari.PlasticMaterial(Kd, Ks, roughness, m.remap_roughness)
 end
 
 function to_gpu(ArrayType, m::Hikari.MetalMaterial)
-    eta = Hikari.no_texture(m.eta) ? m.eta : to_gpu(ArrayType, m.eta)
-    k = Hikari.no_texture(m.k) ? m.k : to_gpu(ArrayType, m.k)
-    roughness = Hikari.no_texture(m.roughness) ? m.roughness : to_gpu(ArrayType, m.roughness)
-    reflectance = Hikari.no_texture(m.reflectance) ? m.reflectance : to_gpu(ArrayType, m.reflectance)
+    eta = to_gpu(ArrayType, m.eta)
+    k = to_gpu(ArrayType, m.k)
+    roughness = to_gpu(ArrayType, m.roughness)
+    reflectance = to_gpu(ArrayType, m.reflectance)
     return Hikari.MetalMaterial(eta, k, roughness, reflectance, m.remap_roughness)
 end
 
@@ -99,10 +109,11 @@ to_gpu(::Type, light::Hikari.AmbientLight) = light
 to_gpu_lights(ArrayType, lights::Tuple) = map(l -> to_gpu(ArrayType, l), lights)
 
 # Scene GPU conversion - uses Raycore.to_gpu which handles preservation via global PRESERVE
+# Returns ImmutableScene for GPU (mutable structs can't be passed to GPU kernels)
 function to_gpu(ArrayType, scene::Hikari.Scene)
     aggregate = to_gpu(ArrayType, scene.aggregate)
     lights = to_gpu_lights(ArrayType, scene.lights)
-    return Hikari.Scene(lights, aggregate, scene.bound, scene.world_center, scene.world_radius)
+    return Hikari.ImmutableScene(lights, aggregate, scene.bound, scene.world_center, scene.world_radius)
 end
 
 @kernel function ka_trace_image!(img, camera, scene, sampler, max_depth)

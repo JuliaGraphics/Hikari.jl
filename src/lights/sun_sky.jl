@@ -202,7 +202,7 @@ end
 Sample incident radiance at a point - returns directional sun illumination.
 """
 function sample_li(
-    light::SunSkyLight{S}, ref::Interaction, u::Point2f, scene::Scene,
+    light::SunSkyLight{S}, ref::Interaction, u::Point2f, scene::AbstractScene,
 )::Tuple{S,Vec3f,Float32,VisibilityTester} where S<:Spectrum
     # Direction TO the sun
     wi = light.sun_direction
@@ -238,6 +238,6 @@ end
 """
 Approximate power - not accurate but needed for interface.
 """
-@inline function power(light::SunSkyLight{S}, scene::Scene)::S where S<:Spectrum
+@inline function power(light::SunSkyLight{S}, scene::AbstractScene)::S where S<:Spectrum
     light.sun_intensity * Float32(π) * scene.world_radius^2
 end

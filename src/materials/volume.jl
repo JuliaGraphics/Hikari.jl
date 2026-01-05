@@ -229,8 +229,8 @@ This version checks for scene intersections DURING ray marching, so objects
 inside or in front of the volume are properly rendered with correct transmittance.
 """
 function shade(cloud::CloudVolume, ray::RayDifferentials, si::SurfaceInteraction,
-               scene::Scene, beta::RGBSpectrum, depth::Int32, max_depth::Int32;
-               step_size::Float32=0.02f0, shadow_steps::Int=16)
+               scene::S, beta::RGBSpectrum, depth::Int32, max_depth::Int32;
+               step_size::Float32=0.02f0, shadow_steps::Int=16) where {S<:AbstractScene}
 
     # Volume bounds
     box_min = cloud.origin
@@ -382,9 +382,20 @@ For volumes, we handle everything in shade() including the continuation ray,
 so no bounce is needed here.
 """
 function sample_bounce(cloud::CloudVolume, ray::RayDifferentials, si::SurfaceInteraction,
-                       scene::Scene, beta::RGBSpectrum, depth::Int32)
+                       scene::AbstractScene, beta::RGBSpectrum, depth::Int32)
     # Everything is handled in shade() to avoid double ray-marching
     return (false, ray, RGBSpectrum(0f0), Int32(0))
+end
+
+"""
+    compute_bsdf(cloud::CloudVolume, si, allow_multiple_lobes, transport) -> BSDF
+
+Returns a dummy BSDF for volume materials. Volumes don't use BSDF-based shading;
+they use ray marching in shade() instead. This method exists so that
+compute_bsdf_for_material can handle CloudVolume without special-casing.
+"""
+@inline function compute_bsdf(::CloudVolume, si::SurfaceInteraction, ::Bool, transport)
+    return BSDF(si)
 end
 
 # ============================================================================

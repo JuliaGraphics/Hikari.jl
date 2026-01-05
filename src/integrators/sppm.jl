@@ -44,37 +44,37 @@ struct SPPMPixel
     end
 end
 
-struct SPPMIntegrator <: Integrator
+struct SPPM <: Integrator
     initial_search_radius::Float32
     max_depth::Int64
-    n_iterations::Int64
+    iterations::Int64
     photons_per_iteration::Int64
     write_frequency::Int64
-
-    function SPPMIntegrator(
-        initial_search_radius::Float32, max_depth::Int64,
-        n_iterations::Int64, film, photons_per_iteration::Int64=-1,
-        write_frequency::Int64 = 1,
-    )
-        photons_per_iteration = (
-            photons_per_iteration > 0
-            ? photons_per_iteration : area(film.crop_bounds)
-        )
-        new(
-            initial_search_radius, max_depth,
-            n_iterations, photons_per_iteration, write_frequency,
-        )
-    end
 end
 
-function (i::SPPMIntegrator)(scene::Scene, film::Film, camera::Camera)
+function SPPM(;
+    search_radius::Real = 0.075f0,
+    max_depth::Integer = 5,
+    iterations::Integer = 100,
+    photons_per_iteration::Integer = -1,  # -1 means auto (based on film size)
+    write_frequency::Integer = 1,
+)
+    SPPM(
+        Float32(search_radius),
+        Int64(max_depth),
+        Int64(iterations),
+        Int64(photons_per_iteration),
+        Int64(write_frequency),
+    )
+end
 
+function (integrator::SPPM)(scene::Scene, film::Film, camera::Camera)
     pixel_bounds = film.crop_bounds
 
     b_sides = inclusive_sides(pixel_bounds)
     n_pixels = UInt64(b_sides[1] * b_sides[2])
     pixels = StructArray{SPPMPixel}(undef, Int(b_sides[2]), Int(b_sides[1]))
-    pixels.radius .= i.initial_search_radius
+    pixels.radius .= integrator.initial_search_radius
     pixels.Ld .= (RGBSpectrum(0.0f0),)
     pixels.ϕ_x .= 0f0
     pixels.ϕ_y .= 0f0
@@ -87,11 +87,14 @@ function (i::SPPMIntegrator)(scene::Scene, film::Film, camera::Camera)
     visible_points.wo .= (Vec3f(0f0),)
     visible_points.β .= (RGBSpectrum(0f0),)
 
+    # Auto-determine photons_per_iteration if not specified
+    photons_per_iter = integrator.photons_per_iteration > 0 ?
+        integrator.photons_per_iteration : Int64(area(film.crop_bounds))
 
     grid = [Int32[] for _ in 1:n_pixels]
 
     γ = 2f0 / 3f0
-    inv_sqrt_spp = Float32(1f0 / sqrt(i.n_iterations))
+    inv_sqrt_spp = Float32(1f0 / sqrt(integrator.iterations))
     light_distribution = compute_light_power_distribution(scene)
 
     tile_size = 16
@@ -99,23 +102,23 @@ function (i::SPPMIntegrator)(scene::Scene, film::Film, camera::Camera)
     n_tiles = Int64.(floor.((pixel_extent .+ tile_size) ./ tile_size))
 
     sampler = UniformSampler(1)
-    for iteration in 1:i.n_iterations
+    for iteration in 1:integrator.iterations
         _generate_visible_sppm_points!(
-            i, pixels, visible_points, scene, camera,
+            integrator, pixels, visible_points, scene, camera,
             n_tiles, tile_size, sampler,
             pixel_bounds, inv_sqrt_spp,
         )
         _clean_grid!(grid)
         grid_bounds, grid_resolution = _populate_grid!(grid, pixels, visible_points)
         _trace_photons!(
-            i, pixels, visible_points, scene, camera, iteration, light_distribution,
+            integrator, pixels, visible_points, scene, camera, iteration, light_distribution,
             grid, grid_bounds, grid_resolution,
-            n_pixels,
+            n_pixels, photons_per_iter,
         )
         _update_pixels!(pixels, visible_points, γ)
     end
     # Convert SPPM pixels to image and write to framebuffer
-    image = _sppm_to_image(i, pixels, i.n_iterations)
+    image = _sppm_to_image(integrator, pixels, integrator.iterations)
     set_image!(film, image)
     to_framebuffer!(film, 1f0)
 end
@@ -226,7 +229,7 @@ end
 end
 
 function _generate_visible_sppm_points!(
-        i::SPPMIntegrator,
+        i::SPPM,
         pixels::AbstractMatrix{SPPMPixel}, vps::AbstractMatrix{VisiblePoint},
         scene::Scene, camera::Camera,
         n_tiles::Point2, tile_size::Int64, sampler::S,
@@ -318,17 +321,17 @@ end
 
 
 function _trace_photons!(
-        i::SPPMIntegrator, pixels::AbstractMatrix{SPPMPixel}, vps::AbstractMatrix{VisiblePoint},
+        i::SPPM, pixels::AbstractMatrix{SPPMPixel}, vps::AbstractMatrix{VisiblePoint},
         scene::Scene, camera::Camera, iteration::Int64,
         light_distribution::Distribution1D,
         grid::Vector{Vector{Int32}},
         grid_bounds::Bounds3, grid_resolution::Point3,
-        n_pixels::UInt64,
+        n_pixels::UInt64, photons_per_iter::Int64,
     )
     # Trace photons and accumulate contributions.
-    halton_base = UInt64(iteration - 1) * UInt64(i.photons_per_iteration)
+    halton_base = UInt64(iteration - 1) * UInt64(photons_per_iter)
     bar = get_progress_bar(
-        i.photons_per_iteration, "[$iteration] Photon pass: ",
+        photons_per_iter, "[$iteration] Photon pass: ",
     )
     shutter_open = camera.core.core.shutter_open
     shutter_close = camera.core.core.shutter_close
@@ -340,7 +343,7 @@ function _trace_photons!(
     p = vps.p
     wo = vps.wo
     bsdfs = vps.bsdf
-    Threads.@threads for photon_index in 0:i.photons_per_iteration-1
+    Threads.@threads for photon_index in 0:photons_per_iter-1
         # Follow photon path for `photon_index`.
         halton_index = halton_base + photon_index
         halton_dim = 0
@@ -489,7 +492,7 @@ function _update_pixels!(pixels::AbstractMatrix{SPPMPixel}, vps::AbstractMatrix{
 end
 
 function _sppm_to_image(
-        i::SPPMIntegrator, pixels::AbstractMatrix{SPPMPixel}, iteration::Int64,
+        i::SPPM, pixels::AbstractMatrix{SPPMPixel}, iteration::Int64,
     )
 
     @real_assert iteration > 0

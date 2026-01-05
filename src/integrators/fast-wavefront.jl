@@ -2,7 +2,7 @@
 # Fast Wavefront Path Tracer Integrator
 # ============================================================================
 # A simplified wavefront renderer with basic diffuse + shadow + reflection
-# shading. Uses the same interface as WhittedIntegrator: (scene, film, camera)
+# shading. Uses the same interface as Whitted: (scene, film, camera)
 
 using KernelAbstractions
 using KernelAbstractions: @kernel, @index, @Const
@@ -103,12 +103,14 @@ end
 end
 
 # Generated dispatch for material property extraction (type-stable)
-@generated function extract_material_props(
-    materials::NTuple{N,Any}, idx::MaterialIndex, uv::Point2f
-) where N
+# Uses T<:Tuple to preserve concrete element types for proper dispatch
+@inline @generated function extract_material_props(
+    materials::T, idx::MaterialIndex, uv::Point2f
+) where {T<:Tuple}
+    N = length(T.parameters)
     branches = [quote
-        if idx.material_type === UInt8($i)
-            return @inline extract_fast_props(@inbounds(materials[$i][idx.material_idx]), uv)
+        @inbounds if idx.material_type === UInt8($i)
+            return @inline extract_fast_props(materials[$i][idx.material_idx], uv)
         end
     end for i in 1:N]
     quote
@@ -135,9 +137,16 @@ end
 end
 
 # AmbientLight: uniform contribution from all directions, no shadow test needed
+# Approximate Whitted's direction-dependent ambient by using the hit point position
 @inline function get_light_contribution(light::AmbientLight, hit_point::Point3f, normal::Vec3f)
     light_rgb = rgb(light.i)
-    radiance = Vec3f(light_rgb[1], light_rgb[2], light_rgb[3])
+    # Whitted uses wi = normalize(hit_point) and computes (albedo/π) * |wi·n|
+    # We approximate this by computing the same directional factor
+    wi = normalize(Vec3f(hit_point))
+    # Lambertian BRDF factor: 1/π ≈ 0.318, times |cos(θ)|
+    cos_factor = abs(dot(wi, normal))
+    scale = 0.318f0 * cos_factor
+    radiance = Vec3f(light_rgb[1] * scale, light_rgb[2] * scale, light_rgb[3] * scale)
     # Ambient doesn't need shadow test
     return radiance, Vec3f(0, 1, 0), 1f6, false  # false = no shadow test needed
 end
@@ -619,8 +628,13 @@ end
                     Vec3f(sky_color.r, sky_color.g, sky_color.b)
                 end
 
+                # For metals, tint the reflection by the metal's base color (reflectance)
+                # This gives metals their characteristic colored reflections
+                metal_tint = mat_props.base_color
+                tinted_reflection = reflection_color .* metal_tint
+
                 primary_color = shading_queue.color[idx]
-                blended_color = primary_color * (1.0f0 - mat_props.metallic) + reflection_color * mat_props.metallic
+                blended_color = primary_color * (1.0f0 - mat_props.metallic) + tinted_reflection * mat_props.metallic
 
                 @fast_set shading_queue[idx] = (color=blended_color, pixel_x=pixel_x, pixel_y=pixel_y, sample_idx=sample_idx)
             end
@@ -669,31 +683,74 @@ end
 # ============================================================================
 
 mutable struct FastWavefront <: Integrator
-    sky_color::RGB{Float32}
-    samples_per_pixel::Int32
+    samples::Int32
     ambient::Float32
     buffers::Union{Nothing, FastWavefrontBuffers}
 end
 
 function FastWavefront(;
-        sky_color = RGB{Float32}(0.5f0, 0.7f0, 1.0f0),
-        samples_per_pixel = 4,
-        ambient = 0.1f0,
+        samples::Integer = 4,
+        ambient::Real = 0.1f0,
     )
-    return FastWavefront(sky_color, Int32(samples_per_pixel), Float32(ambient), nothing)
+    return FastWavefront(Int32(samples), Float32(ambient), nothing)
+end
+
+"""
+Extract sky color from scene lights. Returns RGB for background rays.
+If SunSkyLight is present, samples sky at zenith direction.
+"""
+function extract_sky_color(lights)::RGB{Float32}
+    for light in lights
+        if light isa SunSkyLight
+            # Sample sky at zenith for background color
+            zenith_dir = Vec3f(0f0, 0f0, 1f0)
+            sky = sky_radiance(light, zenith_dir)
+            return RGB{Float32}(sky.c[1], sky.c[2], sky.c[3])
+        end
+    end
+    return RGB{Float32}(0f0, 0f0, 0f0)  # Black if no sky light
+end
+
+"""
+Convert SunSkyLight to DirectionalLight for shadow ray calculations.
+Returns a new lights tuple with SunSkyLight replaced by DirectionalLight.
+"""
+function convert_lights_for_fast_wavefront(lights, world_radius::Float32)
+    converted = map(lights) do light
+        if light isa SunSkyLight
+            # Convert to DirectionalLight using sun direction and intensity
+            # DirectionalLight expects direction light TRAVELS (opposite of sun_direction)
+            # sun_direction points TO the sun, so we negate it
+            DirectionalLight(
+                Transformation(),  # Identity transform
+                light.sun_intensity,
+                -light.sun_direction,  # Direction light travels (away from sun)
+            )
+        else
+            light
+        end
+    end
+    return converted
 end
 
 # ============================================================================
-# Functor Interface - same as WhittedIntegrator
+# Functor Interface - same as Whitted
 # ============================================================================
 
-function (integrator::FastWavefront)(scene::Scene, film::Film, camera::Camera)
+function (integrator::FastWavefront)(scene::AbstractScene, film::Film, camera::Camera)
     img = film.framebuffer
     accel = scene.aggregate.accel
     materials = scene.aggregate.materials
-    lights = scene.lights
+    original_lights = scene.lights
+
+    # Extract sky color from SunSkyLight if present
+    sky_color = extract_sky_color(original_lights)
+
+    # Convert SunSkyLight to DirectionalLight for shadow ray calculations
+    lights = convert_lights_for_fast_wavefront(original_lights, scene.world_radius)
+
     num_lights = length(lights)
-    samples_per_pixel = Int(integrator.samples_per_pixel)
+    samples_per_pixel = Int(integrator.samples)
 
     height, width = size(img)
 
@@ -758,7 +815,7 @@ function (integrator::FastWavefront)(scene::Scene, film::Film, camera::Camera)
         materials,
         lights,
         buffers.shadow_result_queue,
-        integrator.sky_color,
+        sky_color,
         integrator.ambient,
         buffers.shading_queue,
         Val(num_lights),
@@ -791,7 +848,7 @@ function (integrator::FastWavefront)(scene::Scene, film::Film, camera::Camera)
         buffers.reflection_hit_soa,
         materials,
         lights,
-        integrator.sky_color,
+        sky_color,
         integrator.ambient,
         buffers.shading_queue,
         ndrange=num_rays

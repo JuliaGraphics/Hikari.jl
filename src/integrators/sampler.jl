@@ -3,12 +3,14 @@ using KernelAbstractions.Extras.LoopInfo: @unroll
 
 abstract type SamplerIntegrator <: Integrator end
 
-struct WhittedIntegrator{S <: AbstractSampler} <: SamplerIntegrator
+struct Whitted{S <: AbstractSampler} <: SamplerIntegrator
     sampler::S
     max_depth::Int64
+end
 
-    WhittedIntegrator(sampler::S, max_depth::Integer = 5) where {S <: AbstractSampler} =
-        new{S}(sampler, Int64(max_depth))
+function Whitted(; samples::Integer = 4, max_depth::Integer = 5)
+    sampler = UniformSampler(Int64(samples))
+    Whitted(sampler, Int64(max_depth))
 end
 
 @inline function sample_kernel_inner!(
@@ -124,24 +126,28 @@ end
     return le(first(lights), ray) + only_light(Base.tail(lights), ray)
 end
 
-@inline function light_contribution(l, lights, wo, scene, bsdf, sampler, si)
-    core = si.core
-    n = si.shading.n
-    # Why can't I use KernelAbstraction.@unroll here, when in Hikari.jl?
-    # Worked just fined when the function was defined outside
-    Base.Cartesian.@nexprs 8 i -> begin
-        if i <= length(lights)
-            @_inbounds light = lights[i]
-            sampled_li, wi, pdf, tester = @inline sample_li(light, core, get_2d(sampler), scene)
+# Generated function for type-stable light iteration
+# Unrolls only for the actual number of lights in the tuple
+# Uses unique variable names per iteration to avoid union types
+@noinline @generated function light_contribution(
+    l::RGBSpectrum, lights::NTuple{N,Light}, wo, scene::S, bsdf, sampler, si
+) where {N, S<:AbstractScene}
+    # Generate unique symbols for each light iteration to avoid union types
+    light_exprs = [quote
+        let light = @_inbounds lights[$i]
+            sampled_li, wi, pdf, tester = sample_li(light, si.core, get_2d(sampler), scene)
             if !(is_black(sampled_li) || pdf ≈ 0.0f0)
                 f = @inline bsdf(wo, wi)
                 if !is_black(f) && @inline unoccluded(tester, scene)
-                    l += f * sampled_li * abs(wi ⋅ n) / pdf
+                    l += f * sampled_li * abs(wi ⋅ si.shading.n) / pdf
                 end
             end
         end
+    end for i in 1:N]
+    quote
+        $(light_exprs...)
+        return l
     end
-    return l
 end
 
 function li(
@@ -180,7 +186,7 @@ end
     branches = [quote
         @inbounds if idx.material_type === UInt8($i)
             bsdf = @inline compute_bsdf(materials[$i][idx.material_idx], si, false, Radiance)
-            l = @inline light_contribution(RGBSpectrum(0f0), lights, wo, scene, bsdf, sampler, si)
+            l = light_contribution(RGBSpectrum(0f0), lights, wo, scene, bsdf, sampler, si)
             if depth + Int32(1) ≤ max_depth
                 l += @inline specular_reflect(bsdf, sampler, max_depth, ray, si, scene, depth)
                 l += @inline specular_transmit(bsdf, sampler, max_depth, ray, si, scene, depth)
@@ -234,7 +240,9 @@ end
         ry_direction = wi - ∂wo∂y + 2.0f0 * (wo ⋅ ns) * ∂n∂y + ∂dn∂y * ns
         rd = RayDifferentials(rd, rx_origin=rx_origin, ry_origin=ry_origin, rx_direction=rx_direction, ry_direction=ry_direction)
     end
-    return f * li(sampler, max_depth, rd, scene, depth + Int32(1)) * abs(wi ⋅ ns) / pdf
+    # Recursive call - works on CPU but can cause issues on GPU with complex scenes
+    reflected_li = li(sampler, max_depth, rd, scene, depth + Int32(1))
+    return f * reflected_li * abs(wi ⋅ ns) / pdf
 end
 
 """
@@ -322,7 +330,9 @@ end
         ry_direction = wi - η * ∂wo∂y + μ * ∂n∂y + ∂μ∂y * ns
         rd = RayDifferentials(rd, rx_origin=rx_origin, ry_origin=ry_origin, rx_direction=rx_direction, ry_direction=ry_direction)
     end
-    f * li(sampler, max_depth, rd, scene, depth + Int32(1)) * abs(wi ⋅ ns) / pdf
+    # Recursive call - works on CPU but can cause issues on GPU with complex scenes
+    transmitted_li = li(sampler, max_depth, rd, scene, depth + Int32(1))
+    f * transmitted_li * abs(wi ⋅ ns) / pdf
 end
 
 
@@ -350,12 +360,136 @@ macro setindex(N, setindex_expr)
     return :($(esc(tuple)) = $expr)
 end
 
+# Iterative path tracing for Whitted-style integrator
+# Avoids recursion which is problematic on GPU
 @inline function li_iterative(
         sampler, max_depth::Int32, initial_ray::RayDifferentials, scene::S
     )::RGBSpectrum where {S<:AbstractScene}
-    # Use the recursive li function which creates BSDF once per hit
-    # This is more allocation-efficient than the shade_material approach
-    return li(sampler, max_depth, initial_ray, scene, Int32(0))
+
+    L = RGBSpectrum(0.0f0)           # Accumulated radiance
+    throughput = RGBSpectrum(1.0f0)  # Path throughput
+    ray = initial_ray
+    lights = scene.lights
+    materials = scene.aggregate.materials
+
+    depth = Int32(0)
+    while depth <= max_depth
+        # Find intersection
+        hit, primitive, si = intersect!(scene, ray)
+
+        if !hit
+            # Add background/environment light contribution
+            L += throughput * only_light(lights, ray)
+            break
+        end
+
+        # Compute surface interaction
+        si = compute_differentials(si, ray)
+        wo = si.core.wo
+
+        # Add emitted light
+        L += throughput * @inline le(si, wo)
+
+        # Get material and compute BSDF (or detect volume)
+        idx = primitive.metadata
+        valid, is_volume, bsdf = @inline compute_bsdf_for_material(materials, idx, si)
+
+        if !valid
+            break
+        end
+
+        # Handle volume materials specially - they use shade() directly
+        if is_volume
+            # Volume materials handle their own ray marching and continuation rays
+            vol_radiance = @inline shade_material(materials, idx, ray, si, scene, throughput, depth, max_depth)
+            if !isnan(vol_radiance)
+                L += vol_radiance
+            end
+            break  # Volume's shade() handles everything including continuation
+        end
+
+        # Add direct lighting contribution (surface materials only)
+        direct = light_contribution(RGBSpectrum(0f0), lights, wo, scene, bsdf, sampler, si)
+        # Check for NaN before adding
+        if !isnan(direct)
+            L += throughput * direct
+        end
+
+        # Check if we should continue with specular bounces
+        if depth >= max_depth
+            break
+        end
+
+        # Try specular reflection
+        type = BSDF_REFLECTION | BSDF_SPECULAR
+        wi, f, pdf, sampled_type = sample_f(bsdf, wo, get_2d(sampler), type)
+        ns = si.shading.n
+
+        if pdf > 0.0f0 && !is_black(f) && abs(wi ⋅ ns) != 0.0f0
+            # Update throughput and continue with reflected ray
+            new_throughput = f * abs(wi ⋅ ns) / pdf
+            if !isnan(new_throughput)
+                throughput *= new_throughput
+                ray = RayDifferentials(spawn_ray(si, wi))
+                depth += Int32(1)
+                continue
+            end
+        end
+
+        # Try specular transmission if reflection didn't work
+        type = BSDF_TRANSMISSION | BSDF_SPECULAR
+        wi, f, pdf, sampled_type = sample_f(bsdf, wo, get_2d(sampler), type)
+
+        if pdf > 0.0f0 && !is_black(f) && abs(wi ⋅ ns) != 0.0f0
+            # Update throughput and continue with transmitted ray
+            new_throughput = f * abs(wi ⋅ ns) / pdf
+            if !isnan(new_throughput)
+                throughput *= new_throughput
+                ray = RayDifferentials(spawn_ray(si, wi))
+                depth += Int32(1)
+                continue
+            end
+        end
+
+        # No specular bounce possible, terminate
+        break
+    end
+
+    # Final NaN check
+    if isnan(L)
+        return RGBSpectrum(0.0f0)
+    end
+    return L
+end
+
+# Helper to check if a material type is a volume (CloudVolume)
+# Returns true for volume materials that need special handling via shade_material
+@inline is_volume_material(::Material) = false
+@inline is_volume_material(::CloudVolume) = true
+
+# Helper to compute BSDF for a material index - returns (valid::Bool, is_volume::Bool, bsdf::BSDF)
+# Returns a tuple to avoid Union{Nothing, BSDF} type instability
+# For volume materials, is_volume=true indicates caller should use shade_material instead of BSDF
+@inline @generated function compute_bsdf_for_material(
+    materials::T, idx::MaterialIndex, si::SurfaceInteraction
+) where {T<:Tuple}
+    N = length(T.parameters)
+    branches = []
+    for i in 1:N
+        # Get the element type of the material array at position i
+        mat_array_type = T.parameters[i]
+        mat_type = eltype(mat_array_type)
+        is_vol = mat_type <: CloudVolume
+        push!(branches, quote
+            @inbounds if idx.material_type === UInt8($i)
+                return (true, $is_vol, @inline compute_bsdf(materials[$i][idx.material_idx], si, false, Radiance))
+            end
+        end)
+    end
+    quote
+        $(branches...)
+        return (false, false, BSDF())
+    end
 end
 
 

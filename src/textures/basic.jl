@@ -25,21 +25,37 @@ function Base.convert(::Type{Texture{ElType,N,T}}, ::NoTexture) where {ElType,N,
     return Texture{ElType,N,T}()
 end
 
-function (c::Texture{T})(si::SurfaceInteraction)::T where {T<:TextureType}
-    c.isconst && return c.const_value
-    uv = Vec2f(1f0 - si.uv[2], si.uv[1])
-    s = unsafe_trunc.(Int32, size(c.data))
+# GPU-compatible texture evaluation using dispatch on array type
+# For constant textures (with 0x0 SMatrix), directly return const_value
+# For data textures, sample the array
+
+# Dispatch for actual data textures (non-empty arrays)
+@inline function _sample_texture_data(data::AbstractArray, const_value, isconst::Bool, uv::Vec2f)
+    # On CPU, constant textures still have empty Matrix data
+    # On GPU, we use SMatrix{0,0} which dispatches to the specialized method below
+    if isconst
+        return const_value
+    end
+    s = unsafe_trunc.(Int32, size(data))
     idx = map(x -> unsafe_trunc(Int32, x), Int32(1) .+ ((s .- Int32(1)) .* uv))
     idx = clamp.(idx, Int32(1), s)
-    @_inbounds return c.data[idx...]
+    @_inbounds return data[idx...]
+end
+
+# Dispatch for empty static arrays (constant textures on GPU)
+# SMatrix{0,0,T,0} is used as placeholder for constant textures
+# This specialized method avoids GPU IR issues by not touching the empty array
+@inline function _sample_texture_data(::SMatrix{0,0,T,0}, const_value::T, ::Bool, ::Vec2f) where T
+    return const_value
+end
+
+function (c::Texture{T})(si::SurfaceInteraction)::T where {T<:TextureType}
+    uv = Vec2f(1f0 - si.uv[2], si.uv[1])
+    return _sample_texture_data(c.data, c.const_value, c.isconst, uv)
 end
 
 # UV-only texture evaluation (for FastWavefront and other simplified integrators)
 @inline function evaluate_texture(tex::Texture{T}, uv::Point2f)::T where T
-    tex.isconst && return tex.const_value
     uv_adj = Vec2f(1f0 - uv[2], uv[1])
-    s = unsafe_trunc.(Int32, size(tex.data))
-    idx = Int32(1) .+ unsafe_trunc.(Int32, (s .- Int32(1)) .* uv_adj)
-    idx = clamp.(idx, Int32(1), s)
-    @_inbounds return tex.data[idx...]
+    return _sample_texture_data(tex.data, tex.const_value, tex.isconst, uv_adj)
 end

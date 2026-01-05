@@ -308,10 +308,12 @@ end
 
 # Type-stable shade dispatch - each material type implements shade(material, ray, si, scene, beta, depth, max_depth)
 # IMPORTANT: Type annotations on ray, si, scene, beta prevent argument boxing in generated code
+# Note: Use T<:Tuple instead of NTuple{N} to support heterogeneous material type tuples
 @inline @generated function shade_material(
-    materials::NTuple{N}, idx::MaterialIndex,
+    materials::T, idx::MaterialIndex,
     ray::RayDifferentials, si::SurfaceInteraction, scene::S, beta::RGBSpectrum, depth::Int32, max_depth::Int32
-) where {N, S<:AbstractScene}
+) where {T<:Tuple, S<:AbstractScene}
+    N = length(T.parameters)
     branches = [quote
         @inbounds if idx.material_type === UInt8($i)
             return @inline shade(materials[$i][idx.material_idx], ray, si, scene, beta, depth, max_depth)
@@ -325,10 +327,12 @@ end
 
 # Type-stable bounce ray generation - materials implement sample_bounce(material, ray, si, scene, beta, depth)
 # IMPORTANT: Type annotations prevent argument boxing in generated code
+# Note: Use T<:Tuple instead of NTuple{N} to support heterogeneous material type tuples
 @inline @generated function sample_material_bounce(
-    materials::NTuple{N}, idx::MaterialIndex,
+    materials::T, idx::MaterialIndex,
     ray::RayDifferentials, si::SurfaceInteraction, scene::S, beta::RGBSpectrum, depth::Int32
-) where {N, S<:AbstractScene}
+) where {T<:Tuple, S<:AbstractScene}
+    N = length(T.parameters)
     branches = [quote
         @inbounds if idx.material_type === UInt8($i)
             return @inline sample_bounce(materials[$i][idx.material_idx], ray, si, scene, beta, depth)
