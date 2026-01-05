@@ -316,7 +316,7 @@ end
     N = length(T.parameters)
     branches = [quote
         @inbounds if idx.material_type === UInt8($i)
-            return @inline shade(materials[$i][idx.material_idx], ray, si, scene, beta, depth, max_depth)
+            return shade(materials[$i][idx.material_idx], ray, si, scene, beta, depth, max_depth)
         end
     end for i in 1:N]
     quote
@@ -352,7 +352,7 @@ function partial_derivatives(vs::AbstractVector{Point3f}, uv::AbstractVector{Poi
     det = δuv_13[1] * δuv_23[2] - δuv_13[2] * δuv_23[1]
     if det ≈ 0f0
         v = normalize((vs[3] - vs[1]) × (vs[2] - vs[1]))
-        _, ∂p∂u, ∂p∂v = coordinate_system(Vec3f(v))
+        ∂p∂u, ∂p∂v = coordinate_system(Vec3f(v))
         return ∂p∂u, ∂p∂v
     end
     inv_det = 1f0 / det
@@ -367,7 +367,7 @@ end
     verts = Raycore.vertices(triangle)
     tex_coords = Raycore.uvs(triangle)
 
-    pos_deriv_u, pos_deriv_v = partial_derivatives(verts, tex_coords)
+    pos_deriv_u, pos_deriv_v = @inline partial_derivatives(verts, tex_coords)
 
     # Interpolate hit point and texture coordinates using barycentric coordinates
     hit_point = sum_mul(bary_coords, verts)

@@ -228,7 +228,7 @@ The SurfaceInteraction gives us the entry point into the volume.
 This version checks for scene intersections DURING ray marching, so objects
 inside or in front of the volume are properly rendered with correct transmittance.
 """
-function shade(cloud::CloudVolume, ray::RayDifferentials, si::SurfaceInteraction,
+@noinline function shade(cloud::CloudVolume, ray::RayDifferentials, si::SurfaceInteraction,
                scene::S, beta::RGBSpectrum, depth::Int32, max_depth::Int32;
                step_size::Float32=0.02f0, shadow_steps::Int=16) where {S<:AbstractScene}
 

@@ -19,6 +19,7 @@ struct SunSkyLight{S<:Spectrum} <: Light
     # Atmosphere parameters
     turbidity::Float32        # Atmospheric turbidity (2.0 = clear, 10.0 = hazy)
     ground_albedo::S          # Ground color for hemisphere below horizon
+    ground_enabled::Bool      # Whether to show ground plane below horizon
 
     # Precomputed sky coefficients (Preetham model)
     # Perez function coefficients for luminance Y and chromaticity x, y
@@ -36,6 +37,7 @@ struct SunSkyLight{S<:Spectrum} <: Light
         sun_intensity::S;
         turbidity::Float32 = 2.5f0,
         ground_albedo::S = RGBSpectrum(0.3f0),
+        ground_enabled::Bool = true,
         sun_angular_radius::Float32 = 0.00465f0,  # Real sun ~0.53 degrees
     ) where S<:Spectrum
         dir = normalize(sun_direction)
@@ -50,7 +52,7 @@ struct SunSkyLight{S<:Spectrum} <: Light
         new{S}(
             LightInfinite,  # Infinite light (provides le() for background)
             dir, sun_intensity, sun_angular_radius,
-            turbidity, ground_albedo,
+            turbidity, ground_albedo, ground_enabled,
             perez_Y, perez_x, perez_y,
             zenith_Y, zenith_x, zenith_y,
         )
@@ -133,8 +135,8 @@ end
 Compute sky radiance for a given view direction.
 """
 function sky_radiance(light::SunSkyLight, direction::Vec3f)
-    # Below horizon - return ground albedo
-    if direction[3] <= 0f0
+    # Below horizon - return ground albedo if enabled, otherwise continue sky
+    if direction[3] <= 0f0 && light.ground_enabled
         return light.ground_albedo * 0.3f0
     end
 

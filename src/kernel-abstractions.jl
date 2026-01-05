@@ -58,6 +58,19 @@ function to_gpu(ArrayType, m::Hikari.MetalMaterial)
     return Hikari.MetalMaterial(eta, k, roughness, reflectance, m.remap_roughness)
 end
 
+# GPU conversion for CloudVolume - convert density array to GPU
+function to_gpu(ArrayType, m::Hikari.CloudVolume)
+    density_gpu = Raycore.to_gpu(ArrayType, m.density)
+    return Hikari.CloudVolume(
+        density_gpu,
+        m.origin,
+        m.extent,
+        m.extinction_scale,
+        m.asymmetry_g,
+        m.single_scatter_albedo
+    )
+end
+
 function to_gpu(ArrayType, ms::Hikari.MaterialScene)
     accel = to_gpu(ArrayType, ms.accel)
     # Convert each material's textures to GPU, then convert the vector to device array
@@ -104,6 +117,9 @@ to_gpu(::Type, light::Hikari.PointLight) = light
 
 # GPU conversion for AmbientLight (already bitstype, no conversion needed)
 to_gpu(::Type, light::Hikari.AmbientLight) = light
+
+# GPU conversion for SunSkyLight (already bitstype, no conversion needed)
+to_gpu(::Type, light::Hikari.SunSkyLight) = light
 
 # Convert tuple of lights to GPU
 to_gpu_lights(ArrayType, lights::Tuple) = map(l -> to_gpu(ArrayType, l), lights)
