@@ -33,11 +33,19 @@ end
     sample_bsdf_spectral(mat::MatteMaterial, wo, n, uv, lambda, sample_u, rng) -> SpectralBSDFSample
 
 Sample diffuse BSDF with spectral evaluation.
+Uses pbrt-v4 convention: work in local shading space where n = (0,0,1).
 """
 @inline function sample_bsdf_spectral(
     mat::MatteMaterial, wo::Vec3f, n::Vec3f, uv::Point2f,
     lambda::Wavelengths, sample_u::Point2f, rng::Float32
 )
+    # Check for grazing angle (wo perpendicular to shading normal)
+    # This matches pbrt-v4's wo.z == 0 check in BSDF::Sample_f
+    wo_dot_n = dot(wo, n)
+    if abs(wo_dot_n) < 1f-6
+        return SpectralBSDFSample()
+    end
+
     # Get material properties (rng unused for diffuse)
     kd_rgb = evaluate_texture(mat.Kd, uv)
     σ = evaluate_texture(mat.σ, uv)
@@ -45,10 +53,10 @@ Sample diffuse BSDF with spectral evaluation.
     # Uplift to spectral
     kd_spectral = uplift_rgb(kd_rgb, lambda)
 
-    # Flip normal if needed
-    n_oriented = dot(wo, n) < 0f0 ? -n : n
+    # Build local coordinate system from shading normal
+    tangent, bitangent = coordinate_system(n)
 
-    # Cosine-weighted hemisphere sampling
+    # Cosine-weighted hemisphere sampling (in local space, normal = +z)
     local_wi = cosine_sample_hemisphere(sample_u)
     cos_theta = local_wi[3]
 
@@ -56,9 +64,14 @@ Sample diffuse BSDF with spectral evaluation.
         return SpectralBSDFSample()
     end
 
+    # If wo is on the backside of the shading normal, flip wi to same hemisphere
+    # This matches pbrt-v4's: if (wo.z < 0) wi.z *= -1;
+    if wo_dot_n < 0f0
+        local_wi = Vec3f(local_wi[1], local_wi[2], -local_wi[3])
+    end
+
     # Transform to world space
-    tangent, bitangent = coordinate_system(n_oriented)
-    wi = local_to_world(local_wi, n_oriented, tangent, bitangent)
+    wi = local_to_world(local_wi, n, tangent, bitangent)
     wi = normalize(wi)
 
     # f = Kd / π (Lambertian), pdf = cos_theta / π
@@ -86,12 +99,18 @@ Sample perfect specular reflection with spectral evaluation.
     mat::MirrorMaterial, wo::Vec3f, n::Vec3f, uv::Point2f,
     lambda::Wavelengths, sample_u::Point2f, rng::Float32
 )
+    # Check for grazing angle
+    wo_dot_n = dot(wo, n)
+    if abs(wo_dot_n) < 1f-6
+        return SpectralBSDFSample()
+    end
+
     # Get reflectance (rng and sample_u unused for perfect specular)
     kr_rgb = evaluate_texture(mat.Kr, uv)
     kr_spectral = uplift_rgb(kr_rgb, lambda)
 
-    # Flip normal if needed
-    n_oriented = dot(wo, n) < 0f0 ? -n : n
+    # Orient normal to face wo for reflection
+    n_oriented = wo_dot_n < 0f0 ? -n : n
 
     # Perfect reflection
     wi = reflect(wo, n_oriented)
@@ -167,6 +186,12 @@ Sample plastic BSDF (diffuse + glossy specular).
     mat::PlasticMaterial, wo::Vec3f, n::Vec3f, uv::Point2f,
     lambda::Wavelengths, sample_u::Point2f, rng::Float32
 )
+    # Check for grazing angle
+    wo_dot_n = dot(wo, n)
+    if abs(wo_dot_n) < 1f-6
+        return SpectralBSDFSample()
+    end
+
     # Get material properties
     kd_rgb = evaluate_texture(mat.Kd, uv)
     ks_rgb = evaluate_texture(mat.Ks, uv)
@@ -174,9 +199,6 @@ Sample plastic BSDF (diffuse + glossy specular).
 
     kd_spectral = uplift_rgb(kd_rgb, lambda)
     ks_spectral = uplift_rgb(ks_rgb, lambda)
-
-    # Flip normal if needed
-    n_oriented = dot(wo, n) < 0f0 ? -n : n
 
     # Compute diffuse and specular weights for sampling
     kd_lum = average(kd_spectral)
@@ -190,6 +212,9 @@ Sample plastic BSDF (diffuse + glossy specular).
     # Probability of sampling diffuse vs specular
     p_diffuse = kd_lum / total_lum
 
+    # Build coordinate system from shading normal
+    tangent, bitangent = coordinate_system(n)
+
     if rng < p_diffuse
         # Sample diffuse component
         local_wi = cosine_sample_hemisphere(sample_u)
@@ -199,8 +224,12 @@ Sample plastic BSDF (diffuse + glossy specular).
             return SpectralBSDFSample()
         end
 
-        tangent, bitangent = coordinate_system(n_oriented)
-        wi = normalize(local_to_world(local_wi, n_oriented, tangent, bitangent))
+        # Flip wi to same hemisphere as wo (like pbrt-v4)
+        if wo_dot_n < 0f0
+            local_wi = Vec3f(local_wi[1], local_wi[2], -local_wi[3])
+        end
+
+        wi = normalize(local_to_world(local_wi, n, tangent, bitangent))
 
         # Combined BSDF: Kd/π + specular term
         # For simplicity, just return diffuse contribution scaled by 1/p_diffuse
@@ -209,7 +238,8 @@ Sample plastic BSDF (diffuse + glossy specular).
 
         return SpectralBSDFSample(wi, f, pdf, false, 1f0)
     else
-        # Sample specular component (use reflection direction with roughness perturbation)
+        # Sample specular component - orient normal to face wo
+        n_oriented = wo_dot_n < 0f0 ? -n : n
         wi = reflect(wo, n_oriented)
 
         if roughness > 0.001f0
@@ -238,6 +268,12 @@ Sample metal BSDF with conductor Fresnel.
     mat::MetalMaterial, wo::Vec3f, n::Vec3f, uv::Point2f,
     lambda::Wavelengths, sample_u::Point2f, rng::Float32
 )
+    # Check for grazing angle
+    wo_dot_n = dot(wo, n)
+    if abs(wo_dot_n) < 1f-6
+        return SpectralBSDFSample()
+    end
+
     # Get material properties (rng unused)
     eta_rgb = evaluate_texture(mat.eta, uv)
     k_rgb = evaluate_texture(mat.k, uv)
@@ -246,13 +282,13 @@ Sample metal BSDF with conductor Fresnel.
 
     reflectance_spectral = uplift_rgb(reflectance_rgb, lambda)
 
-    # Flip normal if needed
-    n_oriented = dot(wo, n) < 0f0 ? -n : n
+    # Orient normal to face wo for reflection
+    n_oriented = wo_dot_n < 0f0 ? -n : n
 
     # For smooth metals, use perfect reflection
     if roughness < 0.01f0
         wi = reflect(wo, n_oriented)
-        cos_theta = abs(dot(wo, n_oriented))
+        cos_theta = abs(wo_dot_n)
 
         # Fresnel for conductor (using RGB approximation for now)
         # TODO: Full spectral Fresnel for metals
@@ -270,11 +306,12 @@ Sample metal BSDF with conductor Fresnel.
         wm = sample_ggx_vndf(wo, alpha, alpha, sample_u)
         wi = reflect(wo, wm)
 
+        # Reject samples that go through the surface
         if dot(wi, n_oriented) < 0f0
             return SpectralBSDFSample()
         end
 
-        cos_theta = abs(dot(wo, n_oriented))
+        cos_theta = abs(wo_dot_n)
         F_rgb = fresnel_conductor(cos_theta, RGBSpectrum(1f0), eta_rgb, k_rgb)
         F_spectral = uplift_rgb(F_rgb, lambda)
 
@@ -303,10 +340,19 @@ end
     mat::Material, wo::Vec3f, n::Vec3f, uv::Point2f,
     lambda::Wavelengths, sample_u::Point2f, rng::Float32
 )
+    # Check for grazing angle
+    wo_dot_n = dot(wo, n)
+    if abs(wo_dot_n) < 1f-6
+        return SpectralBSDFSample()
+    end
+
     # Default to Lambertian with gray albedo
     kd_spectral = SpectralRadiance(0.5f0)
 
-    n_oriented = dot(wo, n) < 0f0 ? -n : n
+    # Build coordinate system from shading normal
+    tangent, bitangent = coordinate_system(n)
+
+    # Cosine-weighted hemisphere sampling
     local_wi = cosine_sample_hemisphere(sample_u)
     cos_theta = local_wi[3]
 
@@ -314,8 +360,12 @@ end
         return SpectralBSDFSample()
     end
 
-    tangent, bitangent = coordinate_system(n_oriented)
-    wi = normalize(local_to_world(local_wi, n_oriented, tangent, bitangent))
+    # Flip wi to same hemisphere as wo (like pbrt-v4)
+    if wo_dot_n < 0f0
+        local_wi = Vec3f(local_wi[1], local_wi[2], -local_wi[3])
+    end
+
+    wi = normalize(local_to_world(local_wi, n, tangent, bitangent))
 
     f = kd_spectral * (1f0 / Float32(π))
     pdf = cos_theta / Float32(π)

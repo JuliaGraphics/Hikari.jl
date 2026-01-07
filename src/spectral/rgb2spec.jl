@@ -74,7 +74,7 @@ end
 Convert an RGB color to a sigmoid polynomial spectrum representation.
 RGB values should be in [0, 1] range.
 """
-function rgb_to_spectrum(table::RGBToSpectrumTable, r::Float32, g::Float32, b::Float32)::RGBSigmoidPolynomial
+@inline function rgb_to_spectrum(table::RGBToSpectrumTable, r::Float32, g::Float32, b::Float32)::RGBSigmoidPolynomial
     # Clamp to valid range
     r = clamp(r, 0.0f0, 1.0f0)
     g = clamp(g, 0.0f0, 1.0f0)
@@ -95,19 +95,23 @@ function rgb_to_spectrum(table::RGBToSpectrumTable, r::Float32, g::Float32, b::F
         return RGBSigmoidPolynomial(0.0f0, 0.0f0, c2)
     end
 
-    # Find maximum component
-    rgb = (r, g, b)
-    maxc = r > g ? (r > b ? 1 : 3) : (g > b ? 2 : 3)
-    z = rgb[maxc]
+    # Find maximum component and remap - avoid tuple indexing for type stability
+    maxc::Int = r > g ? (r > b ? 1 : 3) : (g > b ? 2 : 3)
+    z::Float32 = maxc == 1 ? r : (maxc == 2 ? g : b)
+
+    # Get components for x and y based on maxc
+    # maxc=1(R): x=G, y=B; maxc=2(G): x=B, y=R; maxc=3(B): x=R, y=G
+    x_comp::Float32 = maxc == 1 ? g : (maxc == 2 ? b : r)
+    y_comp::Float32 = maxc == 1 ? b : (maxc == 2 ? r : g)
 
     # Remap other components relative to max
-    res = Int(table.res)
-    x = rgb[mod1(maxc + 1, 3)] * (res - 1) / z
-    y = rgb[mod1(maxc + 2, 3)] * (res - 1) / z
+    res::Int = Int(table.res)
+    x::Float32 = x_comp * Float32(res - 1) / z
+    y::Float32 = y_comp * Float32(res - 1) / z
 
-    # Find z index using binary search in scale table
-    zi = 1
-    for i in 1:(res-1)
+    # Find z index using linear search in scale table
+    zi::Int = 1
+    @inbounds for i in 1:(res-1)
         if table.scale[i] < z
             zi = i
         end
@@ -115,27 +119,45 @@ function rgb_to_spectrum(table::RGBToSpectrumTable, r::Float32, g::Float32, b::F
     zi = min(zi, res - 1)
 
     # Compute integer indices and fractional offsets
-    xi = min(floor(Int, x) + 1, res - 1)
-    yi = min(floor(Int, y) + 1, res - 1)
+    xi::Int = min(floor(Int, x) + 1, res - 1)
+    yi::Int = min(floor(Int, y) + 1, res - 1)
 
-    dx = x - (xi - 1)
-    dy = y - (yi - 1)
-    dz = (z - table.scale[zi]) / (table.scale[zi + 1] - table.scale[zi])
+    dx::Float32 = x - Float32(xi - 1)
+    dy::Float32 = y - Float32(yi - 1)
+    @inbounds dz::Float32 = (z - table.scale[zi]) / (table.scale[zi + 1] - table.scale[zi])
 
-    # Trilinear interpolation of coefficients
-    c = zeros(Float32, 3)
-    @inbounds for i in 1:3
-        # Helper to fetch coefficient
-        co(dxi, dyi, dzi) = table.coeffs[maxc, zi + dzi, yi + dyi, xi + dxi, i]
+    # Trilinear interpolation of coefficients - fully unrolled, no closures
+    coeffs = table.coeffs
+    @inbounds begin
+        # Coefficient 0 (c0)
+        c0 = (1.0f0 - dz) * (
+            (1.0f0 - dy) * ((1.0f0 - dx) * coeffs[maxc, zi, yi, xi, 1] + dx * coeffs[maxc, zi, yi, xi+1, 1]) +
+                     dy * ((1.0f0 - dx) * coeffs[maxc, zi, yi+1, xi, 1] + dx * coeffs[maxc, zi, yi+1, xi+1, 1])
+        ) + dz * (
+            (1.0f0 - dy) * ((1.0f0 - dx) * coeffs[maxc, zi+1, yi, xi, 1] + dx * coeffs[maxc, zi+1, yi, xi+1, 1]) +
+                     dy * ((1.0f0 - dx) * coeffs[maxc, zi+1, yi+1, xi, 1] + dx * coeffs[maxc, zi+1, yi+1, xi+1, 1])
+        )
 
-        # Trilinear interpolation
-        c[i] = (1 - dz) * ((1 - dy) * ((1 - dx) * co(0, 0, 0) + dx * co(1, 0, 0)) +
-                                 dy * ((1 - dx) * co(0, 1, 0) + dx * co(1, 1, 0))) +
-                    dz * ((1 - dy) * ((1 - dx) * co(0, 0, 1) + dx * co(1, 0, 1)) +
-                                 dy * ((1 - dx) * co(0, 1, 1) + dx * co(1, 1, 1)))
+        # Coefficient 1 (c1)
+        c1 = (1.0f0 - dz) * (
+            (1.0f0 - dy) * ((1.0f0 - dx) * coeffs[maxc, zi, yi, xi, 2] + dx * coeffs[maxc, zi, yi, xi+1, 2]) +
+                     dy * ((1.0f0 - dx) * coeffs[maxc, zi, yi+1, xi, 2] + dx * coeffs[maxc, zi, yi+1, xi+1, 2])
+        ) + dz * (
+            (1.0f0 - dy) * ((1.0f0 - dx) * coeffs[maxc, zi+1, yi, xi, 2] + dx * coeffs[maxc, zi+1, yi, xi+1, 2]) +
+                     dy * ((1.0f0 - dx) * coeffs[maxc, zi+1, yi+1, xi, 2] + dx * coeffs[maxc, zi+1, yi+1, xi+1, 2])
+        )
+
+        # Coefficient 2 (c2)
+        c2 = (1.0f0 - dz) * (
+            (1.0f0 - dy) * ((1.0f0 - dx) * coeffs[maxc, zi, yi, xi, 3] + dx * coeffs[maxc, zi, yi, xi+1, 3]) +
+                     dy * ((1.0f0 - dx) * coeffs[maxc, zi, yi+1, xi, 3] + dx * coeffs[maxc, zi, yi+1, xi+1, 3])
+        ) + dz * (
+            (1.0f0 - dy) * ((1.0f0 - dx) * coeffs[maxc, zi+1, yi, xi, 3] + dx * coeffs[maxc, zi+1, yi, xi+1, 3]) +
+                     dy * ((1.0f0 - dx) * coeffs[maxc, zi+1, yi+1, xi, 3] + dx * coeffs[maxc, zi+1, yi+1, xi+1, 3])
+        )
     end
 
-    return RGBSigmoidPolynomial(c[1], c[2], c[3])
+    return RGBSigmoidPolynomial(c0, c1, c2)
 end
 
 # Convenience method

@@ -191,43 +191,56 @@ Clear accumulated spectral radiance to zero for new render.
 end
 
 # ============================================================================
-# Per-Sample Spectral-to-RGB Accumulation (pbrt-v4 style)
+# Per-Sample Spectral-to-RGB Accumulation (pbrt-v4 style with per-pixel wavelengths)
 # ============================================================================
 
 """
-    pw_accumulate_sample_to_rgb!(backend, pixel_rgb, pixel_L, lambda, num_pixels)
+    pw_accumulate_sample_to_rgb!(backend, pixel_rgb, pixel_L,
+                                  wavelengths_per_pixel, pdf_per_pixel, num_pixels)
 
-Convert this sample's spectral radiance to RGB and accumulate into pixel_rgb.
+Convert this sample's spectral radiance to RGB using PER-PIXEL wavelengths
+and accumulate into pixel_rgb.
 
 This is the key operation that pbrt-v4 does: spectral-to-RGB conversion happens
-IMMEDIATELY after each sample, using that sample's wavelengths. The RGB values
+IMMEDIATELY after each sample, using THAT PIXEL's wavelengths. The RGB values
 are then accumulated across samples.
 
-This is correct because each sample uses different wavelengths, so we can't
-accumulate spectral values and convert at the end.
+Each pixel has independently sampled wavelengths, which decorrelates color noise
+and results in much faster convergence than using shared wavelengths.
 """
 function pw_accumulate_sample_to_rgb!(
     backend,
     pixel_rgb::AbstractVector{Float32},
     pixel_L::AbstractVector{Float32},
-    lambda::Wavelengths,
+    wavelengths_per_pixel::AbstractVector{Float32},
+    pdf_per_pixel::AbstractVector{Float32},
     num_pixels::Int32
 )
     # CPU implementation (GPU kernel would be similar)
     pixel_L_cpu = Array(pixel_L)
     pixel_rgb_cpu = Array(pixel_rgb)
+    wavelengths_cpu = Array(wavelengths_per_pixel)
+    pdf_cpu = Array(pdf_per_pixel)
 
     @inbounds for idx in 1:Int(num_pixels)
         # Extract spectral radiance for this pixel
-        base_L = (idx - 1) * 4
+        base = (idx - 1) * 4
         L = SpectralRadiance((
-            pixel_L_cpu[base_L + 1],
-            pixel_L_cpu[base_L + 2],
-            pixel_L_cpu[base_L + 3],
-            pixel_L_cpu[base_L + 4]
+            pixel_L_cpu[base + 1],
+            pixel_L_cpu[base + 2],
+            pixel_L_cpu[base + 3],
+            pixel_L_cpu[base + 4]
         ))
 
-        # Convert spectral to RGB using THIS sample's wavelengths
+        # Reconstruct THIS PIXEL's wavelengths from stored values
+        lambda = Wavelengths(
+            (wavelengths_cpu[base + 1], wavelengths_cpu[base + 2],
+             wavelengths_cpu[base + 3], wavelengths_cpu[base + 4]),
+            (pdf_cpu[base + 1], pdf_cpu[base + 2],
+             pdf_cpu[base + 3], pdf_cpu[base + 4])
+        )
+
+        # Convert spectral to RGB using THIS PIXEL's wavelengths
         R, G, B = spectral_to_linear_rgb(L, lambda)
 
         # Clamp negative values and NaN/Inf

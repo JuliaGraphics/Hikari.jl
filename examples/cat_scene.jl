@@ -198,9 +198,6 @@ end
 # Run if executed directly
 # =============================================================================
 
-using pocl_jll, OpenCL
-cl.device!(cl.devices(cl.platforms()[1])[1])
-
 # Example: Render with PhysicalWavefront
 
 begin
@@ -209,11 +206,11 @@ begin
     # Choose integrator:
     integrator = Hikari.FastWavefront(samples=8)
     integrator = Hikari.Whitted(samples=8)
-    integrator = Hikari.PhysicalWavefront(samples_per_pixel=200, max_depth=8)
+    integrator = Hikari.PhysicalWavefront(samples_per_pixel=100, max_depth=8)
     gpu_film = to_gpu(Array, film)
     gpu_scene = to_gpu(Array, scene)
     Hikari.clear!(gpu_film)
-    integrator(gpu_scene, gpu_film, camera)
+    @time integrator(gpu_scene, gpu_film, camera)
     Hikari.postprocess!(gpu_film; exposure=2.0f0, tonemap=:aces, gamma=1.2f0)
     Array(gpu_film.postprocess)
 end

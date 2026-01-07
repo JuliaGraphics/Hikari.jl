@@ -20,7 +20,6 @@ and creates a shadow ray work item.
     @Const(materials),
     @Const(lights),        # Tuple of lights
     @Const(num_lights::Int32),
-    @Const(rng_seed::UInt32),
     @Const(max_queued::Int32)
 )
     idx = @index(Global)
@@ -30,20 +29,15 @@ and creates a shadow ray work item.
         if idx <= current_size
             work = material_queue_items[idx]
 
-            # Generate random numbers for light sampling
-            seed = xorshift32(rng_seed ⊻ UInt32(idx) ⊻ UInt32(work.pixel_index) ⊻ UInt32(0xDEADBEEF))
-            u1 = random_float(seed)
-            seed = xorshift32(seed)
-            u2 = random_float(seed)
-            seed = xorshift32(seed)
-            light_select = random_float(seed)
+            # Generate random numbers for light sampling using Julia's RNG
+            u_light = rand(Point2f)
+            light_select = rand(Float32)
 
             # Select a light uniformly
             light_idx = Int32(floor(light_select * Float32(num_lights))) + Int32(1)
             light_idx = min(light_idx, num_lights)
 
             # Sample the selected light
-            u_light = Point2f(u1, u2)
             p = work.pi
             light_sample = sample_light_from_tuple(lights, light_idx, p, work.lambda, u_light)
 
@@ -106,7 +100,6 @@ Evaluate materials for all work items:
     pixel_L,
     @Const(material_queue_items), @Const(material_queue_size),
     @Const(materials),
-    @Const(rng_seed::UInt32),
     @Const(max_depth::Int32),
     @Const(max_queued::Int32)
 )
@@ -117,17 +110,10 @@ Evaluate materials for all work items:
         if idx <= current_size
             work = material_queue_items[idx]
 
-            # Generate random numbers for BSDF sampling
-            seed = xorshift32(rng_seed ⊻ UInt32(idx) ⊻ UInt32(work.pixel_index))
-            u1 = random_float(seed)
-            seed = xorshift32(seed)
-            u2 = random_float(seed)
-            seed = xorshift32(seed)
-            rng = random_float(seed)
-            seed = xorshift32(seed)
-            rr_sample = random_float(seed)
-
-            u = Point2f(u1, u2)
+            # Generate random numbers for BSDF sampling using Julia's RNG
+            u = rand(Point2f)
+            rng = rand(Float32)
+            rr_sample = rand(Float32)
 
             # Sample BSDF
             sample = sample_spectral_material(
@@ -177,8 +163,7 @@ end
 # ============================================================================
 
 """
-    pw_sample_direct_lighting!(backend, shadow_queue, material_queue, materials, lights,
-                                rng_seed)
+    pw_sample_direct_lighting!(backend, shadow_queue, material_queue, materials, lights)
 
 Sample direct lighting for all material work items.
 """
@@ -187,8 +172,7 @@ function pw_sample_direct_lighting!(
     shadow_queue::PWWorkQueue{PWShadowRayWorkItem},
     material_queue::PWWorkQueue{PWMaterialEvalWorkItem},
     materials,
-    lights,
-    rng_seed::UInt32
+    lights
 )
     n = queue_size(material_queue)
     n == 0 && return nothing
@@ -203,7 +187,7 @@ function pw_sample_direct_lighting!(
     kernel!(
         shadow_queue.items, shadow_queue.size,
         material_queue.items, material_queue.size,
-        materials, lights, num_lights, rng_seed, Int32(n);
+        materials, lights, num_lights, Int32(n);
         ndrange=Int(n)
     )
 
@@ -212,8 +196,7 @@ function pw_sample_direct_lighting!(
 end
 
 """
-    pw_evaluate_materials!(backend, next_ray_queue, pixel_L, material_queue, materials,
-                           rng_seed, max_depth)
+    pw_evaluate_materials!(backend, next_ray_queue, pixel_L, material_queue, materials, max_depth)
 
 Evaluate materials and spawn continuation rays.
 """
@@ -223,7 +206,6 @@ function pw_evaluate_materials!(
     pixel_L::AbstractVector{Float32},
     material_queue::PWWorkQueue{PWMaterialEvalWorkItem},
     materials,
-    rng_seed::UInt32,
     max_depth::Int32
 )
     n = queue_size(material_queue)
@@ -234,7 +216,7 @@ function pw_evaluate_materials!(
         next_ray_queue.items, next_ray_queue.size,
         pixel_L,
         material_queue.items, material_queue.size,
-        materials, rng_seed, max_depth, Int32(n);
+        materials, max_depth, Int32(n);
         ndrange=Int(n)
     )
 

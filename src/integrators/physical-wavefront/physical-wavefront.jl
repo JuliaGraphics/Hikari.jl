@@ -31,6 +31,12 @@ mutable struct PWRenderState{Arr}
     # Spectral-to-RGB conversion happens after each sample (like pbrt-v4)
     pixel_rgb::Arr
 
+    # Per-pixel wavelength storage (pbrt-v4 style)
+    # Each pixel gets independently sampled wavelengths for proper decorrelation
+    # 4 wavelengths + 4 PDFs per pixel = 8 floats per pixel
+    wavelengths_per_pixel::Arr  # 4 floats per pixel (lambda values)
+    pdf_per_pixel::Arr          # 4 floats per pixel (PDF values)
+
     # Work queues (double-buffered for ping-pong between bounces)
     ray_queue::PWWorkQueue{PWRayWorkItem}
     ray_queue_next::PWWorkQueue{PWRayWorkItem}
@@ -41,7 +47,7 @@ mutable struct PWRenderState{Arr}
     material_queue::PWWorkQueue{PWMaterialEvalWorkItem}
     shadow_queue::PWWorkQueue{PWShadowRayWorkItem}
 
-    # Current wavelengths (shared across all rays in a sample)
+    # Current wavelengths (kept for compatibility, but per-pixel is preferred)
     current_lambda::Wavelengths
 end
 
@@ -61,6 +67,10 @@ function create_render_state(
     # RGB accumulation across all samples: 3 floats per pixel
     pixel_rgb = ArrayType(zeros(Float32, num_pixels * Int32(3)))
 
+    # Per-pixel wavelength storage (pbrt-v4 style): 4 floats per pixel each
+    wavelengths_per_pixel = ArrayType(zeros(Float32, num_pixels * Int32(4)))
+    pdf_per_pixel = ArrayType(zeros(Float32, num_pixels * Int32(4)))
+
     # Work queues
     ray_queue = PWWorkQueue{PWRayWorkItem}(max_rays, ArrayType)
     ray_queue_next = PWWorkQueue{PWRayWorkItem}(max_rays, ArrayType)
@@ -69,12 +79,13 @@ function create_render_state(
     material_queue = PWWorkQueue{PWMaterialEvalWorkItem}(max_rays, ArrayType)
     shadow_queue = PWWorkQueue{PWShadowRayWorkItem}(max_rays, ArrayType)
 
-    # Default wavelengths (will be set per sample)
+    # Default wavelengths (kept for compatibility)
     lambda = sample_wavelengths_uniform(0.5f0)
 
     return PWRenderState(
         width, height, num_pixels, max_rays,
         pixel_L, pixel_rgb,
+        wavelengths_per_pixel, pdf_per_pixel,
         ray_queue, ray_queue_next,
         escaped_queue, hit_light_queue,
         material_queue, shadow_queue,
@@ -169,12 +180,6 @@ function (pw::PhysicalWavefront)(scene::AbstractScene, film::Film, camera::Camer
         # Clear spectral accumulator for THIS sample only
         pw_clear_film!(backend, state.pixel_L, state.num_pixels)
 
-        # Sample wavelengths for this iteration using importance sampling
-        # Use sample index to get different wavelengths per sample
-        u_lambda = Float32(sample_idx - 1 + rand()) / Float32(pw.samples_per_pixel)
-        # Use importance-sampled visible wavelengths for lower variance
-        state.current_lambda = sample_wavelengths_visible(u_lambda)
-
         # Generate RNG seed for this sample
         rng_seed = UInt32(sample_idx) ⊻ UInt32(0x12345678)
 
@@ -183,13 +188,14 @@ function (pw::PhysicalWavefront)(scene::AbstractScene, film::Film, camera::Camer
         reset_queue!(backend, state.ray_queue_next)
         KA.synchronize(backend)
 
-        # Generate camera rays (all rays use the same wavelengths for this sample)
+        # Generate camera rays with PER-PIXEL wavelength sampling (pbrt-v4 style)
+        # Each pixel samples its own wavelengths for decorrelated color noise
         pw_generate_camera_rays!(
             backend, state.ray_queue,
+            state.wavelengths_per_pixel, state.pdf_per_pixel,
             state.width, state.height,
             camera,
-            Int32(sample_idx), rng_seed,
-            state.current_lambda
+            Int32(sample_idx), rng_seed
         )
 
         # Path tracing loop
@@ -238,7 +244,7 @@ function (pw::PhysicalWavefront)(scene::AbstractScene, film::Film, camera::Camer
             if !isempty_tuple(lights)
                 pw_sample_direct_lighting!(
                     backend, state.shadow_queue, state.material_queue,
-                    materials, lights, rng_seed ⊻ UInt32(depth)
+                    materials, lights
                 )
 
                 # Trace shadow rays
@@ -251,8 +257,7 @@ function (pw::PhysicalWavefront)(scene::AbstractScene, film::Film, camera::Camer
             # Evaluate materials and spawn continuation rays
             pw_evaluate_materials!(
                 backend, state.ray_queue_next, state.pixel_L,
-                state.material_queue, materials,
-                rng_seed ⊻ UInt32(depth + 1000), pw.max_depth
+                state.material_queue, materials, pw.max_depth
             )
 
             # Swap ray queues for next bounce
@@ -260,11 +265,12 @@ function (pw::PhysicalWavefront)(scene::AbstractScene, film::Film, camera::Camer
         end
 
         # CRITICAL: Convert this sample's spectral radiance to RGB and accumulate
-        # This must happen AFTER each sample, using THAT sample's wavelengths
-        # (This is how pbrt-v4 does it: film.AddSample converts spectral->RGB immediately)
+        # This must happen AFTER each sample, using EACH PIXEL's wavelengths
+        # (This is how pbrt-v4 does it: film.AddSample converts spectral->RGB per pixel)
         pw_accumulate_sample_to_rgb!(
             backend, state.pixel_rgb, state.pixel_L,
-            state.current_lambda, state.num_pixels
+            state.wavelengths_per_pixel, state.pdf_per_pixel,
+            state.num_pixels
         )
     end
 
@@ -376,7 +382,7 @@ function render_single_sample!(
         if !isempty_tuple(lights)
             pw_sample_direct_lighting!(
                 backend, state.shadow_queue, state.material_queue,
-                materials, lights, rng_seed ⊻ UInt32(depth)
+                materials, lights
             )
 
             pw_trace_shadow_rays!(
@@ -387,8 +393,7 @@ function render_single_sample!(
 
         pw_evaluate_materials!(
             backend, state.ray_queue_next, state.pixel_L,
-            state.material_queue, materials,
-            rng_seed ⊻ UInt32(depth + 1000), pw.max_depth
+            state.material_queue, materials, pw.max_depth
         )
 
         state.ray_queue, state.ray_queue_next = state.ray_queue_next, state.ray_queue

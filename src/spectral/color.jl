@@ -482,3 +482,17 @@ Convert spectral radiance to linear RGB (no gamma):
     R, G, B = xyz_to_linear_srgb(X, Y, Z)
     return (max(0.0f0, R), max(0.0f0, G), max(0.0f0, B))
 end
+
+"""
+    spectral_to_linear_rgb_passthrough(L::SpectralRadiance) -> (R, G, B)
+
+Pseudo-spectral passthrough: read RGB directly from spectral channels.
+For use when `uplift_rgb(...; method=:passthrough)` was used to store RGB directly.
+This matches PbrtWavefront behavior and avoids spectral-to-XYZ conversion noise.
+"""
+@inline function spectral_to_linear_rgb_passthrough(L::SpectralRadiance)
+    R = max(0.0f0, L.data[1])
+    G = max(0.0f0, L.data[2])
+    B = max(0.0f0, L.data[3])
+    return (R, G, B)
+end

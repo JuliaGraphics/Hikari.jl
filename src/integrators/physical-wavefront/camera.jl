@@ -27,25 +27,30 @@ Convert random UInt32 to Float32 in [0, 1).
 end
 
 # ============================================================================
-# Camera Ray Generation Kernel
+# Camera Ray Generation Kernel (with per-pixel wavelengths - pbrt-v4 style)
 # ============================================================================
 
 """
-    pw_generate_camera_rays_kernel!(ray_queue_items, ray_queue_size, width, height,
-                                     camera, sample_idx, rng_base)
+    pw_generate_camera_rays_kernel!(ray_queue_items, ray_queue_size,
+                                     wavelengths_per_pixel, pdf_per_pixel,
+                                     width, height, camera, sample_idx, rng_base)
 
-Generate camera rays for all pixels with wavelength sampling.
-Each thread generates one camera ray for one pixel.
+Generate camera rays for all pixels with PER-PIXEL wavelength sampling.
+Each thread generates one camera ray with independently sampled wavelengths.
+
+This matches pbrt-v4's approach where each pixel samples its own wavelengths,
+which decorrelates color noise across pixels for faster convergence.
 """
 @kernel function pw_generate_camera_rays_kernel!(
     ray_queue_items,
     ray_queue_size,
+    wavelengths_per_pixel,  # Output: 4 floats per pixel (lambda values)
+    pdf_per_pixel,          # Output: 4 floats per pixel (PDF values)
     @Const(width::Int32),
     @Const(height::Int32),
     @Const(camera),
     @Const(sample_idx::Int32),
-    @Const(rng_base::UInt32),
-    @Const(shared_lambda::Wavelengths)  # Shared wavelengths for all rays in this sample
+    @Const(rng_base::UInt32)
 )
     idx = @index(Global)
     num_pixels = width * height
@@ -57,11 +62,26 @@ Each thread generates one camera ray for one pixel.
         x = Int32(mod(pixel_idx, width)) + Int32(1)
         y = Int32(div(pixel_idx, width)) + Int32(1)
 
-        # Generate random numbers for this pixel
-        seed = xorshift32(rng_base ⊻ UInt32(idx) ⊻ UInt32(sample_idx))
-        jitter_x = random_float(seed)
-        seed = xorshift32(seed)
-        jitter_y = random_float(seed)
+        # Generate random numbers for this pixel using Julia's built-in RNG
+        # This works well on both CPU and GPU with proper decorrelation
+        jitter_x = rand(Float32)
+        jitter_y = rand(Float32)
+        wavelength_u = rand(Float32)  # Per-pixel wavelength sample!
+
+        # Sample wavelengths for THIS PIXEL using importance sampling
+        # This is the key difference from the old code - each pixel gets different wavelengths
+        lambda = sample_wavelengths_visible(wavelength_u)
+
+        # Store per-pixel wavelengths and PDFs for film accumulation
+        base = pixel_idx * Int32(4)
+        wavelengths_per_pixel[base + Int32(1)] = lambda.lambda[1]
+        wavelengths_per_pixel[base + Int32(2)] = lambda.lambda[2]
+        wavelengths_per_pixel[base + Int32(3)] = lambda.lambda[3]
+        wavelengths_per_pixel[base + Int32(4)] = lambda.lambda[4]
+        pdf_per_pixel[base + Int32(1)] = lambda.pdf[1]
+        pdf_per_pixel[base + Int32(2)] = lambda.pdf[2]
+        pdf_per_pixel[base + Int32(3)] = lambda.pdf[3]
+        pdf_per_pixel[base + Int32(4)] = lambda.pdf[4]
 
         # Compute film position with jitter
         # Flip Y to match Hikari's camera convention (y increases downward in camera space)
@@ -76,16 +96,12 @@ Each thread generates one camera ray for one pixel.
         # Generate ray using Hikari's camera interface
         ray, weight = generate_ray(camera, camera_sample)
 
-        # Use shared wavelengths for all rays in this sample iteration
-        # This ensures consistent spectral-to-RGB conversion at film update
-        lambda = shared_lambda
-
         # Only add valid rays
         if weight > 0f0
             # Convert to Raycore.Ray
             raycore_ray = Raycore.Ray(o=ray.o, d=ray.d, t_max=ray.t_max)
 
-            # Create work item
+            # Create work item with per-pixel wavelengths
             work_item = PWRayWorkItem(raycore_ray, lambda, Int32(idx))
 
             # Push to queue atomically
@@ -96,20 +112,22 @@ Each thread generates one camera ray for one pixel.
 end
 
 """
-    pw_generate_camera_rays!(backend, ray_queue, width, height, camera, sample_idx, rng_base, lambda)
+    pw_generate_camera_rays!(backend, ray_queue, wavelengths_per_pixel, pdf_per_pixel,
+                              width, height, camera, sample_idx, rng_base)
 
-Generate camera rays for the current sample pass.
-All rays in this sample use the same wavelengths for consistent spectral-to-RGB conversion.
+Generate camera rays with per-pixel wavelength sampling (pbrt-v4 style).
+Each pixel samples its own wavelengths, which are stored for later film accumulation.
 """
 function pw_generate_camera_rays!(
     backend,
     ray_queue::PWWorkQueue{PWRayWorkItem},
+    wavelengths_per_pixel::AbstractVector{Float32},
+    pdf_per_pixel::AbstractVector{Float32},
     width::Int32,
     height::Int32,
     camera,
     sample_idx::Int32,
-    rng_base::UInt32,
-    lambda::Wavelengths
+    rng_base::UInt32
 )
     # Reset queue
     reset_queue!(backend, ray_queue)
@@ -119,11 +137,11 @@ function pw_generate_camera_rays!(
 
     kernel!(
         ray_queue.items, ray_queue.size,
+        wavelengths_per_pixel, pdf_per_pixel,
         width, height,
         camera,
         sample_idx,
-        rng_base,
-        lambda;
+        rng_base;
         ndrange=num_pixels
     )
 

@@ -25,11 +25,12 @@ For each wavelength λ:
 With smooth transitions between regions.
 """
 @inline function rgb_to_spectral_simple(r::Float32, g::Float32, b::Float32, lambda::Wavelengths)
-    data = ntuple(Val(4)) do i
-        λ = lambda.lambda[i]
-        rgb_to_spectral_at_wavelength(r, g, b, λ)
-    end
-    return SpectralRadiance(data)
+    # Manually unrolled to avoid closure allocations
+    v1 = rgb_to_spectral_at_wavelength(r, g, b, lambda.lambda[1])
+    v2 = rgb_to_spectral_at_wavelength(r, g, b, lambda.lambda[2])
+    v3 = rgb_to_spectral_at_wavelength(r, g, b, lambda.lambda[3])
+    v4 = rgb_to_spectral_at_wavelength(r, g, b, lambda.lambda[4])
+    return SpectralRadiance((v1, v2, v3, v4))
 end
 
 """
@@ -154,11 +155,12 @@ Convert RGB to spectral radiance using Smits' method.
 More accurate than the simple piecewise linear approach.
 """
 @inline function rgb_to_spectral_smits(r::Float32, g::Float32, b::Float32, lambda::Wavelengths)
-    data = ntuple(Val(4)) do i
-        λ = lambda.lambda[i]
-        rgb_to_spectral_smits_at_wavelength(r, g, b, λ)
-    end
-    return SpectralRadiance(data)
+    # Manually unrolled to avoid closure allocations
+    v1 = rgb_to_spectral_smits_at_wavelength(r, g, b, lambda.lambda[1])
+    v2 = rgb_to_spectral_smits_at_wavelength(r, g, b, lambda.lambda[2])
+    v3 = rgb_to_spectral_smits_at_wavelength(r, g, b, lambda.lambda[3])
+    v4 = rgb_to_spectral_smits_at_wavelength(r, g, b, lambda.lambda[4])
+    return SpectralRadiance((v1, v2, v3, v4))
 end
 
 """
@@ -212,13 +214,16 @@ end
 # Include the lookup table and functions
 include("rgb2spec.jl")
 
-# Global table reference for fast access (initialized lazily)
-const _RGB2SPEC_TABLE_REF = Ref{Union{Nothing, RGBToSpectrumTable}}(nothing)
+# Global table - initialized at module load time to avoid type instability
+# Will be set by __init__ or on first access
+const _RGB2SPEC_TABLE_REF = Ref{RGBToSpectrumTable}()
+const _RGB2SPEC_TABLE_LOADED = Ref{Bool}(false)
 
 """Get the global sRGB to spectrum table (loads on first access)"""
-function _get_rgb2spec_table()::RGBToSpectrumTable
-    if _RGB2SPEC_TABLE_REF[] === nothing
+@inline function _get_rgb2spec_table()::RGBToSpectrumTable
+    if !_RGB2SPEC_TABLE_LOADED[]
         _RGB2SPEC_TABLE_REF[] = get_srgb_table()
+        _RGB2SPEC_TABLE_LOADED[] = true
     end
     return _RGB2SPEC_TABLE_REF[]
 end
@@ -233,10 +238,12 @@ This provides the smoothest spectra and lowest variance for spectral rendering.
     table = _get_rgb2spec_table()
     poly = rgb_to_spectrum(table, r, g, b)
 
-    data = ntuple(Val(4)) do i
-        poly(lambda.lambda[i])
-    end
-    return SpectralRadiance(data)
+    # Manually unrolled to avoid closure allocations
+    v1 = poly(lambda.lambda[1])
+    v2 = poly(lambda.lambda[2])
+    v3 = poly(lambda.lambda[3])
+    v4 = poly(lambda.lambda[4])
+    return SpectralRadiance((v1, v2, v3, v4))
 end
 
 """
@@ -250,7 +257,7 @@ Scales the spectrum to preserve the maximum RGB component.
 
     # Find scale factor
     m = max(r, g, b)
-    if m <= 0
+    if m <= 0.0f0
         return SpectralRadiance(0.0f0)
     end
 
@@ -261,10 +268,12 @@ Scales the spectrum to preserve the maximum RGB component.
     max_poly = max_value(poly)
     scale = m / max_poly
 
-    data = ntuple(Val(4)) do i
-        scale * poly(lambda.lambda[i])
-    end
-    return SpectralRadiance(data)
+    # Manually unrolled to avoid closure allocations
+    v1 = scale * poly(lambda.lambda[1])
+    v2 = scale * poly(lambda.lambda[2])
+    v3 = scale * poly(lambda.lambda[3])
+    v4 = scale * poly(lambda.lambda[4])
+    return SpectralRadiance((v1, v2, v3, v4))
 end
 
 # =============================================================================
@@ -280,6 +289,7 @@ Methods:
 - `:sigmoid` - Smooth sigmoid polynomial (pbrt-v4 style, lowest variance, default)
 - `:simple` - Fast piecewise linear
 - `:smits` - Smits' method
+- `:passthrough` - Store RGB directly as first 3 spectral channels (pseudo-spectral, fastest)
 """
 @inline function uplift_rgb(rgb::RGBSpectrum, lambda::Wavelengths; method::Symbol=:sigmoid)
     r, g, b = rgb.c[1], rgb.c[2], rgb.c[3]
@@ -287,6 +297,10 @@ Methods:
         return rgb_to_spectral_sigmoid(r, g, b, lambda)
     elseif method === :smits
         return rgb_to_spectral_smits(r, g, b, lambda)
+    elseif method === :passthrough
+        # Pseudo-spectral: store RGB directly (matches PbrtWavefront behavior)
+        # Channel 4 uses average of RGB for luminance
+        return SpectralRadiance((r, g, b, (r + g + b) / 3f0))
     else
         return rgb_to_spectral_simple(r, g, b, lambda)
     end
