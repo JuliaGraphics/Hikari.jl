@@ -197,28 +197,24 @@ end
 # Run if executed directly
 # =============================================================================
 
+using pocl_jll, OpenCL
+
 # Example: Render with PhysicalWavefront
+
+using Raycore: to_gpu
+cl.device!(cl.devices(cl.platforms()[1])[1])
 begin
     scene = create_scene(; glass_cat=false)
     film, camera = create_film_and_camera(; width=720, height=720, use_pbrt_camera=true)
 
     # Choose integrator:
-    integrator = Hikari.FastWavefront(samples_per_pixel=8)
-    # integrator = Hikari.WhittedIntegrator(Hikari.UniformSampler(16), 5)
-    # integrator = Hikari.PhysicalWavefront(samples_per_pixel=500, max_depth=8)
-
-    Hikari.clear!(film)
-    @time integrator(scene, film, camera)
-
-    Hikari.postprocess!(film; exposure=1.0f0, tonemap=:aces, gamma=1.2f0)
-    img = film.postprocess
+    integrator = Hikari.FastWavefront(samples=8)
+    integrator = Hikari.Whitted(samples=8)
+    integrator = Hikari.PhysicalWavefront(samples_per_pixel=200, max_depth=8)
+    gpu_film = to_gpu(Array, film)
+    gpu_scene = to_gpu(Array, scene)
+    Hikari.clear!(gpu_film)
+    integrator(gpu_scene, gpu_film, camera)
+    Hikari.postprocess!(gpu_film; exposure=2.0f0, tonemap=:aces, gamma=1.2f0)
+    Array(gpu_film.postprocess)
 end
-
-
-@code_warntype Hikari.process_hit_and_generate_shadow_rays!(
-    hit_queue,
-    shadow_ray_queue,
-    lights,
-    idx,
-    nlights
-)

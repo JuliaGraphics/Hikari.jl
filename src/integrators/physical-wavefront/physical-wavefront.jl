@@ -139,7 +139,7 @@ end
 
 Render a scene using spectral wavefront path tracing.
 """
-function (pw::PhysicalWavefront)(scene::Scene, film::Film, camera::Camera)
+function (pw::PhysicalWavefront)(scene::AbstractScene, film::Film, camera::Camera)
     img = film.framebuffer
     accel = scene.aggregate.accel
     materials = scene.aggregate.materials

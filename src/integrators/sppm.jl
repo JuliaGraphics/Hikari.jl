@@ -68,6 +68,18 @@ function SPPM(;
     )
 end
 
+# GPU-safe helper for accumulating light emission in SPPM
+@inline function _accumulate_sppm_light!(light, Ld, pixel_idx, β, rayd)
+    light_emission = β * le(light, rayd)
+    if !isnan(light_emission) && !isinf(light_emission)
+        Ld[pixel_idx...] += light_emission
+    end
+    return nothing
+end
+
+# GPU-safe helper for computing light power (needs scene for some light types)
+@inline _get_light_power_y(light, scene) = to_Y(power(light, scene))
+
 function (integrator::SPPM)(scene::AbstractScene, film::Film, camera::Camera)
     pixel_bounds = film.crop_bounds
 
@@ -153,12 +165,8 @@ end
     while depth ≤ max_depth
         hit, primitive, si = intersect!(scene, rayd)
         if !hit # Accumulate light contributions to the background.
-            for light in scene.lights
-                light_emission = β * le(light, rayd)
-                if !isnan(light_emission) && !isinf(light_emission)
-                    Ld[pixel_idx...] += light_emission
-                end
-            end
+            # Use for_unrolled for GPU-safe iteration over lights
+            for_unrolled(_accumulate_sppm_light!, scene.lights, Ld, pixel_idx, β, rayd)
             return
         end
         # Process SPPM camera ray intersection.
@@ -601,5 +609,7 @@ end
     scene::AbstractScene,
 )::Maybe{Distribution1D}
     length(scene.lights) == 0 && return nothing
-    Distribution1D([(to_Y(power(l))) for l in scene.lights])
+    # Use map_unrolled for GPU-safe iteration, then collect to vector for Distribution1D
+    powers_tuple = map_unrolled(_get_light_power_y, scene.lights, scene)
+    Distribution1D(Float32[powers_tuple...])
 end

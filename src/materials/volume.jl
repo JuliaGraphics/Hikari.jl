@@ -216,6 +216,47 @@ end
 end
 
 # ============================================================================
+# Helper functions for GPU-safe light iteration
+# ============================================================================
+
+"""
+    _accumulate_volume_scatter(acc, light, cloud, pos, ray_d, time, shadow_steps, scene)
+
+Accumulator function for reduce_unrolled over lights in volume scattering.
+Computes single light contribution and adds to accumulator.
+"""
+@inline function _accumulate_volume_scatter(
+    acc::RGBSpectrum, light, cloud::CloudVolume, pos, ray_d, time, shadow_steps, scene
+)
+    # Create interaction at current position for light sampling
+    interaction = Interaction(Point3f(pos), time, -ray_d, Normal3f(0f0, 0f0, 1f0))
+
+    # Sample the light
+    u_light = rand(Point2f)
+    Li, wi, pdf, visibility = sample_li(light, interaction, u_light, scene)
+
+    # Skip if no contribution
+    (is_black(Li) || pdf ≈ 0f0) && return acc
+
+    # Compute transmittance from sample point toward light
+    light_transmittance = compute_transmittance(cloud, pos, wi, shadow_steps)
+
+    # Phase function for this light direction
+    cos_theta = dot(-ray_d, wi)
+    phase = henyey_greenstein(cos_theta, cloud.asymmetry_g)
+
+    # Add light contribution
+    return acc + Li * light_transmittance * phase / pdf
+end
+
+"""
+    _sum_light_le(light, ray)
+
+Helper for sum_unrolled to accumulate le() contributions from lights.
+"""
+@inline _sum_light_le(light, ray) = le(light, ray)
+
+# ============================================================================
 # Material Interface: shade() and sample_bounce()
 # ============================================================================
 
@@ -294,30 +335,11 @@ inside or in front of the volume are properly rendered with correct transmittanc
             dt = min(step_size, t_stop - t)
             step_transmittance = exp(-σ_t * dt)
 
-            # Accumulate scattering from ALL scene lights
-            scatter_light = RGBSpectrum(0f0)
-
-            @inbounds for light in scene.lights
-                # Create interaction at current position for light sampling
-                interaction = Interaction(Point3f(pos), ray.time, -ray_d, Normal3f(0f0, 0f0, 1f0))
-
-                # Sample the light
-                u_light = rand(Point2f)
-                Li, wi, pdf, visibility = sample_li(light, interaction, u_light, scene)
-
-                # Skip if no contribution
-                (is_black(Li) || pdf ≈ 0f0) && continue
-
-                # Compute transmittance from sample point toward light
-                light_transmittance = compute_transmittance(cloud, pos, wi, shadow_steps)
-
-                # Phase function for this light direction
-                cos_theta = dot(-ray_d, wi)
-                phase = henyey_greenstein(cos_theta, cloud.asymmetry_g)
-
-                # Add light contribution
-                scatter_light += Li * light_transmittance * phase / pdf
-            end
+            # Accumulate scattering from ALL scene lights (using reduce_unrolled for GPU compatibility)
+            scatter_light = reduce_unrolled(
+                _accumulate_volume_scatter, scene.lights, RGBSpectrum(0f0),
+                cloud, pos, ray_d, ray.time, shadow_steps, scene
+            )
 
             # Accumulate in-scattering
             scatter_amount = transmittance * (1.0f0 - step_transmittance) * cloud.single_scatter_albedo
@@ -359,8 +381,10 @@ inside or in front of the volume are properly rendered with correct transmittanc
             else
                 # Miss - get background from scene lights via le() (e.g. EnvironmentLight)
                 exit_ray = RayDifferentials(Ray(ray_o .+ ray_d * t_far, ray_d, Inf32, ray.time))
-                for light in scene.lights
-                    background += le(light, exit_ray)
+                # Use sum_unrolled for GPU-safe iteration over lights
+                bg_light = sum_unrolled(_sum_light_le, scene.lights, exit_ray)
+                if bg_light !== nothing
+                    background = bg_light
                 end
                 # Fallback to default sky if no environment light
                 if is_black(background)

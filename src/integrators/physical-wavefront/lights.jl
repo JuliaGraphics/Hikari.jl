@@ -78,14 +78,17 @@ Sample a spotlight spectrally.
     wi = to_light / dist
 
     # Compute spotlight falloff
-    # Need direction in light's local space
-    cos_theta = -dot(wi, light.dir)
+    # Transform -wi to light's local space and check z-component
+    # (spotlight points in +Z direction in local space)
+    wi_local = normalize(light.world_to_light(-wi))
+    cos_theta = wi_local[3]
+
     if cos_theta < light.cos_total_width
         return PWLightSample()
     end
 
     # Compute falloff
-    falloff = if cos_theta >= light.cos_falloff_start
+    spot_falloff = if cos_theta >= light.cos_falloff_start
         1f0
     else
         # Smooth falloff
@@ -95,7 +98,7 @@ Sample a spotlight spectrally.
     end
 
     # Li = I * falloff / r^2
-    Li_rgb = light.i * falloff / dist_sq
+    Li_rgb = light.i * spot_falloff / dist_sq
     Li = uplift_rgb(Li_rgb, lambda)
 
     return PWLightSample(Li, wi, 1f0, light.position, true)

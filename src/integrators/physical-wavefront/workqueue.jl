@@ -50,10 +50,10 @@ end
 """
     reset!(queue::PWWorkQueue)
 
-Reset the queue to empty state. Must be called from a kernel or with @allowscalar.
+Reset the queue to empty state. Works on both CPU and GPU arrays.
 """
 @inline function reset!(queue::PWWorkQueue)
-    @inbounds queue.size[1] = Int32(0)
+    fill!(queue.size, Int32(0))
     return nothing
 end
 
@@ -61,8 +61,9 @@ end
     queue_size(queue::PWWorkQueue) -> Int32
 
 Return the current number of items in the queue.
+Note: This copies from GPU to CPU, so use sparingly (between kernel dispatches).
 """
-@inline queue_size(queue::PWWorkQueue) = @inbounds queue.size[1]
+@inline queue_size(queue::PWWorkQueue) = @inbounds Array(queue.size)[1]
 
 """
     push_work!(queue::PWWorkQueue{T}, item::T) -> Int32

@@ -24,6 +24,7 @@ import Raycore: AccelPrimitive, BVH, TLAS, Instance, InstanceHandle, world_bound
 import Raycore: Normal3f, intersect, intersect_p
 import Raycore: is_dir_negative, increase_hit, intersect_p!
 import Raycore: to_gpu
+import Raycore: sum_unrolled, reduce_unrolled, for_unrolled, map_unrolled
 
 abstract type Spectrum end
 abstract type Light end

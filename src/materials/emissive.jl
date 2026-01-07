@@ -149,12 +149,12 @@ end
 # ============================================================================
 
 """
-    to_gpu(ArrayType, mat::EmissiveMaterial; preserve=[])
+    to_gpu(ArrayType, mat::EmissiveMaterial)
 
 Convert EmissiveMaterial to GPU-compatible form.
 """
-function to_gpu(ArrayType, mat::EmissiveMaterial; preserve=[])
-    Le_gpu = no_texture(mat.Le) ? mat.Le : to_gpu(ArrayType, mat.Le; preserve=preserve)
+function to_gpu(ArrayType, mat::EmissiveMaterial)
+    Le_gpu = to_gpu(ArrayType, mat.Le)
     return EmissiveMaterial(Le_gpu, mat.scale, mat.two_sided)
 end
 

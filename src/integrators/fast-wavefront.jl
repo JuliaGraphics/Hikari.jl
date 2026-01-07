@@ -361,13 +361,32 @@ end
     end
 end
 
+# GPU-safe helper: Generate shadow ray for one light at given index
+@inline function _generate_shadow_ray_for_light!(
+    light_idx::Int32, shadow_ray_queue, lights, hit_point, normal, idx::Int32, ::Val{NLights}
+) where NLights
+    shadow_ray_idx = (idx - Int32(1)) * Int32(NLights) + light_idx
+    shadow_ray = make_shadow_ray(lights[light_idx], hit_point, normal)
+    @fast_set shadow_ray_queue[shadow_ray_idx] = (ray=shadow_ray, hit_idx=idx, light_idx=light_idx)
+    return nothing
+end
+
+# GPU-safe helper: Set dummy ray for one light index
+@inline function _set_dummy_shadow_ray!(
+    light_idx::Int32, shadow_ray_queue, dummy_ray, idx::Int32, ::Val{NLights}
+) where NLights
+    shadow_ray_idx = (idx - Int32(1)) * Int32(NLights) + light_idx
+    shadow_ray_queue.ray[shadow_ray_idx] = dummy_ray
+    return nothing
+end
+
 # Helper: Process one hit and generate all shadow rays for it
 @inline function process_hit_and_generate_shadow_rays!(
     hit_queue,
     shadow_ray_queue,
     lights::T,
     idx::Int32,
-    ::Val{NLights}
+    nlights::Val{NLights}
 ) where {NLights, T}
     @fast_get hit_found, tri, dist, bary, ray = hit_queue[idx]
     if hit_found
@@ -376,21 +395,14 @@ end
         u, v, w = bary[1], bary[2], bary[3]
         normal = Vec3f(normalize(v0 * u + v1 * v + v2 * w))
 
-        # Use let to avoid boxing captured variables in for_unrolled closure
-        let hit_point = hit_point, normal = normal, idx = idx, lights = lights
-            light_idx = Int32(1)
-            shadow_ray_idx = (idx - Int32(1)) * Int32(NLights) + light_idx
-            shadow_ray = make_shadow_ray(lights[light_idx], hit_point, normal)
-            @fast_set shadow_ray_queue[shadow_ray_idx] = (ray=shadow_ray, hit_idx=idx, light_idx=light_idx)
-        end
+        # Generate shadow rays for ALL lights using GPU-safe unrolled iteration
+        for_unrolled(_generate_shadow_ray_for_light!, Val(NLights),
+                     shadow_ray_queue, lights, hit_point, normal, idx, nlights)
     else
         dummy_ray = Ray(o=Point3f(0,0,0), d=Vec3f(0,0,1), t_max=0.0f0)
-        let dummy_ray = dummy_ray, idx = idx
-            for_unrolled(Val(NLights)) do light_idx
-                shadow_ray_idx = (idx - Int32(1)) * Int32(NLights) + light_idx
-                shadow_ray_queue.ray[shadow_ray_idx] = dummy_ray
-            end
-        end
+        # Set dummy rays for all lights using GPU-safe unrolled iteration
+        for_unrolled(_set_dummy_shadow_ray!, Val(NLights),
+                     shadow_ray_queue, dummy_ray, idx, nlights)
     end
     return nothing
 end
@@ -695,20 +707,26 @@ function FastWavefront(;
     return FastWavefront(Int32(samples), Float32(ambient), nothing)
 end
 
+# GPU-safe helper for extracting sky color from a light
+@inline function _extract_sky_from_light(acc::RGB{Float32}, light)
+    # If we already found a sky color, keep it
+    acc != RGB{Float32}(0f0, 0f0, 0f0) && return acc
+    # Check if this light is a SunSkyLight
+    if light isa SunSkyLight
+        zenith_dir = Vec3f(0f0, 0f0, 1f0)
+        sky = sky_radiance(light, zenith_dir)
+        return RGB{Float32}(sky.c[1], sky.c[2], sky.c[3])
+    end
+    return acc
+end
+
 """
 Extract sky color from scene lights. Returns RGB for background rays.
 If SunSkyLight is present, samples sky at zenith direction.
 """
 function extract_sky_color(lights)::RGB{Float32}
-    for light in lights
-        if light isa SunSkyLight
-            # Sample sky at zenith for background color
-            zenith_dir = Vec3f(0f0, 0f0, 1f0)
-            sky = sky_radiance(light, zenith_dir)
-            return RGB{Float32}(sky.c[1], sky.c[2], sky.c[3])
-        end
-    end
-    return RGB{Float32}(0f0, 0f0, 0f0)  # Black if no sky light
+    # Use reduce_unrolled for GPU-safe iteration
+    reduce_unrolled(_extract_sky_from_light, lights, RGB{Float32}(0f0, 0f0, 0f0))
 end
 
 """
