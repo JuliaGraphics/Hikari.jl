@@ -28,7 +28,7 @@ struct DirectionalLight{S<:Spectrum} <: Light
     end
 end
 
-function sample_li(
+@inline function sample_li(
         d::DirectionalLight{S}, ref::Interaction, u::Point2f, scene::AbstractScene,
     )::Tuple{S,Vec3f,Float32,VisibilityTester} where S<:Spectrum
 

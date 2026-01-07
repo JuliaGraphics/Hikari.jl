@@ -68,7 +68,7 @@ function SPPM(;
     )
 end
 
-function (integrator::SPPM)(scene::Scene, film::Film, camera::Camera)
+function (integrator::SPPM)(scene::AbstractScene, film::Film, camera::Camera)
     pixel_bounds = film.crop_bounds
 
     b_sides = inclusive_sides(pixel_bounds)
@@ -131,7 +131,7 @@ end
         pixel_point::Point2f, camera::C, max_depth::Int,
         Ld::AbstractMatrix{RGBSpectrum},
         height::Float32,
-    ) where {SC<:Scene, S<:AbstractSampler, C<:Camera}
+    ) where {SC<:AbstractScene, S<:AbstractSampler, C<:Camera}
 
     # Flip y-coordinate for camera sample to match Julia array convention
     # pixel_point is in (x, y) format where y=1 is top row in Julia's array convention
@@ -231,7 +231,7 @@ end
 function _generate_visible_sppm_points!(
         i::SPPM,
         pixels::AbstractMatrix{SPPMPixel}, vps::AbstractMatrix{VisiblePoint},
-        scene::Scene, camera::Camera,
+        scene::AbstractScene, camera::Camera,
         n_tiles::Point2, tile_size::Int64, sampler::S,
         pixel_bounds::Bounds2, inv_sqrt_spp::Float32,
     ) where S<:AbstractSampler
@@ -322,7 +322,7 @@ end
 
 function _trace_photons!(
         i::SPPM, pixels::AbstractMatrix{SPPMPixel}, vps::AbstractMatrix{VisiblePoint},
-        scene::Scene, camera::Camera, iteration::Int64,
+        scene::AbstractScene, camera::Camera, iteration::Int64,
         light_distribution::Distribution1D,
         grid::Vector{Vector{Int32}},
         grid_bounds::Bounds3, grid_resolution::Point3,
@@ -534,7 +534,7 @@ end
 end
 
 function uniform_sample_one_light(
-        bsdf, i::SurfaceInteraction, scene::Scene, sampler::S,
+        bsdf, i::SurfaceInteraction, scene::AbstractScene, sampler::S,
     )::RGBSpectrum where S<:AbstractSampler
 
 
@@ -553,7 +553,7 @@ end
 
 function estimate_direct(
         bsdf, interaction::SurfaceInteraction, u_scatter::Point2f, light::L,
-        u_light::Point2f, scene::Scene, sampler::S, specular::Bool = false,
+        u_light::Point2f, scene::AbstractScene, sampler::S, specular::Bool = false,
     )::RGBSpectrum where {L<:Light,S<:AbstractSampler}
 
     bsdf_flags = specular ? BSDF_ALL : (BSDF_ALL & ~BSDF_SPECULAR)
@@ -598,7 +598,7 @@ end
 end
 
 @inline function compute_light_power_distribution(
-    scene::Scene,
+    scene::AbstractScene,
 )::Maybe{Distribution1D}
     length(scene.lights) == 0 && return nothing
     Distribution1D([(to_Y(power(l))) for l in scene.lights])

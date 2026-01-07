@@ -129,7 +129,8 @@ end
 # Generated function for type-stable light iteration
 # Unrolls only for the actual number of lights in the tuple
 # Uses unique variable names per iteration to avoid union types
-@noinline @generated function light_contribution(
+# NOTE: Must be @inline to avoid boxing arguments which causes allocations
+@inline @generated function light_contribution(
     l::RGBSpectrum, lights::NTuple{N,Light}, wo, scene::S, bsdf, sampler, si
 ) where {N, S<:AbstractScene}
     # Generate unique symbols for each light iteration to avoid union types
@@ -392,7 +393,7 @@ end
 
         # Get material and compute BSDF (or detect volume)
         idx = primitive.metadata
-        valid, is_volume, bsdf = @inline compute_bsdf_for_material(materials, idx, si)
+        valid, is_volume, bsdf = compute_bsdf_for_material(materials, idx, si)
 
         if !valid
             break

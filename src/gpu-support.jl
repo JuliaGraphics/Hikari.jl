@@ -101,6 +101,26 @@ function to_gpu(::Type, light::Hikari.PointLight; preserve=[])
     return light
 end
 
+# GPU conversion for SunSkyLight
+function to_gpu(ArrayType, light::Hikari.SunSkyLight; preserve=[])
+    dist_gpu = to_gpu(ArrayType, light.distribution; preserve=preserve)
+    return Hikari.SunSkyLight(
+        light.sun_direction,
+        light.sun_intensity,
+        light.sun_angular_radius,
+        light.turbidity,
+        light.ground_albedo,
+        light.ground_enabled,
+        light.perez_Y,
+        light.perez_x,
+        light.perez_y,
+        light.zenith_Y,
+        light.zenith_x,
+        light.zenith_y,
+        dist_gpu,
+    )
+end
+
 # Convert tuple of lights to GPU
 function to_gpu_lights(ArrayType, lights::Tuple; preserve=[])
     return map(l -> to_gpu(ArrayType, l; preserve=preserve), lights)

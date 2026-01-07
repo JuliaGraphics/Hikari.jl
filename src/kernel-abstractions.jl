@@ -75,11 +75,128 @@ function to_gpu(ArrayType, ms::Hikari.MaterialScene)
     accel = to_gpu(ArrayType, ms.accel)
     # Convert each material's textures to GPU, then convert the vector to device array
     # Must use Raycore.to_gpu for the vector conversion (returns device array via argconvert)
+    #
+    # IMPORTANT: We must ensure all materials in each group have the same concrete type.
+    # When materials have different texture configurations (some with data, some constant),
+    # the naive `map` creates a vector with abstract/union element type which can't be
+    # converted to a GPU array. We use `convert_materials_to_gpu` to handle this.
     materials = map(ms.materials) do mats
-        gpu_mats = map(m -> to_gpu(ArrayType, m), mats)
-        Raycore.to_gpu(ArrayType, gpu_mats)
+        convert_materials_to_gpu(ArrayType, mats)
     end
     return Hikari.MaterialScene(accel, materials)
+end
+
+"""
+Convert a vector of materials to GPU, ensuring homogeneous element types.
+
+The challenge is that materials with different texture configurations (some with actual
+texture data, some constant) become different concrete types after GPU conversion.
+GPU arrays require a single concrete element type.
+
+Solution: Convert all materials, then create a new vector with the widest compatible type
+by converting constant textures to use 1-element GPU arrays when needed for consistency.
+"""
+function convert_materials_to_gpu(ArrayType, mats::Vector{M}) where M
+    isempty(mats) && return Raycore.to_gpu(ArrayType, M[])
+
+    # Convert all materials first
+    gpu_mats_raw = [to_gpu(ArrayType, m) for m in mats]
+
+    # Check if all have the same type (common case - homogeneous materials)
+    T1 = typeof(first(gpu_mats_raw))
+    all_same = all(m -> typeof(m) === T1, gpu_mats_raw)
+
+    if all_same
+        # Fast path: all same type, just create typed vector
+        gpu_mats = T1[m for m in gpu_mats_raw]
+        return Raycore.to_gpu(ArrayType, gpu_mats)
+    end
+
+    # Slow path: heterogeneous types - need to unify
+    # This happens when some materials have texture data and others are constant.
+    # We need to promote constant textures to use minimal GPU arrays for type consistency.
+    gpu_mats_unified = unify_material_types(ArrayType, gpu_mats_raw)
+    return Raycore.to_gpu(ArrayType, gpu_mats_unified)
+end
+
+# Fallback for non-vector material containers
+function convert_materials_to_gpu(ArrayType, mats)
+    gpu_mats = map(m -> to_gpu(ArrayType, m), mats)
+    Raycore.to_gpu(ArrayType, collect(gpu_mats))
+end
+
+"""
+Unify heterogeneous material types by promoting constant textures to minimal GPU arrays.
+"""
+function unify_material_types(ArrayType, gpu_mats::Vector)
+    # For MatteMaterial: promote SMatrix{0,0} textures to 1-element GPU arrays
+    # This ensures all materials have the same concrete type
+    if !isempty(gpu_mats) && first(gpu_mats) isa Hikari.MatteMaterial
+        return unify_matte_materials(ArrayType, gpu_mats)
+    end
+    # For other material types, try a similar approach
+    # For now, fall back to Any[] which won't work on GPU but will error clearly
+    @warn "Heterogeneous material types detected - GPU conversion may fail" types=unique(typeof.(gpu_mats))
+    return gpu_mats
+end
+
+function unify_matte_materials(ArrayType, gpu_mats::Vector)
+    # Find the "widest" texture types (prefer GPU arrays over SMatrix{0,0})
+    # We'll promote all constant textures to use minimal 1-element GPU arrays
+
+    # Determine target types from materials that have actual texture data
+    KdType = nothing
+    σType = nothing
+
+    for m in gpu_mats
+        Kd_data_type = typeof(m.Kd.data)
+        σ_data_type = typeof(m.σ.data)
+
+        # Prefer non-SMatrix types (actual GPU arrays)
+        if !(Kd_data_type <: StaticArraysCore.SMatrix) && KdType === nothing
+            KdType = Kd_data_type
+        end
+        if !(σ_data_type <: StaticArraysCore.SMatrix) && σType === nothing
+            σType = σ_data_type
+        end
+    end
+
+    # If no GPU array types found, all are constant - just use the first type
+    if KdType === nothing && σType === nothing
+        T = typeof(first(gpu_mats))
+        return T[m for m in gpu_mats]
+    end
+
+    # Create unified materials with consistent texture types
+    unified = map(gpu_mats) do m
+        Kd = promote_texture_type(ArrayType, m.Kd, KdType)
+        σ = promote_texture_type(ArrayType, m.σ, σType)
+        Hikari.MatteMaterial(Kd, σ)
+    end
+
+    T = typeof(first(unified))
+    return T[m for m in unified]
+end
+
+"""
+Promote a texture to use a specific array type if it's currently a constant (SMatrix{0,0}).
+"""
+function promote_texture_type(ArrayType, tex::Hikari.Texture{ElType}, TargetArrType) where ElType
+    if TargetArrType === nothing
+        # No target type - keep as is
+        return tex
+    end
+
+    if typeof(tex.data) <: StaticArraysCore.SMatrix
+        # Constant texture - promote to 1-element GPU array for type consistency
+        # The texture is still marked as const, so lookup will use const_value
+        dummy_arr = reshape([tex.const_value], 1, 1)
+        gpu_arr = Raycore.to_gpu(ArrayType, dummy_arr)
+        return Hikari.Texture(gpu_arr, tex.const_value, true)
+    else
+        # Already has GPU array data
+        return tex
+    end
 end
 
 # GPU conversion for Distribution1D - uses Raycore.to_gpu which handles preservation via global PRESERVE
@@ -118,8 +235,31 @@ to_gpu(::Type, light::Hikari.PointLight) = light
 # GPU conversion for AmbientLight (already bitstype, no conversion needed)
 to_gpu(::Type, light::Hikari.AmbientLight) = light
 
-# GPU conversion for SunSkyLight (already bitstype, no conversion needed)
-to_gpu(::Type, light::Hikari.SunSkyLight) = light
+# GPU conversion for DirectionalLight (already bitstype, no conversion needed)
+to_gpu(::Type, light::Hikari.DirectionalLight) = light
+
+# GPU conversion for SunLight (already bitstype, no conversion needed)
+to_gpu(::Type, light::Hikari.SunLight) = light
+
+# GPU conversion for SunSkyLight - needs to convert the Distribution2D for importance sampling
+function to_gpu(ArrayType, light::Hikari.SunSkyLight)
+    dist_gpu = to_gpu(ArrayType, light.distribution)
+    return Hikari.SunSkyLight(
+        light.sun_direction,
+        light.sun_intensity,
+        light.sun_angular_radius,
+        light.turbidity,
+        light.ground_albedo,
+        light.ground_enabled,
+        light.perez_Y,
+        light.perez_x,
+        light.perez_y,
+        light.zenith_Y,
+        light.zenith_x,
+        light.zenith_y,
+        dist_gpu,
+    )
+end
 
 # Convert tuple of lights to GPU
 to_gpu_lights(ArrayType, lights::Tuple) = map(l -> to_gpu(ArrayType, l), lights)

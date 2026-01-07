@@ -44,7 +44,7 @@ Uses importance sampling based on environment map luminance.
 # Returns
 Tuple of (radiance, incident direction, pdf, visibility tester)
 """
-function sample_li(e::EnvironmentLight{S}, i::Interaction, u::Point2f, scene::Scene) where {S}
+@inline function sample_li(e::EnvironmentLight{S}, i::Interaction, u::Point2f, scene::AbstractScene) where {S}
     # Importance sample the environment map based on luminance
     uv, map_pdf = sample_continuous(e.env_map.distribution, u)
 
