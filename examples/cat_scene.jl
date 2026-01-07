@@ -9,6 +9,7 @@ using Colors
 using Hikari
 using Raycore
 import Makie
+using Raycore: to_gpu
 
 # =============================================================================
 # Scene Setup (shared by all integrators)
@@ -198,15 +199,13 @@ end
 # =============================================================================
 
 using pocl_jll, OpenCL
+cl.device!(cl.devices(cl.platforms()[1])[1])
 
 # Example: Render with PhysicalWavefront
 
-using Raycore: to_gpu
-cl.device!(cl.devices(cl.platforms()[1])[1])
 begin
     scene = create_scene(; glass_cat=false)
     film, camera = create_film_and_camera(; width=720, height=720, use_pbrt_camera=true)
-
     # Choose integrator:
     integrator = Hikari.FastWavefront(samples=8)
     integrator = Hikari.Whitted(samples=8)

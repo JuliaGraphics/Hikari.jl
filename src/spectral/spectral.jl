@@ -181,6 +181,81 @@ Sample 4 wavelengths with stratified sampling (one per stratum).
     return Wavelengths(lambdas, pdf)
 end
 
+# ============================================================================
+# Importance-Sampled Wavelengths (pbrt-v4 style)
+# ============================================================================
+
+# Extended visible range for importance sampling (matches pbrt-v4)
+const LAMBDA_MIN_VISIBLE = 360.0f0
+const LAMBDA_MAX_VISIBLE = 830.0f0
+
+"""
+    visible_wavelengths_pdf(lambda::Float32) -> Float32
+
+PDF for importance-sampled visible wavelengths, centered at 538nm.
+This distribution reduces variance by sampling more where human vision is sensitive.
+
+From pbrt-v4: PDF = 0.0039398042 / cosh²(0.0072 * (lambda - 538))
+"""
+@inline function visible_wavelengths_pdf(lambda::Float32)::Float32
+    if lambda < LAMBDA_MIN_VISIBLE || lambda > LAMBDA_MAX_VISIBLE
+        return 0.0f0
+    end
+    # Hyperbolic secant squared distribution centered at 538nm
+    x = 0.0072f0 * (lambda - 538.0f0)
+    cosh_x = cosh(x)
+    return 0.0039398042f0 / (cosh_x * cosh_x)
+end
+
+"""
+    sample_visible_wavelengths(u::Float32) -> Float32
+
+Sample a single wavelength using importance sampling for visible light.
+Inverse CDF of the hyperbolic secant squared distribution.
+
+From pbrt-v4: lambda = 538 - 138.888889 * atanh(0.85691062 - 1.82750197 * u)
+"""
+@inline function sample_visible_wavelengths(u::Float32)::Float32
+    # Inverse CDF for hyperbolic secant squared distribution
+    return 538.0f0 - 138.888889f0 * atanh(0.85691062f0 - 1.82750197f0 * u)
+end
+
+"""
+    sample_wavelengths_visible(u::Float32) -> Wavelengths
+
+Sample 4 wavelengths using importance sampling with hero wavelength method.
+Uses pbrt-v4's visible wavelength distribution for reduced variance.
+"""
+@inline function sample_wavelengths_visible(u::Float32)
+    # Sample hero wavelength using importance sampling
+    lambda1 = sample_visible_wavelengths(u)
+
+    # Secondary wavelengths with stratified offsets in [0,1)
+    # These map to different parts of the spectrum
+    u2 = u + 0.25f0
+    u2 = u2 >= 1.0f0 ? u2 - 1.0f0 : u2
+    u3 = u + 0.5f0
+    u3 = u3 >= 1.0f0 ? u3 - 1.0f0 : u3
+    u4 = u + 0.75f0
+    u4 = u4 >= 1.0f0 ? u4 - 1.0f0 : u4
+
+    lambda2 = sample_visible_wavelengths(u2)
+    lambda3 = sample_visible_wavelengths(u3)
+    lambda4 = sample_visible_wavelengths(u4)
+
+    lambdas = (lambda1, lambda2, lambda3, lambda4)
+
+    # PDF for each wavelength
+    pdf = (
+        visible_wavelengths_pdf(lambda1),
+        visible_wavelengths_pdf(lambda2),
+        visible_wavelengths_pdf(lambda3),
+        visible_wavelengths_pdf(lambda4)
+    )
+
+    return Wavelengths(lambdas, pdf)
+end
+
 """
     terminate_secondary_wavelengths(lambda::Wavelengths) -> Wavelengths
 

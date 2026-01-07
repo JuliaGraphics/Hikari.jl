@@ -177,11 +177,11 @@ For sample i out of N total, uses stratum i/N of the wavelength space.
         camera_sample = CameraSample(p_film, Point2f(0.5f0, 0.5f0), 0f0)
         ray, weight = generate_ray(camera, camera_sample)
 
-        # Stratified wavelength sampling
+        # Stratified wavelength sampling with importance sampling
         # Divide wavelength range into strata, sample within current stratum
         stratum_size = 1f0 / Float32(total_samples)
         wavelength_sample = Float32(sample_idx - Int32(1)) * stratum_size + wavelength_jitter * stratum_size
-        lambda = sample_wavelengths_uniform(wavelength_sample)
+        lambda = sample_wavelengths_visible(wavelength_sample)
 
         if weight > 0f0
             raycore_ray = Raycore.Ray(o=ray.o, d=ray.d, t_max=ray.t_max)

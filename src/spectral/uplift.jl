@@ -206,25 +206,100 @@ Compute spectral value at wavelength λ using Smits' method.
 end
 
 # =============================================================================
+# Sigmoid Polynomial Method (pbrt-v4 compatible, lowest variance)
+# =============================================================================
+
+# Include the lookup table and functions
+include("rgb2spec.jl")
+
+# Global table reference for fast access (initialized lazily)
+const _RGB2SPEC_TABLE_REF = Ref{Union{Nothing, RGBToSpectrumTable}}(nothing)
+
+"""Get the global sRGB to spectrum table (loads on first access)"""
+function _get_rgb2spec_table()::RGBToSpectrumTable
+    if _RGB2SPEC_TABLE_REF[] === nothing
+        _RGB2SPEC_TABLE_REF[] = get_srgb_table()
+    end
+    return _RGB2SPEC_TABLE_REF[]
+end
+
+"""
+    rgb_to_spectral_sigmoid(r::Float32, g::Float32, b::Float32, lambda::Wavelengths) -> SpectralRadiance
+
+Convert RGB to spectral radiance using sigmoid polynomial method (pbrt-v4 style).
+This provides the smoothest spectra and lowest variance for spectral rendering.
+"""
+@inline function rgb_to_spectral_sigmoid(r::Float32, g::Float32, b::Float32, lambda::Wavelengths)
+    table = _get_rgb2spec_table()
+    poly = rgb_to_spectrum(table, r, g, b)
+
+    data = ntuple(Val(4)) do i
+        poly(lambda.lambda[i])
+    end
+    return SpectralRadiance(data)
+end
+
+"""
+    rgb_to_spectral_sigmoid_unbounded(r::Float32, g::Float32, b::Float32, lambda::Wavelengths) -> SpectralRadiance
+
+Convert RGB to spectral radiance for unbounded values (emission/illumination).
+Scales the spectrum to preserve the maximum RGB component.
+"""
+@inline function rgb_to_spectral_sigmoid_unbounded(r::Float32, g::Float32, b::Float32, lambda::Wavelengths)
+    table = _get_rgb2spec_table()
+
+    # Find scale factor
+    m = max(r, g, b)
+    if m <= 0
+        return SpectralRadiance(0.0f0)
+    end
+
+    # Normalize and get polynomial for unit-scale color
+    poly = rgb_to_spectrum(table, r / m, g / m, b / m)
+
+    # Scale to match original intensity
+    max_poly = max_value(poly)
+    scale = m / max_poly
+
+    data = ntuple(Val(4)) do i
+        scale * poly(lambda.lambda[i])
+    end
+    return SpectralRadiance(data)
+end
+
+# =============================================================================
 # Convenience functions for Hikari types
 # =============================================================================
 
 """
-    uplift_rgb(rgb::RGBSpectrum, lambda::Wavelengths; method=:simple) -> SpectralRadiance
+    uplift_rgb(rgb::RGBSpectrum, lambda::Wavelengths; method=:sigmoid) -> SpectralRadiance
 
 Convert Hikari RGBSpectrum to spectral radiance at given wavelengths.
 
 Methods:
-- `:simple` - Fast piecewise linear (default)
-- `:smits` - More accurate Smits' method
+- `:sigmoid` - Smooth sigmoid polynomial (pbrt-v4 style, lowest variance, default)
+- `:simple` - Fast piecewise linear
+- `:smits` - Smits' method
 """
-@inline function uplift_rgb(rgb::RGBSpectrum, lambda::Wavelengths; method::Symbol=:simple)
+@inline function uplift_rgb(rgb::RGBSpectrum, lambda::Wavelengths; method::Symbol=:sigmoid)
     r, g, b = rgb.c[1], rgb.c[2], rgb.c[3]
-    if method === :smits
+    if method === :sigmoid
+        return rgb_to_spectral_sigmoid(r, g, b, lambda)
+    elseif method === :smits
         return rgb_to_spectral_smits(r, g, b, lambda)
     else
         return rgb_to_spectral_simple(r, g, b, lambda)
     end
+end
+
+"""
+    uplift_rgb_unbounded(rgb::RGBSpectrum, lambda::Wavelengths) -> SpectralRadiance
+
+Convert Hikari RGBSpectrum to spectral radiance for emission/illumination.
+Uses sigmoid polynomial method with scaling for unbounded values.
+"""
+@inline function uplift_rgb_unbounded(rgb::RGBSpectrum, lambda::Wavelengths)
+    return rgb_to_spectral_sigmoid_unbounded(rgb.c[1], rgb.c[2], rgb.c[3], lambda)
 end
 
 """

@@ -169,10 +169,11 @@ function (pw::PhysicalWavefront)(scene::AbstractScene, film::Film, camera::Camer
         # Clear spectral accumulator for THIS sample only
         pw_clear_film!(backend, state.pixel_L, state.num_pixels)
 
-        # Sample wavelengths for this iteration
+        # Sample wavelengths for this iteration using importance sampling
         # Use sample index to get different wavelengths per sample
         u_lambda = Float32(sample_idx - 1 + rand()) / Float32(pw.samples_per_pixel)
-        state.current_lambda = sample_wavelengths_uniform(u_lambda)
+        # Use importance-sampled visible wavelengths for lower variance
+        state.current_lambda = sample_wavelengths_visible(u_lambda)
 
         # Generate RNG seed for this sample
         rng_seed = UInt32(sample_idx) ⊻ UInt32(0x12345678)
@@ -325,9 +326,9 @@ function render_single_sample!(
 
     state = pw.state
 
-    # Sample wavelengths
+    # Sample wavelengths using importance sampling
     u_lambda = Float32(sample_idx - 1 + rand()) / Float32(pw.samples_per_pixel)
-    state.current_lambda = sample_wavelengths_uniform(u_lambda)
+    state.current_lambda = sample_wavelengths_visible(u_lambda)
 
     rng_seed = UInt32(sample_idx) ⊻ UInt32(0x12345678)
 
