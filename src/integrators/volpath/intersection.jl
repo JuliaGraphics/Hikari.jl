@@ -277,28 +277,33 @@ Handles transmissive boundaries (MediumInterface) by tracing through them.
             work = shadow_items[idx]
 
             # Trace shadow ray, handling transmissive boundaries
-            Tr, visible = trace_shadow_transmittance(
+            # Returns (T_ray, tr_r_u, tr_r_l, visible) following pbrt-v4's TraceTransmittance
+            T_ray, tr_r_u, tr_r_l, visible = trace_shadow_transmittance(
                 accel, materials, media, rgb2spec_table,
                 work.ray.o, work.ray.d, work.t_max, work.lambda, work.medium_idx
             )
 
-            if visible && !is_black(Tr)
-                # Apply transmittance to contribution
-                contribution = work.Ld * Tr
+            if visible && !is_black(T_ray)
+                # Following pbrt-v4 TraceTransmittance (intersect.h line 266):
+                # Ld *= T_ray / (sr.r_u * r_u + sr.r_l * r_l).Average()
+                # This combines path MIS weights (work.r_u, work.r_l) with transmittance
+                # MIS weights (tr_r_u, tr_r_l)
+                mis_weight = work.r_u * tr_r_u + work.r_l * tr_r_l
+                mis_denom = average(mis_weight)
 
-                if !is_black(contribution)
-                    # MIS weight
-                    w = 1f0 / average(work.r_u + work.r_l)
+                if mis_denom > 1f-10
+                    final_L = work.Ld * T_ray / mis_denom
 
-                    # Add to pixel
-                    pixel_idx = work.pixel_index
-                    base_idx = (pixel_idx - Int32(1)) * Int32(4)
+                    if !is_black(final_L)
+                        # Add to pixel
+                        pixel_idx = work.pixel_index
+                        base_idx = (pixel_idx - Int32(1)) * Int32(4)
 
-                    final_L = contribution * w
-                    Atomix.@atomic pixel_L[base_idx + Int32(1)] += final_L[1]
-                    Atomix.@atomic pixel_L[base_idx + Int32(2)] += final_L[2]
-                    Atomix.@atomic pixel_L[base_idx + Int32(3)] += final_L[3]
-                    Atomix.@atomic pixel_L[base_idx + Int32(4)] += final_L[4]
+                        Atomix.@atomic pixel_L[base_idx + Int32(1)] += final_L[1]
+                        Atomix.@atomic pixel_L[base_idx + Int32(2)] += final_L[2]
+                        Atomix.@atomic pixel_L[base_idx + Int32(3)] += final_L[3]
+                        Atomix.@atomic pixel_L[base_idx + Int32(4)] += final_L[4]
+                    end
                 end
             end
         end
@@ -309,16 +314,24 @@ end
     trace_shadow_transmittance(accel, materials, media, rgb2spec_table, origin, dir, t_max, lambda, medium_idx)
 
 Trace a shadow ray computing transmittance through media and transmissive boundaries.
-Returns (transmittance, visible) where visible is false if ray hits an opaque surface.
+Returns (T_ray, r_u, r_l, visible) where:
+- T_ray: spectral transmittance
+- r_u, r_l: MIS weight accumulators for combining with path weights
+- visible: false if ray hits an opaque surface
 
-This follows pbrt-v4's approach: transmissive surfaces (MediumInterface) let the ray through,
-while opaque surfaces block it.
+Following pbrt-v4's TraceTransmittance: transmissive surfaces (MediumInterface) let the ray through,
+while opaque surfaces block it. The final contribution is computed as:
+    Ld * T_ray / average(path_r_u * r_u + path_r_l * r_l)
 """
 @inline function trace_shadow_transmittance(
     accel, materials, media, rgb2spec_table,
     origin::Point3f, dir::Vec3f, t_max::Float32, lambda::Wavelengths, medium_idx::MediumIndex
 )
-    Tr = SpectralRadiance(1f0)
+    # Transmittance and MIS weights following pbrt-v4
+    T_ray = SpectralRadiance(1f0)
+    r_u = SpectralRadiance(1f0)
+    r_l = SpectralRadiance(1f0)
+
     current_medium = medium_idx
     ray_o = origin
     t_remaining = t_max
@@ -336,12 +349,15 @@ while opaque surfaces block it.
         if !hit
             # No more surfaces - compute transmittance for remaining distance
             if has_medium(current_medium)
-                Tr = Tr * compute_transmittance_simple(
+                seg_T, seg_r_u, seg_r_l = compute_transmittance_ratio_tracking(
                     rgb2spec_table, media, current_medium,
                     ray_o, dir, t_remaining, lambda
                 )
+                T_ray = T_ray * seg_T
+                r_u = r_u * seg_r_u
+                r_l = r_l * seg_r_l
             end
-            return (Tr, true)  # Visible
+            return (T_ray, r_u, r_l, true)  # Visible
         end
 
         # Hit a surface - check if it's transmissive
@@ -354,19 +370,22 @@ while opaque surfaces block it.
 
         if !is_transmissive
             # Opaque surface blocks the ray
-            return (SpectralRadiance(0f0), false)
+            return (SpectralRadiance(0f0), SpectralRadiance(1f0), SpectralRadiance(1f0), false)
         end
 
         # Transmissive boundary - compute transmittance up to this point
         if has_medium(current_medium)
-            Tr = Tr * compute_transmittance_simple(
+            seg_T, seg_r_u, seg_r_l = compute_transmittance_ratio_tracking(
                 rgb2spec_table, media, current_medium,
                 ray_o, dir, t_hit, lambda
             )
+            T_ray = T_ray * seg_T
+            r_u = r_u * seg_r_u
+            r_l = r_l * seg_r_l
         end
 
-        if is_black(Tr)
-            return (Tr, true)  # Transmittance is zero, no point continuing
+        if is_black(T_ray)
+            return (T_ray, r_u, r_l, true)  # Transmittance is zero, no point continuing
         end
 
         # Update medium based on crossing direction
@@ -380,26 +399,123 @@ while opaque surfaces block it.
     end
 
     # Exceeded max bounces - treat as occluded
-    return (SpectralRadiance(0f0), false)
+    return (SpectralRadiance(0f0), SpectralRadiance(1f0), SpectralRadiance(1f0), false)
+end
+
+"""
+    compute_transmittance_ratio_tracking(table, media, medium_idx, origin, dir, t_max, lambda)
+
+Compute transmittance through heterogeneous medium using ratio tracking.
+Following pbrt-v4's TraceTransmittance implementation.
+
+Ratio tracking uses delta tracking but only considers null-scattering events,
+providing an unbiased estimate of transmittance through heterogeneous media.
+
+Returns (T_ray, r_u, r_l) where:
+- T_ray: spectral transmittance estimate
+- r_u, r_l: MIS weight accumulators for combining with path weights
+"""
+@inline function compute_transmittance_ratio_tracking(
+    rgb2spec_table, media, medium_idx::MediumIndex,
+    origin::Point3f, dir::Vec3f, t_max::Float32, lambda::Wavelengths
+)
+    medium_type_idx = medium_idx.medium_type
+
+    # Get majorant for this ray segment
+    ray = Raycore.Ray(o=origin, d=dir)
+    majorant = get_majorant_dispatch(rgb2spec_table, media, medium_type_idx, ray, 0f0, t_max, lambda)
+
+    σ_maj_0 = majorant.σ_maj[1]  # First wavelength for sampling
+
+    # Handle zero majorant (empty medium)
+    if σ_maj_0 < 1f-10
+        return (SpectralRadiance(1f0), SpectralRadiance(1f0), SpectralRadiance(1f0))
+    end
+
+    # Ratio tracking state
+    T_ray = SpectralRadiance(1f0)
+    r_u = SpectralRadiance(1f0)
+    r_l = SpectralRadiance(1f0)
+    t = 0f0
+
+    # Step through medium using ratio tracking
+    max_iterations = Int32(256)
+    for _ in 1:max_iterations
+        # Sample exponential distance
+        u = rand(Float32)
+        dt = -log(max(1f-10, 1f0 - u)) / σ_maj_0
+        t_sample = t + dt
+
+        if t_sample >= t_max
+            # Reached end of segment - apply remaining transmittance
+            dt_remain = t_max - t
+            T_maj = exp(-dt_remain * majorant.σ_maj)
+            T_maj_0 = T_maj[1]
+            if T_maj_0 > 1f-10
+                T_ray = T_ray * T_maj / T_maj_0
+                r_l = r_l * T_maj / T_maj_0
+                r_u = r_u * T_maj / T_maj_0
+            end
+            break
+        end
+
+        # Sample medium properties at this point
+        p = Point3f(origin + dir * t_sample)
+        mp = sample_point_dispatch(rgb2spec_table, media, medium_type_idx, p, lambda)
+
+        # Compute null-scattering coefficient
+        σ_n = majorant.σ_maj - mp.σ_a - mp.σ_s
+        # Clamp negative values
+        σ_n = SpectralRadiance(max(σ_n[1], 0f0), max(σ_n[2], 0f0), max(σ_n[3], 0f0), max(σ_n[4], 0f0))
+
+        # Compute transmittance for this segment
+        T_maj = exp(-dt * majorant.σ_maj)
+
+        # Ratio tracking update (only null-scattering for transmittance)
+        # Following pbrt-v4: T_ray *= T_maj * sigma_n / pr
+        pr = T_maj[1] * σ_maj_0
+        if pr > 1f-10
+            T_ray = T_ray * T_maj * σ_n / pr
+            r_l = r_l * T_maj * majorant.σ_maj / pr
+            r_u = r_u * T_maj * σ_n / pr
+        else
+            T_ray = SpectralRadiance(0f0)
+            break
+        end
+
+        # Russian roulette termination (following pbrt-v4)
+        Tr_estimate = T_ray / max(1f-10, average(r_l + r_u))
+        if max_component(Tr_estimate) < 0.05f0
+            q = 0.75f0
+            if rand(Float32) < q
+                T_ray = SpectralRadiance(0f0)
+                break
+            else
+                T_ray = T_ray / (1f0 - q)
+            end
+        end
+
+        if is_black(T_ray)
+            break
+        end
+
+        t = t_sample
+    end
+
+    return (T_ray, r_u, r_l)
 end
 
 """
     compute_transmittance_simple(table, media, medium_idx, origin, dir, t_max, lambda)
 
-Simple transmittance computation using Beer-Lambert law.
-Assumes homogeneous medium properties along the ray.
+Simple wrapper that returns only the transmittance (for compatibility).
 """
 @inline function compute_transmittance_simple(
     rgb2spec_table, media, medium_idx::MediumIndex,
     origin::Point3f, dir::Vec3f, t_max::Float32, lambda::Wavelengths
 )
-    # Sample medium at midpoint
-    mid_p = Point3f(origin + dir * (t_max * 0.5f0))
-    mp = sample_point_dispatch(rgb2spec_table, media, medium_idx.medium_type, mid_p, lambda)
-
-    # Beer-Lambert: T = exp(-σ_t * distance)
-    σ_t = mp.σ_a + mp.σ_s
-    return exp(-σ_t * t_max)
+    T_ray, _, _ = compute_transmittance_ratio_tracking(rgb2spec_table, media, medium_idx, origin, dir, t_max, lambda)
+    return T_ray
 end
 
 """

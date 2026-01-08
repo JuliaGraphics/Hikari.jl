@@ -130,11 +130,15 @@ Implements delta tracking following pbrt-v4's SampleMediumInteraction.
         if t_sample >= majorant.t_max
             # Reached end of medium segment without interaction
             # Update throughput for remaining distance
+            # Following pbrt-v4: apply T_maj and normalize by T_maj[0]
             dt_remain = majorant.t_max - t
             T_maj = exp(-dt_remain * majorant.σ_maj)
-            beta = beta * T_maj
-            r_u = r_u * T_maj
-            r_l = r_l * T_maj
+            T_maj_0 = T_maj[1]  # First wavelength (index 1 in Julia)
+            if T_maj_0 > 1f-10
+                beta = beta * T_maj / T_maj_0
+                r_u = r_u * T_maj / T_maj_0
+                r_l = r_l * T_maj / T_maj_0
+            end
             t = majorant.t_max
             break
         end
@@ -143,11 +147,9 @@ Implements delta tracking following pbrt-v4's SampleMediumInteraction.
         p = Point3f(work.ray.o + work.ray.d * t_sample)
         mp = sample_point_dispatch(rgb2spec_table, media, medium_type_idx, p, work.lambda)
 
-        # Update throughput for distance traveled
+        # Compute transmittance for this segment (from t to t_sample)
+        # Following pbrt-v4: T_maj is computed fresh for each segment
         T_maj = exp(-dt * majorant.σ_maj)
-        beta = beta * T_maj
-        r_u = r_u * T_maj
-        r_l = r_l * T_maj
 
         # Add emission if present (always, scaled by sigma_a/sigma_maj)
         if !is_black(mp.Le) && work.depth < max_depth
@@ -182,10 +184,11 @@ Implements delta tracking following pbrt-v4's SampleMediumInteraction.
             end
 
             # Update beta and r_u for scattering
+            # Following pbrt-v4: beta *= T_maj * sigma_s / pdf
             pdf = T_maj[1] * mp.σ_s[1]
             if pdf > 1f-10
-                beta = beta * mp.σ_s / pdf
-                r_u = r_u * mp.σ_s / pdf
+                beta = beta * T_maj * mp.σ_s / pdf
+                r_u = r_u * T_maj * mp.σ_s / pdf
             end
 
             # Push to scatter queue for phase function sampling
@@ -212,15 +215,16 @@ Implements delta tracking following pbrt-v4's SampleMediumInteraction.
         else
             # === NULL SCATTERING ===
             # Continue tracking with updated throughput
+            # Following pbrt-v4: beta *= T_maj * sigma_n / pdf
             σ_n = majorant.σ_maj - mp.σ_a - mp.σ_s
             # Clamp negative values element-wise
             σ_n = SpectralRadiance(max(σ_n[1], 0f0), max(σ_n[2], 0f0), max(σ_n[3], 0f0), max(σ_n[4], 0f0))
 
             pdf = T_maj[1] * σ_n[1]
             if pdf > 1f-10
-                beta = beta * σ_n / pdf
-                r_u = r_u * σ_n / pdf
-                r_l = r_l * majorant.σ_maj / pdf
+                beta = beta * T_maj * σ_n / pdf
+                r_u = r_u * T_maj * σ_n / pdf
+                r_l = r_l * T_maj * majorant.σ_maj / pdf
             else
                 beta = SpectralRadiance(0f0)
             end

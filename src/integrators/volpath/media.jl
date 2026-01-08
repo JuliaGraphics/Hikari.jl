@@ -196,9 +196,10 @@ Sample medium properties at a point. For homogeneous media, this is constant.
     p::Point3f,
     λ::Wavelengths
 )::MediumProperties
-    σ_a = uplift_rgb(table, medium.σ_a, λ)
-    σ_s = uplift_rgb(table, medium.σ_s, λ)
-    Le = uplift_rgb(table, medium.Le, λ)
+    # Use unbounded uplift for scattering/absorption coefficients (can be > 1.0)
+    σ_a = uplift_rgb_unbounded(table, medium.σ_a, λ)
+    σ_s = uplift_rgb_unbounded(table, medium.σ_s, λ)
+    Le = uplift_rgb_unbounded(table, medium.Le, λ)
     return MediumProperties(σ_a, σ_s, Le, medium.g)
 end
 
@@ -215,8 +216,9 @@ Get majorant for ray segment. For homogeneous media, majorant = σ_t everywhere.
     t_max::Float32,
     λ::Wavelengths
 )::RayMajorantSegment
-    σ_a = uplift_rgb(table, medium.σ_a, λ)
-    σ_s = uplift_rgb(table, medium.σ_s, λ)
+    # Use unbounded uplift for scattering/absorption coefficients (can be > 1.0)
+    σ_a = uplift_rgb_unbounded(table, medium.σ_a, λ)
+    σ_s = uplift_rgb_unbounded(table, medium.σ_s, λ)
     σ_maj = σ_a + σ_s
     return RayMajorantSegment(t_min, t_max, σ_maj)
 end
@@ -412,8 +414,9 @@ end
     d = sample_density(medium, p_medium)
 
     # Scale coefficients by density
-    σ_a = uplift_rgb(table, medium.σ_a, λ) * d
-    σ_s = uplift_rgb(table, medium.σ_s, λ) * d
+    # Use unbounded uplift for scattering/absorption coefficients (can be > 1.0)
+    σ_a = uplift_rgb_unbounded(table, medium.σ_a, λ) * d
+    σ_s = uplift_rgb_unbounded(table, medium.σ_s, λ) * d
 
     return MediumProperties(σ_a, σ_s, SpectralRadiance(0f0), medium.g)
 end
@@ -429,8 +432,9 @@ end
 )::RayMajorantSegment
     # Use global max density for simplicity
     # TODO: Implement DDA traversal for tighter bounds
-    σ_a = uplift_rgb(table, medium.σ_a, λ)
-    σ_s = uplift_rgb(table, medium.σ_s, λ)
+    # Use unbounded uplift for scattering/absorption coefficients (can be > 1.0)
+    σ_a = uplift_rgb_unbounded(table, medium.σ_a, λ)
+    σ_s = uplift_rgb_unbounded(table, medium.σ_s, λ)
     σ_maj = (σ_a + σ_s) * medium.max_density
 
     return RayMajorantSegment(t_min, t_max, σ_maj)

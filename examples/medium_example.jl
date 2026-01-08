@@ -395,7 +395,7 @@ function example_heterogeneous_cloud()
     # Generate procedural cloud density
     println("Generating procedural cloud density (64³)...")
     resolution = 64
-    density = generate_cloud_density(resolution; shape=:sphere, turbulence=0.7f0)
+    density = generate_cloud_density(resolution; shape=:sphere, turbulence=2f0)
     println("  Max density: ", maximum(density))
     println("  Non-zero voxels: ", count(d -> d > 0.01f0, density))
 
@@ -411,19 +411,20 @@ function example_heterogeneous_cloud()
 
     cloud_medium = Hikari.GridMedium(
         density;
-        σ_a = Hikari.RGBSpectrum(0.01f0),   # Low absorption (white clouds)
-        σ_s = Hikari.RGBSpectrum(3f0),       # Scattering
-        g = 0.6f0,                            # Forward scattering
+        σ_a = Hikari.RGBSpectrum(10f0),    # Absorption makes density visible
+        σ_s = Hikari.RGBSpectrum(0.4f0),    # Moderate scattering
+        g = 0.3f0,                           # Slight forward scattering
         bounds = cloud_bounds
     )
 
-    # Glass material wrapping the cloud medium
-    glass = Hikari.GlassMaterial(
-        Kr = Hikari.RGBSpectrum(0.1f0),
-        Kt = Hikari.RGBSpectrum(0.9f0),
-        index = 1.5f0
+    # Transparent boundary (no refraction) to clearly see internal structure
+    # Use index=1.0 to avoid glass distortion obscuring the cloud structure
+    transparent = Hikari.GlassMaterial(
+        Kr = Hikari.RGBSpectrum(0f0),
+        Kt = Hikari.RGBSpectrum(1f0),
+        index = 1.0f0
     )
-    cloud_material = Hikari.MediumInterface(glass; inside=cloud_medium, outside=nothing)
+    cloud_material = Hikari.MediumInterface(transparent; inside=cloud_medium, outside=nothing)
 
     # Create scene with cloud sphere in Cornell box
     scene = create_cornell_box(sphere_material=cloud_material)
@@ -473,7 +474,7 @@ end
 # results = run_all_examples()
 #
 # Or run individual examples:
-img = example_foggy_glass_sphere()
+# img = example_foggy_glass_sphere()
 # img = example_glowing_sphere()
 # img = example_foggy_room_clear_sphere()
 img = example_heterogeneous_cloud()
