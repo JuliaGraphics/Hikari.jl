@@ -233,9 +233,20 @@ end
 
 Convert RGB to spectral radiance using sigmoid polynomial method (pbrt-v4 style).
 This provides the smoothest spectra and lowest variance for spectral rendering.
+
+Note: Uses global table, not GPU-compatible. Use the version with explicit table for GPU kernels.
 """
 @inline function rgb_to_spectral_sigmoid(r::Float32, g::Float32, b::Float32, lambda::Wavelengths)
     table = _get_rgb2spec_table()
+    return rgb_to_spectral_sigmoid(table, r, g, b, lambda)
+end
+
+"""
+    rgb_to_spectral_sigmoid(table::RGBToSpectrumTable, r, g, b, lambda) -> SpectralRadiance
+
+GPU-compatible version that takes an explicit table parameter.
+"""
+@inline function rgb_to_spectral_sigmoid(table::RGBToSpectrumTable, r::Float32, g::Float32, b::Float32, lambda::Wavelengths)
     poly = rgb_to_spectrum(table, r, g, b)
 
     # Manually unrolled to avoid closure allocations
@@ -251,10 +262,20 @@ end
 
 Convert RGB to spectral radiance for unbounded values (emission/illumination).
 Scales the spectrum to preserve the maximum RGB component.
+
+Note: Uses global table, not GPU-compatible. Use the version with explicit table for GPU kernels.
 """
 @inline function rgb_to_spectral_sigmoid_unbounded(r::Float32, g::Float32, b::Float32, lambda::Wavelengths)
     table = _get_rgb2spec_table()
+    return rgb_to_spectral_sigmoid_unbounded(table, r, g, b, lambda)
+end
 
+"""
+    rgb_to_spectral_sigmoid_unbounded(table::RGBToSpectrumTable, r, g, b, lambda) -> SpectralRadiance
+
+GPU-compatible version that takes an explicit table parameter.
+"""
+@inline function rgb_to_spectral_sigmoid_unbounded(table::RGBToSpectrumTable, r::Float32, g::Float32, b::Float32, lambda::Wavelengths)
     # Find scale factor
     m = max(r, g, b)
     if m <= 0.0f0
@@ -284,6 +305,7 @@ end
     uplift_rgb(rgb::RGBSpectrum, lambda::Wavelengths; method=:sigmoid) -> SpectralRadiance
 
 Convert Hikari RGBSpectrum to spectral radiance at given wavelengths.
+Uses global table - not GPU-compatible. Use the version with explicit table for GPU kernels.
 
 Methods:
 - `:sigmoid` - Smooth sigmoid polynomial (pbrt-v4 style, lowest variance, default)
@@ -292,18 +314,27 @@ Methods:
 - `:passthrough` - Store RGB directly as first 3 spectral channels (pseudo-spectral, fastest)
 """
 @inline function uplift_rgb(rgb::RGBSpectrum, lambda::Wavelengths; method::Symbol=:sigmoid)
-    r, g, b = rgb.c[1], rgb.c[2], rgb.c[3]
     if method === :sigmoid
-        return rgb_to_spectral_sigmoid(r, g, b, lambda)
+        return rgb_to_spectral_sigmoid(rgb.c[1], rgb.c[2], rgb.c[3], lambda)
     elseif method === :smits
-        return rgb_to_spectral_smits(r, g, b, lambda)
+        return rgb_to_spectral_smits(rgb.c[1], rgb.c[2], rgb.c[3], lambda)
     elseif method === :passthrough
         # Pseudo-spectral: store RGB directly (matches PbrtWavefront behavior)
         # Channel 4 uses average of RGB for luminance
-        return SpectralRadiance((r, g, b, (r + g + b) / 3f0))
+        return SpectralRadiance((rgb.c[1], rgb.c[2], rgb.c[3], (rgb.c[1] + rgb.c[2] + rgb.c[3]) / 3f0))
     else
-        return rgb_to_spectral_simple(r, g, b, lambda)
+        return rgb_to_spectral_simple(rgb.c[1], rgb.c[2], rgb.c[3], lambda)
     end
+end
+
+"""
+    uplift_rgb(table::RGBToSpectrumTable, rgb::RGBSpectrum, lambda::Wavelengths) -> SpectralRadiance
+
+GPU-compatible version that takes an explicit table parameter.
+Uses sigmoid polynomial method (pbrt-v4 style, lowest variance).
+"""
+@inline function uplift_rgb(table::RGBToSpectrumTable, rgb::RGBSpectrum, lambda::Wavelengths)
+    return rgb_to_spectral_sigmoid(table, rgb.c[1], rgb.c[2], rgb.c[3], lambda)
 end
 
 """
@@ -311,9 +342,19 @@ end
 
 Convert Hikari RGBSpectrum to spectral radiance for emission/illumination.
 Uses sigmoid polynomial method with scaling for unbounded values.
+Uses global table - not GPU-compatible. Use the version with explicit table for GPU kernels.
 """
 @inline function uplift_rgb_unbounded(rgb::RGBSpectrum, lambda::Wavelengths)
     return rgb_to_spectral_sigmoid_unbounded(rgb.c[1], rgb.c[2], rgb.c[3], lambda)
+end
+
+"""
+    uplift_rgb_unbounded(table::RGBToSpectrumTable, rgb::RGBSpectrum, lambda::Wavelengths) -> SpectralRadiance
+
+GPU-compatible version that takes an explicit table parameter.
+"""
+@inline function uplift_rgb_unbounded(table::RGBToSpectrumTable, rgb::RGBSpectrum, lambda::Wavelengths)
+    return rgb_to_spectral_sigmoid_unbounded(table, rgb.c[1], rgb.c[2], rgb.c[3], lambda)
 end
 
 """

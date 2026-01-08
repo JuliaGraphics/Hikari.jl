@@ -57,16 +57,26 @@ end
 # ============================================================================
 
 """
-    RGBToSpectrumTable
+    RGBToSpectrumTable{V1, V5}
 
 Precomputed lookup table for converting RGB colors to RGBSigmoidPolynomial coefficients.
 Uses trilinear interpolation for smooth results.
+
+Parameterized by array types for GPU compatibility:
+- V1: 1D array type for scale (AbstractVector{Float32})
+- V5: 5D array type for coeffs (AbstractArray{Float32, 5})
+
+Use `to_gpu(ArrayType, table)` to convert to GPU-compatible arrays.
 """
-struct RGBToSpectrumTable
+struct RGBToSpectrumTable{V1 <: AbstractVector{Float32}, V5 <: AbstractArray{Float32, 5}}
     res::Int32
-    scale::Vector{Float32}          # [res] - z-axis (max component) scale values
-    coeffs::Array{Float32, 5}       # [3, res, res, res, 3] - [maxc, z, y, x, coeff]
+    scale::V1           # [res] - z-axis (max component) scale values
+    coeffs::V5          # [3, res, res, res, 3] - [maxc, z, y, x, coeff]
 end
+
+# Constructor for CPU arrays (backwards compatible)
+RGBToSpectrumTable(res::Int32, scale::Vector{Float32}, coeffs::Array{Float32, 5}) =
+    RGBToSpectrumTable{Vector{Float32}, Array{Float32, 5}}(res, scale, coeffs)
 
 """
     rgb_to_spectrum(table, rgb) -> RGBSigmoidPolynomial
@@ -314,11 +324,14 @@ end
 # Table Loading
 # ============================================================================
 
-# Global table instance (loaded lazily)
-const _srgb_table = Ref{Union{Nothing, RGBToSpectrumTable}}(nothing)
+# Type alias for CPU table
+const RGBToSpectrumTableCPU = RGBToSpectrumTable{Vector{Float32}, Array{Float32, 5}}
+
+# Global table instance (loaded lazily) - always CPU version
+const _srgb_table = Ref{Union{Nothing, RGBToSpectrumTableCPU}}(nothing)
 
 """Load the sRGB spectrum table from raw binary format"""
-function load_srgb_table_binary(path::String)::RGBToSpectrumTable
+function load_srgb_table_binary(path::String)::RGBToSpectrumTableCPU
     open(path, "r") do io
         res = read(io, Int32)
         scale = Vector{Float32}(undef, res)
@@ -333,13 +346,13 @@ end
 function save_srgb_table_binary(path::String, table::RGBToSpectrumTable)
     open(path, "w") do io
         write(io, table.res)
-        write(io, table.scale)
-        write(io, table.coeffs)
+        write(io, Array(table.scale))   # Convert to CPU array if needed
+        write(io, Array(table.coeffs))  # Convert to CPU array if needed
     end
 end
 
 """Load the sRGB spectrum table (generates if not cached)"""
-function get_srgb_table()::RGBToSpectrumTable
+function get_srgb_table()::RGBToSpectrumTableCPU
     if _srgb_table[] === nothing
         bin_path = joinpath(@__DIR__, "srgb_spectrum_table.dat")
         if isfile(bin_path)
@@ -356,4 +369,25 @@ function get_srgb_table()::RGBToSpectrumTable
         end
     end
     return _srgb_table[]
+end
+
+# ============================================================================
+# GPU Conversion
+# ============================================================================
+
+"""
+    to_gpu(ArrayType, table::RGBToSpectrumTable) -> RGBToSpectrumTable
+
+Convert RGBToSpectrumTable to use GPU-compatible arrays.
+The ArrayType should be a 1D GPU array type (e.g., CuVector or ROCArray).
+"""
+function to_gpu(ArrayType, table::RGBToSpectrumTable)
+    # Convert scale (1D) - use reshape to handle the conversion properly
+    scale_gpu = ArrayType(table.scale)
+
+    # Convert coeffs (5D) - need to handle multi-dimensional arrays
+    # Most GPU array types support direct construction from CPU arrays
+    coeffs_gpu = ArrayType(table.coeffs)
+
+    return RGBToSpectrumTable(table.res, scale_gpu, coeffs_gpu)
 end

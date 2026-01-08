@@ -394,9 +394,9 @@ end
     row = ((idx - 1) % h) + 1
     col = ((idx - 1) ÷ h) + 1
 
-    # Pixel coords (x=col, y=row) - flip y for camera
+    # Pixel coords (x=col, y=row) - match sampler integrator convention
     px = Float32(col) + crop_bounds.p_min[1] - 1f0
-    py = resolution[1] - (Float32(row) + crop_bounds.p_min[2] - 1f0)
+    py = Float32(row) + crop_bounds.p_min[2] - 1f0
     pixel = Point2f(px + 0.5f0, py + 0.5f0)  # Center of pixel
 
     # Generate primary ray

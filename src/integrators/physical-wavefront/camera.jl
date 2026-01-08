@@ -5,27 +5,6 @@
 # Random Number Generation (GPU-compatible)
 # ============================================================================
 
-"""
-    xorshift32(x::UInt32) -> UInt32
-
-Simple xorshift PRNG for GPU usage.
-"""
-@inline function xorshift32(x::UInt32)::UInt32
-    x = x ⊻ (x << 13)
-    x = x ⊻ (x >> 17)
-    x = x ⊻ (x << 5)
-    return x
-end
-
-"""
-    random_float(x::UInt32) -> Float32
-
-Convert random UInt32 to Float32 in [0, 1).
-"""
-@inline function random_float(x::UInt32)::Float32
-    return Float32(x) / Float32(typemax(UInt32))
-end
-
 # ============================================================================
 # Camera Ray Generation Kernel (with per-pixel wavelengths - pbrt-v4 style)
 # ============================================================================
@@ -147,68 +126,6 @@ function pw_generate_camera_rays!(
 
     KernelAbstractions.synchronize(backend)
     return nothing
-end
-
-# ============================================================================
-# Alternative: Generate rays with stratified wavelength sampling
-# ============================================================================
-
-"""
-    pw_generate_camera_rays_stratified_kernel!(...)
-
-Generate camera rays with stratified wavelength sampling across samples.
-For sample i out of N total, uses stratum i/N of the wavelength space.
-"""
-@kernel function pw_generate_camera_rays_stratified_kernel!(
-    ray_queue_items,
-    ray_queue_size,
-    @Const(width::Int32),
-    @Const(height::Int32),
-    @Const(camera),
-    @Const(sample_idx::Int32),
-    @Const(total_samples::Int32),
-    @Const(rng_base::UInt32)
-)
-    idx = @index(Global)
-    num_pixels = width * height
-
-    @inbounds if idx <= num_pixels
-        # Convert linear index to pixel coordinates
-        pixel_idx = idx - Int32(1)
-        x = Int32(mod(pixel_idx, width)) + Int32(1)
-        y = Int32(div(pixel_idx, width)) + Int32(1)
-
-        # Generate random numbers
-        seed = xorshift32(rng_base ⊻ UInt32(idx) ⊻ UInt32(sample_idx))
-        jitter_x = random_float(seed)
-        seed = xorshift32(seed)
-        jitter_y = random_float(seed)
-        seed = xorshift32(seed)
-        wavelength_jitter = random_float(seed)
-
-        # Compute film position with jitter
-        p_film = Point2f(
-            Float32(x) - 0.5f0 + jitter_x,
-            Float32(height) - Float32(y) + 0.5f0 + jitter_y
-        )
-
-        camera_sample = CameraSample(p_film, Point2f(0.5f0, 0.5f0), 0f0)
-        ray, weight = generate_ray(camera, camera_sample)
-
-        # Stratified wavelength sampling with importance sampling
-        # Divide wavelength range into strata, sample within current stratum
-        stratum_size = 1f0 / Float32(total_samples)
-        wavelength_sample = Float32(sample_idx - Int32(1)) * stratum_size + wavelength_jitter * stratum_size
-        lambda = sample_wavelengths_visible(wavelength_sample)
-
-        if weight > 0f0
-            raycore_ray = Raycore.Ray(o=ray.o, d=ray.d, t_max=ray.t_max)
-            work_item = PWRayWorkItem(raycore_ray, lambda, Int32(idx))
-
-            new_idx = @atomic ray_queue_size[1] += Int32(1)
-            ray_queue_items[new_idx] = work_item
-        end
-    end
 end
 
 # ============================================================================

@@ -7,7 +7,7 @@
 # ============================================================================
 
 """
-    sample_spectral_material(materials::NTuple{N}, idx::MaterialIndex, wo, ns, uv, lambda, u, rng)
+    sample_spectral_material(table::RGBToSpectrumTable, materials::NTuple{N}, idx::MaterialIndex, wo, ns, uv, lambda, u, rng)
 
 Type-stable dispatch for spectral BSDF sampling over Hikari's material tuple.
 Returns SpectralBSDFSample from the appropriate material type.
@@ -15,13 +15,13 @@ Returns SpectralBSDFSample from the appropriate material type.
 Uses @generated to create efficient branching code at compile time.
 """
 @inline @generated function sample_spectral_material(
-    materials::NTuple{N,Any}, idx::MaterialIndex,
+    table::RGBToSpectrumTable, materials::NTuple{N,Any}, idx::MaterialIndex,
     wo::Vec3f, ns::Vec3f, uv::Point2f,
     lambda::Wavelengths, u::Point2f, rng::Float32
 ) where {N}
     branches = [quote
         @inbounds if idx.material_type === UInt8($i)
-            return @inline sample_bsdf_spectral(materials[$i][idx.material_idx], wo, ns, uv, lambda, u, rng)
+            return @inline sample_bsdf_spectral(table, materials[$i][idx.material_idx], wo, ns, uv, lambda, u, rng)
         end
     end for i in 1:N]
 
@@ -37,19 +37,19 @@ end
 # ============================================================================
 
 """
-    evaluate_spectral_material(materials::NTuple{N}, idx::MaterialIndex, wo, wi, ns, uv, lambda)
+    evaluate_spectral_material(table::RGBToSpectrumTable, materials::NTuple{N}, idx::MaterialIndex, wo, wi, ns, uv, lambda)
 
 Type-stable dispatch for spectral BSDF evaluation.
 Returns (f::SpectralRadiance, pdf::Float32).
 """
 @inline @generated function evaluate_spectral_material(
-    materials::NTuple{N,Any}, idx::MaterialIndex,
+    table::RGBToSpectrumTable, materials::NTuple{N,Any}, idx::MaterialIndex,
     wo::Vec3f, wi::Vec3f, ns::Vec3f, uv::Point2f,
     lambda::Wavelengths
 ) where {N}
     branches = [quote
         @inbounds if idx.material_type === UInt8($i)
-            return @inline evaluate_bsdf_spectral(materials[$i][idx.material_idx], wo, wi, ns, uv, lambda)
+            return @inline evaluate_bsdf_spectral(table, materials[$i][idx.material_idx], wo, wi, ns, uv, lambda)
         end
     end for i in 1:N]
 
@@ -64,18 +64,18 @@ end
 # ============================================================================
 
 """
-    get_emission_spectral_dispatch(materials::NTuple{N}, idx::MaterialIndex, wo, n, uv, lambda)
+    get_emission_spectral_dispatch(table::RGBToSpectrumTable, materials::NTuple{N}, idx::MaterialIndex, wo, n, uv, lambda)
 
 Type-stable dispatch for getting spectral emission from materials.
 Returns SpectralRadiance (zero for non-emissive materials).
 """
 @inline @generated function get_emission_spectral_dispatch(
-    materials::NTuple{N,Any}, idx::MaterialIndex,
+    table::RGBToSpectrumTable, materials::NTuple{N,Any}, idx::MaterialIndex,
     wo::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
 ) where {N}
     branches = [quote
         @inbounds if idx.material_type === UInt8($i)
-            return @inline get_emission_spectral(materials[$i][idx.material_idx], wo, n, uv, lambda)
+            return @inline get_emission_spectral(table, materials[$i][idx.material_idx], wo, n, uv, lambda)
         end
     end for i in 1:N]
 
@@ -86,18 +86,18 @@ Returns SpectralRadiance (zero for non-emissive materials).
 end
 
 """
-    get_emission_spectral_uv_dispatch(materials::NTuple{N}, idx::MaterialIndex, uv, lambda)
+    get_emission_spectral_uv_dispatch(table::RGBToSpectrumTable, materials::NTuple{N}, idx::MaterialIndex, uv, lambda)
 
 Type-stable dispatch for getting spectral emission without directional check.
 Returns SpectralRadiance (zero for non-emissive materials).
 """
 @inline @generated function get_emission_spectral_uv_dispatch(
-    materials::NTuple{N,Any}, idx::MaterialIndex,
+    table::RGBToSpectrumTable, materials::NTuple{N,Any}, idx::MaterialIndex,
     uv::Point2f, lambda::Wavelengths
 ) where {N}
     branches = [quote
         @inbounds if idx.material_type === UInt8($i)
-            return @inline get_emission_spectral(materials[$i][idx.material_idx], uv, lambda)
+            return @inline get_emission_spectral(table, materials[$i][idx.material_idx], uv, lambda)
         end
     end for i in 1:N]
 
@@ -137,18 +137,18 @@ end
 # ============================================================================
 
 """
-    get_albedo_spectral_dispatch(materials::NTuple{N}, idx::MaterialIndex, uv, lambda)
+    get_albedo_spectral_dispatch(table::RGBToSpectrumTable, materials::NTuple{N}, idx::MaterialIndex, uv, lambda)
 
 Type-stable dispatch for getting material albedo for denoising.
 Returns SpectralRadiance.
 """
 @inline @generated function get_albedo_spectral_dispatch(
-    materials::NTuple{N,Any}, idx::MaterialIndex,
+    table::RGBToSpectrumTable, materials::NTuple{N,Any}, idx::MaterialIndex,
     uv::Point2f, lambda::Wavelengths
 ) where {N}
     branches = [quote
         @inbounds if idx.material_type === UInt8($i)
-            return @inline get_albedo_spectral(materials[$i][idx.material_idx], uv, lambda)
+            return @inline get_albedo_spectral(table, materials[$i][idx.material_idx], uv, lambda)
         end
     end for i in 1:N]
 
@@ -187,20 +187,20 @@ end
 end
 
 """
-    evaluate_material_complete(materials, idx, wo, ns, n, uv, lambda, u, rng)
+    evaluate_material_complete(table::RGBToSpectrumTable, materials, idx, wo, ns, n, uv, lambda, u, rng)
 
 Complete material evaluation for wavefront pipeline.
 Returns PWMaterialEvalResult with BSDF sample and emission.
 """
 @inline @generated function evaluate_material_complete(
-    materials::NTuple{N,Any}, idx::MaterialIndex,
+    table::RGBToSpectrumTable, materials::NTuple{N,Any}, idx::MaterialIndex,
     wo::Vec3f, ns::Vec3f, n::Vec3f, uv::Point2f,
     lambda::Wavelengths, u::Point2f, rng::Float32
 ) where {N}
     branches = [quote
         @inbounds if idx.material_type === UInt8($i)
-            sample = @inline sample_bsdf_spectral(materials[$i][idx.material_idx], wo, ns, uv, lambda, u, rng)
-            Le = @inline get_emission_spectral(materials[$i][idx.material_idx], wo, n, uv, lambda)
+            sample = @inline sample_bsdf_spectral(table, materials[$i][idx.material_idx], wo, ns, uv, lambda, u, rng)
+            Le = @inline get_emission_spectral(table, materials[$i][idx.material_idx], wo, n, uv, lambda)
             is_em = @inline is_emissive(materials[$i][idx.material_idx])
             return PWMaterialEvalResult(sample, Le, is_em)
         end
@@ -304,5 +304,81 @@ Returns (should_continue::Bool, new_beta::SpectralRadiance).
         # Continue with boosted beta
         scale = 1f0 / (1f0 - q)
         return (true, beta * scale)
+    end
+end
+
+# ============================================================================
+# MediumInterface Dispatch Functions
+# ============================================================================
+
+# These functions are used by VolPath to handle medium transitions at surfaces.
+# MediumInterface is defined in integrators/volpath/media.jl
+
+"""
+    has_medium_interface(mat) -> Bool
+
+Check if a material is a MediumInterface (defines medium boundary).
+"""
+@inline has_medium_interface(::Material) = false
+@inline has_medium_interface(::MediumInterface) = true
+@inline has_medium_interface(::MediumInterfaceIdx) = true
+
+"""
+    has_medium_interface_dispatch(materials::NTuple{N}, idx::MaterialIndex) -> Bool
+
+Type-stable dispatch for checking if a material defines a medium boundary.
+"""
+@inline @generated function has_medium_interface_dispatch(
+    materials::NTuple{N,Any}, idx::MaterialIndex
+) where {N}
+    branches = [quote
+        @inbounds if idx.material_type === UInt8($i)
+            return @inline has_medium_interface(materials[$i][idx.material_idx])
+        end
+    end for i in 1:N]
+
+    quote
+        $(branches...)
+        return false
+    end
+end
+
+"""
+    get_medium_index_for_direction(mat::MediumInterface, wi::Vec3f, n::Vec3f) -> MediumIndex
+
+Get the medium index a ray enters when crossing a MediumInterface surface.
+- If dot(wi, n) > 0: ray going in direction of normal -> outside medium
+- If dot(wi, n) < 0: ray going against normal -> inside medium
+"""
+@inline function get_medium_index_for_direction(mi::MediumInterface, wi::Vec3f, n::Vec3f)
+    return get_medium_index(mi, wi, n)
+end
+
+# MediumInterfaceIdx version (after scene building, MediumInterface is converted to this)
+@inline function get_medium_index_for_direction(mi::MediumInterfaceIdx, wi::Vec3f, n::Vec3f)
+    return get_medium_index(mi, wi, n)
+end
+
+# Fallback for non-MediumInterface materials (returns vacuum)
+@inline get_medium_index_for_direction(::Material, ::Vec3f, ::Vec3f) = MediumIndex()
+
+"""
+    get_medium_index_for_direction_dispatch(materials::NTuple{N}, idx::MaterialIndex, wi::Vec3f, n::Vec3f)
+
+Type-stable dispatch for getting the new medium index after crossing a surface.
+Returns the MediumIndex from MediumInterface, or MediumIndex() (vacuum) for regular materials.
+"""
+@inline @generated function get_medium_index_for_direction_dispatch(
+    materials::NTuple{N,Any}, idx::MaterialIndex, wi::Vec3f, n::Vec3f
+) where {N}
+    branches = [quote
+        @inbounds if idx.material_type === UInt8($i)
+            return @inline get_medium_index_for_direction(materials[$i][idx.material_idx], wi, n)
+        end
+    end for i in 1:N]
+
+    quote
+        $(branches...)
+        return MediumIndex()
     end
 end

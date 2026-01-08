@@ -284,7 +284,7 @@ end
 
 """
     pw_handle_escaped_rays_kernel!(pixel_L, escaped_queue_items, escaped_queue_size,
-                                    lights, max_queued)
+                                    lights, rgb2spec_table, max_queued)
 
 Handle rays that escaped the scene by evaluating environment lights.
 """
@@ -292,9 +292,15 @@ Handle rays that escaped the scene by evaluating environment lights.
     pixel_L,
     @Const(escaped_queue_items), @Const(escaped_queue_size),
     @Const(lights),  # Tuple of lights
+    @Const(rgb2spec_scale),  # RGB to spectrum table scale array
+    @Const(rgb2spec_coeffs), # RGB to spectrum table coefficients
+    @Const(rgb2spec_res::Int32),  # RGB to spectrum table resolution
     @Const(max_queued::Int32)
 )
     idx = @index(Global)
+
+    # Reconstruct table struct from components for GPU compatibility
+    rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
 
     @inbounds if idx <= max_queued
         current_size = escaped_queue_size[1]
@@ -302,7 +308,7 @@ Handle rays that escaped the scene by evaluating environment lights.
             work = escaped_queue_items[idx]
 
             # Evaluate environment lights for this direction
-            Le = evaluate_escaped_ray_spectral(lights, work.ray_d, work.lambda)
+            Le = evaluate_escaped_ray_spectral(rgb2spec_table, lights, work.ray_d, work.lambda)
 
             # Apply path throughput
             contribution = work.beta * Le
@@ -451,7 +457,7 @@ function pw_trace_shadow_rays!(
 end
 
 """
-    pw_handle_escaped_rays!(backend, pixel_L, escaped_queue, lights)
+    pw_handle_escaped_rays!(backend, pixel_L, escaped_queue, lights, rgb2spec_table)
 
 Evaluate environment lights for escaped rays.
 """
@@ -459,13 +465,19 @@ function pw_handle_escaped_rays!(
     backend,
     pixel_L::AbstractVector{Float32},
     escaped_queue::PWWorkQueue{PWEscapedRayWorkItem},
-    lights
+    lights,
+    rgb2spec_table::RGBToSpectrumTable
 )
     n = queue_size(escaped_queue)
     n == 0 && return nothing
 
     kernel! = pw_handle_escaped_rays_kernel!(backend)
-    kernel!(pixel_L, escaped_queue.items, escaped_queue.size, lights, Int32(n); ndrange=Int(n))
+    kernel!(
+        pixel_L, escaped_queue.items, escaped_queue.size, lights,
+        rgb2spec_table.scale, rgb2spec_table.coeffs, rgb2spec_table.res,
+        Int32(n);
+        ndrange=Int(n)
+    )
 
     KernelAbstractions.synchronize(backend)
     return nothing

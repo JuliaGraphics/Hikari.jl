@@ -8,7 +8,7 @@
 """
     pw_sample_direct_lighting_kernel!(shadow_queue_items, shadow_queue_size,
                                        material_queue_items, material_queue_size,
-                                       materials, lights, num_lights, rng_seed, max_queued)
+                                       materials, lights, rgb2spec_table, num_lights, max_queued)
 
 Sample direct lighting for all material evaluation work items.
 For each item, selects a light, samples a direction, evaluates BSDF,
@@ -19,10 +19,16 @@ and creates a shadow ray work item.
     @Const(material_queue_items), @Const(material_queue_size),
     @Const(materials),
     @Const(lights),        # Tuple of lights
+    @Const(rgb2spec_scale),  # RGB to spectrum table scale array
+    @Const(rgb2spec_coeffs), # RGB to spectrum table coefficients
+    @Const(rgb2spec_res::Int32),  # RGB to spectrum table resolution
     @Const(num_lights::Int32),
     @Const(max_queued::Int32)
 )
     idx = @index(Global)
+
+    # Reconstruct table struct from components for GPU compatibility
+    rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
 
     @inbounds if idx <= max_queued
         current_size = material_queue_size[1]
@@ -39,12 +45,12 @@ and creates a shadow ray work item.
 
             # Sample the selected light
             p = work.pi
-            light_sample = sample_light_from_tuple(lights, light_idx, p, work.lambda, u_light)
+            light_sample = sample_light_from_tuple(rgb2spec_table, lights, light_idx, p, work.lambda, u_light)
 
             if light_sample.pdf > 0f0 && !is_black(light_sample.Li)
                 # Evaluate BSDF for light direction
                 bsdf_f, bsdf_pdf = evaluate_spectral_material(
-                    materials, work.material_idx,
+                    rgb2spec_table, materials, work.material_idx,
                     work.wo, light_sample.wi, work.ns, work.uv, work.lambda
                 )
 
@@ -88,7 +94,8 @@ end
 """
     pw_evaluate_materials_kernel!(next_ray_queue_items, next_ray_queue_size,
                                    pixel_L, material_queue_items, material_queue_size,
-                                   materials, rng_seed, max_depth, max_queued)
+                                   materials, rgb2spec_scale, rgb2spec_coeffs, rgb2spec_res,
+                                   max_depth, max_queued)
 
 Evaluate materials for all work items:
 1. Sample BSDF for indirect lighting direction
@@ -100,10 +107,16 @@ Evaluate materials for all work items:
     pixel_L,
     @Const(material_queue_items), @Const(material_queue_size),
     @Const(materials),
+    @Const(rgb2spec_scale),  # RGB to spectrum table scale array
+    @Const(rgb2spec_coeffs), # RGB to spectrum table coefficients
+    @Const(rgb2spec_res::Int32),  # RGB to spectrum table resolution
     @Const(max_depth::Int32),
     @Const(max_queued::Int32)
 )
     idx = @index(Global)
+
+    # Reconstruct table struct from components for GPU compatibility
+    rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
 
     @inbounds if idx <= max_queued
         current_size = material_queue_size[1]
@@ -117,7 +130,7 @@ Evaluate materials for all work items:
 
             # Sample BSDF
             sample = sample_spectral_material(
-                materials, work.material_idx,
+                rgb2spec_table, materials, work.material_idx,
                 work.wo, work.ns, work.uv, work.lambda, u, rng
             )
 
@@ -163,7 +176,7 @@ end
 # ============================================================================
 
 """
-    pw_sample_direct_lighting!(backend, shadow_queue, material_queue, materials, lights)
+    pw_sample_direct_lighting!(backend, shadow_queue, material_queue, materials, lights, rgb2spec_table)
 
 Sample direct lighting for all material work items.
 """
@@ -172,7 +185,8 @@ function pw_sample_direct_lighting!(
     shadow_queue::PWWorkQueue{PWShadowRayWorkItem},
     material_queue::PWWorkQueue{PWMaterialEvalWorkItem},
     materials,
-    lights
+    lights,
+    rgb2spec_table::RGBToSpectrumTable
 )
     n = queue_size(material_queue)
     n == 0 && return nothing
@@ -187,7 +201,9 @@ function pw_sample_direct_lighting!(
     kernel!(
         shadow_queue.items, shadow_queue.size,
         material_queue.items, material_queue.size,
-        materials, lights, num_lights, Int32(n);
+        materials, lights,
+        rgb2spec_table.scale, rgb2spec_table.coeffs, rgb2spec_table.res,
+        num_lights, Int32(n);
         ndrange=Int(n)
     )
 
@@ -196,7 +212,7 @@ function pw_sample_direct_lighting!(
 end
 
 """
-    pw_evaluate_materials!(backend, next_ray_queue, pixel_L, material_queue, materials, max_depth)
+    pw_evaluate_materials!(backend, next_ray_queue, pixel_L, material_queue, materials, rgb2spec_table, max_depth)
 
 Evaluate materials and spawn continuation rays.
 """
@@ -206,6 +222,7 @@ function pw_evaluate_materials!(
     pixel_L::AbstractVector{Float32},
     material_queue::PWWorkQueue{PWMaterialEvalWorkItem},
     materials,
+    rgb2spec_table::RGBToSpectrumTable,
     max_depth::Int32
 )
     n = queue_size(material_queue)
@@ -216,7 +233,9 @@ function pw_evaluate_materials!(
         next_ray_queue.items, next_ray_queue.size,
         pixel_L,
         material_queue.items, material_queue.size,
-        materials, max_depth, Int32(n);
+        materials,
+        rgb2spec_table.scale, rgb2spec_table.coeffs, rgb2spec_table.res,
+        max_depth, Int32(n);
         ndrange=Int(n)
     )
 
@@ -231,7 +250,7 @@ end
 """
     pw_populate_aux_buffers_kernel!(aux_albedo, aux_normal, aux_depth,
                                      material_queue_items, material_queue_size,
-                                     materials, width, max_queued)
+                                     materials, rgb2spec_scale, rgb2spec_coeffs, rgb2spec_res, max_queued)
 
 Populate auxiliary buffers for denoising on first bounce.
 Only processes depth=0 items (primary ray hits).
@@ -242,9 +261,15 @@ Only processes depth=0 items (primary ray hits).
     aux_depth,    # 1 float per pixel
     @Const(material_queue_items), @Const(material_queue_size),
     @Const(materials),
+    @Const(rgb2spec_scale),  # RGB to spectrum table scale array
+    @Const(rgb2spec_coeffs), # RGB to spectrum table coefficients
+    @Const(rgb2spec_res::Int32),  # RGB to spectrum table resolution
     @Const(max_queued::Int32)
 )
     idx = @index(Global)
+
+    # Reconstruct table struct from components for GPU compatibility
+    rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
 
     @inbounds if idx <= max_queued
         current_size = material_queue_size[1]
@@ -257,7 +282,7 @@ Only processes depth=0 items (primary ray hits).
 
                 # Get material albedo (spectral, then convert to RGB average)
                 albedo_spec = get_albedo_spectral_dispatch(
-                    materials, work.material_idx, work.uv, work.lambda
+                    rgb2spec_table, materials, work.material_idx, work.uv, work.lambda
                 )
                 # Use average of spectral values as RGB approximation
                 albedo_avg = average(albedo_spec)
@@ -285,7 +310,7 @@ end
 
 """
     pw_populate_aux_buffers!(backend, aux_albedo, aux_normal, aux_depth,
-                              material_queue, materials)
+                              material_queue, materials, rgb2spec_table)
 
 Populate auxiliary buffers for denoising.
 """
@@ -295,7 +320,8 @@ function pw_populate_aux_buffers!(
     aux_normal::AbstractVector{Float32},
     aux_depth::AbstractVector{Float32},
     material_queue::PWWorkQueue{PWMaterialEvalWorkItem},
-    materials
+    materials,
+    rgb2spec_table::RGBToSpectrumTable
 )
     n = queue_size(material_queue)
     n == 0 && return nothing
@@ -304,7 +330,9 @@ function pw_populate_aux_buffers!(
     kernel!(
         aux_albedo, aux_normal, aux_depth,
         material_queue.items, material_queue.size,
-        materials, Int32(n);
+        materials,
+        rgb2spec_table.scale, rgb2spec_table.coeffs, rgb2spec_table.res,
+        Int32(n);
         ndrange=Int(n)
     )
 

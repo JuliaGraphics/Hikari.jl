@@ -282,12 +282,20 @@ struct MaterialIndex
     material_idx::UInt32
 end
 
+# Default constructor for invalid/placeholder MaterialIndex
+MaterialIndex() = MaterialIndex(UInt8(0), UInt32(0))
+
 # MaterialScene: wraps any accelerator (BVH, TLAS, etc.) with materials stored as a tuple of arrays
 # Each material type gets its own array, indexed by triangle.metadata::MaterialIndex
-struct MaterialScene{Accel, Materials<:Tuple}
+# Also stores media tuple for volumetric rendering (empty tuple if no media)
+struct MaterialScene{Accel, Materials<:Tuple, Media<:Tuple}
     accel::Accel  # BVH, TLAS, or any accelerator supporting closest_hit/any_hit
     materials::Materials  # Tuple of material arrays, e.g., (Vector{MatteMaterial}, Vector{GlassMaterial})
+    media::Media  # Tuple of media, e.g., (HomogeneousMedium, GridMedium) - empty () if no media
 end
+
+# Backwards-compatible constructor (no media)
+MaterialScene(accel, materials::Tuple) = MaterialScene(accel, materials, ())
 
 @inline world_bound(ms::MaterialScene) = world_bound(ms.accel)
 
@@ -613,15 +621,16 @@ function MaterialScene(
     meshes::AbstractVector,
     material_types::AbstractVector{UInt8},
     material_indices::AbstractVector{<:Integer},
-    materials::Tuple;
+    materials::Tuple,
+    media::Tuple = ();
     transforms::Union{Nothing, AbstractVector{Mat4f}} = nothing
 )
-    scene, _handles = material_scene_with_handles(meshes, material_types, material_indices, materials; transforms)
+    scene, _handles = material_scene_with_handles(meshes, material_types, material_indices, materials, media; transforms)
     return scene
 end
 
 """
-    material_scene_with_handles(meshes, material_types, material_indices, materials; transforms=nothing)
+    material_scene_with_handles(meshes, material_types, material_indices, materials, media=(); transforms=nothing)
 
 Like `MaterialScene(...)` but also returns instance handles for dynamic updates.
 Returns `(scene::MaterialScene, handles::Vector{InstanceHandle})`.
@@ -633,7 +642,8 @@ function material_scene_with_handles(
     meshes::AbstractVector,
     material_types::AbstractVector{UInt8},
     material_indices::AbstractVector{<:Integer},
-    materials::Tuple;
+    materials::Tuple,
+    media::Tuple = ();
     transforms::Union{Nothing, AbstractVector{Mat4f}} = nothing
 )
     # Create Instance objects with MaterialIndex metadata
@@ -649,7 +659,7 @@ function material_scene_with_handles(
         ]
     end
     tlas, handles = TLAS(instances)
-    return MaterialScene(tlas, materials), handles
+    return MaterialScene(tlas, materials, media), handles
 end
 
 """
@@ -682,11 +692,34 @@ function MaterialScene(mesh_material_pairs::Vector{<:Tuple})
     has_transforms = length(mesh_material_pairs) > 0 && length(first(mesh_material_pairs)) >= 3
     transforms = has_transforms ? [Mat4f(pair[3]) for pair in mesh_material_pairs] : nothing
 
+    # === Extract media from MediumInterface materials ===
+    # Collect unique media objects and build mapping
+    media_list = Any[]  # Unique media objects
+    medium_to_index = Dict{Any, Int}()  # Medium object -> 1-based index
+
+    for mat in materials_list
+        if mat isa MediumInterface
+            for medium in (mat.inside, mat.outside)
+                if medium !== nothing && !haskey(medium_to_index, medium)
+                    push!(media_list, medium)
+                    medium_to_index[medium] = length(media_list)
+                end
+            end
+        end
+    end
+
+    # Convert MediumInterface -> MediumInterfaceIdx with proper indices
+    converted_materials = [to_indexed(mat, medium_to_index) for mat in materials_list]
+
+    # Build media tuple (empty if no media)
+    media_tuple = isempty(media_list) ? () : Tuple(media_list)
+
+    # === Build materials tuple (same logic as before, but with converted materials) ===
     # First pass: discover unique material types and their order
     type_to_slot = Dict{DataType, UInt8}()
     type_order = DataType[]  # Keep track of order types were discovered
 
-    for mat in materials_list
+    for mat in converted_materials
         T = typeof(mat)
         if !haskey(type_to_slot, T)
             type_to_slot[T] = UInt8(length(type_to_slot) + 1)
@@ -696,7 +729,7 @@ function MaterialScene(mesh_material_pairs::Vector{<:Tuple})
 
     # Second pass: count materials per type to pre-allocate
     type_counts = Dict{DataType, Int}()
-    for mat in materials_list
+    for mat in converted_materials
         T = typeof(mat)
         type_counts[T] = get(type_counts, T, 0) + 1
     end
@@ -732,11 +765,11 @@ function MaterialScene(mesh_material_pairs::Vector{<:Tuple})
     end
 
     materials_tuple, material_types, material_indices = create_typed_vectors(
-        type_order, type_counts, materials_list, type_to_slot
+        type_order, type_counts, converted_materials, type_to_slot
     )
 
-    # Use the first constructor which builds the TLAS
-    return MaterialScene(meshes, material_types, material_indices, materials_tuple; transforms)
+    # Use the first constructor which builds the TLAS (with media)
+    return MaterialScene(meshes, material_types, material_indices, materials_tuple, media_tuple; transforms)
 end
 
 """
@@ -745,6 +778,9 @@ end
 Like `MaterialScene(pairs)` but also returns instance handles for dynamic updates.
 Accepts 2-tuples `(mesh, material)` or 3-tuples `(mesh, material, transform)`.
 Returns `(scene::MaterialScene, handles::Vector{InstanceHandle})`.
+
+Automatically extracts media from `MediumInterface` materials and converts them
+to `MediumInterfaceIdx` with proper indices for GPU dispatch.
 """
 function material_scene_with_handles(mesh_material_pairs::Vector{<:Tuple})
     # Extract components - handle both 2-tuples and 3-tuples
@@ -753,11 +789,33 @@ function material_scene_with_handles(mesh_material_pairs::Vector{<:Tuple})
     has_transforms = length(mesh_material_pairs) > 0 && length(first(mesh_material_pairs)) >= 3
     transforms = has_transforms ? [Mat4f(pair[3]) for pair in mesh_material_pairs] : nothing
 
+    # === Extract media from MediumInterface materials ===
+    media_list = Any[]  # Unique media objects
+    medium_to_index = Dict{Any, Int}()  # Medium object -> 1-based index
+
+    for mat in materials_list
+        if mat isa MediumInterface
+            for medium in (mat.inside, mat.outside)
+                if medium !== nothing && !haskey(medium_to_index, medium)
+                    push!(media_list, medium)
+                    medium_to_index[medium] = length(media_list)
+                end
+            end
+        end
+    end
+
+    # Convert MediumInterface -> MediumInterfaceIdx with proper indices
+    converted_materials = [to_indexed(mat, medium_to_index) for mat in materials_list]
+
+    # Build media tuple (empty if no media)
+    media_tuple = isempty(media_list) ? () : Tuple(media_list)
+
+    # === Build materials tuple with converted materials ===
     # First pass: discover unique material types and their order
     type_to_slot = Dict{DataType, UInt8}()
     type_order = DataType[]
 
-    for mat in materials_list
+    for mat in converted_materials
         T = typeof(mat)
         if !haskey(type_to_slot, T)
             type_to_slot[T] = UInt8(length(type_to_slot) + 1)
@@ -767,7 +825,7 @@ function material_scene_with_handles(mesh_material_pairs::Vector{<:Tuple})
 
     # Second pass: count materials per type
     type_counts = Dict{DataType, Int}()
-    for mat in materials_list
+    for mat in converted_materials
         T = typeof(mat)
         type_counts[T] = get(type_counts, T, 0) + 1
     end
@@ -780,10 +838,10 @@ function material_scene_with_handles(mesh_material_pairs::Vector{<:Tuple})
         type_current_idx[T] = 0
     end
 
-    material_types = Vector{UInt8}(undef, length(materials_list))
-    material_indices = Vector{UInt32}(undef, length(materials_list))
+    material_types = Vector{UInt8}(undef, length(converted_materials))
+    material_indices = Vector{UInt32}(undef, length(converted_materials))
 
-    for (i, mat) in enumerate(materials_list)
+    for (i, mat) in enumerate(converted_materials)
         T = typeof(mat)
         slot = type_to_slot[T]
         type_current_idx[T] += 1
@@ -796,7 +854,7 @@ function material_scene_with_handles(mesh_material_pairs::Vector{<:Tuple})
     materials_arrays = [typed_vectors[type_order[i]] for i in 1:length(type_order)]
     materials_tuple = Tuple(materials_arrays)
 
-    return material_scene_with_handles(meshes, material_types, material_indices, materials_tuple; transforms)
+    return material_scene_with_handles(meshes, material_types, material_indices, materials_tuple, media_tuple; transforms)
 end
 
 include("filter.jl")
@@ -815,6 +873,9 @@ include("materials/bsdf.jl")
 include("materials/material.jl")
 include("materials/volume.jl")
 include("materials/emissive.jl")
+
+# MediumIndex and MediumInterface (needed by spectral-eval.jl for BSDF forwarding)
+include("materials/medium-interface.jl")
 
 # Spectral rendering support (for PhysicalWavefront)
 include("spectral/spectral.jl")
@@ -867,6 +928,17 @@ include("integrators/physical-wavefront/intersection.jl")
 include("integrators/physical-wavefront/material-eval.jl")
 include("integrators/physical-wavefront/film-update.jl")
 include("integrators/physical-wavefront/physical-wavefront.jl")
+
+# VolPath volumetric path tracer
+include("integrators/volpath/media.jl")
+include("integrators/volpath/medium-dispatch.jl")
+include("integrators/volpath/workitems.jl")
+include("integrators/volpath/workqueue.jl")
+include("integrators/volpath/delta-tracking.jl")
+include("integrators/volpath/medium-scatter.jl")
+include("integrators/volpath/intersection.jl")
+include("integrators/volpath/surface-eval.jl")
+include("integrators/volpath/volpath.jl")
 
 include("kernel-abstractions.jl")
 

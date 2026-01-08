@@ -112,7 +112,7 @@ function create_scene(; glass_cat=false)
 
     # New spheres in front of the cat (matching PbrtWavefront)
     glass_sphere = tmesh(Sphere(Point3f(-0.8, -1.5 + 0.5, 0.5), 0.5f0), glass_sphere_material)
-    emissive_sphere = tmesh(Sphere(Point3f(0.8, -1.5 + 0.4, 0.3), 0.4f0), emissive_sphere_material)
+    emissive_sphere = tmesh(Sphere(Point3f(0.8, -1.5 + 0.4, 0.3), 0.4f0), glass_sphere_material)
 
     mat_scene = Hikari.MaterialScene([cat, floor, back_wall, left_wall, sphere1, sphere2, glass_sphere, emissive_sphere])
 
@@ -199,18 +199,68 @@ end
 # =============================================================================
 
 # Example: Render with PhysicalWavefront
-
+using AMDGPU
 begin
     scene = create_scene(; glass_cat=false)
     film, camera = create_film_and_camera(; width=720, height=720, use_pbrt_camera=true)
     # Choose integrator:
     integrator = Hikari.FastWavefront(samples=8)
     integrator = Hikari.Whitted(samples=8)
-    integrator = Hikari.PhysicalWavefront(samples_per_pixel=100, max_depth=8)
+    integrator = Hikari.PhysicalWavefront(samples_per_pixel=10, max_depth=8)
+    integrator = Hikari.VolPath(samples_per_pixel=100, max_depth=8)
     gpu_film = to_gpu(Array, film)
     gpu_scene = to_gpu(Array, scene)
     Hikari.clear!(gpu_film)
     @time integrator(gpu_scene, gpu_film, camera)
-    Hikari.postprocess!(gpu_film; exposure=2.0f0, tonemap=:aces, gamma=1.2f0)
+    Hikari.postprocess!(gpu_film; exposure=1.0f0, tonemap=:aces, gamma=1.2f0)
     Array(gpu_film.postprocess)
 end
+
+# Example: Render with VolPath and participating media (fog)
+begin
+    scene = create_scene(; glass_cat=false)
+    film, camera = create_film_and_camera(; width=720, height=720, use_pbrt_camera=true)
+
+    # Create a homogeneous fog medium
+    # σ_a = absorption coefficient (how much light is absorbed)
+    # σ_s = scattering coefficient (how much light scatters - controls fog density)
+    # Le = emission (for glowing media)
+    # g = Henyey-Greenstein asymmetry parameter (-1 to 1, 0 = isotropic)
+    fog = Hikari.HomogeneousMedium(
+        σ_a = Hikari.RGBSpectrum(0.001f0),  # Very little absorption
+        σ_s = Hikari.RGBSpectrum(0.05f0),   # Light scattering
+        Le = Hikari.RGBSpectrum(0f0),        # No emission
+        g = 0.3f0                            # Slight forward scattering
+    )
+
+    integrator = Hikari.VolPath(samples_per_pixel=64, max_depth=8)
+    gpu_film = to_gpu(Array, film)
+    gpu_scene = to_gpu(Array, scene)
+    Hikari.clear!(gpu_film)
+    @time integrator(gpu_scene, gpu_film, camera; media=(fog,))
+    Hikari.postprocess!(gpu_film; exposure=1.0f0, tonemap=:aces, gamma=1.2f0)
+    Array(gpu_film.postprocess)
+end
+
+# Example: Using MediumInterface for surface-defined medium boundaries
+# This follows pbrt-v4's approach where surfaces define transitions between media.
+#
+# MediumInterface wraps a material and specifies which medium is on each side:
+# - inside: medium when entering the surface (ray going against geometric normal)
+# - outside: medium when exiting the surface (ray going with geometric normal)
+#
+# MediumIndex(0) = vacuum (no medium)
+# MediumIndex(1) = first medium in the media tuple, etc.
+#
+# Example usage:
+#   fog = Hikari.HomogeneousMedium(...)
+#   glass = Hikari.GlassMaterial(...)
+#
+#   # Glass object filled with fog (fog inside, vacuum outside)
+#   glass_with_fog = Hikari.MediumInterface(glass; inside=1, outside=0)
+#
+#   # Object embedded in global fog (same medium both sides)
+#   glass_in_fog = Hikari.MediumInterface(glass, 1)
+#
+# The wrapped material's BSDF is used for light transport calculations,
+# while MediumInterface determines medium transitions for volumetric effects.

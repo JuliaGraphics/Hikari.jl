@@ -453,7 +453,7 @@ end
 # ============================================================================
 
 """
-    pw_update_aux_from_material_queue!(backend, film, material_queue, materials)
+    pw_update_aux_from_material_queue!(backend, film, material_queue, materials, rgb2spec_table)
 
 Update film auxiliary buffers (albedo, normal, depth) from first-bounce material hits.
 
@@ -464,7 +464,8 @@ function pw_update_aux_from_material_queue!(
     backend,
     film::Film,
     material_queue::PWWorkQueue{PWMaterialEvalWorkItem},
-    materials
+    materials,
+    rgb2spec_table::RGBToSpectrumTable
 )
     n = queue_size(material_queue)
     n == 0 && return nothing
@@ -479,6 +480,7 @@ function pw_update_aux_from_material_queue!(
         film.depth,
         material_queue.items, material_queue.size,
         materials,
+        rgb2spec_table.scale, rgb2spec_table.coeffs, rgb2spec_table.res,
         width, height, Int32(n);
         ndrange=Int(n)
     )
@@ -490,7 +492,8 @@ end
 """
     pw_update_aux_kernel!(aux_albedo, aux_normal, aux_depth,
                            material_queue_items, material_queue_size,
-                           materials, width, height, max_queued)
+                           materials, rgb2spec_scale, rgb2spec_coeffs, rgb2spec_res,
+                           width, height, max_queued)
 
 Kernel to update auxiliary buffers from depth=0 material queue items.
 """
@@ -500,10 +503,16 @@ Kernel to update auxiliary buffers from depth=0 material queue items.
     aux_depth,     # Float32 matrix (height × width)
     @Const(material_queue_items), @Const(material_queue_size),
     @Const(materials),
+    @Const(rgb2spec_scale),  # RGB to spectrum table scale array
+    @Const(rgb2spec_coeffs), # RGB to spectrum table coefficients
+    @Const(rgb2spec_res::Int32),  # RGB to spectrum table resolution
     @Const(width::Int32), @Const(height::Int32),
     @Const(max_queued::Int32)
 )
     idx = @index(Global)
+
+    # Reconstruct table struct from components for GPU compatibility
+    rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
 
     @inbounds if idx <= max_queued
         current_size = material_queue_size[1]
@@ -516,7 +525,7 @@ Kernel to update auxiliary buffers from depth=0 material queue items.
 
                 # Get material albedo (spectral, convert to RGB)
                 albedo_spec = get_albedo_spectral_dispatch(
-                    materials, work.material_idx, work.uv, work.lambda
+                    rgb2spec_table, materials, work.material_idx, work.uv, work.lambda
                 )
                 # Simple average of spectral values as grayscale approximation
                 # Could use hero wavelength for better color, but this is for denoising

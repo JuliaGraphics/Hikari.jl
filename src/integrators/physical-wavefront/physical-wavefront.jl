@@ -11,12 +11,12 @@ import KernelAbstractions as KA
 # ============================================================================
 
 """
-    PWRenderState{Arr}
+    PWRenderState{Arr, Table}
 
 Holds all allocated buffers for PhysicalWavefront rendering.
 Reused across frames to avoid allocation overhead.
 """
-mutable struct PWRenderState{Arr}
+mutable struct PWRenderState{Arr, Table <: RGBToSpectrumTable}
     # Dimensions
     width::Int32
     height::Int32
@@ -49,6 +49,9 @@ mutable struct PWRenderState{Arr}
 
     # Current wavelengths (kept for compatibility, but per-pixel is preferred)
     current_lambda::Wavelengths
+
+    # RGB to spectrum lookup table (GPU-compatible)
+    rgb2spec_table::Table
 end
 
 """
@@ -82,6 +85,10 @@ function create_render_state(
     # Default wavelengths (kept for compatibility)
     lambda = sample_wavelengths_uniform(0.5f0)
 
+    # Load RGB to spectrum table and convert to GPU if needed
+    rgb2spec_table_cpu = get_srgb_table()
+    rgb2spec_table = to_gpu(ArrayType, rgb2spec_table_cpu)
+
     return PWRenderState(
         width, height, num_pixels, max_rays,
         pixel_L, pixel_rgb,
@@ -89,7 +96,8 @@ function create_render_state(
         ray_queue, ray_queue_next,
         escaped_queue, hit_light_queue,
         material_queue, shadow_queue,
-        lambda
+        lambda,
+        rgb2spec_table
     )
 end
 
@@ -222,7 +230,7 @@ function (pw::PhysicalWavefront)(scene::AbstractScene, film::Film, camera::Camer
             # Populate auxiliary buffers on first bounce (for denoising)
             if depth == 0 && pw.use_denoising
                 pw_update_aux_from_material_queue!(
-                    backend, film, state.material_queue, materials
+                    backend, film, state.material_queue, materials, state.rgb2spec_table
                 )
             end
 
@@ -230,7 +238,8 @@ function (pw::PhysicalWavefront)(scene::AbstractScene, film::Film, camera::Camer
             if !isempty_tuple(lights)
                 pw_handle_escaped_rays!(
                     backend, state.pixel_L,
-                    state.escaped_queue, lights
+                    state.escaped_queue, lights,
+                    state.rgb2spec_table
                 )
             end
 
@@ -244,7 +253,8 @@ function (pw::PhysicalWavefront)(scene::AbstractScene, film::Film, camera::Camer
             if !isempty_tuple(lights)
                 pw_sample_direct_lighting!(
                     backend, state.shadow_queue, state.material_queue,
-                    materials, lights
+                    materials, lights,
+                    state.rgb2spec_table
                 )
 
                 # Trace shadow rays
@@ -257,7 +267,7 @@ function (pw::PhysicalWavefront)(scene::AbstractScene, film::Film, camera::Camer
             # Evaluate materials and spawn continuation rays
             pw_evaluate_materials!(
                 backend, state.ray_queue_next, state.pixel_L,
-                state.material_queue, materials, pw.max_depth
+                state.material_queue, materials, state.rgb2spec_table, pw.max_depth
             )
 
             # Swap ray queues for next bounce
@@ -370,7 +380,8 @@ function render_single_sample!(
         if !isempty_tuple(lights)
             pw_handle_escaped_rays!(
                 backend, state.pixel_L,
-                state.escaped_queue, lights
+                state.escaped_queue, lights,
+                state.rgb2spec_table
             )
         end
 
@@ -382,7 +393,8 @@ function render_single_sample!(
         if !isempty_tuple(lights)
             pw_sample_direct_lighting!(
                 backend, state.shadow_queue, state.material_queue,
-                materials, lights
+                materials, lights,
+                state.rgb2spec_table
             )
 
             pw_trace_shadow_rays!(

@@ -28,15 +28,16 @@ end
 
 # ============================================================================
 # Light Sampling for Each Light Type
+# All functions take rgb2spec_table for GPU-compatible spectral conversion
 # ============================================================================
 
 """
-    sample_light_spectral(light::PointLight, p::Point3f, lambda::Wavelengths, u::Point2f)
+    sample_light_spectral(table, light::PointLight, p::Point3f, lambda::Wavelengths, u::Point2f)
 
 Sample a point light spectrally.
 """
 @inline function sample_light_spectral(
-    light::PointLight, p::Point3f, lambda::Wavelengths, ::Point2f
+    table::RGBToSpectrumTable, light::PointLight, p::Point3f, lambda::Wavelengths, ::Point2f
 )::PWLightSample
     # Direction and distance to light
     to_light = light.position - p
@@ -53,18 +54,18 @@ Sample a point light spectrally.
     # Li = I / r^2
     # Convert RGB intensity to spectral
     Li_rgb = light.i / dist_sq
-    Li = uplift_rgb(Li_rgb, lambda)
+    Li = uplift_rgb(table, Li_rgb, lambda)
 
     return PWLightSample(Li, wi, 1f0, light.position, true)
 end
 
 """
-    sample_light_spectral(light::SpotLight, p::Point3f, lambda::Wavelengths, u::Point2f)
+    sample_light_spectral(table, light::SpotLight, p::Point3f, lambda::Wavelengths, u::Point2f)
 
 Sample a spotlight spectrally.
 """
 @inline function sample_light_spectral(
-    light::SpotLight, p::Point3f, lambda::Wavelengths, ::Point2f
+    table::RGBToSpectrumTable, light::SpotLight, p::Point3f, lambda::Wavelengths, ::Point2f
 )::PWLightSample
     # Direction and distance to light
     to_light = light.position - p
@@ -99,18 +100,18 @@ Sample a spotlight spectrally.
 
     # Li = I * falloff / r^2
     Li_rgb = light.i * spot_falloff / dist_sq
-    Li = uplift_rgb(Li_rgb, lambda)
+    Li = uplift_rgb(table, Li_rgb, lambda)
 
     return PWLightSample(Li, wi, 1f0, light.position, true)
 end
 
 """
-    sample_light_spectral(light::DirectionalLight, p::Point3f, lambda::Wavelengths, u::Point2f)
+    sample_light_spectral(table, light::DirectionalLight, p::Point3f, lambda::Wavelengths, u::Point2f)
 
 Sample a directional light spectrally.
 """
 @inline function sample_light_spectral(
-    light::DirectionalLight, p::Point3f, lambda::Wavelengths, ::Point2f
+    table::RGBToSpectrumTable, light::DirectionalLight, p::Point3f, lambda::Wavelengths, ::Point2f
 )::PWLightSample
     # Direction is opposite to light's travel direction
     wi = -light.direction
@@ -119,18 +120,18 @@ Sample a directional light spectrally.
     # p_light is at "infinity" - use large distance for shadow ray
     p_light = Point3f(p + 1f6 * wi)
 
-    Li = uplift_rgb(light.l, lambda)
+    Li = uplift_rgb(table, light.i, lambda)
 
     return PWLightSample(Li, wi, 1f0, p_light, true)
 end
 
 """
-    sample_light_spectral(light::SunLight, p::Point3f, lambda::Wavelengths, u::Point2f)
+    sample_light_spectral(table, light::SunLight, p::Point3f, lambda::Wavelengths, u::Point2f)
 
 Sample a sun light spectrally.
 """
 @inline function sample_light_spectral(
-    light::SunLight, p::Point3f, lambda::Wavelengths, ::Point2f
+    table::RGBToSpectrumTable, light::SunLight, p::Point3f, lambda::Wavelengths, ::Point2f
 )::PWLightSample
     # Direction is opposite to light's travel direction
     wi = -light.direction
@@ -138,18 +139,18 @@ Sample a sun light spectrally.
     # Distant lights have delta distribution
     p_light = Point3f(p + 1f6 * wi)
 
-    Li = uplift_rgb(light.l, lambda)
+    Li = uplift_rgb(table, light.l, lambda)
 
     return PWLightSample(Li, wi, 1f0, p_light, true)
 end
 
 """
-    sample_light_spectral(light::SunSkyLight, p::Point3f, lambda::Wavelengths, u::Point2f)
+    sample_light_spectral(table, light::SunSkyLight, p::Point3f, lambda::Wavelengths, u::Point2f)
 
 Sample sun direction from SunSkyLight spectrally.
 """
 @inline function sample_light_spectral(
-    light::SunSkyLight, p::Point3f, lambda::Wavelengths, ::Point2f
+    table::RGBToSpectrumTable, light::SunSkyLight, p::Point3f, lambda::Wavelengths, ::Point2f
 )::PWLightSample
     # Direction TO the sun
     wi = light.sun_direction
@@ -158,18 +159,18 @@ Sample sun direction from SunSkyLight spectrally.
     p_light = Point3f(p + 1f6 * wi)
 
     # Sun radiance
-    Li = uplift_rgb(light.sun_radiance, lambda)
+    Li = uplift_rgb(table, light.sun_radiance, lambda)
 
     return PWLightSample(Li, wi, 1f0, p_light, true)
 end
 
 """
-    sample_light_spectral(light::EnvironmentLight, p::Point3f, lambda::Wavelengths, u::Point2f)
+    sample_light_spectral(table, light::EnvironmentLight, p::Point3f, lambda::Wavelengths, u::Point2f)
 
 Sample environment light spectrally with importance sampling.
 """
 @inline function sample_light_spectral(
-    light::EnvironmentLight, p::Point3f, lambda::Wavelengths, u::Point2f
+    table::RGBToSpectrumTable, light::EnvironmentLight, p::Point3f, lambda::Wavelengths, u::Point2f
 )::PWLightSample
     # Importance sample the environment map based on luminance
     uv, map_pdf = sample_continuous(light.env_map.distribution, u)
@@ -194,13 +195,13 @@ Sample environment light spectrally with importance sampling.
     # p_light at infinity
     p_light = Point3f(p + 1f6 * wi)
 
-    Li = uplift_rgb(Li_rgb, lambda)
+    Li = uplift_rgb(table, Li_rgb, lambda)
 
     return PWLightSample(Li, wi, pdf, p_light, false)
 end
 
 """
-    sample_light_spectral(light::AmbientLight, p::Point3f, lambda::Wavelengths, u::Point2f)
+    sample_light_spectral(table, light::AmbientLight, p::Point3f, lambda::Wavelengths, u::Point2f)
 
 Sample ambient light spectrally (uniform sphere).
 NOTE: Ambient light represents uniform illumination from all directions.
@@ -208,7 +209,7 @@ We sample the full sphere uniformly - the BSDF evaluation will naturally
 give zero for directions below the surface, and cos_theta weighting handles the rest.
 """
 @inline function sample_light_spectral(
-    light::AmbientLight, p::Point3f, lambda::Wavelengths, u::Point2f
+    table::RGBToSpectrumTable, light::AmbientLight, p::Point3f, lambda::Wavelengths, u::Point2f
 )::PWLightSample
     # Ambient lights provide constant illumination from all directions
     # Sample uniform sphere - BSDF evaluation filters invalid directions
@@ -224,14 +225,14 @@ give zero for directions below the surface, and cos_theta weighting handles the 
 
     p_light = Point3f(p + 1f6 * wi)
 
-    Li = uplift_rgb(light.i, lambda)
+    Li = uplift_rgb(table, light.i, lambda)
 
     return PWLightSample(Li, wi, pdf, p_light, false)
 end
 
 # Fallback for unknown light types
 @inline function sample_light_spectral(
-    ::Light, ::Point3f, ::Wavelengths, ::Point2f
+    ::RGBToSpectrumTable, ::Light, ::Point3f, ::Wavelengths, ::Point2f
 )::PWLightSample
     return PWLightSample()
 end
@@ -297,20 +298,20 @@ end
 # ============================================================================
 
 """
-    sample_light_from_tuple(lights::Tuple, idx::Int32, p::Point3f, lambda::Wavelengths, u::Point2f)
+    sample_light_from_tuple(table, lights::Tuple, idx::Int32, p::Point3f, lambda::Wavelengths, u::Point2f)
 
 Recursively sample from the appropriate light in a heterogeneous tuple.
 """
-@inline sample_light_from_tuple(::Tuple{}, ::Int32, ::Point3f, ::Wavelengths, ::Point2f) =
+@inline sample_light_from_tuple(::RGBToSpectrumTable, ::Tuple{}, ::Int32, ::Point3f, ::Wavelengths, ::Point2f) =
     PWLightSample()
 
 @inline function sample_light_from_tuple(
-    lights::Tuple, idx::Int32, p::Point3f, lambda::Wavelengths, u::Point2f
+    table::RGBToSpectrumTable, lights::Tuple, idx::Int32, p::Point3f, lambda::Wavelengths, u::Point2f
 )
     if idx == Int32(1)
-        return sample_light_spectral(first(lights), p, lambda, u)
+        return sample_light_spectral(table, first(lights), p, lambda, u)
     else
-        return sample_light_from_tuple(Base.tail(lights), idx - Int32(1), p, lambda, u)
+        return sample_light_from_tuple(table, Base.tail(lights), idx - Int32(1), p, lambda, u)
     end
 end
 
@@ -324,15 +325,16 @@ Count total number of lights in a tuple (recursively for nested structures).
 
 # ============================================================================
 # Environment Light Evaluation (for escaped rays)
+# All functions take rgb2spec_table for GPU-compatible spectral conversion
 # ============================================================================
 
 """
-    evaluate_environment_spectral(light::EnvironmentLight, ray_d::Vec3f, lambda::Wavelengths)
+    evaluate_environment_spectral(table, light::EnvironmentLight, ray_d::Vec3f, lambda::Wavelengths)
 
 Evaluate environment light for an escaped ray direction.
 """
 @inline function evaluate_environment_spectral(
-    light::EnvironmentLight, ray_d::Vec3f, lambda::Wavelengths
+    table::RGBToSpectrumTable, light::EnvironmentLight, ray_d::Vec3f, lambda::Wavelengths
 )::SpectralRadiance
     # Convert direction to UV
     uv = direction_to_uv(ray_d, light.env_map.rotation)
@@ -340,50 +342,50 @@ Evaluate environment light for an escaped ray direction.
     # Sample environment map
     Le_rgb = light.env_map(uv) * light.scale
 
-    return uplift_rgb(Le_rgb, lambda)
+    return uplift_rgb(table, Le_rgb, lambda)
 end
 
 """
-    evaluate_environment_spectral(light::SunSkyLight, ray_d::Vec3f, lambda::Wavelengths)
+    evaluate_environment_spectral(table, light::SunSkyLight, ray_d::Vec3f, lambda::Wavelengths)
 
 Evaluate sun/sky light for an escaped ray direction.
 """
 @inline function evaluate_environment_spectral(
-    light::SunSkyLight, ray_d::Vec3f, lambda::Wavelengths
+    table::RGBToSpectrumTable, light::SunSkyLight, ray_d::Vec3f, lambda::Wavelengths
 )::SpectralRadiance
     # Get sky color for direction
     Le_rgb = sky_color(light, ray_d)
 
-    return uplift_rgb(Le_rgb, lambda)
+    return uplift_rgb(table, Le_rgb, lambda)
 end
 
 """
-    evaluate_environment_spectral(light::AmbientLight, ray_d::Vec3f, lambda::Wavelengths)
+    evaluate_environment_spectral(table, light::AmbientLight, ray_d::Vec3f, lambda::Wavelengths)
 
 Evaluate ambient light for an escaped ray - provides constant radiance regardless of direction.
 """
 @inline function evaluate_environment_spectral(
-    light::AmbientLight, ray_d::Vec3f, lambda::Wavelengths
+    table::RGBToSpectrumTable, light::AmbientLight, ray_d::Vec3f, lambda::Wavelengths
 )::SpectralRadiance
-    return uplift_rgb(light.i, lambda)
+    return uplift_rgb(table, light.i, lambda)
 end
 
 # Fallback - non-environment lights contribute nothing for escaped rays
-@inline evaluate_environment_spectral(::Light, ::Vec3f, ::Wavelengths) = SpectralRadiance(0f0)
+@inline evaluate_environment_spectral(::RGBToSpectrumTable, ::Light, ::Vec3f, ::Wavelengths) = SpectralRadiance(0f0)
 
 """
-    evaluate_escaped_ray_spectral(lights::Tuple, ray_d::Vec3f, lambda::Wavelengths)
+    evaluate_escaped_ray_spectral(table, lights::Tuple, ray_d::Vec3f, lambda::Wavelengths)
 
 Evaluate all environment-type lights for an escaped ray.
 Returns total spectral radiance from infinite lights.
 """
-@inline evaluate_escaped_ray_spectral(::Tuple{}, ::Vec3f, ::Wavelengths) = SpectralRadiance(0f0)
+@inline evaluate_escaped_ray_spectral(::RGBToSpectrumTable, ::Tuple{}, ::Vec3f, ::Wavelengths) = SpectralRadiance(0f0)
 
 @inline function evaluate_escaped_ray_spectral(
-    lights::Tuple, ray_d::Vec3f, lambda::Wavelengths
+    table::RGBToSpectrumTable, lights::Tuple, ray_d::Vec3f, lambda::Wavelengths
 )::SpectralRadiance
-    first_Le = evaluate_environment_spectral(first(lights), ray_d, lambda)
-    rest_Le = evaluate_escaped_ray_spectral(Base.tail(lights), ray_d, lambda)
+    first_Le = evaluate_environment_spectral(table, first(lights), ray_d, lambda)
+    rest_Le = evaluate_escaped_ray_spectral(table, Base.tail(lights), ray_d, lambda)
     return first_Le + rest_Le
 end
 

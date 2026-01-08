@@ -58,6 +58,13 @@ function to_gpu(ArrayType, m::Hikari.MetalMaterial)
     return Hikari.MetalMaterial(eta, k, roughness, reflectance, m.remap_roughness)
 end
 
+# GPU conversion for MediumInterface - convert wrapped material to GPU
+# MediumIndex values are just Int32, so they transfer directly
+function to_gpu(ArrayType, m::Hikari.MediumInterface)
+    gpu_material = to_gpu(ArrayType, m.material)
+    return Hikari.MediumInterface(gpu_material, m.inside, m.outside)
+end
+
 # GPU conversion for CloudVolume - convert density array to GPU
 function to_gpu(ArrayType, m::Hikari.CloudVolume)
     density_gpu = Raycore.to_gpu(ArrayType, m.density)
