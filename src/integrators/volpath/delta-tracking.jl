@@ -19,7 +19,7 @@
     lambda::Wavelengths
 )
     base = (pixel_index - Int32(1)) * Int32(4)
-    @inbounds for i in 1:4
+    @_inbounds for i in 1:4
         # Atomic add for thread safety
         Atomix.@atomic pixel_L[base + Int32(i)] += L[i]
     end
@@ -58,7 +58,7 @@ For each ray:
     # Reconstruct RGB to spectrum table
     rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
 
-    @inbounds if idx <= max_queued
+    @_inbounds if idx <= max_queued
         current_size = medium_sample_size[1]
         if idx <= current_size
             work = medium_sample_items[idx]

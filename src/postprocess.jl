@@ -123,7 +123,7 @@ end
 @kernel function postprocess_kernel!(dst, @Const(src), exposure::Float32, tonemap_mode::UInt8,
                                       inv_gamma::Float32, apply_gamma::Bool, white_point::Float32)
     i = @index(Global, Linear)
-    @inbounds begin
+    @_inbounds begin
         c = src[i]
 
         # Apply exposure

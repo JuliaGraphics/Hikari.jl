@@ -30,7 +30,7 @@ and creates a shadow ray work item.
     # Reconstruct table struct from components for GPU compatibility
     rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
 
-    @inbounds if idx <= max_queued
+    @_inbounds if idx <= max_queued
         current_size = material_queue_size[1]
         if idx <= current_size
             work = material_queue_items[idx]
@@ -40,7 +40,7 @@ and creates a shadow ray work item.
             light_select = rand(Float32)
 
             # Select a light uniformly
-            light_idx = Int32(floor(light_select * Float32(num_lights))) + Int32(1)
+            light_idx = floor_int32(light_select * Float32(num_lights)) + Int32(1)
             light_idx = min(light_idx, num_lights)
 
             # Sample the selected light
@@ -118,7 +118,7 @@ Evaluate materials for all work items:
     # Reconstruct table struct from components for GPU compatibility
     rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
 
-    @inbounds if idx <= max_queued
+    @_inbounds if idx <= max_queued
         current_size = material_queue_size[1]
         if idx <= current_size
             work = material_queue_items[idx]
@@ -271,7 +271,7 @@ Only processes depth=0 items (primary ray hits).
     # Reconstruct table struct from components for GPU compatibility
     rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
 
-    @inbounds if idx <= max_queued
+    @_inbounds if idx <= max_queued
         current_size = material_queue_size[1]
         if idx <= current_size
             work = material_queue_items[idx]

@@ -246,11 +246,11 @@ function MajorantGrid(res::Vec3i, alloc=Vector{Float32})
 end
 
 @inline function majorant_lookup(grid::MajorantGrid, x::Int, y::Int, z::Int)::Float32
-    @inbounds grid.voxels[x + grid.res[1] * (y + grid.res[2] * z) + 1]
+    @_inbounds grid.voxels[x + grid.res[1] * (y + grid.res[2] * z) + 1]
 end
 
 @inline function majorant_set!(grid::MajorantGrid, x::Int, y::Int, z::Int, v::Float32)
-    @inbounds grid.voxels[x + grid.res[1] * (y + grid.res[2] * z) + 1] = v
+    @_inbounds grid.voxels[x + grid.res[1] * (y + grid.res[2] * z) + 1] = v
 end
 
 """
@@ -273,6 +273,9 @@ struct GridMedium{T<:AbstractArray{Float32,3}, M<:MajorantGrid} <: Medium
 
     # 3D density field (values typically 0-1)
     density::T
+
+    # Density grid resolution (stored to avoid size() call on GPU)
+    density_res::Vec3i
 
     # Phase function asymmetry
     g::Float32
@@ -302,6 +305,10 @@ function GridMedium(
     # Build majorant grid
     majorant_grid = build_majorant_grid(density, majorant_res)
 
+    # Store density resolution to avoid size() call on GPU
+    nx, ny, nz = size(density)
+    density_res = Vec3i(nx, ny, nz)
+
     GridMedium(
         bounds,
         inv_transform,
@@ -309,6 +316,7 @@ function GridMedium(
         σ_a,
         σ_s,
         density,
+        density_res,
         g,
         majorant_grid,
         max_density
@@ -336,7 +344,7 @@ function build_majorant_grid(density::AbstractArray{Float32,3}, res::Vec3i)
                 # Find max in this region
                 max_val = 0f0
                 for z in z_start:z_end, y in y_start:y_end, x in x_start:x_end
-                    @inbounds max_val = max(max_val, density[x, y, z])
+                    @_inbounds max_val = max(max_val, density[x, y, z])
                 end
 
                 majorant_set!(grid, ix, iy, iz, max_val)
@@ -354,21 +362,22 @@ end
     # Normalize to [0,1] within bounds
     p_norm = (p_medium - medium.bounds.p_min) ./ (medium.bounds.p_max - medium.bounds.p_min)
 
-    # Check bounds
-    if any(p_norm .< 0f0) || any(p_norm .> 1f0)
+    # Check bounds (explicit element-wise check for GPU compatibility - avoid any() which creates arrays)
+    if p_norm[1] < 0f0 || p_norm[2] < 0f0 || p_norm[3] < 0f0 ||
+       p_norm[1] > 1f0 || p_norm[2] > 1f0 || p_norm[3] > 1f0
         return 0f0
     end
 
-    # Grid coordinates
-    nx, ny, nz = size(medium.density)
+    # Grid coordinates (use stored resolution to avoid size() on GPU)
+    nx, ny, nz = medium.density_res[1], medium.density_res[2], medium.density_res[3]
     gx = p_norm[1] * (nx - 1) + 1
     gy = p_norm[2] * (ny - 1) + 1
     gz = p_norm[3] * (nz - 1) + 1
 
     # Integer indices
-    ix = clamp(floor(Int, gx), 1, nx - 1)
-    iy = clamp(floor(Int, gy), 1, ny - 1)
-    iz = clamp(floor(Int, gz), 1, nz - 1)
+    ix = clamp(floor_int(gx), 1, nx - 1)
+    iy = clamp(floor_int(gy), 1, ny - 1)
+    iz = clamp(floor_int(gz), 1, nz - 1)
 
     # Fractional parts
     fx = Float32(gx - ix)
@@ -376,7 +385,7 @@ end
     fz = Float32(gz - iz)
 
     # Trilinear interpolation
-    @inbounds begin
+    @_inbounds begin
         d000 = medium.density[ix, iy, iz]
         d100 = medium.density[ix+1, iy, iz]
         d010 = medium.density[ix, iy+1, iz]
@@ -407,8 +416,9 @@ end
     p::Point3f,
     λ::Wavelengths
 )::MediumProperties
-    # Transform to medium space
-    p_medium = Point3f((medium.render_to_medium * Vec4f(p..., 1f0))[1:3])
+    # Transform to medium space (explicit indexing for GPU compatibility - avoid [1:3] slicing)
+    p4 = medium.render_to_medium * Vec4f(p[1], p[2], p[3], 1f0)
+    p_medium = Point3f(p4[1], p4[2], p4[3])
 
     # Sample density
     d = sample_density(medium, p_medium)
@@ -439,4 +449,3 @@ end
 
     return RayMajorantSegment(t_min, t_max, σ_maj)
 end
-

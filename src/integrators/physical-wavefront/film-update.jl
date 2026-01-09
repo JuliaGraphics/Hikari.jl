@@ -35,7 +35,7 @@ Arguments:
     idx = @index(Global)
     num_pixels = width * height
 
-    @inbounds if idx <= num_pixels
+    @_inbounds if idx <= num_pixels
         # Extract spectral radiance for this pixel
         base = (idx - Int32(1)) * Int32(4)
         L = SpectralRadiance((
@@ -79,8 +79,8 @@ Arguments:
         # framebuffer is (height, width) = (rows, cols)
         # So framebuffer[row, col] = framebuffer[y, x]
         pixel_idx = idx - Int32(1)
-        x = Int32(mod(pixel_idx, width)) + Int32(1)   # column (1 to width)
-        y = Int32(div(pixel_idx, width)) + Int32(1)   # row (1 to height)
+        x = u_int32(mod(pixel_idx, width)) + Int32(1)   # column (1 to width)
+        y = u_int32(div(pixel_idx, width)) + Int32(1)   # row (1 to height)
 
         framebuffer[y, x] = RGB{Float32}(R, G, B)
     end
@@ -110,7 +110,7 @@ within a sample iteration. This kernel uses a single Wavelengths value for all p
     idx = @index(Global)
     num_pixels = width * height
 
-    @inbounds if idx <= num_pixels
+    @_inbounds if idx <= num_pixels
         # Extract spectral radiance for this pixel
         base = (idx - Int32(1)) * Int32(4)
         L = SpectralRadiance((
@@ -141,8 +141,8 @@ within a sample iteration. This kernel uses a single Wavelengths value for all p
         # framebuffer is (height, width) = (rows, cols)
         # So framebuffer[row, col] = framebuffer[y, x]
         pixel_idx = idx - Int32(1)
-        x = Int32(mod(pixel_idx, width)) + Int32(1)   # column (1 to width)
-        y = Int32(div(pixel_idx, width)) + Int32(1)   # row (1 to height)
+        x = u_int32(mod(pixel_idx, width)) + Int32(1)   # column (1 to width)
+        y = u_int32(div(pixel_idx, width)) + Int32(1)   # row (1 to height)
 
         framebuffer[y, x] = RGB{Float32}(R, G, B)
     end
@@ -165,7 +165,7 @@ Adds new sample's spectral values to existing accumulated values.
 )
     idx = @index(Global)
 
-    @inbounds if idx <= num_pixels * Int32(4)
+    @_inbounds if idx <= num_pixels * Int32(4)
         pixel_L_accum[idx] += pixel_L_sample[idx]
     end
 end
@@ -185,7 +185,7 @@ Clear accumulated spectral radiance to zero for new render.
 )
     idx = @index(Global)
 
-    @inbounds if idx <= num_pixels * Int32(4)
+    @_inbounds if idx <= num_pixels * Int32(4)
         pixel_L[idx] = 0.0f0
     end
 end
@@ -222,7 +222,7 @@ function pw_accumulate_sample_to_rgb!(
     wavelengths_cpu = Array(wavelengths_per_pixel)
     pdf_cpu = Array(pdf_per_pixel)
 
-    @inbounds for idx in 1:Int(num_pixels)
+    @_inbounds for idx in 1:Int(num_pixels)
         # Extract spectral radiance for this pixel
         base = (idx - 1) * 4
         L = SpectralRadiance((
@@ -281,7 +281,7 @@ function pw_finalize_film!(
     # Build flat RGB output for reshape
     rgb_output = Vector{Float32}(undef, Int(num_pixels) * 3)
 
-    @inbounds for idx in 1:Int(num_pixels)
+    @_inbounds for idx in 1:Int(num_pixels)
         base = (idx - 1) * 3
         R = pixel_rgb_cpu[base + 1] * inv_samples
         G = pixel_rgb_cpu[base + 2] * inv_samples
@@ -336,7 +336,7 @@ function pw_update_film!(
 
     inv_samples = samples_accumulated > Int32(0) ? 1.0f0 / Float32(samples_accumulated) : 0.0f0
 
-    @inbounds for idx in 1:Int(num_pixels)
+    @_inbounds for idx in 1:Int(num_pixels)
         base = (idx - 1) * 4
         L = SpectralRadiance((
             pixel_L_cpu[base + 1],
@@ -514,7 +514,7 @@ Kernel to update auxiliary buffers from depth=0 material queue items.
     # Reconstruct table struct from components for GPU compatibility
     rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
 
-    @inbounds if idx <= max_queued
+    @_inbounds if idx <= max_queued
         current_size = material_queue_size[1]
         if idx <= current_size
             work = material_queue_items[idx]
@@ -535,8 +535,8 @@ Kernel to update auxiliary buffers from depth=0 material queue items.
                 # pixel_index uses row-major: idx = (y-1)*width + x
                 # aux buffers are (height, width), so use [y, x]
                 p_idx = pixel_idx - Int32(1)
-                x = Int32(mod(p_idx, width)) + Int32(1)   # column
-                y = Int32(div(p_idx, width)) + Int32(1)   # row
+                x = u_int32(mod(p_idx, width)) + Int32(1)   # column
+                y = u_int32(div(p_idx, width)) + Int32(1)   # row
 
                 # Store albedo (grayscale for now)
                 aux_albedo[y, x] = RGB{Float32}(albedo_avg, albedo_avg, albedo_avg)
@@ -566,7 +566,7 @@ Apply exposure adjustment to framebuffer (in-place).
 )
     idx = @index(Global)
 
-    @inbounds begin
+    @_inbounds begin
         pixel = framebuffer[idx]
         r = pixel.r * exposure
         g = pixel.g * exposure
@@ -602,7 +602,7 @@ Apply sRGB gamma curve to convert from linear to display sRGB.
 )
     idx = @index(Global)
 
-    @inbounds begin
+    @_inbounds begin
         pixel = input[idx]
         r = linear_to_srgb_gamma(pixel.r)
         g = linear_to_srgb_gamma(pixel.g)

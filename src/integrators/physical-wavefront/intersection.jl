@@ -29,7 +29,7 @@ This kernel does NOT generate shadow rays - that happens in direct lighting.
 )
     idx = @index(Global)
 
-    @inbounds if idx <= max_queued
+    @_inbounds if idx <= max_queued
         current_size = ray_queue_size[1]
         if idx <= current_size
             work = ray_queue_items[idx]
@@ -252,7 +252,7 @@ Trace shadow rays and accumulate unoccluded contributions to pixel buffer.
 )
     idx = @index(Global)
 
-    @inbounds if idx <= max_queued
+    @_inbounds if idx <= max_queued
         current_size = shadow_queue_size[1]
         if idx <= current_size
             work = shadow_queue_items[idx]
@@ -302,7 +302,7 @@ Handle rays that escaped the scene by evaluating environment lights.
     # Reconstruct table struct from components for GPU compatibility
     rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
 
-    @inbounds if idx <= max_queued
+    @_inbounds if idx <= max_queued
         current_size = escaped_queue_size[1]
         if idx <= current_size
             work = escaped_queue_items[idx]
@@ -356,7 +356,7 @@ Handle rays that hit emissive surfaces.
 )
     idx = @index(Global)
 
-    @inbounds if idx <= max_queued
+    @_inbounds if idx <= max_queued
         current_size = hit_light_queue_size[1]
         if idx <= current_size
             work = hit_light_queue_items[idx]

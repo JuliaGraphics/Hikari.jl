@@ -94,7 +94,7 @@ so delta tracking can run with bounded t_max and process the hit if ray survives
 )
     idx = @index(Global)
 
-    @inbounds if idx <= max_queued
+    @_inbounds if idx <= max_queued
         current_size = ray_size[1]
         if idx <= current_size
             work = ray_items[idx]
@@ -271,7 +271,7 @@ Handles transmissive boundaries (MediumInterface) by tracing through them.
 
     rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
 
-    @inbounds if idx <= max_queued
+    @_inbounds if idx <= max_queued
         current_size = shadow_size[1]
         if idx <= current_size
             work = shadow_items[idx]
@@ -308,6 +308,21 @@ Handles transmissive boundaries (MediumInterface) by tracing through them.
             end
         end
     end
+end
+
+# ============================================================================
+# Helper functions for with_material dispatch (no variable capture)
+# ============================================================================
+
+"""
+Get the medium index when crossing a material boundary.
+Used with with_material for GPU-safe dispatch.
+Returns (is_transmissive, new_medium_idx).
+"""
+@inline function _get_crossing_info(material, entering::Bool)
+    is_trans = is_medium_interface_idx(material)
+    new_medium = get_crossing_medium(material, entering)
+    return (is_trans, new_medium)
 end
 
 """
@@ -360,13 +375,14 @@ while opaque surfaces block it. The final contribution is computed as:
             return (T_ray, r_u, r_l, true)  # Visible
         end
 
-        # Hit a surface - check if it's transmissive
+        # Hit a surface - check if it's transmissive using with_material for type stability
         mat_idx = primitive.metadata::MaterialIndex
-        material = get_material(materials, mat_idx)
 
-        # Check if material is a MediumInterfaceIdx (transmissive boundary)
-        # Note: MediumInterface is converted to MediumInterfaceIdx during scene building
-        is_transmissive = material isa MediumInterfaceIdx
+        # Use with_material to get crossing info with concrete material type
+        # This avoids union type issues on GPU by calling helper with concrete type
+        n = vp_compute_geometric_normal(primitive)
+        entering = dot(dir, n) < 0f0
+        is_transmissive, new_medium = with_material(_get_crossing_info, materials, mat_idx, entering)
 
         if !is_transmissive
             # Opaque surface blocks the ray
@@ -388,10 +404,8 @@ while opaque surfaces block it. The final contribution is computed as:
             return (T_ray, r_u, r_l, true)  # Transmittance is zero, no point continuing
         end
 
-        # Update medium based on crossing direction
-        n = vp_compute_geometric_normal(primitive)
-        entering = dot(dir, n) < 0f0
-        current_medium = entering ? material.inside : material.outside
+        # Update medium based on crossing direction (already computed above)
+        current_medium = new_medium
 
         # Move past this surface
         ray_o = Point3f(ray_o + dir * (t_hit + 1f-4))  # Small offset to avoid self-intersection
@@ -568,7 +582,7 @@ Handle rays that escaped the scene by evaluating environment lights.
 
     rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
 
-    @inbounds if idx <= max_queued
+    @_inbounds if idx <= max_queued
         current_size = escaped_size[1]
         if idx <= current_size
             work = escaped_items[idx]

@@ -26,7 +26,7 @@ Process surface hits:
 
     rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
 
-    @inbounds if idx <= max_queued
+    @_inbounds if idx <= max_queued
         current_size = hit_size[1]
         if idx <= current_size
             work = hit_items[idx]
@@ -89,7 +89,9 @@ Process surface hits:
                 )
 
                 new_idx = @atomic material_size[1] += Int32(1)
-                material_items[new_idx] = mat_work
+                if new_idx <= length(material_items)
+                    material_items[new_idx] = mat_work
+                end
             end
         end
     end
@@ -144,7 +146,7 @@ end
     light_select = rand(Float32)
 
     # Select light uniformly
-    light_idx = Int32(floor(light_select * Float32(num_lights))) + Int32(1)
+    light_idx = floor_int32(light_select * Float32(num_lights)) + Int32(1)
     light_idx = min(light_idx, num_lights)
 
     # Sample the light
@@ -189,7 +191,9 @@ end
                 )
 
                 new_idx = @atomic shadow_size[1] += Int32(1)
-                shadow_items[new_idx] = shadow_item
+                if new_idx <= length(shadow_items)
+                    shadow_items[new_idx] = shadow_item
+                end
             end
         end
     end
@@ -220,7 +224,7 @@ Creates shadow rays for unoccluded light contributions.
 
     rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
 
-    @inbounds if idx <= max_queued
+    @_inbounds if idx <= max_queued
         current_size = material_size[1]
         if idx <= current_size
             work = material_items[idx]
@@ -397,7 +401,7 @@ Includes Russian roulette for path termination.
 
     rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
 
-    @inbounds if idx <= max_queued
+    @_inbounds if idx <= max_queued
         current_size = material_size[1]
         if idx <= current_size
             work = material_items[idx]

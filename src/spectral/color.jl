@@ -307,11 +307,11 @@ Sample CIE X color matching function at wavelength lambda (in nm).
 Uses nearest-neighbor lookup into tabulated data.
 """
 @inline function sample_cie_x(lambda::Float32)::Float32
-    offset = round(Int32, lambda) - CIE_LAMBDA_MIN
-    if offset < 0 || offset >= N_CIE_SAMPLES
+    offset = round_int32(lambda) - CIE_LAMBDA_MIN
+    if offset < 0 || offset >= length(CIE_X)
         return 0.0f0
     end
-    @inbounds return CIE_X[offset + 1]
+    @_inbounds return CIE_X[offset + 1]
 end
 
 """
@@ -320,11 +320,11 @@ end
 Sample CIE Y color matching function at wavelength lambda (in nm).
 """
 @inline function sample_cie_y(lambda::Float32)::Float32
-    offset = round(Int32, lambda) - CIE_LAMBDA_MIN
-    if offset < 0 || offset >= N_CIE_SAMPLES
+    offset = round_int32(lambda) - CIE_LAMBDA_MIN
+    if offset < 0 || offset >= length(CIE_Y)
         return 0.0f0
     end
-    @inbounds return CIE_Y[offset + 1]
+    @_inbounds return CIE_Y[offset + 1]
 end
 
 """
@@ -333,11 +333,11 @@ end
 Sample CIE Z color matching function at wavelength lambda (in nm).
 """
 @inline function sample_cie_z(lambda::Float32)::Float32
-    offset = round(Int32, lambda) - CIE_LAMBDA_MIN
-    if offset < 0 || offset >= N_CIE_SAMPLES
+    offset = round_int32(lambda) - CIE_LAMBDA_MIN
+    if offset < 0 || offset >= length(CIE_Z)
         return 0.0f0
     end
-    @inbounds return CIE_Z[offset + 1]
+    @_inbounds return CIE_Z[offset + 1]
 end
 
 """
@@ -376,7 +376,7 @@ where CMF is the color matching function and pdf is the wavelength sampling PDF.
     Y_sum = 0.0f0
     Z_sum = 0.0f0
 
-    @inbounds for i in 1:4
+    @_inbounds for i in 1:4
         pdf_i = lambda.pdf[i]
         if pdf_i != 0.0f0
             inv_pdf = 1.0f0 / pdf_i

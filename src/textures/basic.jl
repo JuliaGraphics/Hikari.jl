@@ -57,5 +57,5 @@ end
 # UV-only texture evaluation (for FastWavefront and other simplified integrators)
 @inline function evaluate_texture(tex::Texture{T}, uv::Point2f)::T where T
     uv_adj = Vec2f(1f0 - uv[2], uv[1])
-    return _sample_texture_data(tex.data, tex.const_value, tex.isconst, uv_adj)
+    @_inbounds return _sample_texture_data(tex.data, tex.const_value, tex.isconst, uv_adj)
 end

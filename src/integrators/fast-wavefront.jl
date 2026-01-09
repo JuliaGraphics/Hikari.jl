@@ -109,7 +109,7 @@ end
 ) where {T<:Tuple}
     N = length(T.parameters)
     branches = [quote
-        @inbounds if idx.material_type === UInt8($i)
+        @_inbounds if idx.material_type === UInt8($i)
             return @inline extract_fast_props(materials[$i][idx.material_idx], uv)
         end
     end for i in 1:N]
@@ -327,7 +327,7 @@ end
     y = u_int32(i[1])
     x = u_int32(i[2])
 
-    @inbounds if y <= height && x <= width
+    @_inbounds if y <= height && x <= width
         pixel_idx = (y - Int32(1)) * width + x
         for s in 1:NSamples
             s_idx = Int32(s)
@@ -352,7 +352,7 @@ end
     i = @index(Global, Linear)
     idx = u_int32(i)
 
-    @inbounds if idx <= length(ray_queue.ray)
+    @_inbounds if idx <= length(ray_queue.ray)
         @fast_get ray, pixel_x, pixel_y, sample_idx = ray_queue[idx]
         hit_found, tri, dist, bary = closest_hit(accel, ray)
         uv = hit_found ? compute_uv(tri, Vec3f(bary)) : Point2f(0)
@@ -417,7 +417,7 @@ end
     i = @index(Global, Linear)
     idx = u_int32(i)
 
-    @inbounds if idx <= length(hit_queue.hit_found)
+    @_inbounds if idx <= length(hit_queue.hit_found)
         process_hit_and_generate_shadow_rays!(
             hit_queue, shadow_ray_queue, lights, idx, nlights
         )
@@ -432,7 +432,7 @@ end
 )
     i = @index(Global, Linear)
     idx = u_int32(i)
-    @inbounds if idx <= length(shadow_ray_queue.ray)
+    @_inbounds if idx <= length(shadow_ray_queue.ray)
         @fast_get ray, hit_idx, light_idx = shadow_ray_queue[idx]
 
         visible = if ray.t_max > 0.0f0
@@ -500,7 +500,7 @@ end
     i = @index(Global, Linear)
     idx = u_int32(i)
 
-    @inbounds if idx <= length(hit_queue.hit_found)
+    @_inbounds if idx <= length(hit_queue.hit_found)
         @fast_get hit_found, tri, dist, bary, uv, ray, pixel_x, pixel_y, sample_idx = hit_queue[idx]
 
         if hit_found
@@ -533,7 +533,7 @@ end
     i = @index(Global, Linear)
     idx = u_int32(i)
 
-    @inbounds if idx <= length(hit_queue.hit_found)
+    @_inbounds if idx <= length(hit_queue.hit_found)
         @fast_get hit_found, tri, dist, bary, uv, ray = hit_queue[idx]
         dummy_ray = Ray(o=Point3f(0), d=Vec3f(0, 0, 1), t_max=0.0f0)
 
@@ -575,7 +575,7 @@ end
     i = @index(Global, Linear)
     idx = u_int32(i)
 
-    @inbounds if idx <= length(reflection_ray_soa.ray)
+    @_inbounds if idx <= length(reflection_ray_soa.ray)
         @fast_get ray, hit_idx = reflection_ray_soa[idx]
 
         if ray.t_max > 0.0f0
@@ -612,7 +612,7 @@ end
     i = @index(Global, Linear)
     idx = u_int32(i)
 
-    @inbounds if idx <= length(hit_queue.hit_found)
+    @_inbounds if idx <= length(hit_queue.hit_found)
         @fast_get hit_found, tri, uv, pixel_x, pixel_y, sample_idx = hit_queue[idx]
 
         if hit_found
@@ -663,7 +663,7 @@ end
     i = @index(Global, Linear)
     idx = u_int32(i)
 
-    @inbounds if idx <= length(shading_queue.color)
+    @_inbounds if idx <= length(shading_queue.color)
         sample_accumulator[idx] = shading_queue.color[idx]
     end
 end
@@ -678,7 +678,7 @@ end
     x = u_int32(i[2])
     height, width = size(img)
 
-    @inbounds if y <= height && x <= width
+    @_inbounds if y <= height && x <= width
         pixel_idx = (y - Int32(1)) * width + x
         avg_color = Vec3f(0.0f0)
         for s_idx in Int32(1):Int32(NSamples)

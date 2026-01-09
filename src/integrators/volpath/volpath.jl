@@ -74,10 +74,10 @@ Generate camera rays with per-pixel wavelength sampling.
     idx = @index(Global)
     num_pixels = width * height
 
-    @inbounds if idx <= num_pixels
+    @_inbounds if idx <= num_pixels
         pixel_idx = idx - Int32(1)
-        x = Int32(mod(pixel_idx, width)) + Int32(1)
-        y = Int32(div(pixel_idx, width)) + Int32(1)
+        x = u_int32(mod(pixel_idx, width)) + Int32(1)
+        y = u_int32(div(pixel_idx, width)) + Int32(1)
 
         # Random jitter and wavelength sample
         jitter_x = rand(Float32)
@@ -145,7 +145,7 @@ end
 )
     pixel_idx = @index(Global)
 
-    @inbounds if pixel_idx <= n_pixels
+    @_inbounds if pixel_idx <= n_pixels
         base = (pixel_idx - Int32(1)) * Int32(4)
 
         L = SpectralRadiance(
@@ -190,7 +190,7 @@ end
 )
     pixel_idx = @index(Global)
 
-    @inbounds if pixel_idx <= width * height
+    @_inbounds if pixel_idx <= width * height
         px = ((pixel_idx - Int32(1)) % width) + Int32(1)
         py = ((pixel_idx - Int32(1)) ÷ width) + Int32(1)
 

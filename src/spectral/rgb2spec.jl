@@ -74,17 +74,13 @@ struct RGBToSpectrumTable{V1 <: AbstractVector{Float32}, V5 <: AbstractArray{Flo
     coeffs::V5          # [3, res, res, res, 3] - [maxc, z, y, x, coeff]
 end
 
-# Constructor for CPU arrays (backwards compatible)
-RGBToSpectrumTable(res::Int32, scale::Vector{Float32}, coeffs::Array{Float32, 5}) =
-    RGBToSpectrumTable{Vector{Float32}, Array{Float32, 5}}(res, scale, coeffs)
-
 """
     rgb_to_spectrum(table, rgb) -> RGBSigmoidPolynomial
 
 Convert an RGB color to a sigmoid polynomial spectrum representation.
 RGB values should be in [0, 1] range.
 """
-@inline function rgb_to_spectrum(table::RGBToSpectrumTable, r::Float32, g::Float32, b::Float32)::RGBSigmoidPolynomial
+@inline function rgb_to_spectrum(table::RGBToSpectrumTable, r::Float32, g::Float32, b::Float32)
     # Clamp to valid range
     r = clamp(r, 0.0f0, 1.0f0)
     g = clamp(g, 0.0f0, 1.0f0)
@@ -95,75 +91,75 @@ RGB values should be in [0, 1] range.
         # For gray, polynomial is constant: sigmoid(c2) = r
         # Solving: 0.5 + c2/(2*sqrt(1+c2²)) = r
         # => c2 = (r - 0.5) / sqrt(r * (1 - r))
-        if r > 0.0f0 && r < 1.0f0
-            c2 = (r - 0.5f0) / sqrt(r * (1.0f0 - r))
+        c2 = if r > 0.0f0 && r < 1.0f0
+            (r - 0.5f0) / sqrt(r * (1.0f0 - r))
         elseif r <= 0.0f0
-            c2 = -1.0f10  # Very negative -> sigmoid ≈ 0
+            -1.0f10  # Very negative -> sigmoid ≈ 0
         else
-            c2 = 1.0f10   # Very positive -> sigmoid ≈ 1
+            1.0f10   # Very positive -> sigmoid ≈ 1
         end
         return RGBSigmoidPolynomial(0.0f0, 0.0f0, c2)
     end
 
-    # Find maximum component and remap - avoid tuple indexing for type stability
-    maxc::Int = r > g ? (r > b ? 1 : 3) : (g > b ? 2 : 3)
-    z::Float32 = maxc == 1 ? r : (maxc == 2 ? g : b)
+    # Find maximum component and remap - use Int32, no type asserts
+    maxc = r > g ? (r > b ? Int32(1) : Int32(3)) : (g > b ? Int32(2) : Int32(3))
+    z = maxc == Int32(1) ? r : (maxc == Int32(2) ? g : b)
 
     # Get components for x and y based on maxc
     # maxc=1(R): x=G, y=B; maxc=2(G): x=B, y=R; maxc=3(B): x=R, y=G
-    x_comp::Float32 = maxc == 1 ? g : (maxc == 2 ? b : r)
-    y_comp::Float32 = maxc == 1 ? b : (maxc == 2 ? r : g)
+    x_comp = maxc == Int32(1) ? g : (maxc == Int32(2) ? b : r)
+    y_comp = maxc == Int32(1) ? b : (maxc == Int32(2) ? r : g)
 
     # Remap other components relative to max
-    res::Int = Int(table.res)
-    x::Float32 = x_comp * Float32(res - 1) / z
-    y::Float32 = y_comp * Float32(res - 1) / z
+    res = table.res  # Already Int32
+    x = x_comp * Float32(res - Int32(1)) / z
+    y = y_comp * Float32(res - Int32(1)) / z
 
     # Find z index using linear search in scale table
-    zi::Int = 1
-    @inbounds for i in 1:(res-1)
+    zi = Int32(1)
+    @_inbounds for i in Int32(1):(res - Int32(1))
         if table.scale[i] < z
             zi = i
         end
     end
-    zi = min(zi, res - 1)
+    zi = min(zi, res - Int32(1))
 
     # Compute integer indices and fractional offsets
-    xi::Int = min(floor(Int, x) + 1, res - 1)
-    yi::Int = min(floor(Int, y) + 1, res - 1)
+    xi = min(u_int32(x) + Int32(1), res - Int32(1))
+    yi = min(u_int32(y) + Int32(1), res - Int32(1))
 
-    dx::Float32 = x - Float32(xi - 1)
-    dy::Float32 = y - Float32(yi - 1)
-    @inbounds dz::Float32 = (z - table.scale[zi]) / (table.scale[zi + 1] - table.scale[zi])
+    dx = x - Float32(xi - Int32(1))
+    dy = y - Float32(yi - Int32(1))
+    @_inbounds dz = (z - table.scale[zi]) / (table.scale[zi + Int32(1)] - table.scale[zi])
 
     # Trilinear interpolation of coefficients - fully unrolled, no closures
     coeffs = table.coeffs
-    @inbounds begin
+    @_inbounds begin
         # Coefficient 0 (c0)
         c0 = (1.0f0 - dz) * (
-            (1.0f0 - dy) * ((1.0f0 - dx) * coeffs[maxc, zi, yi, xi, 1] + dx * coeffs[maxc, zi, yi, xi+1, 1]) +
-                     dy * ((1.0f0 - dx) * coeffs[maxc, zi, yi+1, xi, 1] + dx * coeffs[maxc, zi, yi+1, xi+1, 1])
+            (1.0f0 - dy) * ((1.0f0 - dx) * coeffs[maxc, zi, yi, xi, Int32(1)] + dx * coeffs[maxc, zi, yi, xi+Int32(1), Int32(1)]) +
+                     dy * ((1.0f0 - dx) * coeffs[maxc, zi, yi+Int32(1), xi, Int32(1)] + dx * coeffs[maxc, zi, yi+Int32(1), xi+Int32(1), Int32(1)])
         ) + dz * (
-            (1.0f0 - dy) * ((1.0f0 - dx) * coeffs[maxc, zi+1, yi, xi, 1] + dx * coeffs[maxc, zi+1, yi, xi+1, 1]) +
-                     dy * ((1.0f0 - dx) * coeffs[maxc, zi+1, yi+1, xi, 1] + dx * coeffs[maxc, zi+1, yi+1, xi+1, 1])
+            (1.0f0 - dy) * ((1.0f0 - dx) * coeffs[maxc, zi+Int32(1), yi, xi, Int32(1)] + dx * coeffs[maxc, zi+Int32(1), yi, xi+Int32(1), Int32(1)]) +
+                     dy * ((1.0f0 - dx) * coeffs[maxc, zi+Int32(1), yi+Int32(1), xi, Int32(1)] + dx * coeffs[maxc, zi+Int32(1), yi+Int32(1), xi+Int32(1), Int32(1)])
         )
 
         # Coefficient 1 (c1)
         c1 = (1.0f0 - dz) * (
-            (1.0f0 - dy) * ((1.0f0 - dx) * coeffs[maxc, zi, yi, xi, 2] + dx * coeffs[maxc, zi, yi, xi+1, 2]) +
-                     dy * ((1.0f0 - dx) * coeffs[maxc, zi, yi+1, xi, 2] + dx * coeffs[maxc, zi, yi+1, xi+1, 2])
+            (1.0f0 - dy) * ((1.0f0 - dx) * coeffs[maxc, zi, yi, xi, Int32(2)] + dx * coeffs[maxc, zi, yi, xi+Int32(1), Int32(2)]) +
+                     dy * ((1.0f0 - dx) * coeffs[maxc, zi, yi+Int32(1), xi, Int32(2)] + dx * coeffs[maxc, zi, yi+Int32(1), xi+Int32(1), Int32(2)])
         ) + dz * (
-            (1.0f0 - dy) * ((1.0f0 - dx) * coeffs[maxc, zi+1, yi, xi, 2] + dx * coeffs[maxc, zi+1, yi, xi+1, 2]) +
-                     dy * ((1.0f0 - dx) * coeffs[maxc, zi+1, yi+1, xi, 2] + dx * coeffs[maxc, zi+1, yi+1, xi+1, 2])
+            (1.0f0 - dy) * ((1.0f0 - dx) * coeffs[maxc, zi+Int32(1), yi, xi, Int32(2)] + dx * coeffs[maxc, zi+Int32(1), yi, xi+Int32(1), Int32(2)]) +
+                     dy * ((1.0f0 - dx) * coeffs[maxc, zi+Int32(1), yi+Int32(1), xi, Int32(2)] + dx * coeffs[maxc, zi+Int32(1), yi+Int32(1), xi+Int32(1), Int32(2)])
         )
 
         # Coefficient 2 (c2)
         c2 = (1.0f0 - dz) * (
-            (1.0f0 - dy) * ((1.0f0 - dx) * coeffs[maxc, zi, yi, xi, 3] + dx * coeffs[maxc, zi, yi, xi+1, 3]) +
-                     dy * ((1.0f0 - dx) * coeffs[maxc, zi, yi+1, xi, 3] + dx * coeffs[maxc, zi, yi+1, xi+1, 3])
+            (1.0f0 - dy) * ((1.0f0 - dx) * coeffs[maxc, zi, yi, xi, Int32(3)] + dx * coeffs[maxc, zi, yi, xi+Int32(1), Int32(3)]) +
+                     dy * ((1.0f0 - dx) * coeffs[maxc, zi, yi+Int32(1), xi, Int32(3)] + dx * coeffs[maxc, zi, yi+Int32(1), xi+Int32(1), Int32(3)])
         ) + dz * (
-            (1.0f0 - dy) * ((1.0f0 - dx) * coeffs[maxc, zi+1, yi, xi, 3] + dx * coeffs[maxc, zi+1, yi, xi+1, 3]) +
-                     dy * ((1.0f0 - dx) * coeffs[maxc, zi+1, yi+1, xi, 3] + dx * coeffs[maxc, zi+1, yi+1, xi+1, 3])
+            (1.0f0 - dy) * ((1.0f0 - dx) * coeffs[maxc, zi+Int32(1), yi, xi, Int32(3)] + dx * coeffs[maxc, zi+Int32(1), yi, xi+Int32(1), Int32(3)]) +
+                     dy * ((1.0f0 - dx) * coeffs[maxc, zi+Int32(1), yi+Int32(1), xi, Int32(3)] + dx * coeffs[maxc, zi+Int32(1), yi+Int32(1), xi+Int32(1), Int32(3)])
         )
     end
 
@@ -221,7 +217,7 @@ GPU-compatible version that takes raw arrays and returns coefficient tuple.
 
     # Find z index
     zi = Int32(1)
-    @inbounds for i in Int32(1):Int32(res-1)
+    @_inbounds for i in Int32(1):Int32(res-1)
         if scale[i] < z
             zi = i
         end
@@ -229,19 +225,19 @@ GPU-compatible version that takes raw arrays and returns coefficient tuple.
     zi = min(zi, Int32(res - 1))
 
     # Integer indices
-    xi = min(floor(Int32, x) + Int32(1), Int32(res - 1))
-    yi = min(floor(Int32, y) + Int32(1), Int32(res - 1))
+    xi = min(u_int32(x) + Int32(1), Int32(res - 1))
+    yi = min(u_int32(y) + Int32(1), Int32(res - 1))
 
     dx = x - Float32(xi - 1)
     dy = y - Float32(yi - 1)
-    @inbounds dz = (z - scale[zi]) / (scale[zi + 1] - scale[zi])
+    @_inbounds dz = (z - scale[zi]) / (scale[zi + 1] - scale[zi])
 
     # Trilinear interpolation
     c0 = 0.0f0
     c1 = 0.0f0
     c2 = 0.0f0
 
-    @inbounds for i in Int32(1):Int32(3)
+    @_inbounds for i in Int32(1):Int32(3)
         val = (1.0f0 - dz) * (
             (1.0f0 - dy) * ((1.0f0 - dx) * coeffs[maxc, zi, yi, xi, i] +
                                      dx * coeffs[maxc, zi, yi, xi+1, i]) +

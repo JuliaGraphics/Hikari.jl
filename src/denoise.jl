@@ -149,7 +149,7 @@ Applies a 5x5 filter with edge-stopping weights.
     idx = @index(Global)
     num_pixels = width * height
 
-    @inbounds if idx <= num_pixels
+    @_inbounds if idx <= num_pixels
         # Convert linear index to 2D coordinates (row, col) for Julia matrices
         row = ((idx - Int32(1)) % height) + Int32(1)
         col = ((idx - Int32(1)) ÷ height) + Int32(1)
@@ -241,7 +241,7 @@ Uses spatial 3x3 neighborhood for variance estimation.
     idx = @index(Global)
     num_pixels = width * height
 
-    @inbounds if idx <= num_pixels
+    @_inbounds if idx <= num_pixels
         # Convert linear index to 2D
         row = ((idx - Int32(1)) % height) + Int32(1)
         col = ((idx - Int32(1)) ÷ height) + Int32(1)

@@ -22,7 +22,7 @@
     light_select = rand(Float32)
 
     # Select light uniformly
-    light_idx = Int32(floor(light_select * Float32(num_lights))) + Int32(1)
+    light_idx = floor_int32(light_select * Float32(num_lights)) + Int32(1)
     light_idx = min(light_idx, num_lights)
 
     # Sample the light
@@ -108,7 +108,7 @@ Creates shadow rays for each scatter point.
 
     rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
 
-    @inbounds if idx <= max_queued
+    @_inbounds if idx <= max_queued
         current_size = scatter_size[1]
         if idx <= current_size
             work = scatter_items[idx]
@@ -201,7 +201,7 @@ Sample phase function at scatter points to generate continuation rays.
 )
     idx = @index(Global)
 
-    @inbounds if idx <= max_queued
+    @_inbounds if idx <= max_queued
         current_size = scatter_size[1]
         if idx <= current_size
             work = scatter_items[idx]

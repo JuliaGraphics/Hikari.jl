@@ -63,7 +63,7 @@ end
 Return the current number of items in the queue.
 Note: This copies from GPU to CPU, so use sparingly (between kernel dispatches).
 """
-@inline queue_size(queue::PWWorkQueue) = @inbounds Array(queue.size)[1]
+@inline queue_size(queue::PWWorkQueue) = @_inbounds Array(queue.size)[1]
 
 """
     push_work!(queue::PWWorkQueue{T}, item::T) -> Int32
@@ -75,7 +75,7 @@ Thread-safe for concurrent GPU access.
     # Atomically increment size and get index
     idx = @atomic queue.size[1] += Int32(1)
     # Store item at the allocated index
-    @inbounds queue.items[idx] = item
+    @_inbounds queue.items[idx] = item
     return idx
 end
 
@@ -85,7 +85,7 @@ end
 Get item at the given index (1-based).
 """
 @inline function get_item(queue::PWWorkQueue, idx::Integer)
-    @inbounds return queue.items[idx]
+    @_inbounds return queue.items[idx]
 end
 
 # Allow indexing
@@ -96,7 +96,7 @@ end
 # ============================================================================
 
 @kernel function pw_reset_queue_kernel!(queue_size)
-    @inbounds queue_size[1] = Int32(0)
+    @_inbounds queue_size[1] = Int32(0)
 end
 
 """
@@ -299,7 +299,7 @@ Each thread checks if its index is within the current queue size.
 )
     idx = @index(Global)
 
-    @inbounds if idx <= max_queued
+    @_inbounds if idx <= max_queued
         # Check if this index has a valid item
         current_size = queue_size[1]
         if idx <= current_size

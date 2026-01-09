@@ -65,6 +65,13 @@ function to_gpu(ArrayType, m::Hikari.MediumInterface)
     return Hikari.MediumInterface(gpu_material, m.inside, m.outside)
 end
 
+# GPU conversion for MediumInterfaceIdx - convert wrapped material to GPU
+# MediumIndex values are just Int32 bitstype, so they transfer directly
+function to_gpu(ArrayType, m::Hikari.MediumInterfaceIdx)
+    gpu_material = to_gpu(ArrayType, m.material)
+    return Hikari.MediumInterfaceIdx(gpu_material, m.inside, m.outside)
+end
+
 # GPU conversion for CloudVolume - convert density array to GPU
 function to_gpu(ArrayType, m::Hikari.CloudVolume)
     density_gpu = Raycore.to_gpu(ArrayType, m.density)
@@ -75,6 +82,28 @@ function to_gpu(ArrayType, m::Hikari.CloudVolume)
         m.extinction_scale,
         m.asymmetry_g,
         m.single_scatter_albedo
+    )
+end
+
+# GPU conversion for HomogeneousMedium - all fields are bitstype, no conversion needed
+to_gpu(::Type, m::Hikari.HomogeneousMedium) = m
+
+# GPU conversion for GridMedium - convert density array and majorant grid to GPU
+function to_gpu(ArrayType, m::Hikari.GridMedium)
+    density_gpu = Raycore.to_gpu(ArrayType, m.density)
+    majorant_voxels_gpu = Raycore.to_gpu(ArrayType, m.majorant_grid.voxels)
+    majorant_grid_gpu = Hikari.MajorantGrid(majorant_voxels_gpu, m.majorant_grid.res)
+    return Hikari.GridMedium(
+        m.bounds,
+        m.render_to_medium,
+        m.medium_to_render,
+        m.σ_a,
+        m.σ_s,
+        density_gpu,
+        m.density_res,
+        m.g,
+        majorant_grid_gpu,
+        m.max_density
     )
 end
 
@@ -90,7 +119,9 @@ function to_gpu(ArrayType, ms::Hikari.MaterialScene)
     materials = map(ms.materials) do mats
         convert_materials_to_gpu(ArrayType, mats)
     end
-    return Hikari.MaterialScene(accel, materials)
+    # Convert media tuple to GPU (each medium may have arrays like density grids)
+    media = map(m -> to_gpu(ArrayType, m), ms.media)
+    return Hikari.MaterialScene(accel, materials, media)
 end
 
 """
@@ -213,14 +244,29 @@ function to_gpu(ArrayType, d::Hikari.Distribution1D)
     return Hikari.Distribution1D(func_gpu, cdf_gpu, d.func_int)
 end
 
-# GPU conversion for Distribution2D
+# GPU conversion for Distribution2D -> FlatDistribution2D
+# IMPORTANT: We convert to FlatDistribution2D to avoid nested device arrays
+# which cause SPIR-V validation errors when pointers are extracted from
+# structs loaded from device arrays and used in loops.
 function to_gpu(ArrayType, d::Hikari.Distribution2D)
-    # Convert each conditional distribution to device arrays
-    p_conditional_gpu = [to_gpu(ArrayType, p) for p in d.p_conditional_v]
-    # The vector of Distribution1D structs also needs to be a device array
-    p_conditional_vec = Raycore.to_gpu(ArrayType, p_conditional_gpu)
-    p_marginal_gpu = to_gpu(ArrayType, d.p_marginal)
-    return Hikari.Distribution2D(p_conditional_vec, p_marginal_gpu)
+    # First flatten the distribution on CPU
+    flat = Hikari.FlatDistribution2D(d)
+    # Then convert to GPU
+    return to_gpu(ArrayType, flat)
+end
+
+# GPU conversion for FlatDistribution2D
+function to_gpu(ArrayType, d::Hikari.FlatDistribution2D)
+    return Hikari.FlatDistribution2D(
+        Raycore.to_gpu(ArrayType, d.conditional_func),
+        Raycore.to_gpu(ArrayType, d.conditional_cdf),
+        Raycore.to_gpu(ArrayType, d.conditional_func_int),
+        Raycore.to_gpu(ArrayType, d.marginal_func),
+        Raycore.to_gpu(ArrayType, d.marginal_cdf),
+        d.marginal_func_int,
+        d.nu,
+        d.nv
+    )
 end
 
 # GPU conversion for EnvironmentMap

@@ -189,8 +189,8 @@ Sample environment light spectrally with importance sampling.
         return PWLightSample()
     end
 
-    # Sample environment map color at UV
-    Li_rgb = light.env_map(uv) * light.scale
+    # Sample environment map color at UV (using lookup_uv like pbrt-v4's ImageLe)
+    Li_rgb = lookup_uv(light.env_map, uv) * light.scale
 
     # p_light at infinity
     p_light = Point3f(p + 1f6 * wi)
@@ -294,25 +294,32 @@ end
 @inline pdf_li_spectral(::Light, ::Point3f, ::Vec3f) = 0f0
 
 # ============================================================================
-# Recursive Light Tuple Dispatch (Type-Stable)
+# Light Tuple Dispatch (GPU-Safe with Unrolled If-Branches)
 # ============================================================================
 
-"""
-    sample_light_from_tuple(table, lights::Tuple, idx::Int32, p::Point3f, lambda::Wavelengths, u::Point2f)
+@inline @generated function sample_light_from_tuple(
+    table::RGBToSpectrumTable, lights::L, idx::Int32, p::Point3f, lambda::Wavelengths, u::Point2f
+) where {L <: Tuple}
+    N = length(L.parameters)
 
-Recursively sample from the appropriate light in a heterogeneous tuple.
-"""
-@inline sample_light_from_tuple(::RGBToSpectrumTable, ::Tuple{}, ::Int32, ::Point3f, ::Wavelengths, ::Point2f) =
-    PWLightSample()
-
-@inline function sample_light_from_tuple(
-    table::RGBToSpectrumTable, lights::Tuple, idx::Int32, p::Point3f, lambda::Wavelengths, u::Point2f
-)
-    if idx == Int32(1)
-        return sample_light_spectral(table, first(lights), p, lambda, u)
-    else
-        return sample_light_from_tuple(table, Base.tail(lights), idx - Int32(1), p, lambda, u)
+    if N == 0
+        return :(PWLightSample())
     end
+
+    # Build unrolled if-else chain - each branch calls sample_light_spectral directly
+    expr = :(@_inbounds sample_light_spectral(table, lights[$N], p, lambda, u))
+
+    for i in (N-1):-1:1
+        expr = quote
+            if idx == Int32($i)
+                @_inbounds sample_light_spectral(table, lights[$i], p, lambda, u)
+            else
+                $expr
+            end
+        end
+    end
+
+    return expr
 end
 
 """
@@ -320,8 +327,7 @@ end
 
 Count total number of lights in a tuple (recursively for nested structures).
 """
-@inline count_lights(::Tuple{}) = Int32(0)
-@inline count_lights(lights::Tuple) = Int32(1) + count_lights(Base.tail(lights))
+@inline count_lights(::NTuple{N, Any}) where {N} = Int32(N)
 
 # ============================================================================
 # Environment Light Evaluation (for escaped rays)
@@ -336,11 +342,9 @@ Evaluate environment light for an escaped ray direction.
 @inline function evaluate_environment_spectral(
     table::RGBToSpectrumTable, light::EnvironmentLight, ray_d::Vec3f, lambda::Wavelengths
 )::SpectralRadiance
-    # Convert direction to UV
-    uv = direction_to_uv(ray_d, light.env_map.rotation)
-
-    # Sample environment map
-    Le_rgb = light.env_map(uv) * light.scale
+    # Sample environment map by direction (env_map handles direction->UV internally)
+    # Following pbrt-v4 ImageInfiniteLight::Le which passes direction directly
+    Le_rgb = light.env_map(ray_d) * light.scale
 
     return uplift_rgb(table, Le_rgb, lambda)
 end

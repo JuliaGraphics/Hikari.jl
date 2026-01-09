@@ -34,12 +34,12 @@ which decorrelates color noise across pixels for faster convergence.
     idx = @index(Global)
     num_pixels = width * height
 
-    @inbounds if idx <= num_pixels
+    @_inbounds if idx <= num_pixels
         # Convert linear index to pixel coordinates
         # idx-1 to make 0-indexed, then compute x,y
         pixel_idx = idx - Int32(1)
-        x = Int32(mod(pixel_idx, width)) + Int32(1)
-        y = Int32(div(pixel_idx, width)) + Int32(1)
+        x = u_int32(mod(pixel_idx, width)) + Int32(1)
+        y = u_int32(div(pixel_idx, width)) + Int32(1)
 
         # Generate random numbers for this pixel using Julia's built-in RNG
         # This works well on both CPU and GPU with proper decorrelation
@@ -139,8 +139,8 @@ Convert linear pixel index to x,y coordinates (1-based).
 """
 @inline function pixel_coords_from_index(idx::Int32, width::Int32)
     pixel_idx = idx - Int32(1)
-    x = Int32(mod(pixel_idx, width)) + Int32(1)
-    y = Int32(div(pixel_idx, width)) + Int32(1)
+    x = u_int32(mod(pixel_idx, width)) + Int32(1)
+    y = u_int32(div(pixel_idx, width)) + Int32(1)
     return (x, y)
 end
 

@@ -250,11 +250,13 @@ GPU-compatible version that takes an explicit table parameter.
     poly = rgb_to_spectrum(table, r, g, b)
 
     # Manually unrolled to avoid closure allocations
-    v1 = poly(lambda.lambda[1])
-    v2 = poly(lambda.lambda[2])
-    v3 = poly(lambda.lambda[3])
-    v4 = poly(lambda.lambda[4])
-    return SpectralRadiance((v1, v2, v3, v4))
+    @_inbounds begin
+        v1 = poly(lambda.lambda[1])
+        v2 = poly(lambda.lambda[2])
+        v3 = poly(lambda.lambda[3])
+        v4 = poly(lambda.lambda[4])
+        return SpectralRadiance((v1, v2, v3, v4))
+    end
 end
 
 """

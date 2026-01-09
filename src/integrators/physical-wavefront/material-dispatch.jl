@@ -20,7 +20,7 @@ Uses @generated to create efficient branching code at compile time.
     lambda::Wavelengths, u::Point2f, rng::Float32
 ) where {N}
     branches = [quote
-        @inbounds if idx.material_type === UInt8($i)
+        @_inbounds if idx.material_type === UInt8($i)
             return @inline sample_bsdf_spectral(table, materials[$i][idx.material_idx], wo, ns, uv, lambda, u, rng)
         end
     end for i in 1:N]
@@ -48,11 +48,10 @@ Returns (f::SpectralRadiance, pdf::Float32).
     lambda::Wavelengths
 ) where {N}
     branches = [quote
-        @inbounds if idx.material_type === UInt8($i)
+        @_inbounds if idx.material_type === UInt8($i)
             return @inline evaluate_bsdf_spectral(table, materials[$i][idx.material_idx], wo, wi, ns, uv, lambda)
         end
     end for i in 1:N]
-
     quote
         $(branches...)
         return (SpectralRadiance(0f0), 0f0)
@@ -74,7 +73,7 @@ Returns SpectralRadiance (zero for non-emissive materials).
     wo::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
 ) where {N}
     branches = [quote
-        @inbounds if idx.material_type === UInt8($i)
+        @_inbounds if idx.material_type === UInt8($i)
             return @inline get_emission_spectral(table, materials[$i][idx.material_idx], wo, n, uv, lambda)
         end
     end for i in 1:N]
@@ -96,7 +95,7 @@ Returns SpectralRadiance (zero for non-emissive materials).
     uv::Point2f, lambda::Wavelengths
 ) where {N}
     branches = [quote
-        @inbounds if idx.material_type === UInt8($i)
+        @_inbounds if idx.material_type === UInt8($i)
             return @inline get_emission_spectral(table, materials[$i][idx.material_idx], uv, lambda)
         end
     end for i in 1:N]
@@ -121,7 +120,7 @@ Returns Bool.
     materials::NTuple{N,Any}, idx::MaterialIndex
 ) where {N}
     branches = [quote
-        @inbounds if idx.material_type === UInt8($i)
+        @_inbounds if idx.material_type === UInt8($i)
             return @inline is_emissive(materials[$i][idx.material_idx])
         end
     end for i in 1:N]
@@ -147,7 +146,7 @@ Returns SpectralRadiance.
     uv::Point2f, lambda::Wavelengths
 ) where {N}
     branches = [quote
-        @inbounds if idx.material_type === UInt8($i)
+        @_inbounds if idx.material_type === UInt8($i)
             return @inline get_albedo_spectral(table, materials[$i][idx.material_idx], uv, lambda)
         end
     end for i in 1:N]
@@ -198,7 +197,7 @@ Returns PWMaterialEvalResult with BSDF sample and emission.
     lambda::Wavelengths, u::Point2f, rng::Float32
 ) where {N}
     branches = [quote
-        @inbounds if idx.material_type === UInt8($i)
+        @_inbounds if idx.material_type === UInt8($i)
             sample = @inline sample_bsdf_spectral(table, materials[$i][idx.material_idx], wo, ns, uv, lambda, u, rng)
             Le = @inline get_emission_spectral(table, materials[$i][idx.material_idx], wo, n, uv, lambda)
             is_em = @inline is_emissive(materials[$i][idx.material_idx])
@@ -332,7 +331,7 @@ Type-stable dispatch for checking if a material defines a medium boundary.
     materials::NTuple{N,Any}, idx::MaterialIndex
 ) where {N}
     branches = [quote
-        @inbounds if idx.material_type === UInt8($i)
+        @_inbounds if idx.material_type === UInt8($i)
             return @inline has_medium_interface(materials[$i][idx.material_idx])
         end
     end for i in 1:N]
@@ -372,7 +371,7 @@ Returns the MediumIndex from MediumInterface, or MediumIndex() (vacuum) for regu
     materials::NTuple{N,Any}, idx::MaterialIndex, wi::Vec3f, n::Vec3f
 ) where {N}
     branches = [quote
-        @inbounds if idx.material_type === UInt8($i)
+        @_inbounds if idx.material_type === UInt8($i)
             return @inline get_medium_index_for_direction(materials[$i][idx.material_idx], wi, n)
         end
     end for i in 1:N]

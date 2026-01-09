@@ -313,7 +313,7 @@ end
 
 @kernel function film_to_rgb!(image, xyz, filter_weight_sum, splat_xyz, scale, splat_scale)
     idx = @index(Global)
-    @inbounds begin
+    @_inbounds begin
         rgb = XYZ_to_RGB(xyz[idx])
         # Normalize pixel with weight sum.
         fws = filter_weight_sum[idx]
@@ -403,7 +403,7 @@ end
     camera_sample = CameraSample(pixel, Point2f(0.5f0), 0f0)
     ray, ω = generate_ray_differential(camera, camera_sample)
 
-    @inbounds if ω > 0f0
+    @_inbounds if ω > 0f0
         # Trace primary ray
         hit, _primitive, si = intersect!(scene, ray)
 

@@ -94,6 +94,20 @@ end
     mi.inside.medium_type != mi.outside.medium_type
 end
 
+# Trait functions for GPU-compatible type checking (avoids `isa` runtime dispatch)
+"""Check if a material is a MediumInterfaceIdx (GPU-compatible, no runtime type introspection)"""
+@inline is_medium_interface_idx(::MediumInterfaceIdx) = true
+@inline is_medium_interface_idx(::Material) = false
+
+# GPU-safe accessors for medium indices (return vacuum for non-interface materials)
+"""Get the inside medium index from a material (vacuum if not a MediumInterfaceIdx)"""
+@inline get_inside_medium(mi::MediumInterfaceIdx) = mi.inside
+@inline get_inside_medium(::Material) = MediumIndex()
+
+"""Get the outside medium index from a material (vacuum if not a MediumInterfaceIdx)"""
+@inline get_outside_medium(mi::MediumInterfaceIdx) = mi.outside
+@inline get_outside_medium(::Material) = MediumIndex()
+
 """
     get_medium_index(mi::MediumInterfaceIdx, wi::Vec3f, n::Vec3f) -> MediumIndex
 
@@ -106,6 +120,16 @@ Determine which medium a ray enters based on direction and surface normal.
         mi.outside
     else
         mi.inside
+    end
+end
+
+# GPU-safe version that works with any material type
+"""Get medium index based on direction for any material (vacuum for non-interface)"""
+@inline function get_crossing_medium(material, entering::Bool)
+    if entering
+        get_inside_medium(material)
+    else
+        get_outside_medium(material)
     end
 end
 
@@ -130,3 +154,49 @@ end
 
 # Non-MediumInterface materials pass through unchanged
 to_indexed(mat::Material, ::Dict) = mat
+
+# ============================================================================
+# Helper: Extract media and convert materials
+# ============================================================================
+
+"""
+    extract_media_and_convert(materials_list) -> (converted_materials, media_tuple)
+
+Extract all media from MediumInterface materials and convert them to indexed versions.
+Returns the converted materials and a tuple of media for VolPath rendering.
+
+This is useful for external integrations (like TraceMakie) that build scenes
+without using the full Hikari.Scene constructor.
+
+# Example
+```julia
+materials = [matte, glass_with_fog, ...]
+converted, media = extract_media_and_convert(materials)
+# converted contains MediumInterfaceIdx instead of MediumInterface
+# media is a tuple of Medium objects for VolPath
+```
+"""
+function extract_media_and_convert(materials_list::Vector{<:Material})
+    # Collect unique media from MediumInterface materials
+    media_list = []
+    medium_to_index = Dict{Any, Int}()
+
+    for mat in materials_list
+        if mat isa MediumInterface
+            for medium in (mat.inside, mat.outside)
+                if medium !== nothing && !haskey(medium_to_index, medium)
+                    push!(media_list, medium)
+                    medium_to_index[medium] = length(media_list)
+                end
+            end
+        end
+    end
+
+    # Convert MediumInterface -> MediumInterfaceIdx with proper indices
+    converted_materials = [to_indexed(mat, medium_to_index) for mat in materials_list]
+
+    # Build media tuple (empty if no media)
+    media_tuple = isempty(media_list) ? () : Tuple(media_list)
+
+    return converted_materials, media_tuple
+end

@@ -223,7 +223,7 @@ function eval_residual!(residual::Vector{Float64}, coeffs::Vector{Float64},
     out_rgb = zeros(Float64, 3)
     n = length(tables.lambda)
 
-    @inbounds for i in 1:n
+    @_inbounds for i in 1:n
         # Normalized wavelength [0, 1]
         λ_norm = (tables.lambda[i] - CIE_LAMBDA_MIN) / (CIE_LAMBDA_MAX - CIE_LAMBDA_MIN)
 

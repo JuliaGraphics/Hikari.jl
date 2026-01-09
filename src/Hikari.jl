@@ -11,6 +11,7 @@ using StructArrays
 using Atomix
 using KernelAbstractions
 using Raycore
+import Raycore: @_inbounds
 
 # Re-export Raycore types and functions that Trace uses
 import Raycore: AbstractRay, Ray, RayDifferentials, apply, check_direction, scale_differentials
@@ -24,7 +25,8 @@ import Raycore: AccelPrimitive, BVH, TLAS, Instance, InstanceHandle, world_bound
 import Raycore: Normal3f, intersect, intersect_p
 import Raycore: is_dir_negative, increase_hit, intersect_p!
 import Raycore: to_gpu
-import Raycore: sum_unrolled, reduce_unrolled, for_unrolled, map_unrolled
+import Raycore: sum_unrolled, reduce_unrolled, for_unrolled, map_unrolled, getindex_unrolled
+import Raycore: @_inbounds
 
 abstract type Spectrum end
 abstract type Light end
@@ -46,17 +48,6 @@ macro real_assert(expr, msg="")
         return :()
     end
 end
-
-const ENABLE_INBOUNDS = true
-
-macro _inbounds(ex)
-    if ENABLE_INBOUNDS
-        esc(:(@inbounds $ex))
-    else
-        esc(ex)
-    end
-end
-
 
 # GeometryBasics.@fixed_vector Normal StaticVector
 # Normal3f is now imported from Raycore
@@ -304,14 +295,58 @@ MaterialScene(accel, materials::Tuple) = MaterialScene(accel, materials, ())
 @generated function get_material(materials::NTuple{N,Any}, idx::MaterialIndex) where N
     branches = [quote
         if idx.material_type === UInt8($i)
-            return @inbounds materials[$i][idx.material_idx]
+            return @_inbounds materials[$i][idx.material_idx]
         end
     end for i in 1:N]
     # Return first material type as fallback (GPU-compatible, no error() call)
     # This should never happen in practice if material indices are valid
     quote
         $(branches...)
-        return @inbounds materials[1][1]
+        return @_inbounds materials[1][1]
+    end
+end
+
+# ============================================================================
+# with_material - GPU-safe closure dispatch over materials
+# ============================================================================
+
+"""
+    with_material(f, materials, idx, args...)
+
+Execute function `f` with the material at index `idx`, passing additional `args`.
+The function is called as `f(material, args...)` where `material` has a concrete type.
+
+This provides type-stable material dispatch by using compile-time unrolled if-branches.
+The closure receives the material as its first argument plus any additional args,
+avoiding variable capture issues on GPU.
+
+# Example
+```julia
+# Instead of:
+material = get_material(materials, mat_idx)
+is_transmissive = is_medium_interface_idx(material)  # Union type issue on GPU
+
+# Use:
+is_transmissive = with_material(check_transmissive, materials, mat_idx)
+# Where: check_transmissive(mat) = is_medium_interface_idx(mat)
+
+# With additional arguments:
+result = with_material(process_material, materials, mat_idx, ray, normal)
+# Where: process_material(mat, ray, n) = ...
+```
+"""
+@inline @generated function with_material(f::F, materials::NTuple{N,Any}, idx::MaterialIndex, args...) where {F, N}
+    branches = [quote
+        @_inbounds if idx.material_type === UInt8($i)
+            return @inline f(materials[$i][idx.material_idx], args...)
+        end
+    end for i in 1:N]
+
+    quote
+        $(branches...)
+        # Fallback - should never reach if material indices are valid
+        # Call with first material type for type stability (GPU-compatible, no error)
+        return @inline f(@_inbounds(materials[1][1]), args...)
     end
 end
 
@@ -324,7 +359,7 @@ end
 ) where {T<:Tuple, S<:AbstractScene}
     N = length(T.parameters)
     branches = [quote
-        @inbounds if idx.material_type === UInt8($i)
+        @_inbounds if idx.material_type === UInt8($i)
             return shade(materials[$i][idx.material_idx], ray, si, scene, beta, depth, max_depth)
         end
     end for i in 1:N]
@@ -343,7 +378,7 @@ end
 ) where {T<:Tuple, S<:AbstractScene}
     N = length(T.parameters)
     branches = [quote
-        @inbounds if idx.material_type === UInt8($i)
+        @_inbounds if idx.material_type === UInt8($i)
             return @inline sample_bounce(materials[$i][idx.material_idx], ray, si, scene, beta, depth)
         end
     end for i in 1:N]

@@ -185,7 +185,7 @@ end
 ) where {T<:Tuple, S<:AbstractScene}
     N = length(T.parameters)
     branches = [quote
-        @inbounds if idx.material_type === UInt8($i)
+        @_inbounds if idx.material_type === UInt8($i)
             bsdf = @inline compute_bsdf(materials[$i][idx.material_idx], si, false, Radiance)
             l = light_contribution(RGBSpectrum(0f0), lights, wo, scene, bsdf, sampler, si)
             if depth + Int32(1) ≤ max_depth
@@ -482,7 +482,7 @@ end
         mat_type = eltype(mat_array_type)
         is_vol = mat_type <: CloudVolume
         push!(branches, quote
-            @inbounds if idx.material_type === UInt8($i)
+            @_inbounds if idx.material_type === UInt8($i)
                 return (true, $is_vol, @inline compute_bsdf(materials[$i][idx.material_idx], si, false, Radiance))
             end
         end)

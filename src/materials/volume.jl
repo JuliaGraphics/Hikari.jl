@@ -79,9 +79,9 @@ end
     gz = uz * (nz - 1) + 1
 
     # Integer indices
-    ix = clamp(floor(Int, gx), 1, nx - 1)
-    iy = clamp(floor(Int, gy), 1, ny - 1)
-    iz = clamp(floor(Int, gz), 1, nz - 1)
+    ix = clamp(floor_int(gx), 1, nx - 1)
+    iy = clamp(floor_int(gy), 1, ny - 1)
+    iz = clamp(floor_int(gz), 1, nz - 1)
 
     # Fractional parts
     fx = Float32(gx - ix)
@@ -89,7 +89,7 @@ end
     fz = Float32(gz - iz)
 
     # Trilinear interpolation
-    @inbounds begin
+    @_inbounds begin
         d000 = cloud.density[ix, iy, iz]
         d100 = cloud.density[ix+1, iy, iz]
         d010 = cloud.density[ix, iy+1, iz]
@@ -201,7 +201,7 @@ end
     dt = (t_far - t_near) / Float32(steps)
 
     t = t_near + 0.5f0 * dt
-    @inbounds for _ in 1:steps
+    @_inbounds for _ in 1:steps
         sample_pos = Point3f(
             pos[1] + dir[1] * t,
             pos[2] + dir[2] * t,

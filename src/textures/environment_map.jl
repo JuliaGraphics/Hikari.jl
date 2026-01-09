@@ -3,7 +3,7 @@ Environment map texture for HDR image-based lighting.
 Supports sampling by direction vector (for environment lights).
 Includes importance sampling distribution based on luminance.
 """
-struct EnvironmentMap{S<:Spectrum, T<:AbstractMatrix{S}, D<:Distribution2D}
+struct EnvironmentMap{S<:Spectrum, T<:AbstractMatrix{S}, D}
     """HDR image data (lat-long / equirectangular format)."""
     data::T
 
@@ -14,7 +14,7 @@ struct EnvironmentMap{S<:Spectrum, T<:AbstractMatrix{S}, D<:Distribution2D}
     distribution::D
 
     """Inner constructor for pre-computed environment maps (used by to_gpu)."""
-    function EnvironmentMap(data::T, rotation::Float32, distribution::D) where {S<:Spectrum, T<:AbstractMatrix{S}, D<:Distribution2D}
+    function EnvironmentMap(data::T, rotation::Float32, distribution::D) where {S<:Spectrum, T<:AbstractMatrix{S}, D<:Union{Distribution2D, FlatDistribution2D}}
         new{S, T, D}(data, rotation, distribution)
     end
 
@@ -97,19 +97,21 @@ Sample the environment map by direction vector.
     y = uv[2] * (h - 1) + 1
 
     # Get integer pixel coordinates
-    x0 = floor(Int32, x)
-    y0 = floor(Int32, y)
+    x0 = floor_int32(x)
+    y0 = floor_int32(y)
     x1 = x0 + Int32(1)
     y1 = y0 + Int32(1)
 
     # Clamp to valid range
-    x0 = clamp(x0, Int32(1), Int32(w))
-    x1 = clamp(x1, Int32(1), Int32(w))
-    y0 = clamp(y0, Int32(1), Int32(h))
-    y1 = clamp(y1, Int32(1), Int32(h))
+    w32 = u_int32(w)
+    h32 = u_int32(h)
+    x0 = clamp(x0, Int32(1), w32)
+    x1 = clamp(x1, Int32(1), w32)
+    y0 = clamp(y0, Int32(1), h32)
+    y1 = clamp(y1, Int32(1), h32)
 
     # Wrap x coordinates for seamless horizontal tiling
-    x1 = x1 > w ? Int32(1) : x1
+    x1 = x1 > w32 ? Int32(1) : x1
 
     # Interpolation weights
     fx = x - floor(x)
@@ -131,6 +133,54 @@ end
 Sample method alias for compatibility.
 """
 @inline sample(env::EnvironmentMap, dir::Vec3f) = env(dir)
+
+"""
+    lookup_uv(env::EnvironmentMap, uv::Point2f) -> Spectrum
+
+Look up environment map directly by UV coordinates.
+This is the equivalent of pbrt-v4's ImageLe(uv, lambda) for ImageInfiniteLight.
+Used when UV is already known (e.g., from importance sampling the distribution).
+"""
+@inline function lookup_uv(env::EnvironmentMap{S, T, D}, uv::Point2f)::S where {S<:Spectrum, T, D}
+    # Bilinear interpolation (same as direction-based lookup, but UV already computed)
+    h, w = size(env.data)
+
+    # Convert to pixel coordinates
+    x = uv[1] * (w - 1) + 1
+    y = uv[2] * (h - 1) + 1
+
+    # Get integer pixel coordinates
+    x0 = floor_int32(x)
+    y0 = floor_int32(y)
+    x1 = x0 + Int32(1)
+    y1 = y0 + Int32(1)
+
+    # Clamp to valid range
+    w32 = u_int32(w)
+    h32 = u_int32(h)
+    x0 = clamp(x0, Int32(1), w32)
+    x1 = clamp(x1, Int32(1), w32)
+    y0 = clamp(y0, Int32(1), h32)
+    y1 = clamp(y1, Int32(1), h32)
+
+    # Wrap x coordinates for seamless horizontal tiling
+    x1 = x1 > w32 ? Int32(1) : x1
+
+    # Interpolation weights
+    fx = x - floor(x)
+    fy = y - floor(y)
+
+    # Bilinear interpolation
+    c00 = env.data[y0, x0]
+    c10 = env.data[y0, x1]
+    c01 = env.data[y1, x0]
+    c11 = env.data[y1, x1]
+
+    c0 = c00 * (1f0 - fx) + c10 * fx
+    c1 = c01 * (1f0 - fx) + c11 * fx
+
+    c0 * (1f0 - fy) + c1 * fy
+end
 
 """
 Load an environment map from an HDR/EXR file.

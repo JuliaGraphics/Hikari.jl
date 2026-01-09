@@ -121,7 +121,16 @@ function (b::BSDF)(
     return output
 end
 
+# GPU-safe integer conversion helpers (avoid InexactError)
+# Truncate toward zero
 u_int32(x) = Base.unsafe_trunc(Int32, x)
+u_int(x) = Base.unsafe_trunc(Int, x)
+# Floor then truncate (for array indexing with potential negative intermediates)
+floor_int32(x) = Base.unsafe_trunc(Int32, floor(x))
+floor_int(x) = Base.unsafe_trunc(Int, floor(x))
+# Round then truncate (for nearest-neighbor lookups)
+round_int32(x) = Base.unsafe_trunc(Int32, round(x))
+round_int(x) = Base.unsafe_trunc(Int, round(x))
 
 """
 Compute incident ray direction for a given outgoing direction and
