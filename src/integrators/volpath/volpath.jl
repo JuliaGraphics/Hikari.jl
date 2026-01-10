@@ -62,7 +62,7 @@ end
 
 Generate camera rays with per-pixel wavelength sampling.
 """
-@kernel function vp_generate_camera_rays_kernel!(
+@kernel inbounds=true function vp_generate_camera_rays_kernel!(
     ray_items, ray_size,
     wavelengths_per_pixel,
     pdf_per_pixel,
@@ -74,7 +74,7 @@ Generate camera rays with per-pixel wavelength sampling.
     idx = @index(Global)
     num_pixels = width * height
 
-    @_inbounds if idx <= num_pixels
+    @inbounds if idx <= num_pixels
         pixel_idx = idx - Int32(1)
         x = u_int32(mod(pixel_idx, width)) + Int32(1)
         y = u_int32(div(pixel_idx, width)) + Int32(1)
@@ -136,7 +136,7 @@ end
 # Film Accumulation
 # ============================================================================
 
-@kernel function vp_accumulate_to_rgb_kernel!(
+@kernel inbounds=true function vp_accumulate_to_rgb_kernel!(
     pixel_rgb,
     @Const(pixel_L),
     @Const(wavelengths_per_pixel),
@@ -145,7 +145,7 @@ end
 )
     pixel_idx = @index(Global)
 
-    @_inbounds if pixel_idx <= n_pixels
+    @inbounds if pixel_idx <= n_pixels
         base = (pixel_idx - Int32(1)) * Int32(4)
 
         L = SpectralRadiance(
@@ -182,7 +182,7 @@ end
     end
 end
 
-@kernel function vp_finalize_film_kernel!(
+@kernel inbounds=true function vp_finalize_film_kernel!(
     framebuffer,
     @Const(pixel_rgb),
     @Const(samples::Int32),
@@ -190,7 +190,7 @@ end
 )
     pixel_idx = @index(Global)
 
-    @_inbounds if pixel_idx <= width * height
+    @inbounds if pixel_idx <= width * height
         px = ((pixel_idx - Int32(1)) % width) + Int32(1)
         py = ((pixel_idx - Int32(1)) ÷ width) + Int32(1)
 
@@ -208,7 +208,7 @@ end
     end
 end
 
-@inline function linear_to_srgb(x::Float32)
+@propagate_inbounds function linear_to_srgb(x::Float32)
     x = clamp(x, 0f0, 1f0)
     if x <= 0.0031308f0
         return 12.92f0 * x

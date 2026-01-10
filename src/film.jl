@@ -206,12 +206,12 @@ end
 Point p is in (x, y) format.
 Returns CartesianIndex in (row, col) = (y, x) format for Julia array indexing.
 """
-@inline function get_pixel_index(crop_bounds, p::Point2)
+@propagate_inbounds function get_pixel_index(crop_bounds, p::Point2)
     ix, iy = u_int32.((p .- crop_bounds.p_min .+ 1.0f0))
     return CartesianIndex(iy, ix)  # (row, col) = (y, x) for Julia arrays
 end
 
-@inline function merge_film_tile!(f::AbstractMatrix{Pixel}, crop_bounds::Bounds2, ft::AbstractMatrix{FilmTilePixel}, tile::Bounds2, tile_col::Int32)
+@propagate_inbounds function merge_film_tile!(f::AbstractMatrix{Pixel}, crop_bounds::Bounds2, ft::AbstractMatrix{FilmTilePixel}, tile::Bounds2, tile_col::Int32)
     ft_contrib_sum = ft.contrib_sum
     ft_filter_weight_sum = ft.filter_weight_sum
     f_xyz = f.xyz
@@ -227,7 +227,7 @@ end
     # Use while loops to avoid iterate() protocol (causes PHI node errors in SPIR-V)
     py = u_int32(tile.p_min[2])
     py_max = u_int32(tile.p_max[2])
-    @_inbounds while py <= py_max
+     while py <= py_max
         px = u_int32(tile.p_min[1])
         px_max = u_int32(tile.p_max[1])
         while px <= px_max
@@ -246,13 +246,13 @@ end
     return
 end
 
-@inline function get_tile_index(bounds::Bounds2, p::Point2)
+@propagate_inbounds function get_tile_index(bounds::Bounds2, p::Point2)
     j, i = u_int32.((p .- bounds.p_min .+ 1.0f0))
     ncols = u_int32(inclusive_sides(bounds)[1])
     return (i - Int32(1)) * ncols + j
 end
 
-@inline function add_sample!(
+@propagate_inbounds function add_sample!(
     tiles::AbstractMatrix{FilmTilePixel}, tile::Bounds2, tile_column::Int32, point::Point2f, spectrum::RGBSpectrum,
     filter_table, filter_radius::Point2f, sample_weight::Float32=1.0f0,
 )
@@ -276,7 +276,7 @@ end
 
     # Use while loops to avoid iterate() protocol (causes PHI node errors in SPIR-V)
     i = Int32(1)
-    @_inbounds while i <= xn
+     while i <= xn
         j = Int32(1)
         while j <= yn
             x = xrange[i]
@@ -311,9 +311,9 @@ function clear!(film::Film)
     film.depth .= 0.0f0
 end
 
-@kernel function film_to_rgb!(image, xyz, filter_weight_sum, splat_xyz, scale, splat_scale)
+@kernel inbounds=true function film_to_rgb!(image, xyz, filter_weight_sum, splat_xyz, scale, splat_scale)
     idx = @index(Global)
-    @_inbounds begin
+     begin
         rgb = XYZ_to_RGB(xyz[idx])
         # Normalize pixel with weight sum.
         fws = filter_weight_sum[idx]
@@ -385,7 +385,7 @@ function fill_aux_buffers!(film::Film, scene, camera)
     return film
 end
 
-@kernel function aux_buffer_kernel!(albedo, normal, depth, resolution, crop_bounds, scene, camera)
+@kernel inbounds=true function aux_buffer_kernel!(albedo, normal, depth, resolution, crop_bounds, scene, camera)
     idx = @index(Global)
 
     # Convert linear index to 2D pixel coordinates
@@ -403,7 +403,7 @@ end
     camera_sample = CameraSample(pixel, Point2f(0.5f0), 0f0)
     ray, ω = generate_ray_differential(camera, camera_sample)
 
-    @_inbounds if ω > 0f0
+     if ω > 0f0
         # Trace primary ray
         hit, _primitive, si = intersect!(scene, ray)
 

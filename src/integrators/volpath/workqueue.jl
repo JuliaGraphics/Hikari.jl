@@ -25,7 +25,7 @@ function VPWorkQueue{T}(backend, capacity::Integer) where T
 end
 
 """Get current queue size (copies from GPU if needed)"""
-@inline function queue_size(q::VPWorkQueue)
+@propagate_inbounds function queue_size(q::VPWorkQueue)
     s = Array(q.size)
     return Int(s[1])
 end
@@ -132,12 +132,12 @@ function VolPathState(
 end
 
 """Get current input ray queue"""
-@inline function current_ray_queue(state::VolPathState)
+@propagate_inbounds function current_ray_queue(state::VolPathState)
     state.current_ray_queue == :a ? state.ray_queue_a : state.ray_queue_b
 end
 
 """Get next output ray queue"""
-@inline function next_ray_queue(state::VolPathState)
+@propagate_inbounds function next_ray_queue(state::VolPathState)
     state.current_ray_queue == :a ? state.ray_queue_b : state.ray_queue_a
 end
 

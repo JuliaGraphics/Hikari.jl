@@ -69,7 +69,7 @@ function SPPM(;
 end
 
 # GPU-safe helper for accumulating light emission in SPPM
-@inline function _accumulate_sppm_light!(light, Ld, pixel_idx, β, rayd)
+@propagate_inbounds function _accumulate_sppm_light!(light, Ld, pixel_idx, β, rayd)
     light_emission = β * le(light, rayd)
     if !isnan(light_emission) && !isinf(light_emission)
         Ld[pixel_idx...] += light_emission
@@ -78,7 +78,7 @@ end
 end
 
 # GPU-safe helper for computing light power (needs scene for some light types)
-@inline _get_light_power_y(light, scene) = to_Y(power(light, scene))
+@propagate_inbounds _get_light_power_y(light, scene) = to_Y(power(light, scene))
 
 function (integrator::SPPM)(scene::AbstractScene, film::Film, camera::Camera)
     pixel_bounds = film.crop_bounds
@@ -136,7 +136,7 @@ function (integrator::SPPM)(scene::AbstractScene, film::Film, camera::Camera)
 end
 
 
-@inline function inner_kernel(
+@propagate_inbounds function inner_kernel(
         scene::SC, tile_sampler::S,
         inv_sqrt_spp::Float32,
         vps::AbstractMatrix{VisiblePoint},
@@ -274,7 +274,7 @@ function _generate_visible_sppm_points!(
     end
 end
 
-@inline function _clean_grid!(grid)
+@propagate_inbounds function _clean_grid!(grid)
     for i in 1:length(grid)
         empty!(grid[i])
     end
@@ -310,7 +310,7 @@ function _populate_grid!(
         1, Int64.(floor.(base_grid_resolution .* diag ./ max_diag)),
     )
     # Add visible points to SPPM grid.
-    @_inbounds for (i, pixel) in enumerate(pixels)
+     for (i, pixel) in enumerate(pixels)
         is_black(β[i]) && continue
         # Add pixel's visible point to applicable grid cells.
         shift = pradius[i]
@@ -506,7 +506,7 @@ function _sppm_to_image(
     @real_assert iteration > 0
     Np = iteration * i.photons_per_iteration * π
     image = fill(RGBSpectrum(0f0), size(pixels))
-    @_inbounds for (i, p) in enumerate(pixels)
+     for (i, p) in enumerate(pixels)
         # Combine direct and indirect radiance estimates.
         # Guard against division by zero when radius is very small
         indirect = if p.radius > 1f-6
@@ -524,7 +524,7 @@ Calculate indices of a point `p` in grid constrained by `bounds`.
 
 Computed indices are in [0, resolution), which is the correct input for `hash`.
 """
-@inline function to_grid(
+@propagate_inbounds function to_grid(
         p::Point3f, bounds::Bounds3, grid_resolution::Point3,
     )::Tuple{Bool,Point3{UInt64}}
 
@@ -535,7 +535,7 @@ Computed indices are in [0, resolution), which is the correct input for `hash`.
     return in_bounds, grid_point
 end
 
-@inline function hash(
+@propagate_inbounds function hash(
     p1::UInt64, p2::UInt64, p3::UInt64, hash_size::UInt64,
 )::UInt64
     (((p1 * 73856093) ⊻ (p2 * 19349663) ⊻ (p3 * 83492791)) % hash_size) + 1
@@ -597,7 +597,7 @@ function estimate_direct(
     Ld
 end
 
-@inline function power_heuristic(
+@propagate_inbounds function power_heuristic(
     nf::Int64, f_pdf::Float32, ng::Int64, g_pdf::Float32,
 )
     f = (nf * f_pdf)^2
@@ -605,7 +605,7 @@ end
     f / (f + g)
 end
 
-@inline function compute_light_power_distribution(
+@propagate_inbounds function compute_light_power_distribution(
     scene::AbstractScene,
 )::Maybe{Distribution1D}
     length(scene.lights) == 0 && return nothing

@@ -21,7 +21,7 @@ struct RGBSigmoidPolynomial
 end
 
 """Sigmoid function for spectrum evaluation"""
-@inline function sigmoid(x::Float32)::Float32
+@propagate_inbounds function sigmoid(x::Float32)::Float32
     if isinf(x)
         return x > 0 ? 1.0f0 : 0.0f0
     end
@@ -29,7 +29,7 @@ end
 end
 
 """Evaluate spectrum at wavelength λ (in nm)"""
-@inline function (poly::RGBSigmoidPolynomial)(lambda::Float32)::Float32
+@propagate_inbounds function (poly::RGBSigmoidPolynomial)(lambda::Float32)::Float32
     # Polynomial: c0*λ² + c1*λ + c2
     x = poly.c0 * lambda * lambda + poly.c1 * lambda + poly.c2
     return sigmoid(x)
@@ -80,7 +80,7 @@ end
 Convert an RGB color to a sigmoid polynomial spectrum representation.
 RGB values should be in [0, 1] range.
 """
-@inline function rgb_to_spectrum(table::RGBToSpectrumTable, r::Float32, g::Float32, b::Float32)
+@propagate_inbounds function rgb_to_spectrum(table::RGBToSpectrumTable, r::Float32, g::Float32, b::Float32)
     # Clamp to valid range
     r = clamp(r, 0.0f0, 1.0f0)
     g = clamp(g, 0.0f0, 1.0f0)
@@ -117,7 +117,7 @@ RGB values should be in [0, 1] range.
 
     # Find z index using linear search in scale table
     zi = Int32(1)
-    @_inbounds for i in Int32(1):(res - Int32(1))
+    @inbounds for i in Int32(1):(res - Int32(1))
         if table.scale[i] < z
             zi = i
         end
@@ -130,11 +130,11 @@ RGB values should be in [0, 1] range.
 
     dx = x - Float32(xi - Int32(1))
     dy = y - Float32(yi - Int32(1))
-    @_inbounds dz = (z - table.scale[zi]) / (table.scale[zi + Int32(1)] - table.scale[zi])
+    @inbounds dz = (z - table.scale[zi]) / (table.scale[zi + Int32(1)] - table.scale[zi])
 
     # Trilinear interpolation of coefficients - fully unrolled, no closures
     coeffs = table.coeffs
-    @_inbounds begin
+    @inbounds begin
         # Coefficient 0 (c0)
         c0 = (1.0f0 - dz) * (
             (1.0f0 - dy) * ((1.0f0 - dx) * coeffs[maxc, zi, yi, xi, Int32(1)] + dx * coeffs[maxc, zi, yi, xi+Int32(1), Int32(1)]) +
@@ -179,7 +179,7 @@ rgb_to_spectrum(table::RGBToSpectrumTable, rgb::NTuple{3, Float32}) =
 
 GPU-compatible version that takes raw arrays and returns coefficient tuple.
 """
-@inline function rgb_to_spectrum_coeffs(
+@propagate_inbounds function rgb_to_spectrum_coeffs(
     scale::AbstractVector{Float32},
     coeffs::AbstractArray{Float32, 5},
     res::Int32,
@@ -217,7 +217,7 @@ GPU-compatible version that takes raw arrays and returns coefficient tuple.
 
     # Find z index
     zi = Int32(1)
-    @_inbounds for i in Int32(1):Int32(res-1)
+    @inbounds for i in Int32(1):Int32(res-1)
         if scale[i] < z
             zi = i
         end
@@ -230,14 +230,14 @@ GPU-compatible version that takes raw arrays and returns coefficient tuple.
 
     dx = x - Float32(xi - 1)
     dy = y - Float32(yi - 1)
-    @_inbounds dz = (z - scale[zi]) / (scale[zi + 1] - scale[zi])
+    @inbounds dz = (z - scale[zi]) / (scale[zi + 1] - scale[zi])
 
     # Trilinear interpolation
     c0 = 0.0f0
     c1 = 0.0f0
     c2 = 0.0f0
 
-    @_inbounds for i in Int32(1):Int32(3)
+    @inbounds for i in Int32(1):Int32(3)
         val = (1.0f0 - dz) * (
             (1.0f0 - dy) * ((1.0f0 - dx) * coeffs[maxc, zi, yi, xi, i] +
                                      dx * coeffs[maxc, zi, yi, xi+1, i]) +
@@ -263,7 +263,7 @@ GPU-compatible version that takes raw arrays and returns coefficient tuple.
 end
 
 """Evaluate sigmoid polynomial at wavelength (GPU-compatible)"""
-@inline function eval_sigmoid_polynomial(c0::Float32, c1::Float32, c2::Float32, lambda::Float32)::Float32
+@propagate_inbounds function eval_sigmoid_polynomial(c0::Float32, c1::Float32, c2::Float32, lambda::Float32)::Float32
     x = c0 * lambda * lambda + c1 * lambda + c2
     if isinf(x)
         return x > 0 ? 1.0f0 : 0.0f0
@@ -284,7 +284,7 @@ struct RGBAlbedoSpectrum
     poly::RGBSigmoidPolynomial
 end
 
-@inline (s::RGBAlbedoSpectrum)(lambda::Float32) = s.poly(lambda)
+@propagate_inbounds (s::RGBAlbedoSpectrum)(lambda::Float32) = s.poly(lambda)
 
 """
     RGBUnboundedSpectrum
@@ -297,7 +297,7 @@ struct RGBUnboundedSpectrum
     scale::Float32
 end
 
-@inline function (s::RGBUnboundedSpectrum)(lambda::Float32)::Float32
+@propagate_inbounds function (s::RGBUnboundedSpectrum)(lambda::Float32)::Float32
     return s.scale * s.poly(lambda)
 end
 

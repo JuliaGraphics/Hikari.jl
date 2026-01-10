@@ -52,7 +52,7 @@ end
 
 Reset the queue to empty state. Works on both CPU and GPU arrays.
 """
-@inline function reset!(queue::PWWorkQueue)
+@propagate_inbounds function reset!(queue::PWWorkQueue)
     fill!(queue.size, Int32(0))
     return nothing
 end
@@ -63,7 +63,7 @@ end
 Return the current number of items in the queue.
 Note: This copies from GPU to CPU, so use sparingly (between kernel dispatches).
 """
-@inline queue_size(queue::PWWorkQueue) = @_inbounds Array(queue.size)[1]
+@propagate_inbounds queue_size(queue::PWWorkQueue) =  Array(queue.size)[1]
 
 """
     push_work!(queue::PWWorkQueue{T}, item::T) -> Int32
@@ -71,11 +71,11 @@ Note: This copies from GPU to CPU, so use sparingly (between kernel dispatches).
 Atomically push an item to the queue and return its index (1-based).
 Thread-safe for concurrent GPU access.
 """
-@inline function push_work!(queue::PWWorkQueue{T}, item::T) where {T}
+@propagate_inbounds function push_work!(queue::PWWorkQueue{T}, item::T) where {T}
     # Atomically increment size and get index
     idx = @atomic queue.size[1] += Int32(1)
     # Store item at the allocated index
-    @_inbounds queue.items[idx] = item
+     queue.items[idx] = item
     return idx
 end
 
@@ -84,19 +84,19 @@ end
 
 Get item at the given index (1-based).
 """
-@inline function get_item(queue::PWWorkQueue, idx::Integer)
-    @_inbounds return queue.items[idx]
+@propagate_inbounds function get_item(queue::PWWorkQueue, idx::Integer)
+     return queue.items[idx]
 end
 
 # Allow indexing
-@inline Base.getindex(queue::PWWorkQueue, idx::Integer) = get_item(queue, idx)
+@propagate_inbounds Base.getindex(queue::PWWorkQueue, idx::Integer) = get_item(queue, idx)
 
 # ============================================================================
 # Reset Kernel - GPU-safe queue reset
 # ============================================================================
 
-@kernel function pw_reset_queue_kernel!(queue_size)
-    @_inbounds queue_size[1] = Int32(0)
+@kernel inbounds=true function pw_reset_queue_kernel!(queue_size)
+     queue_size[1] = Int32(0)
 end
 
 """
@@ -138,7 +138,7 @@ const PWMaterialEvalQueue{I, C} = PWWorkQueue{PWMaterialEvalWorkItem, I, C}
 
 Push a new camera ray to the queue with default path state.
 """
-@inline function push_camera_ray!(
+@propagate_inbounds function push_camera_ray!(
     queue::PWWorkQueue{PWRayWorkItem},
     ray::Raycore.Ray,
     lambda::Wavelengths,
@@ -154,7 +154,7 @@ end
 
 Push an indirect (bounced) ray to the queue.
 """
-@inline function push_indirect_ray!(
+@propagate_inbounds function push_indirect_ray!(
     queue::PWWorkQueue{PWRayWorkItem},
     ray::Raycore.Ray,
     depth::Int32,
@@ -189,7 +189,7 @@ end
 
 Push a shadow ray for direct lighting visibility test.
 """
-@inline function push_shadow_ray!(
+@propagate_inbounds function push_shadow_ray!(
     queue::PWWorkQueue{PWShadowRayWorkItem},
     ray::Raycore.Ray,
     t_max::Float32,
@@ -208,7 +208,7 @@ end
 
 Push an escaped ray work item (created from a ray that missed geometry).
 """
-@inline function push_escaped_ray!(
+@propagate_inbounds function push_escaped_ray!(
     queue::PWWorkQueue{PWEscapedRayWorkItem},
     w::PWRayWorkItem
 )
@@ -222,7 +222,7 @@ end
 
 Push a hit area light work item (ray hit an emissive surface).
 """
-@inline function push_hit_area_light!(
+@propagate_inbounds function push_hit_area_light!(
     queue::PWWorkQueue{PWHitAreaLightWorkItem},
     p::Point3f,
     n::Vec3f,
@@ -252,7 +252,7 @@ end
 
 Push a material evaluation work item.
 """
-@inline function push_material_eval!(
+@propagate_inbounds function push_material_eval!(
     queue::PWWorkQueue{PWMaterialEvalWorkItem},
     pi::Point3f,
     n::Vec3f,
@@ -290,7 +290,7 @@ end
 Generic kernel that processes all items in a queue.
 Each thread checks if its index is within the current queue size.
 """
-@kernel function for_all_queued_kernel!(
+@kernel inbounds=true function for_all_queued_kernel!(
     queue_items,
     queue_size,
     @Const(max_queued),
@@ -299,7 +299,7 @@ Each thread checks if its index is within the current queue size.
 )
     idx = @index(Global)
 
-    @_inbounds if idx <= max_queued
+     if idx <= max_queued
         # Check if this index has a valid item
         current_size = queue_size[1]
         if idx <= current_size

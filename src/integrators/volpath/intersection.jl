@@ -10,7 +10,7 @@
 
 Compute geometric normal from a triangle primitive.
 """
-@inline function vp_compute_geometric_normal(primitive)
+@propagate_inbounds function vp_compute_geometric_normal(primitive)
     v0 = primitive.vertices[1]
     v1 = primitive.vertices[2]
     v2 = primitive.vertices[3]
@@ -25,7 +25,7 @@ end
 
 Compute UV coordinates using barycentric coordinates from ray intersection.
 """
-@inline function vp_compute_uv_barycentric(primitive, barycentric)
+@propagate_inbounds function vp_compute_uv_barycentric(primitive, barycentric)
     w, u, v = barycentric[1], barycentric[2], barycentric[3]
     uv0 = primitive.uv[1]
     uv1 = primitive.uv[2]
@@ -41,7 +41,7 @@ end
 
 Compute interpolated shading normal from vertex normals.
 """
-@inline function vp_compute_shading_normal(primitive, barycentric, geometric_normal::Vec3f)
+@propagate_inbounds function vp_compute_shading_normal(primitive, barycentric, geometric_normal::Vec3f)
     n0 = primitive.normals[1]
     n1 = primitive.normals[2]
     n2 = primitive.normals[3]
@@ -82,7 +82,7 @@ This implements the key pbrt-v4 pattern: intersection FIRST, then medium samplin
 For rays in media, we store both the ray and the surface hit info together,
 so delta tracking can run with bounded t_max and process the hit if ray survives.
 """
-@kernel function vp_trace_rays_kernel!(
+@kernel inbounds=true function vp_trace_rays_kernel!(
     # Output queues
     medium_sample_items, medium_sample_size,   # Rays in medium with t_max
     escaped_items, escaped_size,                # Rays that missed (not in medium)
@@ -94,7 +94,7 @@ so delta tracking can run with bounded t_max and process the hit if ray survives
 )
     idx = @index(Global)
 
-    @_inbounds if idx <= max_queued
+    @inbounds if idx <= max_queued
         current_size = ray_size[1]
         if idx <= current_size
             work = ray_items[idx]
@@ -258,7 +258,7 @@ Trace shadow rays and accumulate unoccluded contributions.
 For rays through media, computes transmittance along the ray.
 Handles transmissive boundaries (MediumInterface) by tracing through them.
 """
-@kernel function vp_trace_shadow_rays_kernel!(
+@kernel inbounds=true function vp_trace_shadow_rays_kernel!(
     pixel_L,
     @Const(shadow_items), @Const(shadow_size),
     @Const(accel),
@@ -271,7 +271,7 @@ Handles transmissive boundaries (MediumInterface) by tracing through them.
 
     rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
 
-    @_inbounds if idx <= max_queued
+    @inbounds if idx <= max_queued
         current_size = shadow_size[1]
         if idx <= current_size
             work = shadow_items[idx]
@@ -319,7 +319,7 @@ Get the medium index when crossing a material boundary.
 Used with with_material for GPU-safe dispatch.
 Returns (is_transmissive, new_medium_idx).
 """
-@inline function _get_crossing_info(material, entering::Bool)
+@propagate_inbounds function _get_crossing_info(material, entering::Bool)
     is_trans = is_medium_interface_idx(material)
     new_medium = get_crossing_medium(material, entering)
     return (is_trans, new_medium)
@@ -338,7 +338,7 @@ Following pbrt-v4's TraceTransmittance: transmissive surfaces (MediumInterface) 
 while opaque surfaces block it. The final contribution is computed as:
     Ld * T_ray / average(path_r_u * r_u + path_r_l * r_l)
 """
-@inline function trace_shadow_transmittance(
+@propagate_inbounds function trace_shadow_transmittance(
     accel, materials, media, rgb2spec_table,
     origin::Point3f, dir::Vec3f, t_max::Float32, lambda::Wavelengths, medium_idx::MediumIndex
 )
@@ -429,7 +429,7 @@ Returns (T_ray, r_u, r_l) where:
 - T_ray: spectral transmittance estimate
 - r_u, r_l: MIS weight accumulators for combining with path weights
 """
-@inline function compute_transmittance_ratio_tracking(
+@propagate_inbounds function compute_transmittance_ratio_tracking(
     rgb2spec_table, media, medium_idx::MediumIndex,
     origin::Point3f, dir::Vec3f, t_max::Float32, lambda::Wavelengths
 )
@@ -524,7 +524,7 @@ end
 
 Simple wrapper that returns only the transmittance (for compatibility).
 """
-@inline function compute_transmittance_simple(
+@propagate_inbounds function compute_transmittance_simple(
     rgb2spec_table, media, medium_idx::MediumIndex,
     origin::Point3f, dir::Vec3f, t_max::Float32, lambda::Wavelengths
 )
@@ -571,7 +571,7 @@ end
 
 Handle rays that escaped the scene by evaluating environment lights.
 """
-@kernel function vp_handle_escaped_rays_kernel!(
+@kernel inbounds=true function vp_handle_escaped_rays_kernel!(
     pixel_L,
     @Const(escaped_items), @Const(escaped_size),
     @Const(lights),
@@ -582,7 +582,7 @@ Handle rays that escaped the scene by evaluating environment lights.
 
     rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
 
-    @_inbounds if idx <= max_queued
+    @inbounds if idx <= max_queued
         current_size = escaped_size[1]
         if idx <= current_size
             work = escaped_items[idx]

@@ -306,8 +306,8 @@ end
 # Helper for empty tuple check
 # ============================================================================
 
-@inline isempty_tuple(t::Tuple) = length(t) == 0
-@inline isempty_tuple(::Tuple{}) = true
+@propagate_inbounds isempty_tuple(t::Tuple) = length(t) == 0
+@propagate_inbounds isempty_tuple(::Tuple{}) = true
 
 # ============================================================================
 # Alternative: Single-Sample Render for Interactive Preview

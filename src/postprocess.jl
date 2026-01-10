@@ -13,7 +13,7 @@ using ImageCore: RGB
 """
 Simple Reinhard tonemapping: L / (1 + L)
 """
-@inline function _tonemap_reinhard(r::Float32, g::Float32, b::Float32)
+@propagate_inbounds function _tonemap_reinhard(r::Float32, g::Float32, b::Float32)
     lum = 0.2126f0 * r + 0.7152f0 * g + 0.0722f0 * b
     scale = ifelse(lum > 0f0, 1f0 / (1f0 + lum), 1f0)
     clamp(r * scale, 0f0, 1f0), clamp(g * scale, 0f0, 1f0), clamp(b * scale, 0f0, 1f0)
@@ -22,7 +22,7 @@ end
 """
 Extended Reinhard with white point control.
 """
-@inline function _tonemap_reinhard_extended(r::Float32, g::Float32, b::Float32, Lwhite::Float32)
+@propagate_inbounds function _tonemap_reinhard_extended(r::Float32, g::Float32, b::Float32, Lwhite::Float32)
     lum = 0.2126f0 * r + 0.7152f0 * g + 0.0722f0 * b
     Lwhite2 = Lwhite * Lwhite
     scale = ifelse(lum > 0f0, (1f0 + lum / Lwhite2) / (1f0 + lum), 1f0)
@@ -33,7 +33,7 @@ end
 ACES filmic approximation (Narkowicz).
 Industry-standard filmic curve used in games and film.
 """
-@inline function _tonemap_aces(r::Float32, g::Float32, b::Float32)
+@propagate_inbounds function _tonemap_aces(r::Float32, g::Float32, b::Float32)
     a = 2.51f0
     b_c = 0.03f0
     c = 2.43f0
@@ -49,7 +49,7 @@ end
 """
 Uncharted 2 filmic curve helper.
 """
-@inline function _uncharted2_partial(x::Float32)
+@propagate_inbounds function _uncharted2_partial(x::Float32)
     A = 0.15f0
     B = 0.50f0
     C = 0.10f0
@@ -63,7 +63,7 @@ end
 Uncharted 2 filmic tonemapping.
 Good for high-contrast scenes, preserves detail in shadows.
 """
-@inline function _tonemap_uncharted2(r::Float32, g::Float32, b::Float32)
+@propagate_inbounds function _tonemap_uncharted2(r::Float32, g::Float32, b::Float32)
     W = 11.2f0
     exposure_bias = 2.0f0
 
@@ -82,7 +82,7 @@ end
 Filmic tonemapping (Hejl-Dawson).
 Alternative filmic curve with good highlight rolloff.
 """
-@inline function _tonemap_filmic(r::Float32, g::Float32, b::Float32)
+@propagate_inbounds function _tonemap_filmic(r::Float32, g::Float32, b::Float32)
     # Attempt to preserve some color saturation
     function filmic_channel(x::Float32)
         x = max(0f0, x - 0.004f0)
@@ -103,7 +103,7 @@ const TONEMAP_ACES = UInt8(3)
 const TONEMAP_UNCHARTED2 = UInt8(4)
 const TONEMAP_FILMIC = UInt8(5)
 
-@inline function _apply_tonemap(r::Float32, g::Float32, b::Float32, mode::UInt8, wp::Float32)
+@propagate_inbounds function _apply_tonemap(r::Float32, g::Float32, b::Float32, mode::UInt8, wp::Float32)
     if mode == TONEMAP_REINHARD
         return _tonemap_reinhard(r, g, b)
     elseif mode == TONEMAP_REINHARD_EXT
@@ -120,10 +120,10 @@ const TONEMAP_FILMIC = UInt8(5)
     end
 end
 
-@kernel function postprocess_kernel!(dst, @Const(src), exposure::Float32, tonemap_mode::UInt8,
+@kernel inbounds=true function postprocess_kernel!(dst, @Const(src), exposure::Float32, tonemap_mode::UInt8,
                                       inv_gamma::Float32, apply_gamma::Bool, white_point::Float32)
     i = @index(Global, Linear)
-    @_inbounds begin
+     begin
         c = src[i]
 
         # Apply exposure

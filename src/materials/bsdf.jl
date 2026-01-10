@@ -15,7 +15,7 @@ Base.Base.@propagate_inbounds function Base.getindex(b::BXDFVector, i::Int)
     return getfield(b, i)
 end
 
-@inline function BXDFVector{S}(sbdfs::Vararg{UberBxDF{S}, N}) where {S<:Spectrum, N}
+@propagate_inbounds function BXDFVector{S}(sbdfs::Vararg{UberBxDF{S}, N}) where {S<:Spectrum, N}
     missing_bxdf = ntuple(i -> UberBxDF{S}(), 8 - N)
     return BXDFVector{S}(sbdfs..., missing_bxdf..., UInt8(N))
 end
@@ -82,11 +82,11 @@ that transforms vectors in world space to local reflection space is:
 
 Since it is an orthonormal matrix, its inverse is its transpose.
 """
-@inline function world_to_local(b::BSDF, v::Vec3f)
+@propagate_inbounds function world_to_local(b::BSDF, v::Vec3f)
     Vec3f(v ⋅ b.ss, v ⋅ b.ts, v ⋅ b.ns)
 end
 # TODO benchmark
-@inline function local_to_world(b::BSDF, v::Vec3f)
+@propagate_inbounds function local_to_world(b::BSDF, v::Vec3f)
     Mat3f(b.ss..., b.ts..., b.ns...) * v
 end
 
@@ -236,7 +236,7 @@ function compute_pdf(
     matching_components > 0 ? pdf / matching_components : 0f0
 end
 
-@inline function num_components(b::BSDF, flags::UInt8)::Int64
+@propagate_inbounds function num_components(b::BSDF, flags::UInt8)::Int64
     num = Int32(0)
     bxdfs = b.bxdfs
     Base.Cartesian.@nexprs 8 i -> begin

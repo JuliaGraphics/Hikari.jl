@@ -133,10 +133,10 @@ function cie_interp(data::Vector{Float64}, lambda::Float64)::Float64
 end
 
 """Sigmoid function for spectrum representation"""
-@inline sigmoid(x::Float64)::Float64 = 0.5 * x / sqrt(1.0 + x * x) + 0.5
+@propagate_inbounds sigmoid(x::Float64)::Float64  = 0.5 * x / sqrt(1.0 + x * x) + 0.5
 
 """Smoothstep for scale table"""
-@inline smoothstep(x::Float64)::Float64 = x * x * (3.0 - 2.0 * x)
+@propagate_inbounds smoothstep(x::Float64)::Float64  = x * x * (3.0 - 2.0 * x)
 
 """Convert RGB to CIE Lab for perceptual error metric"""
 function rgb_to_lab(rgb::Vector{Float64}, rgb_to_xyz::Matrix{Float64}, xyz_whitepoint::Vector{Float64})::Vector{Float64}
@@ -223,7 +223,7 @@ function eval_residual!(residual::Vector{Float64}, coeffs::Vector{Float64},
     out_rgb = zeros(Float64, 3)
     n = length(tables.lambda)
 
-    @_inbounds for i in 1:n
+     for i in 1:n
         # Normalized wavelength [0, 1]
         λ_norm = (tables.lambda[i] - CIE_LAMBDA_MIN) / (CIE_LAMBDA_MAX - CIE_LAMBDA_MIN)
 

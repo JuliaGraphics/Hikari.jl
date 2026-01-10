@@ -52,6 +52,6 @@ function sample_le(
     return a.i, ray, light_normal, pdf_pos, pdf_dir
 end
 
-@inline function power(p::AmbientLight)
+@propagate_inbounds function power(p::AmbientLight)
     p.i
 end

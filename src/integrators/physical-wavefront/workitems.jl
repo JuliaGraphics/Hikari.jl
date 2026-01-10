@@ -22,7 +22,7 @@ struct PWRaySamples
     indirect_rr::Float32     # Russian roulette sample
 end
 
-@inline function PWRaySamples()
+@propagate_inbounds function PWRaySamples()
     return PWRaySamples(
         Point2f(0f0, 0f0), 0f0,
         Point2f(0f0, 0f0), 0f0, 0f0
@@ -41,7 +41,7 @@ struct PWLightSampleContext
     ns::Vec3f       # Shading normal
 end
 
-@inline PWLightSampleContext() = PWLightSampleContext(
+@propagate_inbounds PWLightSampleContext() = PWLightSampleContext(
     Point3f(0f0, 0f0, 0f0),
     Vec3f(0f0, 0f0, 1f0),
     Vec3f(0f0, 0f0, 1f0)
@@ -76,7 +76,7 @@ end
 
 Create a new camera ray work item with default path state.
 """
-@inline function PWRayWorkItem(ray::Raycore.Ray, lambda::Wavelengths, pixel_index::Int32)
+@propagate_inbounds function PWRayWorkItem(ray::Raycore.Ray, lambda::Wavelengths, pixel_index::Int32)
     return PWRayWorkItem(
         ray,
         Int32(0),
@@ -111,7 +111,7 @@ struct PWEscapedRayWorkItem
     prev_intr_ctx::PWLightSampleContext
 end
 
-@inline function PWEscapedRayWorkItem(w::PWRayWorkItem)
+@propagate_inbounds function PWEscapedRayWorkItem(w::PWRayWorkItem)
     return PWEscapedRayWorkItem(
         w.ray.o,
         w.ray.d,
@@ -219,7 +219,7 @@ struct PWPixelSampleState
     samples::PWRaySamples        # Current ray samples
 end
 
-@inline function PWPixelSampleState(p_pixel::Point2i, lambda::Wavelengths)
+@propagate_inbounds function PWPixelSampleState(p_pixel::Point2i, lambda::Wavelengths)
     return PWPixelSampleState(
         p_pixel,
         SpectralRadiance(0f0),
@@ -244,14 +244,14 @@ struct PWMISContext
     r_l::SpectralRadiance    # Light sampling PDF contribution
 end
 
-@inline PWMISContext() = PWMISContext(SpectralRadiance(1f0), SpectralRadiance(1f0))
+@propagate_inbounds PWMISContext() = PWMISContext(SpectralRadiance(1f0), SpectralRadiance(1f0))
 
 """
     balance_heuristic(pdf_f::Float32, pdf_g::Float32) -> Float32
 
 Balance heuristic for MIS: w_f = pdf_f / (pdf_f + pdf_g)
 """
-@inline function balance_heuristic(pdf_f::Float32, pdf_g::Float32)
+@propagate_inbounds function balance_heuristic(pdf_f::Float32, pdf_g::Float32)
     return pdf_f / (pdf_f + pdf_g)
 end
 
@@ -261,7 +261,7 @@ end
 Power heuristic for MIS: w_f = pdf_f^beta / (pdf_f^beta + pdf_g^beta)
 Default beta=2 (squared terms).
 """
-@inline function power_heuristic(pdf_f::Float32, pdf_g::Float32, beta::Float32=2f0)
+@propagate_inbounds function power_heuristic(pdf_f::Float32, pdf_g::Float32, beta::Float32=2f0)
     f = pdf_f^beta
     g = pdf_g^beta
     return f / (f + g)

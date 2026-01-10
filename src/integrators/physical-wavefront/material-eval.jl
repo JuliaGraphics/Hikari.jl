@@ -14,7 +14,7 @@ Sample direct lighting for all material evaluation work items.
 For each item, selects a light, samples a direction, evaluates BSDF,
 and creates a shadow ray work item.
 """
-@kernel function pw_sample_direct_lighting_kernel!(
+@kernel inbounds=true function pw_sample_direct_lighting_kernel!(
     shadow_queue_items, shadow_queue_size,
     @Const(material_queue_items), @Const(material_queue_size),
     @Const(materials),
@@ -30,7 +30,7 @@ and creates a shadow ray work item.
     # Reconstruct table struct from components for GPU compatibility
     rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
 
-    @_inbounds if idx <= max_queued
+     if idx <= max_queued
         current_size = material_queue_size[1]
         if idx <= current_size
             work = material_queue_items[idx]
@@ -102,7 +102,7 @@ Evaluate materials for all work items:
 2. Apply Russian roulette for path termination
 3. Create continuation ray if path should continue
 """
-@kernel function pw_evaluate_materials_kernel!(
+@kernel inbounds=true function pw_evaluate_materials_kernel!(
     next_ray_queue_items, next_ray_queue_size,
     pixel_L,
     @Const(material_queue_items), @Const(material_queue_size),
@@ -118,7 +118,7 @@ Evaluate materials for all work items:
     # Reconstruct table struct from components for GPU compatibility
     rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
 
-    @_inbounds if idx <= max_queued
+     if idx <= max_queued
         current_size = material_queue_size[1]
         if idx <= current_size
             work = material_queue_items[idx]
@@ -255,7 +255,7 @@ end
 Populate auxiliary buffers for denoising on first bounce.
 Only processes depth=0 items (primary ray hits).
 """
-@kernel function pw_populate_aux_buffers_kernel!(
+@kernel inbounds=true function pw_populate_aux_buffers_kernel!(
     aux_albedo,   # 3 floats per pixel (RGB)
     aux_normal,   # 3 floats per pixel
     aux_depth,    # 1 float per pixel
@@ -271,7 +271,7 @@ Only processes depth=0 items (primary ray hits).
     # Reconstruct table struct from components for GPU compatibility
     rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
 
-    @_inbounds if idx <= max_queued
+     if idx <= max_queued
         current_size = material_queue_size[1]
         if idx <= current_size
             work = material_queue_items[idx]

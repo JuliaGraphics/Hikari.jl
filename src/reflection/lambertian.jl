@@ -56,7 +56,7 @@ function ρ_lambertian_transmission(
     t.t
 end
 
-@inline function sample_lambertian_transmission(
+@propagate_inbounds function sample_lambertian_transmission(
         b::UberBxDF{S}, wo::Vec3f, sample::Point2f,
     )::Tuple{Vec3f,Float32,RGBSpectrum,UInt8} where S<:Spectrum
 
@@ -67,7 +67,7 @@ end
     return wi, pdf, b(wo, wi), UInt8(0)
 end
 
-@inline function pdf_lambertian_transmission(
+@propagate_inbounds function pdf_lambertian_transmission(
         ::UberBxDF, wo::Vec3f, wi::Vec3f,
     )::Float32
 

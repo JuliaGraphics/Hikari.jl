@@ -12,14 +12,14 @@
 # ============================================================================
 
 """Add spectral contribution to film pixel"""
-@inline function add_to_pixel!(
+@propagate_inbounds function add_to_pixel!(
     pixel_L::AbstractVector{Float32},
     pixel_index::Int32,
     L::SpectralRadiance,
     lambda::Wavelengths
 )
     base = (pixel_index - Int32(1)) * Int32(4)
-    @_inbounds for i in 1:4
+    @inbounds for i in 1:4
         # Atomic add for thread safety
         Atomix.@atomic pixel_L[base + Int32(i)] += L[i]
     end
@@ -41,7 +41,7 @@ For each ray:
 3. If real scatter: push to medium_scatter_queue
 4. If escape (reach t_max): process stored surface hit or escaped ray
 """
-@kernel function vp_sample_medium_kernel!(
+@kernel inbounds=true function vp_sample_medium_kernel!(
     # Output queues
     scatter_items, scatter_size,                       # Real scatter events -> phase sampling
     hit_surface_items, hit_surface_size,              # Surface hits (ray survived medium)
@@ -58,7 +58,7 @@ For each ray:
     # Reconstruct RGB to spectrum table
     rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
 
-    @_inbounds if idx <= max_queued
+    @inbounds if idx <= max_queued
         current_size = medium_sample_size[1]
         if idx <= current_size
             work = medium_sample_items[idx]
@@ -81,7 +81,7 @@ end
 Inner function for medium sampling with bounded t_max.
 Implements delta tracking following pbrt-v4's SampleMediumInteraction.
 """
-@inline function sample_medium_interaction!(
+@propagate_inbounds function sample_medium_interaction!(
     # Output queues
     scatter_items, scatter_size,
     hit_surface_items, hit_surface_size,
@@ -205,9 +205,11 @@ Implements delta tracking following pbrt-v4's SampleMediumInteraction.
                 mp.g
             )
 
-            new_idx = @atomic scatter_size[1] += Int32(1)
-            if new_idx <= max_queued
-                scatter_items[new_idx] = scatter_item
+            @inbounds begin
+                new_idx = @atomic scatter_size[1] += Int32(1)
+                if new_idx <= max_queued
+                    scatter_items[new_idx] = scatter_item
+                end
             end
             scattered = true
             return
@@ -260,9 +262,11 @@ Implements delta tracking following pbrt-v4's SampleMediumInteraction.
             work.prev_intr_p,
             work.prev_intr_n
         )
-        new_idx = @atomic escaped_size[1] += Int32(1)
-        if new_idx <= max_queued
-            escaped_items[new_idx] = escaped_item
+        @inbounds begin
+            new_idx = @atomic escaped_size[1] += Int32(1)
+            if new_idx <= max_queued
+                escaped_items[new_idx] = escaped_item
+            end
         end
     else
         # Ray reached surface - push to hit_surface_queue for material eval
@@ -287,9 +291,11 @@ Implements delta tracking following pbrt-v4's SampleMediumInteraction.
             work.medium_idx,
             work.t_max
         )
-        new_idx = @atomic hit_surface_size[1] += Int32(1)
-        if new_idx <= max_queued
-            hit_surface_items[new_idx] = hit_item
+        @inbounds begin
+            new_idx = @atomic hit_surface_size[1] += Int32(1)
+            if new_idx <= max_queued
+                hit_surface_items[new_idx] = hit_item
+            end
         end
     end
     return

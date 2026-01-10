@@ -97,7 +97,7 @@ function UberBxDF{S}(active::Bool, bxdf_type::UInt8;
     return UberBxDF{S}(fresnel, r, t, a, b, η_a, η_b, _distribution, transport, type, bxdf_type, active)
 end
 
-@inline function sample_f(s::UberBxDF, wo::Vec3f, sample::Point2f)::Tuple{Vec3f,Float32,RGBSpectrum,UInt8}
+@propagate_inbounds function sample_f(s::UberBxDF, wo::Vec3f, sample::Point2f)::Tuple{Vec3f,Float32,RGBSpectrum,UInt8}
     if s.bxdf_type === SPECULAR_REFLECTION
         return sample_specular_reflection(s, wo, sample)
     elseif s.bxdf_type === SPECULAR_TRANSMISSION
@@ -126,7 +126,7 @@ In comparison, `sample_f` computes PDF value for the incident directions *it*
 chooses given the outgoing direction, while this returns a value of PDF
 for the given pair of directions.
 """
-@inline function compute_pdf(s::UberBxDF, wo::Vec3f, wi::Vec3f)::Float32
+@propagate_inbounds function compute_pdf(s::UberBxDF, wo::Vec3f, wi::Vec3f)::Float32
     if s.bxdf_type === FRESNEL_SPECULAR
         return pdf_fresnel_specular(s, wo, wi)
     elseif s.bxdf_type === LAMENTIAN_TRANSMISSION
@@ -142,7 +142,7 @@ for the given pair of directions.
     return same_hemisphere(wo, wi) ? abs(cos_θ(wi)) * (1.0f0 / π) : 0.0f0
 end
 
-@inline function (s::UberBxDF)(wo::Vec3f, wi::Vec3f)
+@propagate_inbounds function (s::UberBxDF)(wo::Vec3f, wi::Vec3f)
     if s.bxdf_type === SPECULAR_REFLECTION
         return distribution_specular_reflection(s, wo, wi)
     elseif s.bxdf_type === SPECULAR_TRANSMISSION

@@ -7,7 +7,7 @@ const BSDF_SPECULAR = UInt8(0b10000)
 const BSDF_ALL = UInt8(0b11111)
 
 
-@inline function same_hemisphere(w::Vec3f, wp::Union{Vec3f,Normal3f})::Bool
+@propagate_inbounds function same_hemisphere(w::Vec3f, wp::Union{Vec3f,Normal3f})::Bool
     w[3] * wp[3] > 0
 end
 

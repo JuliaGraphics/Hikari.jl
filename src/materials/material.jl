@@ -8,7 +8,7 @@
 """
 Compute BSDF for MatteMaterial.
 """
-@inline function compute_bsdf(m::MatteMaterial, si::SurfaceInteraction, ::Bool, transport)
+@propagate_inbounds function compute_bsdf(m::MatteMaterial, si::SurfaceInteraction, ::Bool, transport)
     r = clamp(m.Kd(si))
     is_black(r) && return BSDF(si)
     σ = clamp(m.σ(si), 0f0, 90f0)
@@ -19,7 +19,7 @@ end
 """
 Compute BSDF for MirrorMaterial.
 """
-@inline function compute_bsdf(m::MirrorMaterial, si::SurfaceInteraction, ::Bool, transport)
+@propagate_inbounds function compute_bsdf(m::MirrorMaterial, si::SurfaceInteraction, ::Bool, transport)
     r = clamp(m.Kr(si))
     return BSDF(si, SpecularReflection(!is_black(r), r, FresnelNoOp()))
 end
@@ -27,7 +27,7 @@ end
 """
 Compute BSDF for GlassMaterial.
 """
-@inline function compute_bsdf(g::GlassMaterial, si::SurfaceInteraction, allow_multiple_lobes::Bool, transport)
+@propagate_inbounds function compute_bsdf(g::GlassMaterial, si::SurfaceInteraction, allow_multiple_lobes::Bool, transport)
     η = g.index(si)
     u_roughness = g.u_roughness(si)
     v_roughness = g.v_roughness(si)
@@ -73,7 +73,7 @@ end
 """
 Compute BSDF for PlasticMaterial.
 """
-@inline function compute_bsdf(p::PlasticMaterial, si::SurfaceInteraction, ::Bool, transport)
+@propagate_inbounds function compute_bsdf(p::PlasticMaterial, si::SurfaceInteraction, ::Bool, transport)
     # Initialize diffuse component
     kd = clamp(p.Kd(si))
     bsdf_1 = LambertianReflection(!is_black(kd), kd)
@@ -92,7 +92,7 @@ end
 """
 Compute BSDF for MetalMaterial - conductor with Fresnel reflectance.
 """
-@inline function compute_bsdf(m::MetalMaterial, si::SurfaceInteraction, ::Bool, transport)
+@propagate_inbounds function compute_bsdf(m::MetalMaterial, si::SurfaceInteraction, ::Bool, transport)
     # Get material parameters
     eta = clamp(m.eta(si))
     k_val = clamp(m.k(si))
@@ -123,16 +123,16 @@ end
 # ============================================================================
 
 # Non-allocating sum of le() over lights tuple (recursive for type stability)
-@inline sum_light_le(lights::Tuple{}, ray) = RGBSpectrum(0f0)
-@inline function sum_light_le(lights::Tuple, ray)
+@propagate_inbounds sum_light_le(lights::Tuple{}, ray) = RGBSpectrum(0f0)
+@propagate_inbounds function sum_light_le(lights::Tuple, ray)
     return le(first(lights), ray) + sum_light_le(Base.tail(lights), ray)
 end
 
-@inline function shade_light(light, interaction, scene, hit_wo, bsdf, shading_n, beta)
+@propagate_inbounds function shade_light(light, interaction, scene, hit_wo, bsdf, shading_n, beta)
     u_light = rand(Point2f)
-    Li, wi, pdf, visibility = @inline sample_li(light, interaction, u_light, scene)
+    Li, wi, pdf, visibility = sample_li(light, interaction, u_light, scene)
     (is_black(Li) || pdf ≈ 0f0) && return RGBSpectrum(0f0)
-    f = @inline bsdf(hit_wo, wi)
+    f = bsdf(hit_wo, wi)
     is_black(f) && return RGBSpectrum(0f0)
     !unoccluded(visibility, scene) && return RGBSpectrum(0f0)
     cos_theta = abs(wi ⋅ shading_n)
@@ -140,29 +140,29 @@ end
 end
 
 # Type-stable recursive light shading (handles heterogeneous tuple)
-@inline shade_lights(::Tuple{}, interaction, scene, hit_wo, bsdf, shading_n, beta) = RGBSpectrum(0f0)
-@inline function shade_lights(lights::Tuple, interaction, scene, hit_wo, bsdf, shading_n, beta)
+@propagate_inbounds shade_lights(::Tuple{}, interaction, scene, hit_wo, bsdf, shading_n, beta) = RGBSpectrum(0f0)
+@propagate_inbounds function shade_lights(lights::Tuple, interaction, scene, hit_wo, bsdf, shading_n, beta)
     first_contrib = shade_light(first(lights), interaction, scene, hit_wo, bsdf, shading_n, beta)
     rest_contrib = shade_lights(Base.tail(lights), interaction, scene, hit_wo, bsdf, shading_n, beta)
     return first_contrib + rest_contrib
 end
 
-@inline specular_type(::Reflect) = BSDF_REFLECTION | BSDF_SPECULAR
-@inline specular_type(::Transmit) = BSDF_TRANSMISSION | BSDF_SPECULAR
+@propagate_inbounds specular_type(::Reflect) = BSDF_REFLECTION | BSDF_SPECULAR
+@propagate_inbounds specular_type(::Transmit) = BSDF_TRANSMISSION | BSDF_SPECULAR
 
 """
     specular_bounce(type, bsdf, ray, si, scene, beta, depth, max_depth) -> RGBSpectrum
 
 Compute specular reflection or transmission contribution by tracing a bounce ray.
 """
-@inline function specular_bounce(type, bsdf::BSDF, ray::RayDifferentials, si::SurfaceInteraction,
+@propagate_inbounds function specular_bounce(type, bsdf::BSDF, ray::RayDifferentials, si::SurfaceInteraction,
                                   scene::S, beta::RGBSpectrum, depth::Int32, max_depth::Int32) where {S<:AbstractScene}
     wo = si.core.wo
     ns = si.shading.n
 
     # Sample specular direction from BSDF
     u = rand(Point2f)
-    wi, f, pdf, sampled_type = @inline sample_f(bsdf, wo, u, specular_type(type))
+    wi, f, pdf, sampled_type = sample_f(bsdf, wo, u, specular_type(type))
 
     # Check for valid sample
     if !(pdf > 0f0 && !is_black(f) && abs(wi ⋅ ns) != 0f0)
@@ -200,7 +200,7 @@ end
 """
 Compute ray differentials for specular reflection.
 """
-@inline function specular_differentials(::Reflect, rd, bsdf, si, ray, wo, wi)
+@propagate_inbounds function specular_differentials(::Reflect, rd, bsdf, si, ray, wo, wi)
     ns = si.shading.n
     rx_origin = si.core.p + si.∂p∂x
     ry_origin = si.core.p + si.∂p∂y
@@ -219,7 +219,7 @@ end
 """
 Compute ray differentials for specular transmission.
 """
-@inline function specular_differentials(::Transmit, rd, bsdf, si, ray, wo, wi)
+@propagate_inbounds function specular_differentials(::Transmit, rd, bsdf, si, ray, wo, wi)
     ns = si.shading.n
     rx_origin = si.core.p + si.∂p∂x
     ry_origin = si.core.p + si.∂p∂y
@@ -252,7 +252,7 @@ end
 Compute direct lighting and specular bounces for a surface hit.
 This is the generic implementation that works for all material types.
 """
-@inline function shade(material::Material, ray::RayDifferentials, si::SurfaceInteraction,
+@propagate_inbounds function shade(material::Material, ray::RayDifferentials, si::SurfaceInteraction,
                        scene::S, beta::RGBSpectrum, depth::Int32, max_depth::Int32) where {S<:AbstractScene}
     # Compute BSDF from material
     bsdf = compute_bsdf(material, si, false, Radiance)
@@ -287,7 +287,7 @@ end
 
 Sample BSDF to generate a bounce ray for path continuation.
 """
-@inline function sample_bounce(material::Material, ray::RayDifferentials, si::SurfaceInteraction,
+@propagate_inbounds function sample_bounce(material::Material, ray::RayDifferentials, si::SurfaceInteraction,
                                scene::Scene, beta::RGBSpectrum, depth::Int32)
     # Compute BSDF
     bsdf = compute_bsdf(material, si, true, Radiance)

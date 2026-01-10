@@ -51,12 +51,12 @@ function CloudVolume(density::AbstractArray{Float32,3};
 end
 
 """Get the maximum extinction coefficient in the volume"""
-@inline function max_extinction(cloud::CloudVolume)
+@propagate_inbounds function max_extinction(cloud::CloudVolume)
     maximum(cloud.density) * cloud.extinction_scale
 end
 
 """Sample density at a world position using trilinear interpolation"""
-@inline function sample_density(cloud::CloudVolume, pos::Point3f)
+@propagate_inbounds function sample_density(cloud::CloudVolume, pos::Point3f)
     ox, oy, oz = cloud.origin[1], cloud.origin[2], cloud.origin[3]
     ex, ey, ez = cloud.extent[1], cloud.extent[2], cloud.extent[3]
 
@@ -89,7 +89,7 @@ end
     fz = Float32(gz - iz)
 
     # Trilinear interpolation
-    @_inbounds begin
+     begin
         d000 = cloud.density[ix, iy, iz]
         d100 = cloud.density[ix+1, iy, iz]
         d010 = cloud.density[ix, iy+1, iz]
@@ -117,7 +117,7 @@ end
 end
 
 """Get extinction coefficient at a world position"""
-@inline function extinction_at(cloud::CloudVolume, pos::Point3f)
+@propagate_inbounds function extinction_at(cloud::CloudVolume, pos::Point3f)
     return sample_density(cloud, pos) * cloud.extinction_scale
 end
 
@@ -130,7 +130,7 @@ end
 
 Compute ray intersection with an axis-aligned bounding box.
 """
-@inline function intersect_box(ray_o::Point3f, ray_d::Vec3f, t_max::Float32,
+@propagate_inbounds function intersect_box(ray_o::Point3f, ray_d::Vec3f, t_max::Float32,
                                box_min::Point3f, box_max::Point3f)
     inv_dx = 1.0f0 / ray_d[1]
     inv_dy = 1.0f0 / ray_d[2]
@@ -172,7 +172,7 @@ Henyey-Greenstein phase function.
 - g = 0: Isotropic scattering
 - g < 0: Backward scattering
 """
-@inline function henyey_greenstein(cos_theta::Float32, g::Float32)
+@propagate_inbounds function henyey_greenstein(cos_theta::Float32, g::Float32)
     g2 = g * g
     denom = 1.0f0 + g2 - 2.0f0 * g * cos_theta
     return (1.0f0 - g2) / (4.0f0 * Float32(π) * denom * sqrt(denom))
@@ -183,7 +183,7 @@ end
 # ============================================================================
 
 """Compute transmittance from a point towards a direction through the volume"""
-@inline function compute_transmittance(cloud::CloudVolume, pos::Point3f, dir::Vec3f,
+@propagate_inbounds function compute_transmittance(cloud::CloudVolume, pos::Point3f, dir::Vec3f,
                                        steps::Int=16)
     box_min = cloud.origin
     box_max = cloud.origin + cloud.extent
@@ -201,7 +201,7 @@ end
     dt = (t_far - t_near) / Float32(steps)
 
     t = t_near + 0.5f0 * dt
-    @_inbounds for _ in 1:steps
+     for _ in 1:steps
         sample_pos = Point3f(
             pos[1] + dir[1] * t,
             pos[2] + dir[2] * t,
@@ -225,7 +225,7 @@ end
 Accumulator function for reduce_unrolled over lights in volume scattering.
 Computes single light contribution and adds to accumulator.
 """
-@inline function _accumulate_volume_scatter(
+@propagate_inbounds function _accumulate_volume_scatter(
     acc::RGBSpectrum, light, cloud::CloudVolume, pos, ray_d, time, shadow_steps, scene
 )
     # Create interaction at current position for light sampling
@@ -254,7 +254,7 @@ end
 
 Helper for sum_unrolled to accumulate le() contributions from lights.
 """
-@inline _sum_light_le(light, ray) = le(light, ray)
+@propagate_inbounds _sum_light_le(light, ray) = le(light, ray)
 
 # ============================================================================
 # Material Interface: shade() and sample_bounce()
@@ -418,7 +418,7 @@ Returns a dummy BSDF for volume materials. Volumes don't use BSDF-based shading;
 they use ray marching in shade() instead. This method exists so that
 compute_bsdf_for_material can handle CloudVolume without special-casing.
 """
-@inline function compute_bsdf(::CloudVolume, si::SurfaceInteraction, ::Bool, transport)
+@propagate_inbounds function compute_bsdf(::CloudVolume, si::SurfaceInteraction, ::Bool, transport)
     return BSDF(si)
 end
 

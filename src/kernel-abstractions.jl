@@ -325,10 +325,10 @@ function to_gpu(ArrayType, scene::Hikari.Scene)
     return Hikari.ImmutableScene(lights, aggregate, scene.bound, scene.world_center, scene.world_radius)
 end
 
-@kernel function ka_trace_image!(img, camera, scene, sampler, max_depth)
+@kernel inbounds=true function ka_trace_image!(img, camera, scene, sampler, max_depth)
     _idx = @index(Global)
     idx = _idx % Int32
-    @_inbounds if checkbounds(Bool, img, idx)
+     if checkbounds(Bool, img, idx)
         cols = size(img, 2) % Int32
         row = (idx - Int32(1)) ÷ cols + Int32(1)
         col = (idx - Int32(1)) % cols + Int32(1)

@@ -46,7 +46,7 @@ Compute the direction of incident light wi, given an outgoing direction wo
 and return the value of BxDF for the pair of directions.
 `sample` parameter isn't needed for the δ-distribution.
 """
-@inline function sample_specular_reflection(
+@propagate_inbounds function sample_specular_reflection(
         s::UberBxDF{S}, wo::Vec3f, ::Point2f,
     )::Tuple{Vec3f,Float32,S,UInt8} where {S<:Spectrum}
     wi = Vec3f(-wo[1], -wo[2], wo[3])
@@ -69,7 +69,7 @@ Compute the direction of incident light wi, given an outgoing direction wo
 and return the value of BxDF for the pair of directions.
 `sample` parameter isn't needed for the δ-distribution.
 """
-@inline function sample_specular_transmission(s::UberBxDF{S}, wo::Vec3f, ::Point2f)::Tuple{Vec3f,Float32,S,UInt8} where {S}
+@propagate_inbounds function sample_specular_transmission(s::UberBxDF{S}, wo::Vec3f, ::Point2f)::Tuple{Vec3f,Float32,S,UInt8} where {S}
 
     # Figure out which η is incident and which is transmitted.
     entering = cos_θ(wo) > 0
@@ -90,17 +90,17 @@ and return the value of BxDF for the pair of directions.
     return wi, pdf, ft / abs(cos_wi), UInt8(0)
 end
 
-@inline function distribution_fresnel_specular(::UberBxDF{S}, ::Vec3f, ::Vec3f)::S where {S<:Spectrum}
+@propagate_inbounds function distribution_fresnel_specular(::UberBxDF{S}, ::Vec3f, ::Vec3f)::S where {S<:Spectrum}
     S(0f0)
 end
 
-@inline pdf_fresnel_specular(f::UberBxDF, wo::Vec3f, wi::Vec3f)::Float32 = 0.0f0
+@propagate_inbounds pdf_fresnel_specular(f::UberBxDF, wo::Vec3f, wi::Vec3f)::Float32  = 0.0f0
 
 """
 Compute the direction of incident light wi, given an outgoing direction wo
 and return the value of BxDF for the pair of directions.
 """
-@inline function sample_fresnel_specular(f::UberBxDF{S}, wo::Vec3f, u::Point2f)::Tuple{Vec3f,Float32,RGBSpectrum,UInt8} where {S<:Spectrum}
+@propagate_inbounds function sample_fresnel_specular(f::UberBxDF{S}, wo::Vec3f, u::Point2f)::Tuple{Vec3f,Float32,RGBSpectrum,UInt8} where {S<:Spectrum}
 
     fd = fresnel_dielectric(cos_θ(wo), f.η_a, f.η_b)
     if u[1] < fd # Compute perfect specular reflection direction.

@@ -20,7 +20,7 @@ Each thread generates one camera ray with independently sampled wavelengths.
 This matches pbrt-v4's approach where each pixel samples its own wavelengths,
 which decorrelates color noise across pixels for faster convergence.
 """
-@kernel function pw_generate_camera_rays_kernel!(
+@kernel inbounds=true function pw_generate_camera_rays_kernel!(
     ray_queue_items,
     ray_queue_size,
     wavelengths_per_pixel,  # Output: 4 floats per pixel (lambda values)
@@ -34,7 +34,7 @@ which decorrelates color noise across pixels for faster convergence.
     idx = @index(Global)
     num_pixels = width * height
 
-    @_inbounds if idx <= num_pixels
+     if idx <= num_pixels
         # Convert linear index to pixel coordinates
         # idx-1 to make 0-indexed, then compute x,y
         pixel_idx = idx - Int32(1)
@@ -137,7 +137,7 @@ end
 
 Convert linear pixel index to x,y coordinates (1-based).
 """
-@inline function pixel_coords_from_index(idx::Int32, width::Int32)
+@propagate_inbounds function pixel_coords_from_index(idx::Int32, width::Int32)
     pixel_idx = idx - Int32(1)
     x = u_int32(mod(pixel_idx, width)) + Int32(1)
     y = u_int32(div(pixel_idx, width)) + Int32(1)
@@ -149,6 +149,6 @@ end
 
 Convert x,y coordinates to linear pixel index (1-based).
 """
-@inline function pixel_index_from_coords(x::Int32, y::Int32, width::Int32)
+@propagate_inbounds function pixel_index_from_coords(x::Int32, y::Int32, width::Int32)
     return (y - Int32(1)) * width + x
 end

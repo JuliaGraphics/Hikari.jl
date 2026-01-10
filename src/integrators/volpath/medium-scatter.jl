@@ -6,7 +6,7 @@
 # ============================================================================
 
 """Inner function for medium direct lighting - can use return statements."""
-@inline function medium_direct_lighting_inner!(
+@propagate_inbounds function medium_direct_lighting_inner!(
     shadow_items, shadow_size,
     work::VPMediumScatterWorkItem,
     lights,
@@ -75,9 +75,11 @@
                 work.medium_idx  # Shadow ray travels through same medium
             )
 
-            new_idx = @atomic shadow_size[1] += Int32(1)
-            if new_idx <= max_queued
-                shadow_items[new_idx] = shadow_item
+            @inbounds begin
+                new_idx = @atomic shadow_size[1] += Int32(1)
+                if new_idx <= max_queued
+                    shadow_items[new_idx] = shadow_item
+                end
             end
         end
     end
@@ -94,7 +96,7 @@ end
 Sample direct lighting at medium scattering events.
 Creates shadow rays for each scatter point.
 """
-@kernel function vp_medium_direct_lighting_kernel!(
+@kernel inbounds=true function vp_medium_direct_lighting_kernel!(
     # Output
     shadow_items, shadow_size,
     # Input
@@ -108,7 +110,7 @@ Creates shadow rays for each scatter point.
 
     rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
 
-    @_inbounds if idx <= max_queued
+    @inbounds if idx <= max_queued
         current_size = scatter_size[1]
         if idx <= current_size
             work = scatter_items[idx]
@@ -125,7 +127,7 @@ end
 # ============================================================================
 
 """Inner function for medium scatter - can use return statements."""
-@inline function medium_scatter_inner!(
+@propagate_inbounds function medium_scatter_inner!(
     ray_items, ray_size,
     work::VPMediumScatterWorkItem,
     max_depth::Int32,
@@ -175,9 +177,11 @@ end
             work.medium_idx   # Stay in same medium
         )
 
-        new_idx = @atomic ray_size[1] += Int32(1)
-        if new_idx <= max_queued
-            ray_items[new_idx] = ray_item
+        @inbounds begin
+            new_idx = @atomic ray_size[1] += Int32(1)
+            if new_idx <= max_queued
+                ray_items[new_idx] = ray_item
+            end
         end
     end
     return
@@ -192,7 +196,7 @@ end
 
 Sample phase function at scatter points to generate continuation rays.
 """
-@kernel function vp_medium_scatter_kernel!(
+@kernel inbounds=true function vp_medium_scatter_kernel!(
     # Output
     ray_items, ray_size,
     # Input
@@ -201,7 +205,7 @@ Sample phase function at scatter points to generate continuation rays.
 )
     idx = @index(Global)
 
-    @_inbounds if idx <= max_queued
+    @inbounds if idx <= max_queued
         current_size = scatter_size[1]
         if idx <= current_size
             work = scatter_items[idx]

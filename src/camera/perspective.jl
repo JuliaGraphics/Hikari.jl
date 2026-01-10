@@ -90,9 +90,9 @@ function PerspectiveCamera(eyepos, lookat, film; up=Vec3f(0, 1, 0), fov=55)
     )
 end
 
-@inline get_film(c::PerspectiveCamera)::Film = c.core.core.film
+@propagate_inbounds get_film(c::PerspectiveCamera)::Film  = c.core.core.film
 
-@inline function generate_ray(
+@propagate_inbounds function generate_ray(
         camera::PerspectiveCamera, sample::CameraSample,
     )::Tuple{Ray,Float32}
     # Compute raster & camera sample positions.

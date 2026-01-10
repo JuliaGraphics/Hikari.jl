@@ -88,7 +88,7 @@ function falloff(s::SpotLight, w::Vec3f)::Float32
     δ^4
 end
 
-@inline function power(s::SpotLight)
+@propagate_inbounds function power(s::SpotLight)
     s.i * 2f0 * π * (1f0 - 0.5f0 * (s.cos_falloff_start + s.cos_total_width))
 end
 

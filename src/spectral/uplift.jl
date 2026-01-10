@@ -24,12 +24,14 @@ For each wavelength λ:
 
 With smooth transitions between regions.
 """
-@inline function rgb_to_spectral_simple(r::Float32, g::Float32, b::Float32, lambda::Wavelengths)
+@propagate_inbounds function rgb_to_spectral_simple(r::Float32, g::Float32, b::Float32, lambda::Wavelengths)
     # Manually unrolled to avoid closure allocations
-    v1 = rgb_to_spectral_at_wavelength(r, g, b, lambda.lambda[1])
-    v2 = rgb_to_spectral_at_wavelength(r, g, b, lambda.lambda[2])
-    v3 = rgb_to_spectral_at_wavelength(r, g, b, lambda.lambda[3])
-    v4 = rgb_to_spectral_at_wavelength(r, g, b, lambda.lambda[4])
+    @inbounds begin
+        v1 = rgb_to_spectral_at_wavelength(r, g, b, lambda.lambda[1])
+        v2 = rgb_to_spectral_at_wavelength(r, g, b, lambda.lambda[2])
+        v3 = rgb_to_spectral_at_wavelength(r, g, b, lambda.lambda[3])
+        v4 = rgb_to_spectral_at_wavelength(r, g, b, lambda.lambda[4])
+    end
     return SpectralRadiance((v1, v2, v3, v4))
 end
 
@@ -39,7 +41,7 @@ end
 Get spectral value at a single wavelength from RGB.
 Uses smooth blending between spectral bands.
 """
-@inline function rgb_to_spectral_at_wavelength(r::Float32, g::Float32, b::Float32, λ::Float32)::Float32
+@propagate_inbounds function rgb_to_spectral_at_wavelength(r::Float32, g::Float32, b::Float32, λ::Float32)::Float32
     # Transition wavelengths
     λ_blue_to_green = 490.0f0
     λ_green_to_red = 580.0f0
@@ -72,8 +74,8 @@ end
 
 Convert Hikari's RGBSpectrum to spectral radiance at given wavelengths.
 """
-@inline function rgb_to_spectral(rgb::RGBSpectrum, lambda::Wavelengths)
-    return rgb_to_spectral_simple(rgb.c[1], rgb.c[2], rgb.c[3], lambda)
+@propagate_inbounds function rgb_to_spectral(rgb::RGBSpectrum, lambda::Wavelengths)
+    @inbounds return rgb_to_spectral_simple(rgb.c[1], rgb.c[2], rgb.c[3], lambda)
 end
 
 # =============================================================================
@@ -127,25 +129,27 @@ const SMITS_BASIS = SmitsSpectralBasis(
 
 Linearly interpolate a Smits basis spectrum at wavelength λ.
 """
-@inline function lerp_smits_basis(basis::NTuple{10, Float32}, λ::Float32)::Float32
+@propagate_inbounds function lerp_smits_basis(basis::NTuple{10, Float32}, λ::Float32)::Float32
     wavelengths = SMITS_BASIS.wavelengths
 
     # Clamp to range
-    if λ <= wavelengths[1]
-        return basis[1]
-    elseif λ >= wavelengths[10]
+    @inbounds begin
+        if λ <= wavelengths[1]
+            return basis[1]
+        elseif λ >= wavelengths[10]
+            return basis[10]
+        end
+
+        # Find interval
+        for i in 1:9
+            if λ < wavelengths[i+1]
+                t = (λ - wavelengths[i]) / (wavelengths[i+1] - wavelengths[i])
+                return (1.0f0 - t) * basis[i] + t * basis[i+1]
+            end
+        end
+
         return basis[10]
     end
-
-    # Find interval
-    for i in 1:9
-        if λ < wavelengths[i+1]
-            t = (λ - wavelengths[i]) / (wavelengths[i+1] - wavelengths[i])
-            return (1.0f0 - t) * basis[i] + t * basis[i+1]
-        end
-    end
-
-    return basis[10]
 end
 
 """
@@ -154,12 +158,14 @@ end
 Convert RGB to spectral radiance using Smits' method.
 More accurate than the simple piecewise linear approach.
 """
-@inline function rgb_to_spectral_smits(r::Float32, g::Float32, b::Float32, lambda::Wavelengths)
+@propagate_inbounds function rgb_to_spectral_smits(r::Float32, g::Float32, b::Float32, lambda::Wavelengths)
     # Manually unrolled to avoid closure allocations
-    v1 = rgb_to_spectral_smits_at_wavelength(r, g, b, lambda.lambda[1])
-    v2 = rgb_to_spectral_smits_at_wavelength(r, g, b, lambda.lambda[2])
-    v3 = rgb_to_spectral_smits_at_wavelength(r, g, b, lambda.lambda[3])
-    v4 = rgb_to_spectral_smits_at_wavelength(r, g, b, lambda.lambda[4])
+    @inbounds begin
+        v1 = rgb_to_spectral_smits_at_wavelength(r, g, b, lambda.lambda[1])
+        v2 = rgb_to_spectral_smits_at_wavelength(r, g, b, lambda.lambda[2])
+        v3 = rgb_to_spectral_smits_at_wavelength(r, g, b, lambda.lambda[3])
+        v4 = rgb_to_spectral_smits_at_wavelength(r, g, b, lambda.lambda[4])
+    end
     return SpectralRadiance((v1, v2, v3, v4))
 end
 
@@ -168,7 +174,7 @@ end
 
 Compute spectral value at wavelength λ using Smits' method.
 """
-@inline function rgb_to_spectral_smits_at_wavelength(r::Float32, g::Float32, b::Float32, λ::Float32)::Float32
+@propagate_inbounds function rgb_to_spectral_smits_at_wavelength(r::Float32, g::Float32, b::Float32, λ::Float32)::Float32
     # Decompose RGB into white + primary components
     spectrum = 0.0f0
 
@@ -220,7 +226,7 @@ const _RGB2SPEC_TABLE_REF = Ref{RGBToSpectrumTable}()
 const _RGB2SPEC_TABLE_LOADED = Ref{Bool}(false)
 
 """Get the global sRGB to spectrum table (loads on first access)"""
-@inline function _get_rgb2spec_table()::RGBToSpectrumTable
+@propagate_inbounds function _get_rgb2spec_table()::RGBToSpectrumTable
     if !_RGB2SPEC_TABLE_LOADED[]
         _RGB2SPEC_TABLE_REF[] = get_srgb_table()
         _RGB2SPEC_TABLE_LOADED[] = true
@@ -236,7 +242,7 @@ This provides the smoothest spectra and lowest variance for spectral rendering.
 
 Note: Uses global table, not GPU-compatible. Use the version with explicit table for GPU kernels.
 """
-@inline function rgb_to_spectral_sigmoid(r::Float32, g::Float32, b::Float32, lambda::Wavelengths)
+@propagate_inbounds function rgb_to_spectral_sigmoid(r::Float32, g::Float32, b::Float32, lambda::Wavelengths)
     table = _get_rgb2spec_table()
     return rgb_to_spectral_sigmoid(table, r, g, b, lambda)
 end
@@ -246,11 +252,11 @@ end
 
 GPU-compatible version that takes an explicit table parameter.
 """
-@inline function rgb_to_spectral_sigmoid(table::RGBToSpectrumTable, r::Float32, g::Float32, b::Float32, lambda::Wavelengths)
+@propagate_inbounds function rgb_to_spectral_sigmoid(table::RGBToSpectrumTable, r::Float32, g::Float32, b::Float32, lambda::Wavelengths)
     poly = rgb_to_spectrum(table, r, g, b)
 
     # Manually unrolled to avoid closure allocations
-    @_inbounds begin
+    @inbounds begin
         v1 = poly(lambda.lambda[1])
         v2 = poly(lambda.lambda[2])
         v3 = poly(lambda.lambda[3])
@@ -267,7 +273,7 @@ Scales the spectrum to preserve the maximum RGB component.
 
 Note: Uses global table, not GPU-compatible. Use the version with explicit table for GPU kernels.
 """
-@inline function rgb_to_spectral_sigmoid_unbounded(r::Float32, g::Float32, b::Float32, lambda::Wavelengths)
+@propagate_inbounds function rgb_to_spectral_sigmoid_unbounded(r::Float32, g::Float32, b::Float32, lambda::Wavelengths)
     table = _get_rgb2spec_table()
     return rgb_to_spectral_sigmoid_unbounded(table, r, g, b, lambda)
 end
@@ -277,7 +283,7 @@ end
 
 GPU-compatible version that takes an explicit table parameter.
 """
-@inline function rgb_to_spectral_sigmoid_unbounded(table::RGBToSpectrumTable, r::Float32, g::Float32, b::Float32, lambda::Wavelengths)
+@propagate_inbounds function rgb_to_spectral_sigmoid_unbounded(table::RGBToSpectrumTable, r::Float32, g::Float32, b::Float32, lambda::Wavelengths)
     # Find scale factor
     m = max(r, g, b)
     if m <= 0.0f0
@@ -292,10 +298,12 @@ GPU-compatible version that takes an explicit table parameter.
     scale = m / max_poly
 
     # Manually unrolled to avoid closure allocations
-    v1 = scale * poly(lambda.lambda[1])
-    v2 = scale * poly(lambda.lambda[2])
-    v3 = scale * poly(lambda.lambda[3])
-    v4 = scale * poly(lambda.lambda[4])
+    @inbounds begin
+        v1 = scale * poly(lambda.lambda[1])
+        v2 = scale * poly(lambda.lambda[2])
+        v3 = scale * poly(lambda.lambda[3])
+        v4 = scale * poly(lambda.lambda[4])
+    end
     return SpectralRadiance((v1, v2, v3, v4))
 end
 
@@ -315,17 +323,19 @@ Methods:
 - `:smits` - Smits' method
 - `:passthrough` - Store RGB directly as first 3 spectral channels (pseudo-spectral, fastest)
 """
-@inline function uplift_rgb(rgb::RGBSpectrum, lambda::Wavelengths; method::Symbol=:sigmoid)
-    if method === :sigmoid
-        return rgb_to_spectral_sigmoid(rgb.c[1], rgb.c[2], rgb.c[3], lambda)
-    elseif method === :smits
-        return rgb_to_spectral_smits(rgb.c[1], rgb.c[2], rgb.c[3], lambda)
-    elseif method === :passthrough
-        # Pseudo-spectral: store RGB directly (matches PbrtWavefront behavior)
-        # Channel 4 uses average of RGB for luminance
-        return SpectralRadiance((rgb.c[1], rgb.c[2], rgb.c[3], (rgb.c[1] + rgb.c[2] + rgb.c[3]) / 3f0))
-    else
-        return rgb_to_spectral_simple(rgb.c[1], rgb.c[2], rgb.c[3], lambda)
+@propagate_inbounds function uplift_rgb(rgb::RGBSpectrum, lambda::Wavelengths; method::Symbol=:sigmoid)
+    @inbounds begin
+        if method === :sigmoid
+            return rgb_to_spectral_sigmoid(rgb.c[1], rgb.c[2], rgb.c[3], lambda)
+        elseif method === :smits
+            return rgb_to_spectral_smits(rgb.c[1], rgb.c[2], rgb.c[3], lambda)
+        elseif method === :passthrough
+            # Pseudo-spectral: store RGB directly (matches PbrtWavefront behavior)
+            # Channel 4 uses average of RGB for luminance
+            return SpectralRadiance((rgb.c[1], rgb.c[2], rgb.c[3], (rgb.c[1] + rgb.c[2] + rgb.c[3]) / 3f0))
+        else
+            return rgb_to_spectral_simple(rgb.c[1], rgb.c[2], rgb.c[3], lambda)
+        end
     end
 end
 
@@ -335,8 +345,8 @@ end
 GPU-compatible version that takes an explicit table parameter.
 Uses sigmoid polynomial method (pbrt-v4 style, lowest variance).
 """
-@inline function uplift_rgb(table::RGBToSpectrumTable, rgb::RGBSpectrum, lambda::Wavelengths)
-    return rgb_to_spectral_sigmoid(table, rgb.c[1], rgb.c[2], rgb.c[3], lambda)
+@propagate_inbounds function uplift_rgb(table::RGBToSpectrumTable, rgb::RGBSpectrum, lambda::Wavelengths)
+    @inbounds return rgb_to_spectral_sigmoid(table, rgb.c[1], rgb.c[2], rgb.c[3], lambda)
 end
 
 """
@@ -346,8 +356,8 @@ Convert Hikari RGBSpectrum to spectral radiance for emission/illumination.
 Uses sigmoid polynomial method with scaling for unbounded values.
 Uses global table - not GPU-compatible. Use the version with explicit table for GPU kernels.
 """
-@inline function uplift_rgb_unbounded(rgb::RGBSpectrum, lambda::Wavelengths)
-    return rgb_to_spectral_sigmoid_unbounded(rgb.c[1], rgb.c[2], rgb.c[3], lambda)
+@propagate_inbounds function uplift_rgb_unbounded(rgb::RGBSpectrum, lambda::Wavelengths)
+    @inbounds return rgb_to_spectral_sigmoid_unbounded(rgb.c[1], rgb.c[2], rgb.c[3], lambda)
 end
 
 """
@@ -355,8 +365,8 @@ end
 
 GPU-compatible version that takes an explicit table parameter.
 """
-@inline function uplift_rgb_unbounded(table::RGBToSpectrumTable, rgb::RGBSpectrum, lambda::Wavelengths)
-    return rgb_to_spectral_sigmoid_unbounded(table, rgb.c[1], rgb.c[2], rgb.c[3], lambda)
+@propagate_inbounds function uplift_rgb_unbounded(table::RGBToSpectrumTable, rgb::RGBSpectrum, lambda::Wavelengths)
+    @inbounds return rgb_to_spectral_sigmoid_unbounded(table, rgb.c[1], rgb.c[2], rgb.c[3], lambda)
 end
 
 """
@@ -364,6 +374,6 @@ end
 
 Convert a scalar value to uniform spectral radiance.
 """
-@inline function uplift_scalar(value::Float32, lambda::Wavelengths)
+@propagate_inbounds function uplift_scalar(value::Float32, lambda::Wavelengths)
     return SpectralRadiance(value)
 end

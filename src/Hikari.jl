@@ -1,5 +1,6 @@
 module Hikari
 
+using Base: @propagate_inbounds
 import FileIO
 using ImageCore
 using ImageIO
@@ -11,7 +12,6 @@ using StructArrays
 using Atomix
 using KernelAbstractions
 using Raycore
-import Raycore: @_inbounds
 
 # Re-export Raycore types and functions that Trace uses
 import Raycore: AbstractRay, Ray, RayDifferentials, apply, check_direction, scale_differentials
@@ -26,7 +26,6 @@ import Raycore: Normal3f, intersect, intersect_p
 import Raycore: is_dir_negative, increase_hit, intersect_p!
 import Raycore: to_gpu
 import Raycore: sum_unrolled, reduce_unrolled, for_unrolled, map_unrolled, getindex_unrolled
-import Raycore: @_inbounds
 
 abstract type Spectrum end
 abstract type Light end
@@ -63,9 +62,9 @@ function get_progress_bar(n::Integer, desc::String = "Progress")
     )
 end
 
-@inline maybe_copy(v::Maybe)::Maybe = v isa Nothing ? v : copy(v)
+@propagate_inbounds maybe_copy(v::Maybe)::Maybe  = v isa Nothing ? v : copy(v)
 
-@inline function concentric_sample_disk(u::Point2f)::Point2f
+@propagate_inbounds function concentric_sample_disk(u::Point2f)::Point2f
     # Map uniform random numbers to [-1, 1].
     offset_x = 2f0 * u[1] - 1f0
     offset_y = 2f0 * u[2] - 1f0
@@ -118,9 +117,9 @@ function uniform_sample_cone(
     x * cos(ϕ) * sinθ + y * sin(ϕ) * sinθ + z * cosθ
 end
 
-@inline uniform_sphere_pdf()::Float32 = 1f0 / (4f0 * π)
+@propagate_inbounds uniform_sphere_pdf()::Float32  = 1f0 / (4f0 * π)
 
-@inline function uniform_cone_pdf(cosθ_max::Float32)::Float32
+@propagate_inbounds function uniform_cone_pdf(cosθ_max::Float32)::Float32
     1f0 / (2f0 * π * (1f0 - cosθ_max))
 end
 
@@ -135,16 +134,16 @@ of the direction onto xy-plane.
 
 Since normal is `(0, 0, 1) → cos_θ = n · w = (0, 0, 1) ⋅ w = w.z`.
 """
-@inline cos_θ(w::Vec3f) = w[3]
-@inline sin_θ2(w::Vec3f) = max(0f0, 1f0 - cos_θ(w) * cos_θ(w))
-@inline sin_θ(w::Vec3f) = √(sin_θ2(w))
-@inline tan_θ(w::Vec3f) = sin_θ(w) / cos_θ(w)
+@propagate_inbounds cos_θ(w::Vec3f) = w[3]
+@propagate_inbounds sin_θ2(w::Vec3f) = max(0f0, 1f0 - cos_θ(w) * cos_θ(w))
+@propagate_inbounds sin_θ(w::Vec3f) = √(sin_θ2(w))
+@propagate_inbounds tan_θ(w::Vec3f) = sin_θ(w) / cos_θ(w)
 
-@inline function cos_ϕ(w::Vec3f)
+@propagate_inbounds function cos_ϕ(w::Vec3f)
     sinθ = sin_θ(w)
     sinθ ≈ 0f0 ? 1f0 : clamp(w[1] / sinθ, -1f0, 1f0)
 end
-@inline function sin_ϕ(w::Vec3f)
+@propagate_inbounds function sin_ϕ(w::Vec3f)
     sinθ = sin_θ(w)
     sinθ ≈ 0f0 ? 1f0 : clamp(w[2] / sinθ, -1f0, 1f0)
 end
@@ -184,7 +183,7 @@ end
 """
 Flip normal `n` so that it lies in the same hemisphere as `v`.
 """
-@inline face_forward(n, v) = (n ⋅ v) < 0 ? -n : n
+@propagate_inbounds face_forward(n, v) = (n ⋅ v) < 0 ? -n : n
 
 include("spectrum.jl")
 include("surface_interaction.jl")
@@ -224,11 +223,11 @@ ImmutableScene(s::Scene) = ImmutableScene(s.lights, s.aggregate, s.bound, s.worl
 ImmutableScene(s::ImmutableScene) = s  # Already immutable
 
 # Common interface for both scene types
-@inline function intersect!(scene::AbstractScene, ray::AbstractRay)
+@propagate_inbounds function intersect!(scene::AbstractScene, ray::AbstractRay)
     intersect!(scene.aggregate, ray)
 end
 
-@inline function intersect_p(scene::AbstractScene, ray::AbstractRay)
+@propagate_inbounds function intersect_p(scene::AbstractScene, ray::AbstractRay)
     intersect_p(scene.aggregate, ray)
 end
 
@@ -288,21 +287,21 @@ end
 # Backwards-compatible constructor (no media)
 MaterialScene(accel, materials::Tuple) = MaterialScene(accel, materials, ())
 
-@inline world_bound(ms::MaterialScene) = world_bound(ms.accel)
+@propagate_inbounds world_bound(ms::MaterialScene) = world_bound(ms.accel)
 
 # Generated function for type-stable material dispatch
 # Returns the material from the appropriate tuple slot
 @generated function get_material(materials::NTuple{N,Any}, idx::MaterialIndex) where N
     branches = [quote
         if idx.material_type === UInt8($i)
-            return @_inbounds materials[$i][idx.material_idx]
+            return  materials[$i][idx.material_idx]
         end
     end for i in 1:N]
     # Return first material type as fallback (GPU-compatible, no error() call)
     # This should never happen in practice if material indices are valid
     quote
         $(branches...)
-        return @_inbounds materials[1][1]
+        return  materials[1][1]
     end
 end
 
@@ -335,10 +334,10 @@ result = with_material(process_material, materials, mat_idx, ray, normal)
 # Where: process_material(mat, ray, n) = ...
 ```
 """
-@inline @generated function with_material(f::F, materials::NTuple{N,Any}, idx::MaterialIndex, args...) where {F, N}
+@propagate_inbounds @generated function with_material(f::F, materials::NTuple{N,Any}, idx::MaterialIndex, args...) where {F, N}
     branches = [quote
-        @_inbounds if idx.material_type === UInt8($i)
-            return @inline f(materials[$i][idx.material_idx], args...)
+         if idx.material_type === UInt8($i)
+            return f(materials[$i][idx.material_idx], args...)
         end
     end for i in 1:N]
 
@@ -346,20 +345,20 @@ result = with_material(process_material, materials, mat_idx, ray, normal)
         $(branches...)
         # Fallback - should never reach if material indices are valid
         # Call with first material type for type stability (GPU-compatible, no error)
-        return @inline f(@_inbounds(materials[1][1]), args...)
+        return f((materials[1][1]), args...)
     end
 end
 
 # Type-stable shade dispatch - each material type implements shade(material, ray, si, scene, beta, depth, max_depth)
 # IMPORTANT: Type annotations on ray, si, scene, beta prevent argument boxing in generated code
 # Note: Use T<:Tuple instead of NTuple{N} to support heterogeneous material type tuples
-@inline @generated function shade_material(
+@propagate_inbounds @generated function shade_material(
     materials::T, idx::MaterialIndex,
     ray::RayDifferentials, si::SurfaceInteraction, scene::S, beta::RGBSpectrum, depth::Int32, max_depth::Int32
 ) where {T<:Tuple, S<:AbstractScene}
     N = length(T.parameters)
     branches = [quote
-        @_inbounds if idx.material_type === UInt8($i)
+         if idx.material_type === UInt8($i)
             return shade(materials[$i][idx.material_idx], ray, si, scene, beta, depth, max_depth)
         end
     end for i in 1:N]
@@ -372,14 +371,14 @@ end
 # Type-stable bounce ray generation - materials implement sample_bounce(material, ray, si, scene, beta, depth)
 # IMPORTANT: Type annotations prevent argument boxing in generated code
 # Note: Use T<:Tuple instead of NTuple{N} to support heterogeneous material type tuples
-@inline @generated function sample_material_bounce(
+@propagate_inbounds @generated function sample_material_bounce(
     materials::T, idx::MaterialIndex,
     ray::RayDifferentials, si::SurfaceInteraction, scene::S, beta::RGBSpectrum, depth::Int32
 ) where {T<:Tuple, S<:AbstractScene}
     N = length(T.parameters)
     branches = [quote
-        @_inbounds if idx.material_type === UInt8($i)
-            return @inline sample_bounce(materials[$i][idx.material_idx], ray, si, scene, beta, depth)
+         if idx.material_type === UInt8($i)
+            return sample_bounce(materials[$i][idx.material_idx], ray, si, scene, beta, depth)
         end
     end for i in 1:N]
     quote
@@ -406,12 +405,12 @@ function partial_derivatives(vs::AbstractVector{Point3f}, uv::AbstractVector{Poi
 end
 
 # Convert Raycore.Triangle intersection result to Trace SurfaceInteraction
-@inline function triangle_to_surface_interaction(triangle::Triangle, ray::AbstractRay, bary_coords::StaticVector{3,Float32})::SurfaceInteraction
+@propagate_inbounds function triangle_to_surface_interaction(triangle::Triangle, ray::AbstractRay, bary_coords::StaticVector{3,Float32})::SurfaceInteraction
     # Get triangle data
     verts = Raycore.vertices(triangle)
     tex_coords = Raycore.uvs(triangle)
 
-    pos_deriv_u, pos_deriv_v = @inline partial_derivatives(verts, tex_coords)
+    pos_deriv_u, pos_deriv_v = partial_derivatives(verts, tex_coords)
 
     # Interpolate hit point and texture coordinates using barycentric coordinates
     hit_point = sum_mul(bary_coords, verts)
@@ -476,7 +475,7 @@ end
 
 # Intersect function for MaterialScene - returns hit info, primitive, and SurfaceInteraction
 # The primitive (triangle) contains material_type and material_idx for dispatch
-@inline function intersect!(ms::MaterialScene, ray::AbstractRay)
+@propagate_inbounds function intersect!(ms::MaterialScene, ray::AbstractRay)
     accel = ms.accel
 
     # Handle TLAS (instanced) vs BVH (non-instanced) differently
@@ -558,7 +557,7 @@ end
     end
 end
 
-@inline function intersect_p(ms::MaterialScene, ray::AbstractRay)
+@propagate_inbounds function intersect_p(ms::MaterialScene, ray::AbstractRay)
     hit_found, _, _, _ = any_hit(ms.accel, ray)
     return hit_found
 end

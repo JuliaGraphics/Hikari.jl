@@ -13,7 +13,7 @@ function Whitted(; samples::Integer = 4, max_depth::Integer = 5)
     Whitted(sampler, Int64(max_depth))
 end
 
-@inline function sample_kernel_inner!(
+@propagate_inbounds function sample_kernel_inner!(
         tiles, tile, tile_column::Int32, resolution::Point2f, max_depth::Int32,
         scene, sampler, camera, pixel, spp_sqr, filter_table,
         filter_radius::Point2f
@@ -27,18 +27,18 @@ end
     # Use while loop to avoid iterate() protocol (causes PHI node errors in SPIR-V)
     sample_idx = Int32(1)
     while sample_idx <= sampler.samples_per_pixel
-        camera_sample = @inline get_camera_sample(sampler, campix)
-        ray, ω = @inline generate_ray_differential(camera, camera_sample)
-        ray = @inline scale_differentials(ray, spp_sqr)
+        camera_sample = get_camera_sample(sampler, campix)
+        ray, ω = generate_ray_differential(camera, camera_sample)
+        ray = scale_differentials(ray, spp_sqr)
         l = RGBSpectrum(0.0f0)
         if ω > 0.0f0
-            l = @inline li_iterative(sampler, max_depth, ray, scene)
+            l = li_iterative(sampler, max_depth, ray, scene)
         end
         # TODO check l for invalid values
         if isnan(l)
             l = RGBSpectrum(0.0f0)
         end
-        @inline add_sample!(
+        add_sample!(
             tiles, tile, tile_column, pixel, l,
             filter_table, filter_radius, ω,
         )
@@ -46,7 +46,7 @@ end
     end
 end
 
-@kernel function whitten_kernel!(pixels, crop_bounds, sample_bounds, tiles, tile_size, max_depth, scene, sampler, camera, filter_table, filter_radius)
+@kernel inbounds=true function whitten_kernel!(pixels, crop_bounds, sample_bounds, tiles, tile_size, max_depth, scene, sampler, camera, filter_table, filter_radius)
     _tile_xy = @index(Global, Cartesian)
     linear_idx = @index(Global)
 
@@ -76,7 +76,7 @@ end
         px_max = u_int32(tb_max[1])
         while px <= px_max
             pixel = Point2f(px, py)
-            @inline sample_kernel_inner!(
+            sample_kernel_inner!(
                 tiles, tile_bounds, tile_column, resolution,
                 max_depth, scene, sampler, camera,
                 pixel, spp_sqr, filter_table, filter_radius
@@ -85,7 +85,7 @@ end
         end
         py += Int32(1)
     end
-    @inline merge_film_tile!(pixels, crop_bounds, tiles, tile_bounds, Int32(tile_column))
+    merge_film_tile!(pixels, crop_bounds, tiles, tile_bounds, Int32(tile_column))
 end
 
 """
@@ -121,25 +121,25 @@ function get_material(ms::MaterialScene, shape::Triangle)
 end
 
 # Non-allocating sum over lights for tuples (recursive for type stability)
-@inline only_light(lights::Tuple{}, ray) = RGBSpectrum(0f0)
-@inline function only_light(lights::Tuple, ray)
+@propagate_inbounds only_light(lights::Tuple{}, ray) = RGBSpectrum(0f0)
+@propagate_inbounds function only_light(lights::Tuple, ray)
     return le(first(lights), ray) + only_light(Base.tail(lights), ray)
 end
 
 # Generated function for type-stable light iteration
 # Unrolls only for the actual number of lights in the tuple
 # Uses unique variable names per iteration to avoid union types
-# NOTE: Must be @inline to avoid boxing arguments which causes allocations
-@inline @generated function light_contribution(
+# NOTE: Must be @propagate_inbounds to avoid boxing arguments which causes allocations
+@propagate_inbounds @generated function light_contribution(
     l::RGBSpectrum, lights::NTuple{N,Light}, wo, scene::S, bsdf, sampler, si
 ) where {N, S<:AbstractScene}
     # Generate unique symbols for each light iteration to avoid union types
     light_exprs = [quote
-        let light = @_inbounds lights[$i]
+        let light =  lights[$i]
             sampled_li, wi, pdf, tester = sample_li(light, si.core, get_2d(sampler), scene)
             if !(is_black(sampled_li) || pdf ≈ 0.0f0)
-                f = @inline bsdf(wo, wi)
-                if !is_black(f) && @inline unoccluded(tester, scene)
+                f = bsdf(wo, wi)
+                if !is_black(f) && unoccluded(tester, scene)
                     l += f * sampled_li * abs(wi ⋅ si.shading.n) / pdf
                 end
             end
@@ -169,28 +169,28 @@ function li(
     # Compute scattering functions for surface interaction.
     si = compute_differentials(si, ray)
     # Compute emitted light if ray hit an area light source.
-    l += @inline le(si, wo)
+    l += le(si, wo)
     # Use type-stable dispatch for material-dependent computation
-    l += @inline li_material(scene.aggregate.materials, primitive.metadata,
+    l += li_material(scene.aggregate.materials, primitive.metadata,
                      sampler, max_depth, ray, si, scene, lights, wo, depth)
     l
 end
 
 # Type-stable material dispatch for li computation
 # Uses @generated to avoid union types from get_material flowing into BSDF computation
-@inline @generated function li_material(
+@propagate_inbounds @generated function li_material(
     materials::T, idx::MaterialIndex,
     sampler, max_depth, ray::RayDifferentials, si::SurfaceInteraction,
     scene::S, lights, wo, depth::Int32
 ) where {T<:Tuple, S<:AbstractScene}
     N = length(T.parameters)
     branches = [quote
-        @_inbounds if idx.material_type === UInt8($i)
-            bsdf = @inline compute_bsdf(materials[$i][idx.material_idx], si, false, Radiance)
+         if idx.material_type === UInt8($i)
+            bsdf = compute_bsdf(materials[$i][idx.material_idx], si, false, Radiance)
             l = light_contribution(RGBSpectrum(0f0), lights, wo, scene, bsdf, sampler, si)
             if depth + Int32(1) ≤ max_depth
-                l += @inline specular_reflect(bsdf, sampler, max_depth, ray, si, scene, depth)
-                l += @inline specular_transmit(bsdf, sampler, max_depth, ray, si, scene, depth)
+                l += specular_reflect(bsdf, sampler, max_depth, ray, si, scene, depth)
+                l += specular_transmit(bsdf, sampler, max_depth, ray, si, scene, depth)
             end
             return l
         end
@@ -201,7 +201,7 @@ end
     end
 end
 
-@inline function specular_reflect(
+@propagate_inbounds function specular_reflect(
         bsdf, sampler, max_depth, ray::RayDifferentials,
         si::SurfaceInteraction, scene::AbstractScene, depth::Int32,
     )
@@ -252,7 +252,7 @@ Uses sample_f for proper importance sampling of microfacet distribution.
 The microfacet distribution already handles roughness via its α parameters,
 so no additional perturbation is needed.
 """
-@inline function glossy_reflect(
+@propagate_inbounds function glossy_reflect(
         bsdf, sampler, max_depth, ray::RayDifferentials,
         si::SurfaceInteraction, scene::AbstractScene, depth::Int32,
     )
@@ -276,7 +276,7 @@ so no additional perturbation is needed.
     return f * li(sampler, max_depth, rd, scene, depth + Int32(1)) * abs(wi ⋅ ns) / pdf
 end
 
-@inline function specular_transmit(
+@propagate_inbounds function specular_transmit(
     bsdf, sampler, max_depth, ray::RayDifferentials,
     surface_intersect::SurfaceInteraction, scene::AbstractScene, depth::Int32,
 )
@@ -363,7 +363,7 @@ end
 
 # Iterative path tracing for Whitted-style integrator
 # Avoids recursion which is problematic on GPU
-@inline function li_iterative(
+@propagate_inbounds function li_iterative(
         sampler, max_depth::Int32, initial_ray::RayDifferentials, scene::S
     )::RGBSpectrum where {S<:AbstractScene}
 
@@ -389,7 +389,7 @@ end
         wo = si.core.wo
 
         # Add emitted light
-        L += throughput * @inline le(si, wo)
+        L += throughput * le(si, wo)
 
         # Get material and compute BSDF (or detect volume)
         idx = primitive.metadata
@@ -402,7 +402,7 @@ end
         # Handle volume materials specially - they use shade() directly
         if is_volume
             # Volume materials handle their own ray marching and continuation rays
-            vol_radiance = @inline shade_material(materials, idx, ray, si, scene, throughput, depth, max_depth)
+            vol_radiance = shade_material(materials, idx, ray, si, scene, throughput, depth, max_depth)
             if !isnan(vol_radiance)
                 L += vol_radiance
             end
@@ -465,13 +465,13 @@ end
 
 # Helper to check if a material type is a volume (CloudVolume)
 # Returns true for volume materials that need special handling via shade_material
-@inline is_volume_material(::Material) = false
-@inline is_volume_material(::CloudVolume) = true
+@propagate_inbounds is_volume_material(::Material) = false
+@propagate_inbounds is_volume_material(::CloudVolume) = true
 
 # Helper to compute BSDF for a material index - returns (valid::Bool, is_volume::Bool, bsdf::BSDF)
 # Returns a tuple to avoid Union{Nothing, BSDF} type instability
 # For volume materials, is_volume=true indicates caller should use shade_material instead of BSDF
-@inline @generated function compute_bsdf_for_material(
+@propagate_inbounds @generated function compute_bsdf_for_material(
     materials::T, idx::MaterialIndex, si::SurfaceInteraction
 ) where {T<:Tuple}
     N = length(T.parameters)
@@ -482,8 +482,8 @@ end
         mat_type = eltype(mat_array_type)
         is_vol = mat_type <: CloudVolume
         push!(branches, quote
-            @_inbounds if idx.material_type === UInt8($i)
-                return (true, $is_vol, @inline compute_bsdf(materials[$i][idx.material_idx], si, false, Radiance))
+             if idx.material_type === UInt8($i)
+                return (true, $is_vol, compute_bsdf(materials[$i][idx.material_idx], si, false, Radiance))
             end
         end)
     end
@@ -494,7 +494,7 @@ end
 end
 
 
-@inline function trace_pixel(camera, scene, pixel, sampler, max_depth)
+@propagate_inbounds function trace_pixel(camera, scene, pixel, sampler, max_depth)
     camera_sample = get_camera_sample(sampler, pixel)
     ray, ω = generate_ray_differential(camera, camera_sample)
     if ω > 0.0f0

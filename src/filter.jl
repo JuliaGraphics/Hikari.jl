@@ -9,7 +9,7 @@ function (f::LanczosSincFilter)(p::Point2f)::Float32
     windowed_sinc(p[1], f.radius[1], f.τ) * windowed_sinc(p[2], f.radius[2], f.τ)
 end
 
-@inline function sinc(x::Float32)::Float32
+@propagate_inbounds function sinc(x::Float32)::Float32
     x = abs(x)
     x < 1f-5 && return 1f0
     x *= Float32(π)

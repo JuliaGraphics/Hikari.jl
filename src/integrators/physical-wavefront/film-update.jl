@@ -23,7 +23,7 @@ Arguments:
 - `width`: Image width
 - `height`: Image height
 """
-@kernel function pw_update_film_spectral_kernel!(
+@kernel inbounds=true function pw_update_film_spectral_kernel!(
     framebuffer,
     @Const(pixel_L),
     @Const(wavelengths_per_pixel),
@@ -35,7 +35,7 @@ Arguments:
     idx = @index(Global)
     num_pixels = width * height
 
-    @_inbounds if idx <= num_pixels
+     if idx <= num_pixels
         # Extract spectral radiance for this pixel
         base = (idx - Int32(1)) * Int32(4)
         L = SpectralRadiance((
@@ -99,7 +99,7 @@ Convert accumulated spectral radiance to RGB using uniform wavelength sampling.
 When using stratified wavelength sampling, all pixels share the same wavelengths
 within a sample iteration. This kernel uses a single Wavelengths value for all pixels.
 """
-@kernel function pw_update_film_uniform_kernel!(
+@kernel inbounds=true function pw_update_film_uniform_kernel!(
     framebuffer,
     @Const(pixel_L),
     @Const(lambda::Wavelengths),
@@ -110,7 +110,7 @@ within a sample iteration. This kernel uses a single Wavelengths value for all p
     idx = @index(Global)
     num_pixels = width * height
 
-    @_inbounds if idx <= num_pixels
+     if idx <= num_pixels
         # Extract spectral radiance for this pixel
         base = (idx - Int32(1)) * Int32(4)
         L = SpectralRadiance((
@@ -158,14 +158,14 @@ end
 Accumulate sample results into the film accumulator.
 Adds new sample's spectral values to existing accumulated values.
 """
-@kernel function pw_accumulate_to_film_kernel!(
+@kernel inbounds=true function pw_accumulate_to_film_kernel!(
     pixel_L_accum,
     @Const(pixel_L_sample),
     @Const(num_pixels::Int32)
 )
     idx = @index(Global)
 
-    @_inbounds if idx <= num_pixels * Int32(4)
+     if idx <= num_pixels * Int32(4)
         pixel_L_accum[idx] += pixel_L_sample[idx]
     end
 end
@@ -179,13 +179,13 @@ end
 
 Clear accumulated spectral radiance to zero for new render.
 """
-@kernel function pw_clear_film_kernel!(
+@kernel inbounds=true function pw_clear_film_kernel!(
     pixel_L,
     @Const(num_pixels::Int32)
 )
     idx = @index(Global)
 
-    @_inbounds if idx <= num_pixels * Int32(4)
+     if idx <= num_pixels * Int32(4)
         pixel_L[idx] = 0.0f0
     end
 end
@@ -222,7 +222,7 @@ function pw_accumulate_sample_to_rgb!(
     wavelengths_cpu = Array(wavelengths_per_pixel)
     pdf_cpu = Array(pdf_per_pixel)
 
-    @_inbounds for idx in 1:Int(num_pixels)
+     for idx in 1:Int(num_pixels)
         # Extract spectral radiance for this pixel
         base = (idx - 1) * 4
         L = SpectralRadiance((
@@ -281,7 +281,7 @@ function pw_finalize_film!(
     # Build flat RGB output for reshape
     rgb_output = Vector{Float32}(undef, Int(num_pixels) * 3)
 
-    @_inbounds for idx in 1:Int(num_pixels)
+     for idx in 1:Int(num_pixels)
         base = (idx - 1) * 3
         R = pixel_rgb_cpu[base + 1] * inv_samples
         G = pixel_rgb_cpu[base + 2] * inv_samples
@@ -336,7 +336,7 @@ function pw_update_film!(
 
     inv_samples = samples_accumulated > Int32(0) ? 1.0f0 / Float32(samples_accumulated) : 0.0f0
 
-    @_inbounds for idx in 1:Int(num_pixels)
+     for idx in 1:Int(num_pixels)
         base = (idx - 1) * 4
         L = SpectralRadiance((
             pixel_L_cpu[base + 1],
@@ -497,7 +497,7 @@ end
 
 Kernel to update auxiliary buffers from depth=0 material queue items.
 """
-@kernel function pw_update_aux_kernel!(
+@kernel inbounds=true function pw_update_aux_kernel!(
     aux_albedo,    # RGB{Float32} matrix (height × width)
     aux_normal,    # Vec3f matrix (height × width)
     aux_depth,     # Float32 matrix (height × width)
@@ -514,7 +514,7 @@ Kernel to update auxiliary buffers from depth=0 material queue items.
     # Reconstruct table struct from components for GPU compatibility
     rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
 
-    @_inbounds if idx <= max_queued
+     if idx <= max_queued
         current_size = material_queue_size[1]
         if idx <= current_size
             work = material_queue_items[idx]
@@ -560,13 +560,13 @@ end
 
 Apply exposure adjustment to framebuffer (in-place).
 """
-@kernel function pw_apply_exposure_kernel!(
+@kernel inbounds=true function pw_apply_exposure_kernel!(
     framebuffer,
     @Const(exposure::Float32)
 )
     idx = @index(Global)
 
-    @_inbounds begin
+     begin
         pixel = framebuffer[idx]
         r = pixel.r * exposure
         g = pixel.g * exposure
@@ -596,13 +596,13 @@ end
 
 Apply sRGB gamma curve to convert from linear to display sRGB.
 """
-@kernel function pw_apply_srgb_gamma_kernel!(
+@kernel inbounds=true function pw_apply_srgb_gamma_kernel!(
     output,
     @Const(input)
 )
     idx = @index(Global)
 
-    @_inbounds begin
+     begin
         pixel = input[idx]
         r = linear_to_srgb_gamma(pixel.r)
         g = linear_to_srgb_gamma(pixel.g)

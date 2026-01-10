@@ -15,52 +15,52 @@ end
 const SpectralRadiance = SampledSpectrum{4}
 
 # Constructors
-@inline SampledSpectrum{N}(v::Float32) where {N} = SampledSpectrum{N}(ntuple(_ -> v, Val(N)))
-@inline SampledSpectrum{N}(v::Real) where {N} = SampledSpectrum{N}(Float32(v))
+@propagate_inbounds SampledSpectrum{N}(v::Float32) where {N} = SampledSpectrum{N}(ntuple(_ -> v, Val(N)))
+@propagate_inbounds SampledSpectrum{N}(v::Real) where {N} = SampledSpectrum{N}(Float32(v))
 
-@inline function SpectralRadiance(r::Real, g::Real, b::Real, a::Real)
+@propagate_inbounds function SpectralRadiance(r::Real, g::Real, b::Real, a::Real)
     return SpectralRadiance((Float32(r), Float32(g), Float32(b), Float32(a)))
 end
 
 # Zero spectrum
-@inline SampledSpectrum{N}() where {N} = SampledSpectrum{N}(0f0)
-@inline SpectralRadiance() = SpectralRadiance(0f0)
+@propagate_inbounds SampledSpectrum{N}() where {N} = SampledSpectrum{N}(0f0)
+@propagate_inbounds SpectralRadiance() = SpectralRadiance(0f0)
 
 # Array-like interface
-@inline Base.getindex(s::SampledSpectrum, i::Int) = s.data[i]
-@inline Base.length(::SampledSpectrum{N}) where {N} = N
-@inline Base.eltype(::Type{SampledSpectrum{N}}) where {N} = Float32
+@propagate_inbounds Base.getindex(s::SampledSpectrum, i::Int) = s.data[i]
+@propagate_inbounds Base.length(::SampledSpectrum{N}) where {N} = N
+@propagate_inbounds Base.eltype(::Type{SampledSpectrum{N}}) where {N} = Float32
 
 # Arithmetic operations - all tuple-based for GPU efficiency (no allocations)
-@inline Base.:+(a::SampledSpectrum{N}, b::SampledSpectrum{N}) where {N} =
+@propagate_inbounds Base.:+(a::SampledSpectrum{N}, b::SampledSpectrum{N}) where {N} =
     SampledSpectrum{N}(ntuple(i -> a.data[i] + b.data[i], Val(N)))
-@inline Base.:-(a::SampledSpectrum{N}, b::SampledSpectrum{N}) where {N} =
+@propagate_inbounds Base.:-(a::SampledSpectrum{N}, b::SampledSpectrum{N}) where {N} =
     SampledSpectrum{N}(ntuple(i -> a.data[i] - b.data[i], Val(N)))
-@inline Base.:*(a::SampledSpectrum{N}, b::SampledSpectrum{N}) where {N} =
+@propagate_inbounds Base.:*(a::SampledSpectrum{N}, b::SampledSpectrum{N}) where {N} =
     SampledSpectrum{N}(ntuple(i -> a.data[i] * b.data[i], Val(N)))
-@inline Base.:/(a::SampledSpectrum{N}, b::SampledSpectrum{N}) where {N} =
+@propagate_inbounds Base.:/(a::SampledSpectrum{N}, b::SampledSpectrum{N}) where {N} =
     SampledSpectrum{N}(ntuple(i -> a.data[i] / b.data[i], Val(N)))
 
-@inline Base.:*(a::SampledSpectrum{N}, s::Real) where {N} =
+@propagate_inbounds Base.:*(a::SampledSpectrum{N}, s::Real) where {N} =
     SampledSpectrum{N}(ntuple(i -> a.data[i] * Float32(s), Val(N)))
-@inline Base.:*(s::Real, a::SampledSpectrum{N}) where {N} = a * s
-@inline Base.:/(a::SampledSpectrum{N}, s::Real) where {N} =
+@propagate_inbounds Base.:*(s::Real, a::SampledSpectrum{N}) where {N} = a * s
+@propagate_inbounds Base.:/(a::SampledSpectrum{N}, s::Real) where {N} =
     SampledSpectrum{N}(ntuple(i -> a.data[i] / Float32(s), Val(N)))
 
 # Unary minus
-@inline Base.:-(a::SampledSpectrum{N}) where {N} =
+@propagate_inbounds Base.:-(a::SampledSpectrum{N}) where {N} =
     SampledSpectrum{N}(ntuple(i -> -a.data[i], Val(N)))
 
 # sqrt for BSDF computations
-@inline Base.sqrt(s::SampledSpectrum{N}) where {N} =
+@propagate_inbounds Base.sqrt(s::SampledSpectrum{N}) where {N} =
     SampledSpectrum{N}(ntuple(i -> sqrt(s.data[i]), Val(N)))
 
 # exp for transmittance
-@inline Base.exp(s::SampledSpectrum{N}) where {N} =
+@propagate_inbounds Base.exp(s::SampledSpectrum{N}) where {N} =
     SampledSpectrum{N}(ntuple(i -> exp(s.data[i]), Val(N)))
 
 # Utility functions
-@inline function average(s::SampledSpectrum{N}) where {N}
+@propagate_inbounds function average(s::SampledSpectrum{N}) where {N}
     sum = 0.0f0
     for i in 1:N
         sum += s.data[i]
@@ -68,7 +68,7 @@ end
     return sum / N
 end
 
-@inline function max_component(s::SampledSpectrum{N}) where {N}
+@propagate_inbounds function max_component(s::SampledSpectrum{N}) where {N}
     m = s.data[1]
     for i in 2:N
         m = max(m, s.data[i])
@@ -76,7 +76,7 @@ end
     return m
 end
 
-@inline function min_component(s::SampledSpectrum{N}) where {N}
+@propagate_inbounds function min_component(s::SampledSpectrum{N}) where {N}
     m = s.data[1]
     for i in 2:N
         m = min(m, s.data[i])
@@ -84,18 +84,18 @@ end
     return m
 end
 
-@inline is_black(s::SampledSpectrum{N}) where {N} = all(x -> x == 0.0f0, s.data)
-@inline is_positive(s::SampledSpectrum) = !is_black(s)
+@propagate_inbounds is_black(s::SampledSpectrum{N}) where {N} = all(x -> x == 0.0f0, s.data)
+@propagate_inbounds is_positive(s::SampledSpectrum) = !is_black(s)
 
 # Check for NaN/Inf
-@inline function has_nan(s::SampledSpectrum{N}) where {N}
+@propagate_inbounds function has_nan(s::SampledSpectrum{N}) where {N}
     for i in 1:N
         isnan(s.data[i]) && return true
     end
     return false
 end
 
-@inline function has_inf(s::SampledSpectrum{N}) where {N}
+@propagate_inbounds function has_inf(s::SampledSpectrum{N}) where {N}
     for i in 1:N
         isinf(s.data[i]) && return true
     end
@@ -103,17 +103,17 @@ end
 end
 
 # Safe division (avoid NaN)
-@inline function safe_div(a::SampledSpectrum{N}, b::SampledSpectrum{N}) where {N}
+@propagate_inbounds function safe_div(a::SampledSpectrum{N}, b::SampledSpectrum{N}) where {N}
     SampledSpectrum{N}(ntuple(i -> b.data[i] != 0.0f0 ? a.data[i] / b.data[i] : 0.0f0, Val(N)))
 end
 
 # Clamp to zero (remove negative values)
-@inline function clamp_zero(s::SampledSpectrum{N}) where {N}
+@propagate_inbounds function clamp_zero(s::SampledSpectrum{N}) where {N}
     SampledSpectrum{N}(ntuple(i -> max(0.0f0, s.data[i]), Val(N)))
 end
 
 # Clamp to range
-@inline function Base.clamp(s::SampledSpectrum{N}, lo::Real, hi::Real) where {N}
+@propagate_inbounds function Base.clamp(s::SampledSpectrum{N}, lo::Real, hi::Real) where {N}
     SampledSpectrum{N}(ntuple(i -> clamp(s.data[i], Float32(lo), Float32(hi)), Val(N)))
 end
 
@@ -144,7 +144,7 @@ const LAMBDA_RANGE = LAMBDA_MAX - LAMBDA_MIN
 Sample 4 wavelengths using hero wavelength sampling with stratified offsets.
 This gives better spectral coverage than independent uniform samples.
 """
-@inline function sample_wavelengths_uniform(u::Float32)
+@propagate_inbounds function sample_wavelengths_uniform(u::Float32)
     # Hero wavelength sampling: one uniform sample determines all wavelengths
     # with stratified offsets for better coverage
     lambda1 = LAMBDA_MIN + u * LAMBDA_RANGE
@@ -167,7 +167,7 @@ end
 
 Sample 4 wavelengths with stratified sampling (one per stratum).
 """
-@inline function sample_wavelengths_stratified(u::NTuple{4, Float32})
+@propagate_inbounds function sample_wavelengths_stratified(u::NTuple{4, Float32})
     stratum_size = LAMBDA_RANGE / 4
 
     lambdas = ntuple(Val(4)) do i
@@ -197,7 +197,7 @@ This distribution reduces variance by sampling more where human vision is sensit
 
 From pbrt-v4: PDF = 0.0039398042 / cosh²(0.0072 * (lambda - 538))
 """
-@inline function visible_wavelengths_pdf(lambda::Float32)::Float32
+@propagate_inbounds function visible_wavelengths_pdf(lambda::Float32)::Float32
     if lambda < LAMBDA_MIN_VISIBLE || lambda > LAMBDA_MAX_VISIBLE
         return 0.0f0
     end
@@ -215,7 +215,7 @@ Inverse CDF of the hyperbolic secant squared distribution.
 
 From pbrt-v4: lambda = 538 - 138.888889 * atanh(0.85691062 - 1.82750197 * u)
 """
-@inline function sample_visible_wavelengths(u::Float32)::Float32
+@propagate_inbounds function sample_visible_wavelengths(u::Float32)::Float32
     # Inverse CDF for hyperbolic secant squared distribution
     return 538.0f0 - 138.888889f0 * atanh(0.85691062f0 - 1.82750197f0 * u)
 end
@@ -226,7 +226,7 @@ end
 Sample 4 wavelengths using importance sampling with hero wavelength method.
 Uses pbrt-v4's visible wavelength distribution for reduced variance.
 """
-@inline function sample_wavelengths_visible(u::Float32)
+@propagate_inbounds function sample_wavelengths_visible(u::Float32)
     # Sample hero wavelength using importance sampling
     lambda1 = sample_visible_wavelengths(u)
 
@@ -263,7 +263,7 @@ Set PDF to zero for secondary wavelengths when a wavelength-dependent
 event occurs (e.g., refraction with dispersion). This indicates that
 only the hero wavelength (first) should contribute to the pixel.
 """
-@inline function terminate_secondary_wavelengths(lambda::Wavelengths)
+@propagate_inbounds function terminate_secondary_wavelengths(lambda::Wavelengths)
     # Keep first wavelength, zero out others
     new_pdf = (lambda.pdf[1], 0.0f0, 0.0f0, 0.0f0)
     return Wavelengths(lambda.lambda, new_pdf)
@@ -274,4 +274,4 @@ end
 
 Check if wavelength i has non-zero PDF (should contribute).
 """
-@inline pdf_is_nonzero(lambda::Wavelengths, i::Int) = lambda.pdf[i] > 0.0f0
+@propagate_inbounds pdf_is_nonzero(lambda::Wavelengths, i::Int) = lambda.pdf[i] > 0.0f0

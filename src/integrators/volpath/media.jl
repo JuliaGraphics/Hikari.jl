@@ -25,13 +25,13 @@ HGPhaseFunction() = HGPhaseFunction(0f0)
 Evaluate Henyey-Greenstein phase function.
 p(cos θ) = (1 - g²) / [4π(1 + g² - 2g cos θ)^(3/2)]
 """
-@inline function hg_p(g::Float32, cos_θ::Float32)::Float32
+@propagate_inbounds function hg_p(g::Float32, cos_θ::Float32)::Float32
     g2 = g * g
     denom = 1f0 + g2 - 2f0 * g * cos_θ
     return (1f0 - g2) / (4f0 * Float32(π) * denom * sqrt(denom))
 end
 
-@inline hg_p(phase::HGPhaseFunction, cos_θ::Float32) = hg_p(phase.g, cos_θ)
+@propagate_inbounds hg_p(phase::HGPhaseFunction, cos_θ::Float32) = hg_p(phase.g, cos_θ)
 
 """
     sample_hg(g, wo, u) -> (wi, pdf)
@@ -39,7 +39,7 @@ end
 Importance sample the Henyey-Greenstein phase function.
 Returns sampled direction and PDF.
 """
-@inline function sample_hg(g::Float32, wo::Vec3f, u::Point2f)
+@propagate_inbounds function sample_hg(g::Float32, wo::Vec3f, u::Point2f)
     # Sample cos_θ from HG distribution
     cos_θ = if abs(g) < 1f-3
         # Isotropic case
@@ -73,7 +73,7 @@ Returns sampled direction and PDF.
     return (wi, pdf)
 end
 
-@inline sample_hg(phase::HGPhaseFunction, wo::Vec3f, u::Point2f) = sample_hg(phase.g, wo, u)
+@propagate_inbounds sample_hg(phase::HGPhaseFunction, wo::Vec3f, u::Point2f) = sample_hg(phase.g, wo, u)
 
 # ============================================================================
 # Medium Properties (returned at sample points)
@@ -99,7 +99,7 @@ MediumProperties() = MediumProperties(
     0f0
 )
 
-@inline σ_t(mp::MediumProperties) = mp.σ_a + mp.σ_s
+@propagate_inbounds σ_t(mp::MediumProperties) = mp.σ_a + mp.σ_s
 
 # ============================================================================
 # Ray Majorant Segment
@@ -183,14 +183,14 @@ function HomogeneousMedium(;
 end
 
 """Check if medium has emission"""
-@inline is_emissive(m::HomogeneousMedium) = !is_black(m.Le)
+@propagate_inbounds is_emissive(m::HomogeneousMedium) = !is_black(m.Le)
 
 """
     sample_point(table, medium::HomogeneousMedium, p, λ) -> MediumProperties
 
 Sample medium properties at a point. For homogeneous media, this is constant.
 """
-@inline function sample_point(
+@propagate_inbounds function sample_point(
     table::RGBToSpectrumTable,
     medium::HomogeneousMedium,
     p::Point3f,
@@ -208,7 +208,7 @@ end
 
 Get majorant for ray segment. For homogeneous media, majorant = σ_t everywhere.
 """
-@inline function get_majorant(
+@propagate_inbounds function get_majorant(
     table::RGBToSpectrumTable,
     medium::HomogeneousMedium,
     ray::Raycore.Ray,
@@ -245,12 +245,12 @@ function MajorantGrid(res::Vec3i, alloc=Vector{Float32})
     MajorantGrid(voxels, res)
 end
 
-@inline function majorant_lookup(grid::MajorantGrid, x::Int, y::Int, z::Int)::Float32
-    @_inbounds grid.voxels[x + grid.res[1] * (y + grid.res[2] * z) + 1]
+@propagate_inbounds function majorant_lookup(grid::MajorantGrid, x::Int, y::Int, z::Int)::Float32
+     grid.voxels[x + grid.res[1] * (y + grid.res[2] * z) + 1]
 end
 
-@inline function majorant_set!(grid::MajorantGrid, x::Int, y::Int, z::Int, v::Float32)
-    @_inbounds grid.voxels[x + grid.res[1] * (y + grid.res[2] * z) + 1] = v
+@propagate_inbounds function majorant_set!(grid::MajorantGrid, x::Int, y::Int, z::Int, v::Float32)
+     grid.voxels[x + grid.res[1] * (y + grid.res[2] * z) + 1] = v
 end
 
 """
@@ -344,7 +344,7 @@ function build_majorant_grid(density::AbstractArray{Float32,3}, res::Vec3i)
                 # Find max in this region
                 max_val = 0f0
                 for z in z_start:z_end, y in y_start:y_end, x in x_start:x_end
-                    @_inbounds max_val = max(max_val, density[x, y, z])
+                     max_val = max(max_val, density[x, y, z])
                 end
 
                 majorant_set!(grid, ix, iy, iz, max_val)
@@ -355,10 +355,10 @@ function build_majorant_grid(density::AbstractArray{Float32,3}, res::Vec3i)
     return grid
 end
 
-@inline is_emissive(::GridMedium) = false
+@propagate_inbounds is_emissive(::GridMedium) = false
 
 """Sample density at a point using trilinear interpolation"""
-@inline function sample_density(medium::GridMedium, p_medium::Point3f)::Float32
+@propagate_inbounds function sample_density(medium::GridMedium, p_medium::Point3f)::Float32
     # Normalize to [0,1] within bounds
     p_norm = (p_medium - medium.bounds.p_min) ./ (medium.bounds.p_max - medium.bounds.p_min)
 
@@ -385,7 +385,7 @@ end
     fz = Float32(gz - iz)
 
     # Trilinear interpolation
-    @_inbounds begin
+     begin
         d000 = medium.density[ix, iy, iz]
         d100 = medium.density[ix+1, iy, iz]
         d010 = medium.density[ix, iy+1, iz]
@@ -410,7 +410,7 @@ end
 end
 
 """Sample medium properties at a point"""
-@inline function sample_point(
+@propagate_inbounds function sample_point(
     table::RGBToSpectrumTable,
     medium::GridMedium,
     p::Point3f,
@@ -432,7 +432,7 @@ end
 end
 
 """Get majorant for ray segment (conservative, uses max density)"""
-@inline function get_majorant(
+@propagate_inbounds function get_majorant(
     table::RGBToSpectrumTable,
     medium::GridMedium,
     ray::Raycore.Ray,

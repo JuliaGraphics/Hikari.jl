@@ -306,12 +306,12 @@ const CIE_Z = Float32[
 Sample CIE X color matching function at wavelength lambda (in nm).
 Uses nearest-neighbor lookup into tabulated data.
 """
-@inline function sample_cie_x(lambda::Float32)::Float32
+@propagate_inbounds function sample_cie_x(lambda::Float32)::Float32
     offset = round_int32(lambda) - CIE_LAMBDA_MIN
     if offset < 0 || offset >= length(CIE_X)
         return 0.0f0
     end
-    @_inbounds return CIE_X[offset + 1]
+     return CIE_X[offset + 1]
 end
 
 """
@@ -319,12 +319,12 @@ end
 
 Sample CIE Y color matching function at wavelength lambda (in nm).
 """
-@inline function sample_cie_y(lambda::Float32)::Float32
+@propagate_inbounds function sample_cie_y(lambda::Float32)::Float32
     offset = round_int32(lambda) - CIE_LAMBDA_MIN
     if offset < 0 || offset >= length(CIE_Y)
         return 0.0f0
     end
-    @_inbounds return CIE_Y[offset + 1]
+     return CIE_Y[offset + 1]
 end
 
 """
@@ -332,12 +332,12 @@ end
 
 Sample CIE Z color matching function at wavelength lambda (in nm).
 """
-@inline function sample_cie_z(lambda::Float32)::Float32
+@propagate_inbounds function sample_cie_z(lambda::Float32)::Float32
     offset = round_int32(lambda) - CIE_LAMBDA_MIN
     if offset < 0 || offset >= length(CIE_Z)
         return 0.0f0
     end
-    @_inbounds return CIE_Z[offset + 1]
+     return CIE_Z[offset + 1]
 end
 
 """
@@ -346,7 +346,7 @@ end
 Sample CIE XYZ color matching functions at the given wavelengths.
 Returns (X_samples, Y_samples, Z_samples) as SpectralRadiance.
 """
-@inline function sample_cie_xyz(lambda::Wavelengths)
+@propagate_inbounds function sample_cie_xyz(lambda::Wavelengths)
     X = SpectralRadiance(ntuple(i -> sample_cie_x(lambda.lambda[i]), Val(4)))
     Y = SpectralRadiance(ntuple(i -> sample_cie_y(lambda.lambda[i]), Val(4)))
     Z = SpectralRadiance(ntuple(i -> sample_cie_z(lambda.lambda[i]), Val(4)))
@@ -367,7 +367,7 @@ The formula is:
 
 where CMF is the color matching function and pdf is the wavelength sampling PDF.
 """
-@inline function spectral_to_xyz(L::SpectralRadiance, lambda::Wavelengths)
+@propagate_inbounds function spectral_to_xyz(L::SpectralRadiance, lambda::Wavelengths)
     # Sample the X, Y, Z matching curves at lambda
     X_cmf, Y_cmf, Z_cmf = sample_cie_xyz(lambda)
 
@@ -376,7 +376,7 @@ where CMF is the color matching function and pdf is the wavelength sampling PDF.
     Y_sum = 0.0f0
     Z_sum = 0.0f0
 
-    @_inbounds for i in 1:4
+     for i in 1:4
         pdf_i = lambda.pdf[i]
         if pdf_i != 0.0f0
             inv_pdf = 1.0f0 / pdf_i
@@ -402,7 +402,7 @@ end
 Convert CIE XYZ to linear sRGB color space.
 Uses the standard XYZ to sRGB matrix (D65 white point).
 """
-@inline function xyz_to_linear_srgb(X::Float32, Y::Float32, Z::Float32)
+@propagate_inbounds function xyz_to_linear_srgb(X::Float32, Y::Float32, Z::Float32)
     R =  3.2404542f0 * X - 1.5371385f0 * Y - 0.4985314f0 * Z
     G = -0.9692660f0 * X + 1.8760108f0 * Y + 0.0415560f0 * Z
     B =  0.0556434f0 * X - 0.2040259f0 * Y + 1.0572252f0 * Z
@@ -414,7 +414,7 @@ end
 
 Convert linear sRGB to CIE XYZ color space.
 """
-@inline function linear_srgb_to_xyz(R::Float32, G::Float32, B::Float32)
+@propagate_inbounds function linear_srgb_to_xyz(R::Float32, G::Float32, B::Float32)
     X = 0.4124564f0 * R + 0.3575761f0 * G + 0.1804375f0 * B
     Y = 0.2126729f0 * R + 0.7151522f0 * G + 0.0721750f0 * B
     Z = 0.0193339f0 * R + 0.1191920f0 * G + 0.9503041f0 * B
@@ -426,7 +426,7 @@ end
 
 Apply sRGB gamma curve to a linear RGB value.
 """
-@inline function linear_to_srgb_gamma(c::Float32)::Float32
+@propagate_inbounds function linear_to_srgb_gamma(c::Float32)::Float32
     if c <= 0.0031308f0
         return 12.92f0 * c
     else
@@ -439,7 +439,7 @@ end
 
 Remove sRGB gamma curve from an sRGB value to get linear RGB.
 """
-@inline function srgb_gamma_to_linear(c::Float32)::Float32
+@propagate_inbounds function srgb_gamma_to_linear(c::Float32)::Float32
     if c <= 0.04045f0
         return c / 12.92f0
     else
@@ -455,7 +455,7 @@ Convert spectral radiance to sRGB:
 2. Transform XYZ to linear sRGB
 3. Apply sRGB gamma curve
 """
-@inline function spectral_to_srgb(L::SpectralRadiance, lambda::Wavelengths)
+@propagate_inbounds function spectral_to_srgb(L::SpectralRadiance, lambda::Wavelengths)
     # Convert to XYZ
     X, Y, Z = spectral_to_xyz(L, lambda)
 
@@ -477,7 +477,7 @@ Convert spectral radiance to linear RGB (no gamma):
 1. Convert to XYZ using color matching functions
 2. Transform XYZ to linear sRGB
 """
-@inline function spectral_to_linear_rgb(L::SpectralRadiance, lambda::Wavelengths)
+@propagate_inbounds function spectral_to_linear_rgb(L::SpectralRadiance, lambda::Wavelengths)
     X, Y, Z = spectral_to_xyz(L, lambda)
     R, G, B = xyz_to_linear_srgb(X, Y, Z)
     return (max(0.0f0, R), max(0.0f0, G), max(0.0f0, B))
@@ -490,7 +490,7 @@ Pseudo-spectral passthrough: read RGB directly from spectral channels.
 For use when `uplift_rgb(...; method=:passthrough)` was used to store RGB directly.
 This matches PbrtWavefront behavior and avoids spectral-to-XYZ conversion noise.
 """
-@inline function spectral_to_linear_rgb_passthrough(L::SpectralRadiance)
+@propagate_inbounds function spectral_to_linear_rgb_passthrough(L::SpectralRadiance)
     R = max(0.0f0, L.data[1])
     G = max(0.0f0, L.data[2])
     B = max(0.0f0, L.data[3])

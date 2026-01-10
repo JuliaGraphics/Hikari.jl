@@ -73,18 +73,18 @@ Map [0, 1] scalar to BRDF's roughness, where values close to zero
 correspond to near-perfect specular reflection, rather than by specifying
 α values directly.
 """
-@inline function roughness_to_α(roughness::Float32)::Float32
+@propagate_inbounds function roughness_to_α(roughness::Float32)::Float32
     roughness = max(1f-3, roughness)
     x = log(roughness)
     1.62142f0 + 0.819955f0 * x + 0.1734f0 * x*x +
     0.0171201f0 * x*x*x + 0.000640711f0 * x*x*x*x
 end
 
-@inline function G1(m::MicrofacetDistribution, w::Vec3f)::Float32
+@propagate_inbounds function G1(m::MicrofacetDistribution, w::Vec3f)::Float32
     1f0 / (1f0 + λ(m, w))
 end
 
-@inline function G(m::MicrofacetDistribution, wo::Vec3f, wi::Vec3f)::Float32
+@propagate_inbounds function G(m::MicrofacetDistribution, wo::Vec3f, wi::Vec3f)::Float32
     1f0 / (1f0 + λ(m, wo) + λ(m, wi))
 end
 
@@ -221,7 +221,7 @@ function distribution_microfacet_reflection(m::UberBxDF{S}, wo::Vec3f, wi::Vec3f
         f / (4f0 * cosθi * cosθo)
 end
 
-@inline function sample_microfacet_reflection(
+@propagate_inbounds function sample_microfacet_reflection(
         m::UberBxDF{S}, wo::Vec3f, u::Point2f,
     )::Tuple{Vec3f,Float32,RGBSpectrum,UInt8} where {S<:Spectrum}
 
@@ -240,7 +240,7 @@ end
     wi, pdf, m(wo, wi), UInt8(0)
 end
 
-@inline function pdf_microfacet_reflection(
+@propagate_inbounds function pdf_microfacet_reflection(
         m::UberBxDF, wo::Vec3f, wi::Vec3f,
     )::Float32
 
@@ -277,7 +277,7 @@ function distribution_microfacet_transmission(m::UberBxDF{S}, wo::Vec3f, wi::Vec
     )
 end
 
-@inline function sample_microfacet_transmission(m::UberBxDF{S}, wo::Vec3f, u::Point2f) where {S<:Spectrum}
+@propagate_inbounds function sample_microfacet_transmission(m::UberBxDF{S}, wo::Vec3f, u::Point2f) where {S<:Spectrum}
 
     wo[3] ≈ 0f0 && return Vec3f(0f0), 0f0, S(0f0), UInt8(0)
     wh = sample_wh(m.distribution, wo, u)
@@ -372,7 +372,7 @@ end
 Sample FresnelMicrofacet using Fresnel-weighted probability to choose between
 reflection and transmission.
 """
-@inline function sample_fresnel_microfacet(
+@propagate_inbounds function sample_fresnel_microfacet(
     m::UberBxDF{S}, wo::Vec3f, u::Point2f,
 )::Tuple{Vec3f,Float32,S,UInt8} where {S<:Spectrum}
 

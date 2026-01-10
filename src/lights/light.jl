@@ -5,7 +5,7 @@
     LightInfinite = 0b1000
 end
 
-@inline function is_δ_light(flag::LightFlags)::Bool
+@propagate_inbounds function is_δ_light(flag::LightFlags)::Bool
     flag == LightδPosition || flag == LightδDirection
 end
 
@@ -14,7 +14,7 @@ struct VisibilityTester
     p1::Interaction
 end
 
-@inline function unoccluded(t::VisibilityTester, scene::AbstractScene)::Bool
+@propagate_inbounds function unoccluded(t::VisibilityTester, scene::AbstractScene)::Bool
     # Explicit isinf check to avoid tuple iteration in SPIR-V (any() causes PHI node errors)
     p0_inf = isinf(t.p0.p[1]) || isinf(t.p0.p[2]) || isinf(t.p0.p[3])
     p1_inf = isinf(t.p1.p[1]) || isinf(t.p1.p[2]) || isinf(t.p1.p[3])
@@ -44,4 +44,4 @@ end
 Emmited light if ray hit an area light source.
 By default light sources have no area.
 """
-@inline le(::Light, ::Union{Ray,RayDifferentials}) = RGBSpectrum(0f0)
+@propagate_inbounds le(::Light, ::Union{Ray,RayDifferentials}) = RGBSpectrum(0f0)

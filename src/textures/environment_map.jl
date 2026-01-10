@@ -42,7 +42,7 @@ Uses standard lat-long mapping where:
 - U (horizontal) maps to longitude: 0 at +X, increases counter-clockwise
 - V (vertical) maps to latitude: 0 at top (+Y), 1 at bottom (-Y)
 """
-@inline function direction_to_uv(dir::Vec3f, rotation::Float32=0f0)::Point2f
+@propagate_inbounds function direction_to_uv(dir::Vec3f, rotation::Float32=0f0)::Point2f
     # Compute spherical coordinates
     # θ (theta) is the polar angle from +Y axis
     # φ (phi) is the azimuthal angle in XZ plane from +X axis
@@ -68,7 +68,7 @@ end
 Convert equirectangular UV coordinates to a direction vector.
 Inverse of direction_to_uv.
 """
-@inline function uv_to_direction(uv::Point2f, rotation::Float32=0f0)::Vec3f
+@propagate_inbounds function uv_to_direction(uv::Point2f, rotation::Float32=0f0)::Vec3f
     # Convert UV to spherical coordinates
     # U: [0, 1] -> φ ∈ [-π, π]
     φ = uv[1] * 2f0 * π - π
@@ -86,7 +86,7 @@ end
 """
 Sample the environment map by direction vector.
 """
-@inline function (env::EnvironmentMap{S, T, D})(dir::Vec3f)::S where {S<:Spectrum, T, D}
+@propagate_inbounds function (env::EnvironmentMap{S, T, D})(dir::Vec3f)::S where {S<:Spectrum, T, D}
     uv = direction_to_uv(dir, env.rotation)
 
     # Bilinear interpolation
@@ -132,7 +132,7 @@ end
 """
 Sample method alias for compatibility.
 """
-@inline sample(env::EnvironmentMap, dir::Vec3f) = env(dir)
+@propagate_inbounds sample(env::EnvironmentMap, dir::Vec3f) = env(dir)
 
 """
     lookup_uv(env::EnvironmentMap, uv::Point2f) -> Spectrum
@@ -141,7 +141,7 @@ Look up environment map directly by UV coordinates.
 This is the equivalent of pbrt-v4's ImageLe(uv, lambda) for ImageInfiniteLight.
 Used when UV is already known (e.g., from importance sampling the distribution).
 """
-@inline function lookup_uv(env::EnvironmentMap{S, T, D}, uv::Point2f)::S where {S<:Spectrum, T, D}
+@propagate_inbounds function lookup_uv(env::EnvironmentMap{S, T, D}, uv::Point2f)::S where {S<:Spectrum, T, D}
     # Bilinear interpolation (same as direction-based lookup, but UV already computed)
     h, w = size(env.data)
 

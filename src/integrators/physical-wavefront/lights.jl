@@ -18,7 +18,7 @@ struct PWLightSample
     is_delta::Bool         # True for point/distant lights (no MIS needed)
 end
 
-@inline PWLightSample() = PWLightSample(
+@propagate_inbounds PWLightSample() = PWLightSample(
     SpectralRadiance(0f0),
     Vec3f(0f0, 0f0, 1f0),
     0f0,
@@ -36,7 +36,7 @@ end
 
 Sample a point light spectrally.
 """
-@inline function sample_light_spectral(
+@propagate_inbounds function sample_light_spectral(
     table::RGBToSpectrumTable, light::PointLight, p::Point3f, lambda::Wavelengths, ::Point2f
 )::PWLightSample
     # Direction and distance to light
@@ -64,7 +64,7 @@ end
 
 Sample a spotlight spectrally.
 """
-@inline function sample_light_spectral(
+@propagate_inbounds function sample_light_spectral(
     table::RGBToSpectrumTable, light::SpotLight, p::Point3f, lambda::Wavelengths, ::Point2f
 )::PWLightSample
     # Direction and distance to light
@@ -110,7 +110,7 @@ end
 
 Sample a directional light spectrally.
 """
-@inline function sample_light_spectral(
+@propagate_inbounds function sample_light_spectral(
     table::RGBToSpectrumTable, light::DirectionalLight, p::Point3f, lambda::Wavelengths, ::Point2f
 )::PWLightSample
     # Direction is opposite to light's travel direction
@@ -130,7 +130,7 @@ end
 
 Sample a sun light spectrally.
 """
-@inline function sample_light_spectral(
+@propagate_inbounds function sample_light_spectral(
     table::RGBToSpectrumTable, light::SunLight, p::Point3f, lambda::Wavelengths, ::Point2f
 )::PWLightSample
     # Direction is opposite to light's travel direction
@@ -149,7 +149,7 @@ end
 
 Sample sun direction from SunSkyLight spectrally.
 """
-@inline function sample_light_spectral(
+@propagate_inbounds function sample_light_spectral(
     table::RGBToSpectrumTable, light::SunSkyLight, p::Point3f, lambda::Wavelengths, ::Point2f
 )::PWLightSample
     # Direction TO the sun
@@ -169,7 +169,7 @@ end
 
 Sample environment light spectrally with importance sampling.
 """
-@inline function sample_light_spectral(
+@propagate_inbounds function sample_light_spectral(
     table::RGBToSpectrumTable, light::EnvironmentLight, p::Point3f, lambda::Wavelengths, u::Point2f
 )::PWLightSample
     # Importance sample the environment map based on luminance
@@ -208,7 +208,7 @@ NOTE: Ambient light represents uniform illumination from all directions.
 We sample the full sphere uniformly - the BSDF evaluation will naturally
 give zero for directions below the surface, and cos_theta weighting handles the rest.
 """
-@inline function sample_light_spectral(
+@propagate_inbounds function sample_light_spectral(
     table::RGBToSpectrumTable, light::AmbientLight, p::Point3f, lambda::Wavelengths, u::Point2f
 )::PWLightSample
     # Ambient lights provide constant illumination from all directions
@@ -231,7 +231,7 @@ give zero for directions below the surface, and cos_theta weighting handles the 
 end
 
 # Fallback for unknown light types
-@inline function sample_light_spectral(
+@propagate_inbounds function sample_light_spectral(
     ::RGBToSpectrumTable, ::Light, ::Point3f, ::Wavelengths, ::Point2f
 )::PWLightSample
     return PWLightSample()
@@ -246,35 +246,35 @@ end
 
 PDF for sampling direction wi from point light (always delta).
 """
-@inline pdf_li_spectral(::PointLight, ::Point3f, ::Vec3f) = 0f0
+@propagate_inbounds pdf_li_spectral(::PointLight, ::Point3f, ::Vec3f) = 0f0
 
 """
     pdf_li_spectral(light::DirectionalLight, p::Point3f, wi::Vec3f)
 
 PDF for sampling direction wi from directional light (always delta).
 """
-@inline pdf_li_spectral(::DirectionalLight, ::Point3f, ::Vec3f) = 0f0
+@propagate_inbounds pdf_li_spectral(::DirectionalLight, ::Point3f, ::Vec3f) = 0f0
 
 """
     pdf_li_spectral(light::SunLight, p::Point3f, wi::Vec3f)
 
 PDF for sampling direction wi from sun light (always delta).
 """
-@inline pdf_li_spectral(::SunLight, ::Point3f, ::Vec3f) = 0f0
+@propagate_inbounds pdf_li_spectral(::SunLight, ::Point3f, ::Vec3f) = 0f0
 
 """
     pdf_li_spectral(light::SpotLight, p::Point3f, wi::Vec3f)
 
 PDF for sampling direction wi from spotlight (always delta).
 """
-@inline pdf_li_spectral(::SpotLight, ::Point3f, ::Vec3f) = 0f0
+@propagate_inbounds pdf_li_spectral(::SpotLight, ::Point3f, ::Vec3f) = 0f0
 
 """
     pdf_li_spectral(light::EnvironmentLight, p::Point3f, wi::Vec3f)
 
 PDF for sampling direction wi from environment light.
 """
-@inline function pdf_li_spectral(light::EnvironmentLight, ::Point3f, wi::Vec3f)
+@propagate_inbounds function pdf_li_spectral(light::EnvironmentLight, ::Point3f, wi::Vec3f)
     # Convert direction to UV
     uv = direction_to_uv(wi, light.env_map.rotation)
 
@@ -291,13 +291,13 @@ PDF for sampling direction wi from environment light.
 end
 
 # Fallback
-@inline pdf_li_spectral(::Light, ::Point3f, ::Vec3f) = 0f0
+@propagate_inbounds pdf_li_spectral(::Light, ::Point3f, ::Vec3f) = 0f0
 
 # ============================================================================
 # Light Tuple Dispatch (GPU-Safe with Unrolled If-Branches)
 # ============================================================================
 
-@inline @generated function sample_light_from_tuple(
+@propagate_inbounds @generated function sample_light_from_tuple(
     table::RGBToSpectrumTable, lights::L, idx::Int32, p::Point3f, lambda::Wavelengths, u::Point2f
 ) where {L <: Tuple}
     N = length(L.parameters)
@@ -307,12 +307,12 @@ end
     end
 
     # Build unrolled if-else chain - each branch calls sample_light_spectral directly
-    expr = :(@_inbounds sample_light_spectral(table, lights[$N], p, lambda, u))
+    expr = :(@inbounds sample_light_spectral(table, lights[$N], p, lambda, u))
 
     for i in (N-1):-1:1
         expr = quote
             if idx == Int32($i)
-                @_inbounds sample_light_spectral(table, lights[$i], p, lambda, u)
+                @inbounds sample_light_spectral(table, lights[$i], p, lambda, u)
             else
                 $expr
             end
@@ -327,7 +327,7 @@ end
 
 Count total number of lights in a tuple (recursively for nested structures).
 """
-@inline count_lights(::NTuple{N, Any}) where {N} = Int32(N)
+@propagate_inbounds count_lights(::NTuple{N, Any}) where {N} = Int32(N)
 
 # ============================================================================
 # Environment Light Evaluation (for escaped rays)
@@ -339,7 +339,7 @@ Count total number of lights in a tuple (recursively for nested structures).
 
 Evaluate environment light for an escaped ray direction.
 """
-@inline function evaluate_environment_spectral(
+@propagate_inbounds function evaluate_environment_spectral(
     table::RGBToSpectrumTable, light::EnvironmentLight, ray_d::Vec3f, lambda::Wavelengths
 )::SpectralRadiance
     # Sample environment map by direction (env_map handles direction->UV internally)
@@ -354,7 +354,7 @@ end
 
 Evaluate sun/sky light for an escaped ray direction.
 """
-@inline function evaluate_environment_spectral(
+@propagate_inbounds function evaluate_environment_spectral(
     table::RGBToSpectrumTable, light::SunSkyLight, ray_d::Vec3f, lambda::Wavelengths
 )::SpectralRadiance
     # Get sky color for direction
@@ -368,14 +368,14 @@ end
 
 Evaluate ambient light for an escaped ray - provides constant radiance regardless of direction.
 """
-@inline function evaluate_environment_spectral(
+@propagate_inbounds function evaluate_environment_spectral(
     table::RGBToSpectrumTable, light::AmbientLight, ray_d::Vec3f, lambda::Wavelengths
 )::SpectralRadiance
     return uplift_rgb(table, light.i, lambda)
 end
 
 # Fallback - non-environment lights contribute nothing for escaped rays
-@inline evaluate_environment_spectral(::RGBToSpectrumTable, ::Light, ::Vec3f, ::Wavelengths) = SpectralRadiance(0f0)
+@propagate_inbounds evaluate_environment_spectral(::RGBToSpectrumTable, ::Light, ::Vec3f, ::Wavelengths) = SpectralRadiance(0f0)
 
 """
     evaluate_escaped_ray_spectral(table, lights::Tuple, ray_d::Vec3f, lambda::Wavelengths)
@@ -383,9 +383,9 @@ end
 Evaluate all environment-type lights for an escaped ray.
 Returns total spectral radiance from infinite lights.
 """
-@inline evaluate_escaped_ray_spectral(::RGBToSpectrumTable, ::Tuple{}, ::Vec3f, ::Wavelengths) = SpectralRadiance(0f0)
+@propagate_inbounds evaluate_escaped_ray_spectral(::RGBToSpectrumTable, ::Tuple{}, ::Vec3f, ::Wavelengths) = SpectralRadiance(0f0)
 
-@inline function evaluate_escaped_ray_spectral(
+@propagate_inbounds function evaluate_escaped_ray_spectral(
     table::RGBToSpectrumTable, lights::Tuple, ray_d::Vec3f, lambda::Wavelengths
 )::SpectralRadiance
     first_Le = evaluate_environment_spectral(table, first(lights), ray_d, lambda)
@@ -403,7 +403,7 @@ end
 Compute MIS weight using power heuristic (beta=2).
 Returns weight for strategy f: w_f = pdf_f^2 / (pdf_f^2 + pdf_g^2)
 """
-@inline function mis_weight_spectral(pdf_f::Float32, pdf_g::Float32)
+@propagate_inbounds function mis_weight_spectral(pdf_f::Float32, pdf_g::Float32)
     if pdf_f <= 0f0
         return 0f0
     end
@@ -438,7 +438,7 @@ struct PWDirectLightingResult
     valid::Bool
 end
 
-@inline PWDirectLightingResult() = PWDirectLightingResult(
+@propagate_inbounds PWDirectLightingResult() = PWDirectLightingResult(
     Point3f(0f0, 0f0, 0f0),
     Vec3f(0f0, 0f0, 1f0),
     0f0,
@@ -453,7 +453,7 @@ end
 
 Compute direct lighting contribution from a light sample with MIS.
 """
-@inline function compute_direct_lighting_spectral(
+@propagate_inbounds function compute_direct_lighting_spectral(
     p::Point3f,
     n::Vec3f,
     wo::Vec3f,

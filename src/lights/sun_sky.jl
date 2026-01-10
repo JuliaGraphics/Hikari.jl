@@ -275,7 +275,7 @@ Perez sky luminance distribution function.
 F(θ, γ) = (1 + A*exp(B/cos(θ))) * (1 + C*exp(D*γ) + E*cos²(γ))
 Where θ is zenith angle of sky point, γ is angle between sky point and sun.
 """
-@inline function perez(theta::Float32, gamma::Float32, coeffs::NTuple{5, Float32})
+@propagate_inbounds function perez(theta::Float32, gamma::Float32, coeffs::NTuple{5, Float32})
     A, B, C, D, E = coeffs
     cos_theta = max(0.001f0, cos(theta))
     (1f0 + A * exp(B / cos_theta)) * (1f0 + C * exp(D * gamma) + E * cos(gamma)^2)
@@ -284,7 +284,7 @@ end
 """
 Compute sky radiance for a given view direction.
 """
-@inline function sky_radiance(light::SunSkyLight, direction::Vec3f)
+@propagate_inbounds function sky_radiance(light::SunSkyLight, direction::Vec3f)
     # Below horizon - return ground albedo if enabled, otherwise continue sky
     if direction[3] <= 0f0 && light.ground_enabled
         return light.ground_albedo * 0.3f0
@@ -330,7 +330,7 @@ end
 """
 Compute sun disk radiance (with soft edge).
 """
-@inline function sun_disk_radiance(light::SunSkyLight, direction::Vec3f)
+@propagate_inbounds function sun_disk_radiance(light::SunSkyLight, direction::Vec3f)
     cos_angle = dot(direction, light.sun_direction)
     angle = acos(clamp(cos_angle, -1f0, 1f0))
 
@@ -356,7 +356,7 @@ Convert UV coordinates to direction on the upper hemisphere.
 - v ∈ [0,1] -> θ ∈ [0, π/2] (zenith angle, 0=up/+Z, π/2=horizon)
 Returns direction with z >= 0.
 """
-@inline function hemisphere_uv_to_direction(uv::Point2f)::Vec3f
+@propagate_inbounds function hemisphere_uv_to_direction(uv::Point2f)::Vec3f
     φ = uv[1] * 2f0 * Float32(π)
     θ = uv[2] * Float32(π) / 2f0
     sin_θ = sin(θ)
@@ -367,7 +367,7 @@ end
 Convert direction to UV coordinates for hemisphere.
 Inverse of hemisphere_uv_to_direction.
 """
-@inline function hemisphere_direction_to_uv(dir::Vec3f)::Point2f
+@propagate_inbounds function hemisphere_direction_to_uv(dir::Vec3f)::Point2f
     # θ is zenith angle (0 at +Z, π/2 at horizon)
     θ = acos(clamp(dir[3], 0f0, 1f0))
     # φ is azimuth angle
@@ -396,7 +396,7 @@ solid angle correction.
 The visibility tester ensures proper shadow testing - if geometry blocks
 the sampled sky direction, no contribution is added.
 """
-@inline function sample_li(
+@propagate_inbounds function sample_li(
     light::SunSkyLight{S, D}, ref::Interaction, u::Point2f, scene::AbstractScene,
 )::Tuple{S,Vec3f,Float32,VisibilityTester} where {S<:Spectrum, D}
     # Importance sample direction from pre-computed distribution
@@ -428,7 +428,7 @@ end
 PDF for sampling a particular direction from the SunSkyLight.
 Returns the probability density for importance sampling this direction.
 """
-@inline function pdf_li(light::SunSkyLight{S, D}, ::Interaction, wi::Vec3f)::Float32 where {S<:Spectrum, D}
+@propagate_inbounds function pdf_li(light::SunSkyLight{S, D}, ::Interaction, wi::Vec3f)::Float32 where {S<:Spectrum, D}
     # Below horizon has zero probability
     if wi[3] <= 0f0
         return 0f0
@@ -451,14 +451,14 @@ Return sky radiance for rays that escape the scene.
 This is what makes SunSkyLight provide the sky background.
 """
 # Separate methods to avoid Union type allocation
-@inline function le(light::SunSkyLight, ray::Ray)
+@propagate_inbounds function le(light::SunSkyLight, ray::Ray)
     dir = normalize(Vec3f(ray.d))
     sky = sky_radiance(light, dir)
     sun = sun_disk_radiance(light, dir)
     sky + sun
 end
 
-@inline function le(light::SunSkyLight, ray::RayDifferentials)
+@propagate_inbounds function le(light::SunSkyLight, ray::RayDifferentials)
     dir = normalize(Vec3f(ray.d))
     sky = sky_radiance(light, dir)
     sun = sun_disk_radiance(light, dir)
@@ -468,7 +468,7 @@ end
 """
 Approximate power - not accurate but needed for interface.
 """
-@inline function power(light::SunSkyLight{S}, scene::AbstractScene)::S where S<:Spectrum
+@propagate_inbounds function power(light::SunSkyLight{S}, scene::AbstractScene)::S where S<:Spectrum
     light.sun_intensity * Float32(π) * scene.world_radius^2
 end
 

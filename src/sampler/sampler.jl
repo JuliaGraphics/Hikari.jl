@@ -25,14 +25,14 @@ function Sampler(samples_per_pixel::Integer)
     )
 end
 
-@inline function get_camera_sample(sampler::AbstractSampler, p_raster::Point2f)
+@propagate_inbounds function get_camera_sample(sampler::AbstractSampler, p_raster::Point2f)
     p_film = p_raster .+ get_2d(sampler)
     time = get_1d(sampler)
     p_lens = get_2d(sampler)
     CameraSample(p_film, p_lens, time)
 end
 
-@inline round_count(sampler::AbstractSampler, n::Integer) = n
+@propagate_inbounds round_count(sampler::AbstractSampler, n::Integer) = n
 
 """
 Other samplers are required to explicitly call this,
@@ -134,7 +134,7 @@ end
 
 # Simple GPU-friendly hash-based RNG for camera ray dithering
 # Uses Wang hash for good distribution
-@inline function wang_hash(seed::UInt32)::UInt32
+@propagate_inbounds function wang_hash(seed::UInt32)::UInt32
     seed = (seed ⊻ UInt32(61)) ⊻ (seed >> UInt32(16))
     seed = seed * UInt32(9)
     seed = seed ⊻ (seed >> UInt32(4))
@@ -143,12 +143,12 @@ end
     seed
 end
 
-@inline function gpu_rand_float(x::UInt32, y::UInt32, offset::UInt32)::Float32
+@propagate_inbounds function gpu_rand_float(x::UInt32, y::UInt32, offset::UInt32)::Float32
     hash_val = wang_hash(x ⊻ wang_hash(y ⊻ wang_hash(offset)))
     Float32(hash_val) / Float32(typemax(UInt32))
 end
 
-@inline function get_camera_sample(::UniformSampler, p_raster::Point2f)
+@propagate_inbounds function get_camera_sample(::UniformSampler, p_raster::Point2f)
     # Use rand() for jittering - simpler and works correctly with any resolution
     p_film = p_raster .+ rand(Point2f)
     p_lens = rand(Point2f)
@@ -156,23 +156,23 @@ end
     CameraSample(p_film, p_lens, time)
 end
 
-@inline function has_next_sample(u::UniformSampler)::Bool
+@propagate_inbounds function has_next_sample(u::UniformSampler)::Bool
     u.current_sample ≤ u.samples_per_pixel
 end
-@inline function start_next_sample!(u::UniformSampler)
+@propagate_inbounds function start_next_sample!(u::UniformSampler)
     u.current_sample += 1
 end
-@inline function start_pixel!(u::UniformSampler, ::Point2f)
+@propagate_inbounds function start_pixel!(u::UniformSampler, ::Point2f)
     u.current_sample = 1
 end
 # Use rand() for proper Monte Carlo sampling
 # The deterministic hash-based approach was causing all calls to return
 # the same values, breaking light sampling in scenes with multiple lights
-@inline function get_1d(::UniformSampler)::Float32
+@propagate_inbounds function get_1d(::UniformSampler)::Float32
     rand(Float32)
 end
 
-@inline function get_2d(::UniformSampler)::Point2f
+@propagate_inbounds function get_2d(::UniformSampler)::Point2f
     rand(Point2f)
 end
 

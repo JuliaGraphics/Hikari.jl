@@ -63,7 +63,7 @@ end
 
 Compute luminance from RGB using Rec. 709 coefficients.
 """
-@inline function denoise_luminance(r::Float32, g::Float32, b::Float32)::Float32
+@propagate_inbounds function denoise_luminance(r::Float32, g::Float32, b::Float32)::Float32
     return 0.2126f0 * r + 0.7152f0 * g + 0.0722f0 * b
 end
 
@@ -73,7 +73,7 @@ end
 Color/luminance edge-stopping weight.
 If variance > 0, scales by sqrt(variance) for variance-guided filtering.
 """
-@inline function weight_color(
+@propagate_inbounds function weight_color(
     lum_p::Float32, lum_q::Float32,
     sigma::Float32, variance::Float32
 )::Float32
@@ -93,7 +93,7 @@ end
 Normal edge-stopping weight using dot product.
 High sigma means more tolerance for normal differences.
 """
-@inline function weight_normal(
+@propagate_inbounds function weight_normal(
     n_p::Vec3f, n_q::Vec3f, sigma::Float32
 )::Float32
     dot_val = dot(n_p, n_q)
@@ -108,7 +108,7 @@ end
 Depth edge-stopping weight.
 Uses step size to adapt to increasing filter radius.
 """
-@inline function weight_depth(
+@propagate_inbounds function weight_depth(
     d_p::Float32, d_q::Float32,
     sigma::Float32, step_size::Float32
 )::Float32
@@ -133,7 +133,7 @@ const ATROUS_KERNEL_1D = @SVector Float32[1/16, 1/4, 3/8, 1/4, 1/16]
 Single pass of the à-trous wavelet filter.
 Applies a 5x5 filter with edge-stopping weights.
 """
-@kernel function atrous_denoise_kernel!(
+@kernel inbounds=true function atrous_denoise_kernel!(
     output,  # RGB{Float32} matrix (height × width)
     @Const(input),   # RGB{Float32} matrix
     @Const(normals), # Vec3f matrix
@@ -149,7 +149,7 @@ Applies a 5x5 filter with edge-stopping weights.
     idx = @index(Global)
     num_pixels = width * height
 
-    @_inbounds if idx <= num_pixels
+     if idx <= num_pixels
         # Convert linear index to 2D coordinates (row, col) for Julia matrices
         row = ((idx - Int32(1)) % height) + Int32(1)
         col = ((idx - Int32(1)) ÷ height) + Int32(1)
@@ -233,7 +233,7 @@ end
 Compute per-pixel variance from RGB framebuffer.
 Uses spatial 3x3 neighborhood for variance estimation.
 """
-@kernel function compute_variance_kernel!(
+@kernel inbounds=true function compute_variance_kernel!(
     variance,  # Float32 matrix
     @Const(input),  # RGB{Float32} matrix
     @Const(width::Int32), @Const(height::Int32)
@@ -241,7 +241,7 @@ Uses spatial 3x3 neighborhood for variance estimation.
     idx = @index(Global)
     num_pixels = width * height
 
-    @_inbounds if idx <= num_pixels
+     if idx <= num_pixels
         # Convert linear index to 2D
         row = ((idx - Int32(1)) % height) + Int32(1)
         col = ((idx - Int32(1)) ÷ height) + Int32(1)

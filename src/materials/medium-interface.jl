@@ -21,8 +21,8 @@ end
 
 MediumIndex() = MediumIndex(Int32(0))
 
-@inline is_vacuum(idx::MediumIndex) = idx.medium_type == Int32(0)
-@inline has_medium(idx::MediumIndex) = idx.medium_type > Int32(0)
+@propagate_inbounds is_vacuum(idx::MediumIndex) = idx.medium_type == Int32(0)
+@propagate_inbounds has_medium(idx::MediumIndex) = idx.medium_type > Int32(0)
 
 # ============================================================================
 # User-facing MediumInterface (stores actual Medium objects)
@@ -65,7 +65,7 @@ function MediumInterface(material::M, medium) where {M<:Material}
 end
 
 """Check if this interface represents a medium transition"""
-@inline function is_medium_transition(mi::MediumInterface)
+@propagate_inbounds function is_medium_transition(mi::MediumInterface)
     mi.inside !== mi.outside
 end
 
@@ -90,23 +90,23 @@ struct MediumInterfaceIdx{M<:Material} <: Material
 end
 
 """Check if this interface represents a medium transition"""
-@inline function is_medium_transition(mi::MediumInterfaceIdx)
+@propagate_inbounds function is_medium_transition(mi::MediumInterfaceIdx)
     mi.inside.medium_type != mi.outside.medium_type
 end
 
 # Trait functions for GPU-compatible type checking (avoids `isa` runtime dispatch)
 """Check if a material is a MediumInterfaceIdx (GPU-compatible, no runtime type introspection)"""
-@inline is_medium_interface_idx(::MediumInterfaceIdx) = true
-@inline is_medium_interface_idx(::Material) = false
+@propagate_inbounds is_medium_interface_idx(::MediumInterfaceIdx) = true
+@propagate_inbounds is_medium_interface_idx(::Material) = false
 
 # GPU-safe accessors for medium indices (return vacuum for non-interface materials)
 """Get the inside medium index from a material (vacuum if not a MediumInterfaceIdx)"""
-@inline get_inside_medium(mi::MediumInterfaceIdx) = mi.inside
-@inline get_inside_medium(::Material) = MediumIndex()
+@propagate_inbounds get_inside_medium(mi::MediumInterfaceIdx) = mi.inside
+@propagate_inbounds get_inside_medium(::Material) = MediumIndex()
 
 """Get the outside medium index from a material (vacuum if not a MediumInterfaceIdx)"""
-@inline get_outside_medium(mi::MediumInterfaceIdx) = mi.outside
-@inline get_outside_medium(::Material) = MediumIndex()
+@propagate_inbounds get_outside_medium(mi::MediumInterfaceIdx) = mi.outside
+@propagate_inbounds get_outside_medium(::Material) = MediumIndex()
 
 """
     get_medium_index(mi::MediumInterfaceIdx, wi::Vec3f, n::Vec3f) -> MediumIndex
@@ -115,7 +115,7 @@ Determine which medium a ray enters based on direction and surface normal.
 - If dot(wi, n) > 0: ray going in direction of normal -> outside medium
 - If dot(wi, n) < 0: ray going against normal -> inside medium
 """
-@inline function get_medium_index(mi::MediumInterfaceIdx, wi::Vec3f, n::Vec3f)
+@propagate_inbounds function get_medium_index(mi::MediumInterfaceIdx, wi::Vec3f, n::Vec3f)
     if dot(wi, n) > 0f0
         mi.outside
     else
@@ -125,7 +125,7 @@ end
 
 # GPU-safe version that works with any material type
 """Get medium index based on direction for any material (vacuum for non-interface)"""
-@inline function get_crossing_medium(material, entering::Bool)
+@propagate_inbounds function get_crossing_medium(material, entering::Bool)
     if entering
         get_inside_medium(material)
     else
@@ -134,7 +134,7 @@ end
 end
 
 # Backwards compatibility alias
-@inline get_medium(mi::MediumInterfaceIdx, wi::Vec3f, n::Vec3f) = get_medium_index(mi, wi, n)
+@propagate_inbounds get_medium(mi::MediumInterfaceIdx, wi::Vec3f, n::Vec3f) = get_medium_index(mi, wi, n)
 
 # ============================================================================
 # Conversion: MediumInterface -> MediumInterfaceIdx

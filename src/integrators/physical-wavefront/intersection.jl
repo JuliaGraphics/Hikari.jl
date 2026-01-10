@@ -15,7 +15,7 @@ Trace rays from ray_queue, handle hits and misses:
 
 This kernel does NOT generate shadow rays - that happens in direct lighting.
 """
-@kernel function pw_trace_rays_kernel!(
+@kernel inbounds=true function pw_trace_rays_kernel!(
     # Output queues
     escaped_queue_items, escaped_queue_size,
     hit_light_queue_items, hit_light_queue_size,
@@ -29,7 +29,7 @@ This kernel does NOT generate shadow rays - that happens in direct lighting.
 )
     idx = @index(Global)
 
-    @_inbounds if idx <= max_queued
+     if idx <= max_queued
         current_size = ray_queue_size[1]
         if idx <= current_size
             work = ray_queue_items[idx]
@@ -105,7 +105,7 @@ end
 
 Compute geometric normal from a primitive (triangle).
 """
-@inline function compute_geometric_normal(primitive)
+@propagate_inbounds function compute_geometric_normal(primitive)
     # For Raycore.Triangle, vertices is an SVector{3, Point3f}
     v0 = primitive.vertices[1]
     v1 = primitive.vertices[2]
@@ -122,7 +122,7 @@ end
 Compute UV coordinates for a point on a primitive.
 Uses barycentric interpolation for triangles.
 """
-@inline function compute_uv(primitive, p::Point3f)
+@propagate_inbounds function compute_uv(primitive, p::Point3f)
     # Compute barycentric coordinates
     v0 = primitive.vertices[1]
     v1 = primitive.vertices[2]
@@ -163,7 +163,7 @@ end
 
 Compute tangent vectors for a primitive.
 """
-@inline function compute_tangent_frame(primitive)
+@propagate_inbounds function compute_tangent_frame(primitive)
     v0 = primitive.vertices[1]
     v1 = primitive.vertices[2]
     v2 = primitive.vertices[3]
@@ -185,7 +185,7 @@ end
 Compute UV coordinates using barycentric coordinates from ray intersection.
 More accurate than recomputing barycentric from position.
 """
-@inline function compute_uv_barycentric(primitive, barycentric)
+@propagate_inbounds function compute_uv_barycentric(primitive, barycentric)
     # Barycentric coordinates: (w, u, v) where w + u + v = 1
     w, u, v = barycentric[1], barycentric[2], barycentric[3]
 
@@ -206,7 +206,7 @@ end
 Compute interpolated shading normal from vertex normals using barycentric coordinates.
 Falls back to geometric normal if vertex normals are not available (NaN).
 """
-@inline function compute_shading_normal(primitive, barycentric, geometric_normal::Vec3f)
+@propagate_inbounds function compute_shading_normal(primitive, barycentric, geometric_normal::Vec3f)
     # Get vertex normals from primitive
     n0 = primitive.normals[1]
     n1 = primitive.normals[2]
@@ -244,7 +244,7 @@ end
 
 Trace shadow rays and accumulate unoccluded contributions to pixel buffer.
 """
-@kernel function pw_trace_shadow_rays_kernel!(
+@kernel inbounds=true function pw_trace_shadow_rays_kernel!(
     pixel_L,  # Flat array: 4 floats per pixel (spectral)
     @Const(shadow_queue_items), @Const(shadow_queue_size),
     @Const(accel),
@@ -252,7 +252,7 @@ Trace shadow rays and accumulate unoccluded contributions to pixel buffer.
 )
     idx = @index(Global)
 
-    @_inbounds if idx <= max_queued
+     if idx <= max_queued
         current_size = shadow_queue_size[1]
         if idx <= current_size
             work = shadow_queue_items[idx]
@@ -288,7 +288,7 @@ end
 
 Handle rays that escaped the scene by evaluating environment lights.
 """
-@kernel function pw_handle_escaped_rays_kernel!(
+@kernel inbounds=true function pw_handle_escaped_rays_kernel!(
     pixel_L,
     @Const(escaped_queue_items), @Const(escaped_queue_size),
     @Const(lights),  # Tuple of lights
@@ -302,7 +302,7 @@ Handle rays that escaped the scene by evaluating environment lights.
     # Reconstruct table struct from components for GPU compatibility
     rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
 
-    @_inbounds if idx <= max_queued
+     if idx <= max_queued
         current_size = escaped_queue_size[1]
         if idx <= current_size
             work = escaped_queue_items[idx]
@@ -348,7 +348,7 @@ end
 
 Handle rays that hit emissive surfaces.
 """
-@kernel function pw_handle_hit_area_lights_kernel!(
+@kernel inbounds=true function pw_handle_hit_area_lights_kernel!(
     pixel_L,
     @Const(hit_light_queue_items), @Const(hit_light_queue_size),
     @Const(materials),
@@ -356,7 +356,7 @@ Handle rays that hit emissive surfaces.
 )
     idx = @index(Global)
 
-    @_inbounds if idx <= max_queued
+     if idx <= max_queued
         current_size = hit_light_queue_size[1]
         if idx <= current_size
             work = hit_light_queue_items[idx]

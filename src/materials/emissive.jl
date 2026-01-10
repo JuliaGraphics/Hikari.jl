@@ -82,7 +82,7 @@ end
 Get the emitted radiance at a surface point.
 Returns zero if the surface is one-sided and we're on the back.
 """
-@inline function get_emission(mat::EmissiveMaterial, wo::Vec3f, n::Vec3f, uv::Point2f)
+@propagate_inbounds function get_emission(mat::EmissiveMaterial, wo::Vec3f, n::Vec3f, uv::Point2f)
     # Check if we're on the emitting side
     cos_theta = dot(wo, n)
     if !mat.two_sided && cos_theta < 0f0
@@ -98,22 +98,22 @@ end
 
 Get the emitted radiance at UV coordinates (without directional check).
 """
-@inline function get_emission(mat::EmissiveMaterial, uv::Point2f)
+@propagate_inbounds function get_emission(mat::EmissiveMaterial, uv::Point2f)
     Le = mat.Le(uv)
     return Le * mat.scale
 end
 
 # For non-emissive materials, emission is zero
-@inline get_emission(::Material, ::Vec3f, ::Vec3f, ::Point2f) = RGBSpectrum(0f0)
-@inline get_emission(::Material, ::Point2f) = RGBSpectrum(0f0)
+@propagate_inbounds get_emission(::Material, ::Vec3f, ::Vec3f, ::Point2f) = RGBSpectrum(0f0)
+@propagate_inbounds get_emission(::Material, ::Point2f) = RGBSpectrum(0f0)
 
 """
     is_emissive(mat::Material) -> Bool
 
 Check if a material emits light.
 """
-@inline is_emissive(::EmissiveMaterial) = true
-@inline is_emissive(::Material) = false
+@propagate_inbounds is_emissive(::EmissiveMaterial) = true
+@propagate_inbounds is_emissive(::Material) = false
 
 # ============================================================================
 # BSDF Implementation for EmissiveMaterial
@@ -125,7 +125,7 @@ Check if a material emits light.
 EmissiveMaterial has no BSDF (pure emitter, doesn't scatter light).
 Returns an empty BSDF.
 """
-@inline function compute_bsdf(mat::EmissiveMaterial, si::SurfaceInteraction, ::Bool, transport)
+@propagate_inbounds function compute_bsdf(mat::EmissiveMaterial, si::SurfaceInteraction, ::Bool, transport)
     # No scattering - just emission
     return BSDF(si)
 end
@@ -136,7 +136,7 @@ end
 Shading for emissive material returns the emission directly.
 Emissive materials don't reflect light, they only emit.
 """
-@inline function shade(mat::EmissiveMaterial, ray::RayDifferentials, si::SurfaceInteraction,
+@propagate_inbounds function shade(mat::EmissiveMaterial, ray::RayDifferentials, si::SurfaceInteraction,
                        scene::Scene, beta::RGBSpectrum, depth::Int32, max_depth::Int32)
     wo = si.core.wo
     n = si.core.n
@@ -168,7 +168,7 @@ end
 Get the "albedo" of an emissive material for denoising.
 For emissive materials, we return the normalized emission color.
 """
-@inline function get_albedo(mat::EmissiveMaterial, uv::Point2f)
+@propagate_inbounds function get_albedo(mat::EmissiveMaterial, uv::Point2f)
     Le = mat.Le(uv)
     # Return normalized color (so it's in 0-1 range for denoising)
     luminance = to_Y(Le)

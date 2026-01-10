@@ -57,7 +57,7 @@ function Base.copy(pool::MemoryPool, x::MutableRef{T}) where {T}
     return mem
 end
 
-@inline allocate(pool::MemoryPool, ::Type{MutableRef{T}}) where {T} = allocate(pool, T)
+@propagate_inbounds allocate(pool::MemoryPool, ::Type{MutableRef{T}}) where {T} = allocate(pool, T)
 
 # Creates an actual array out of a view into the pool
 function reinterpret_segment(pool::MemoryPool, ::Type{T}, start::Int, dims::NTuple{N,Int}) where {T,N}
@@ -69,7 +69,7 @@ function reinterpret_segment(pool::MemoryPool, ::Type{T}, start::Int, dims::NTup
     return unsafe_wrap(Array, ptr_t, dims)
 end
 
-@inline function allocate(pool::MemoryPool, ::Type{<:Array{T}}, dims::NTuple{N}) where {T, N}
+@propagate_inbounds function allocate(pool::MemoryPool, ::Type{<:Array{T}}, dims::NTuple{N}) where {T, N}
     len = prod(dims)
     nbytes = sizeof(T) * len
     segment = next_free_segment(pool, nbytes)
@@ -88,7 +88,7 @@ function allocate(pool, obj::T) where {T}
     return mem
 end
 
-@inline function allocate(pool::MemoryPool, ::Type{T}) where {T}
+@propagate_inbounds function allocate(pool::MemoryPool, ::Type{T}) where {T}
     @assert isbitstype(T) "$T"
     nbytes = sizeof(T)
     segment = next_free_segment(pool, nbytes)
@@ -101,9 +101,9 @@ end
     end
 end
 
-@inline allocate(pool::MemoryPool, ::Type{MutableRef{T}}, args::AT) where {T, AT<:Tuple} = allocate(pool, T, args)
+@propagate_inbounds allocate(pool::MemoryPool, ::Type{MutableRef{T}}, args::AT) where {T, AT<:Tuple} = allocate(pool, T, args)
 
-@inline function allocate(pool::MemoryPool, ::Type{T}, args::AT) where {T,AT<:Tuple}
+@propagate_inbounds function allocate(pool::MemoryPool, ::Type{T}, args::AT) where {T,AT<:Tuple}
     obj = T(args...)
     mem = allocate(pool, T)
     ptr = Base.unsafe_convert(Ptr{T}, getfield(mem, :ptr))

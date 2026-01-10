@@ -75,6 +75,6 @@ end
 """
 Total power emitted by the light source over the entire sphere of directions.
 """
-@inline function power(p::PointLight)
+@propagate_inbounds function power(p::PointLight)
     4f0 * π * p.i
 end

@@ -44,7 +44,7 @@ Uses importance sampling based on environment map luminance.
 # Returns
 Tuple of (radiance, incident direction, pdf, visibility tester)
 """
-@inline function sample_li(e::EnvironmentLight{S}, i::Interaction, u::Point2f, scene::AbstractScene) where {S}
+@propagate_inbounds function sample_li(e::EnvironmentLight{S}, i::Interaction, u::Point2f, scene::AbstractScene) where {S}
     # Importance sample the environment map based on luminance
     uv, map_pdf = sample_continuous(e.env_map.distribution, u)
 
@@ -159,7 +159,7 @@ Total power emitted by the environment light.
 For an environment light, this is approximated as the average radiance times
 the surface area of the bounding sphere.
 """
-@inline function power(e::EnvironmentLight{S}, scene::Scene)::S where {S<:Spectrum}
+@propagate_inbounds function power(e::EnvironmentLight{S}, scene::Scene)::S where {S<:Spectrum}
     # Approximate power as average radiance * 4π * r²
     # This is a rough approximation - more accurate would integrate over the map
     e.scale * S(4f0 * π * scene.world_radius^2)

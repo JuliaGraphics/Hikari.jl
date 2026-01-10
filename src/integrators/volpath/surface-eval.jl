@@ -12,7 +12,7 @@ Process surface hits:
 1. Add emission from emissive surfaces (with MIS weight)
 2. Create material evaluation work items for BSDF sampling
 """
-@kernel function vp_process_surface_hits_kernel!(
+@kernel inbounds=true function vp_process_surface_hits_kernel!(
     # Output
     material_items, material_size,
     pixel_L,
@@ -26,7 +26,7 @@ Process surface hits:
 
     rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
 
-    @_inbounds if idx <= max_queued
+    @inbounds if idx <= max_queued
         current_size = hit_size[1]
         if idx <= current_size
             work = hit_items[idx]
@@ -130,7 +130,7 @@ end
 # ============================================================================
 
 """Inner function for surface direct lighting - can use return statements."""
-@inline function surface_direct_lighting_inner!(
+@propagate_inbounds function surface_direct_lighting_inner!(
     shadow_items, shadow_size,
     work::VPMaterialEvalWorkItem,
     materials,
@@ -190,9 +190,11 @@ end
                     work.current_medium  # Shadow ray starts in same medium
                 )
 
-                new_idx = @atomic shadow_size[1] += Int32(1)
-                if new_idx <= length(shadow_items)
-                    shadow_items[new_idx] = shadow_item
+                @inbounds begin
+                    new_idx = @atomic shadow_size[1] += Int32(1)
+                    if new_idx <= length(shadow_items)
+                        shadow_items[new_idx] = shadow_item
+                    end
                 end
             end
         end
@@ -210,7 +212,7 @@ end
 Sample direct lighting at surface hits.
 Creates shadow rays for unoccluded light contributions.
 """
-@kernel function vp_sample_surface_direct_lighting_kernel!(
+@kernel inbounds=true function vp_sample_surface_direct_lighting_kernel!(
     # Output
     shadow_items, shadow_size,
     # Input
@@ -224,7 +226,7 @@ Creates shadow rays for unoccluded light contributions.
 
     rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
 
-    @_inbounds if idx <= max_queued
+    @inbounds if idx <= max_queued
         current_size = material_size[1]
         if idx <= current_size
             work = material_items[idx]
@@ -271,7 +273,7 @@ end
 # ============================================================================
 
 """Inner function for material evaluation - can use return statements."""
-@inline function evaluate_material_inner!(
+@propagate_inbounds function evaluate_material_inner!(
     next_ray_items, next_ray_size,
     work::VPMaterialEvalWorkItem,
     materials,
@@ -368,9 +370,11 @@ end
                 new_medium
             )
 
-            new_idx = @atomic next_ray_size[1] += Int32(1)
-            if new_idx <= max_queued
-                next_ray_items[new_idx] = ray_item
+            @inbounds begin
+                new_idx = @atomic next_ray_size[1] += Int32(1)
+                if new_idx <= max_queued
+                    next_ray_items[new_idx] = ray_item
+                end
             end
         end
     end
@@ -387,7 +391,7 @@ end
 Sample BSDF at surface hits to generate continuation rays.
 Includes Russian roulette for path termination.
 """
-@kernel function vp_evaluate_materials_kernel!(
+@kernel inbounds=true function vp_evaluate_materials_kernel!(
     # Output
     next_ray_items, next_ray_size,
     # Input
@@ -401,7 +405,7 @@ Includes Russian roulette for path termination.
 
     rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
 
-    @_inbounds if idx <= max_queued
+    @inbounds if idx <= max_queued
         current_size = material_size[1]
         if idx <= current_size
             work = material_items[idx]
@@ -452,7 +456,7 @@ end
 
 Check if material is purely emissive (no BSDF).
 """
-@inline function is_pure_emissive_dispatch(materials, mat_idx::MaterialIndex)
+@propagate_inbounds function is_pure_emissive_dispatch(materials, mat_idx::MaterialIndex)
     # Default: assume materials with emission also have BSDF
     # Override for EmissiveMaterial which has no BSDF
     return is_emissive_dispatch(materials, mat_idx) &&
@@ -464,7 +468,7 @@ end
 
 Check if material has a BSDF component.
 """
-@inline function has_bsdf_dispatch(materials, mat_idx::MaterialIndex)
+@propagate_inbounds function has_bsdf_dispatch(materials, mat_idx::MaterialIndex)
     # Most materials have BSDF
     # EmissiveMaterial does not
     type_idx = mat_idx.material_type

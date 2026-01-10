@@ -25,7 +25,7 @@ mp = with_medium(_sample_point_helper, media, idx, table, p, λ)
 # Where: _sample_point_helper(medium, table, p, λ) = sample_point(table, medium, p, λ)
 ```
 """
-@inline @generated function with_medium(f::F, media::M, idx::Int32, args...) where {F, M <: Tuple}
+@propagate_inbounds @generated function with_medium(f::F, media::M, idx::Int32, args...) where {F, M <: Tuple}
     N = length(M.parameters)
 
     if N == 0
@@ -49,8 +49,8 @@ mp = with_medium(_sample_point_helper, media, idx, table, p, λ)
 end
 
 # Single medium fallback (no dispatch needed)
-@inline function with_medium(f::F, medium::Medium, idx::Int32, args...) where F
-    return @inline f(medium, args...)
+@propagate_inbounds function with_medium(f::F, medium::Medium, idx::Int32, args...) where F
+    return f(medium, args...)
 end
 
 # ============================================================================
@@ -58,17 +58,17 @@ end
 # ============================================================================
 
 """Sample medium properties at a point - helper for with_medium"""
-@inline function _sample_point_helper(medium, table::RGBToSpectrumTable, p::Point3f, λ::Wavelengths)
+@propagate_inbounds function _sample_point_helper(medium, table::RGBToSpectrumTable, p::Point3f, λ::Wavelengths)
     return sample_point(table, medium, p, λ)
 end
 
 """Get ray majorant from medium - helper for with_medium"""
-@inline function _get_majorant_helper(medium, table::RGBToSpectrumTable, ray::Raycore.Ray, t_min::Float32, t_max::Float32, λ::Wavelengths)
+@propagate_inbounds function _get_majorant_helper(medium, table::RGBToSpectrumTable, ray::Raycore.Ray, t_min::Float32, t_max::Float32, λ::Wavelengths)
     return get_majorant(table, medium, ray, t_min, t_max, λ)
 end
 
 """Check if medium is emissive - helper for with_medium"""
-@inline function _is_emissive_helper(medium)
+@propagate_inbounds function _is_emissive_helper(medium)
     return is_emissive(medium)
 end
 
@@ -82,7 +82,7 @@ end
 Type-stable dispatch for sampling medium properties at a point.
 Uses with_medium pattern for GPU compatibility.
 """
-@inline function sample_point_dispatch(
+@propagate_inbounds function sample_point_dispatch(
     table::RGBToSpectrumTable,
     media::NTuple{N,Any},
     idx::Int32,
@@ -102,7 +102,7 @@ end
 Type-stable dispatch for getting ray majorant from medium.
 Uses with_medium pattern for GPU compatibility.
 """
-@inline function get_majorant_dispatch(
+@propagate_inbounds function get_majorant_dispatch(
     table::RGBToSpectrumTable,
     media::NTuple{N,Any},
     idx::Int32,
@@ -124,7 +124,7 @@ end
 Type-stable dispatch for checking if medium is emissive.
 Uses with_medium pattern for GPU compatibility.
 """
-@inline function is_emissive_dispatch(
+@propagate_inbounds function is_emissive_dispatch(
     media::NTuple{N,Any},
     idx::Int32
 ) where {N}
@@ -135,7 +135,7 @@ end
 # Single Medium Fallbacks (for non-tuple media)
 # ============================================================================
 
-@inline function sample_point_dispatch(
+@propagate_inbounds function sample_point_dispatch(
     table::RGBToSpectrumTable,
     medium::Medium,
     idx::Int32,
@@ -145,7 +145,7 @@ end
     return sample_point(table, medium, p, λ)
 end
 
-@inline function get_majorant_dispatch(
+@propagate_inbounds function get_majorant_dispatch(
     table::RGBToSpectrumTable,
     medium::Medium,
     idx::Int32,
@@ -157,6 +157,6 @@ end
     return get_majorant(table, medium, ray, t_min, t_max, λ)
 end
 
-@inline function is_emissive_dispatch(medium::Medium, idx::Int32)
+@propagate_inbounds function is_emissive_dispatch(medium::Medium, idx::Int32)
     return is_emissive(medium)
 end

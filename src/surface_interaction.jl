@@ -60,7 +60,7 @@ struct SurfaceInteraction
     end
 end
 
-@inline function SurfaceInteraction(
+@propagate_inbounds function SurfaceInteraction(
         p::Point3f, time::Float32, wo::Vec3f, uv::Point2f,
         ∂p∂u::Vec3f, ∂p∂v::Vec3f, ∂n∂u::Normal3f, ∂n∂v::Normal3f, reverse_normal::Bool
     )
@@ -79,7 +79,7 @@ end
     )
 end
 
-@inline function SurfaceInteraction(
+@propagate_inbounds function SurfaceInteraction(
         normal, hitpoint::Point3f, time::Float32, wo::Vec3f, uv::Point2f,
         ∂p∂u::Vec3f, ∂p∂v::Vec3f, ∂n∂u::Normal3f, ∂n∂v::Normal3f
     )
@@ -91,7 +91,7 @@ end
     )
 end
 
-@inline function set_shading_geometry(
+@propagate_inbounds function set_shading_geometry(
         si::SurfaceInteraction, tangent::Vec3f, bitangent::Vec3f,
         ∂n∂u::Normal3f, ∂n∂v::Normal3f, orientation_is_authoritative::Bool,
     )
@@ -110,7 +110,7 @@ end
 
 is_surface_interaction(i::Interaction) = i.n != Normal3f(0)
 
-@inline function SurfaceInteraction(
+@propagate_inbounds function SurfaceInteraction(
         si::SurfaceInteraction;
         core=si.core , shading=si.shading, uv=si.uv, ∂p∂u=si.∂p∂u, ∂p∂v=si.∂p∂v,
         ∂n∂u=si.∂n∂u, ∂n∂v=si.∂n∂v, ∂u∂x=si.∂u∂x, ∂u∂y=si.∂u∂y,
@@ -125,7 +125,7 @@ end
 Compute partial derivatives needed for computing sampling rates
 for things like texture antialiasing.
 """
-@inline function compute_differentials(si::SurfaceInteraction, ray::RayDifferentials)
+@propagate_inbounds function compute_differentials(si::SurfaceInteraction, ray::RayDifferentials)
 
     if !ray.has_differentials
         return SurfaceInteraction(si;
@@ -173,7 +173,7 @@ the surface's material scatters light.
 surface properties and then initializing a representation of the BSDF
 at the point.
 """
-@inline function compute_scattering!(
+@propagate_inbounds function compute_scattering!(
         primitive, si::SurfaceInteraction, ray::RayDifferentials,
         allow_multiple_lobes::Bool = false, transport = Radiance,
     )
@@ -181,12 +181,12 @@ at the point.
     return si, primitive(si, allow_multiple_lobes, transport)
 end
 
-@inline function le(::SurfaceInteraction, ::Vec3f)::RGBSpectrum
+@propagate_inbounds function le(::SurfaceInteraction, ::Vec3f)::RGBSpectrum
     # TODO right now return 0, since there is no area lights implemented.
     RGBSpectrum(0f0)
 end
 
-@inline function apply(t::Transformation, si::Interaction)
+@propagate_inbounds function apply(t::Transformation, si::Interaction)
     return Interaction(
         t(si.p),
         si.time,
@@ -195,7 +195,7 @@ end
     )
 end
 
-@inline function apply(t::Transformation, si::ShadingInteraction)
+@propagate_inbounds function apply(t::Transformation, si::ShadingInteraction)
     n = normalize(t(si.n))
     ∂p∂u = t(si.∂p∂u)
     ∂p∂v = t(si.∂p∂v)
@@ -204,7 +204,7 @@ end
     return ShadingInteraction(n, ∂p∂u, ∂p∂v, ∂n∂u, ∂n∂v)
 end
 
-@inline function apply(t::Transformation, si::SurfaceInteraction)
+@propagate_inbounds function apply(t::Transformation, si::SurfaceInteraction)
     # TODO compute shading normal separately
     core = apply(t, si.core)
     shading = apply(t, si.shading)
@@ -222,7 +222,7 @@ end
 
 # Trace-specific spawn_ray functions for SurfaceInteraction
 # Raycore has spawn_ray for its Interaction type, but we need these for our SurfaceInteraction
-@inline function spawn_ray(
+@propagate_inbounds function spawn_ray(
         p0::Interaction, p1::Interaction, δ::Float32 = 1f-6,
     )::Ray
     direction = p1.p - p0.p
@@ -230,11 +230,11 @@ end
     return Ray(origin, direction, Inf32, p0.time)
 end
 
-@inline function spawn_ray(p0::SurfaceInteraction, p1::Interaction)::Ray
+@propagate_inbounds function spawn_ray(p0::SurfaceInteraction, p1::Interaction)::Ray
     spawn_ray(p0.core, p1)
 end
 
-@inline function spawn_ray(
+@propagate_inbounds function spawn_ray(
         si::SurfaceInteraction, direction::Vec3f, δ::Float32 = 1f-6,
     )::Ray
     origin = si.core.p .+ δ .* direction
