@@ -141,9 +141,13 @@ end
     @Const(pixel_L),
     @Const(wavelengths_per_pixel),
     @Const(pdf_per_pixel),
+    @Const(cie_x), @Const(cie_y), @Const(cie_z),
     @Const(n_pixels::Int32)
 )
     pixel_idx = @index(Global)
+
+    # Reconstruct CIE table from passed arrays
+    cie_table = CIEXYZTable(cie_x, cie_y, cie_z)
 
     @inbounds if pixel_idx <= n_pixels
         base = (pixel_idx - Int32(1)) * Int32(4)
@@ -172,7 +176,7 @@ end
         lambda = Wavelengths(lambda_tuple, pdf_tuple)
 
         # Convert spectral to linear RGB
-        R, G, B = spectral_to_linear_rgb(L, lambda)
+        R, G, B = spectral_to_linear_rgb(cie_table, L, lambda)
 
         # Accumulate
         rgb_base = (pixel_idx - Int32(1)) * Int32(3)
@@ -377,6 +381,7 @@ function (vp::VolPath)(
         kernel!(
             pixel_rgb, state.pixel_L,
             wavelengths_per_pixel, pdf_per_pixel,
+            state.cie_table.cie_x, state.cie_table.cie_y, state.cie_table.cie_z,
             Int32(n_pixels);
             ndrange=Int(n_pixels)
         )

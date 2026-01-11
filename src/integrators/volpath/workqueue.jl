@@ -77,6 +77,9 @@ mutable struct VolPathState{Backend}
     # RGB to spectrum table
     rgb2spec_table::RGBToSpectrumTable
 
+    # CIE XYZ color matching table
+    cie_table::CIEXYZTable
+
     # Render parameters
     max_depth::Int32
     width::Int32
@@ -112,6 +115,10 @@ function VolPathState(
     ArrayType = backend isa KernelAbstractions.CPU ? Array : typeof(pixel_L).name.wrapper
     rgb2spec_table = to_gpu(ArrayType, rgb2spec_table_cpu)
 
+    # Load CIE XYZ table and convert to GPU
+    cie_table_cpu = CIEXYZTable()
+    cie_table = to_gpu(ArrayType, cie_table_cpu)
+
     VolPathState(
         backend,
         ray_queue_a,
@@ -125,6 +132,7 @@ function VolPathState(
         escaped_queue,
         pixel_L,
         rgb2spec_table,
+        cie_table,
         Int32(max_depth),
         Int32(width),
         Int32(height)

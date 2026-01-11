@@ -5,10 +5,39 @@
 # Constants (matching pbrt-v4)
 # =============================================================================
 
-const CIE_LAMBDA_MIN = 360
-const CIE_LAMBDA_MAX = 830
-const N_CIE_SAMPLES = 471
+const CIE_LAMBDA_MIN = Int32(360)
+const CIE_LAMBDA_MAX = Int32(830)
+const N_CIE_SAMPLES = Int32(471)
 const CIE_Y_INTEGRAL = 106.856895f0
+
+# =============================================================================
+# CIE XYZ Table (GPU-compatible)
+# =============================================================================
+
+"""
+    CIEXYZTable{V <: AbstractVector{Float32}}
+
+GPU-compatible table for CIE XYZ color matching functions.
+Use `to_gpu(ArrayType, table)` to convert to GPU arrays.
+"""
+struct CIEXYZTable{V <: AbstractVector{Float32}}
+    cie_x::V
+    cie_y::V
+    cie_z::V
+end
+
+"""
+    to_gpu(ArrayType, table::CIEXYZTable) -> CIEXYZTable
+
+Convert CIEXYZTable to use GPU-compatible arrays.
+"""
+function to_gpu(ArrayType, table::CIEXYZTable)
+    CIEXYZTable(
+        ArrayType(table.cie_x),
+        ArrayType(table.cie_y),
+        ArrayType(table.cie_z)
+    )
+end
 
 # =============================================================================
 # CIE XYZ Color Matching Function Data (from pbrt-v4)
@@ -296,60 +325,82 @@ const CIE_Z = Float32[
     0.000000000000
 ]
 
+"""
+    CIEXYZTable() -> CIEXYZTable{Vector{Float32}}
+
+Create the default CPU CIE XYZ table from built-in data.
+"""
+CIEXYZTable() = CIEXYZTable(CIE_X, CIE_Y, CIE_Z)
+
 # =============================================================================
 # Color Matching Function Sampling
 # =============================================================================
 
 """
-    sample_cie_x(lambda::Float32) -> Float32
+    sample_cie_x(table::CIEXYZTable, lambda::Float32) -> Float32
 
 Sample CIE X color matching function at wavelength lambda (in nm).
 Uses nearest-neighbor lookup into tabulated data.
 """
-@propagate_inbounds function sample_cie_x(lambda::Float32)::Float32
+@propagate_inbounds function sample_cie_x(table::CIEXYZTable, lambda::Float32)::Float32
     offset = round_int32(lambda) - CIE_LAMBDA_MIN
-    if offset < 0 || offset >= length(CIE_X)
+    if offset < Int32(0) || offset >= N_CIE_SAMPLES
         return 0.0f0
     end
-     return CIE_X[offset + 1]
+    return table.cie_x[offset + Int32(1)]
 end
 
 """
-    sample_cie_y(lambda::Float32) -> Float32
+    sample_cie_y(table::CIEXYZTable, lambda::Float32) -> Float32
 
 Sample CIE Y color matching function at wavelength lambda (in nm).
 """
-@propagate_inbounds function sample_cie_y(lambda::Float32)::Float32
+@propagate_inbounds function sample_cie_y(table::CIEXYZTable, lambda::Float32)::Float32
     offset = round_int32(lambda) - CIE_LAMBDA_MIN
-    if offset < 0 || offset >= length(CIE_Y)
+    if offset < Int32(0) || offset >= N_CIE_SAMPLES
         return 0.0f0
     end
-     return CIE_Y[offset + 1]
+    return table.cie_y[offset + Int32(1)]
 end
 
 """
-    sample_cie_z(lambda::Float32) -> Float32
+    sample_cie_z(table::CIEXYZTable, lambda::Float32) -> Float32
 
 Sample CIE Z color matching function at wavelength lambda (in nm).
 """
-@propagate_inbounds function sample_cie_z(lambda::Float32)::Float32
+@propagate_inbounds function sample_cie_z(table::CIEXYZTable, lambda::Float32)::Float32
     offset = round_int32(lambda) - CIE_LAMBDA_MIN
-    if offset < 0 || offset >= length(CIE_Z)
+    if offset < Int32(0) || offset >= N_CIE_SAMPLES
         return 0.0f0
     end
-     return CIE_Z[offset + 1]
+    return table.cie_z[offset + Int32(1)]
 end
 
 """
-    sample_cie_xyz(lambda::Wavelengths) -> (SpectralRadiance, SpectralRadiance, SpectralRadiance)
+    sample_cie_xyz(table::CIEXYZTable, lambda::Wavelengths) -> (SpectralRadiance, SpectralRadiance, SpectralRadiance)
 
 Sample CIE XYZ color matching functions at the given wavelengths.
 Returns (X_samples, Y_samples, Z_samples) as SpectralRadiance.
 """
-@propagate_inbounds function sample_cie_xyz(lambda::Wavelengths)
-    X = SpectralRadiance(ntuple(i -> sample_cie_x(lambda.lambda[i]), Val(4)))
-    Y = SpectralRadiance(ntuple(i -> sample_cie_y(lambda.lambda[i]), Val(4)))
-    Z = SpectralRadiance(ntuple(i -> sample_cie_z(lambda.lambda[i]), Val(4)))
+@propagate_inbounds function sample_cie_xyz(table::CIEXYZTable, lambda::Wavelengths)
+    X = SpectralRadiance((
+        sample_cie_x(table, lambda.lambda[1]),
+        sample_cie_x(table, lambda.lambda[2]),
+        sample_cie_x(table, lambda.lambda[3]),
+        sample_cie_x(table, lambda.lambda[4])
+    ))
+    Y = SpectralRadiance((
+        sample_cie_y(table, lambda.lambda[1]),
+        sample_cie_y(table, lambda.lambda[2]),
+        sample_cie_y(table, lambda.lambda[3]),
+        sample_cie_y(table, lambda.lambda[4])
+    ))
+    Z = SpectralRadiance((
+        sample_cie_z(table, lambda.lambda[1]),
+        sample_cie_z(table, lambda.lambda[2]),
+        sample_cie_z(table, lambda.lambda[3]),
+        sample_cie_z(table, lambda.lambda[4])
+    ))
     return (X, Y, Z)
 end
 
@@ -358,7 +409,7 @@ end
 # =============================================================================
 
 """
-    spectral_to_xyz(L::SpectralRadiance, lambda::Wavelengths) -> (X, Y, Z)
+    spectral_to_xyz(table::CIEXYZTable, L::SpectralRadiance, lambda::Wavelengths) -> (X, Y, Z)
 
 Convert spectral radiance to CIE XYZ using the pbrt-v4 algorithm.
 
@@ -367,16 +418,16 @@ The formula is:
 
 where CMF is the color matching function and pdf is the wavelength sampling PDF.
 """
-@propagate_inbounds function spectral_to_xyz(L::SpectralRadiance, lambda::Wavelengths)
+@propagate_inbounds function spectral_to_xyz(table::CIEXYZTable, L::SpectralRadiance, lambda::Wavelengths)
     # Sample the X, Y, Z matching curves at lambda
-    X_cmf, Y_cmf, Z_cmf = sample_cie_xyz(lambda)
+    X_cmf, Y_cmf, Z_cmf = sample_cie_xyz(table, lambda)
 
     # Compute SafeDiv(CMF * L, pdf) for each channel and average
     X_sum = 0.0f0
     Y_sum = 0.0f0
     Z_sum = 0.0f0
 
-     for i in 1:4
+    for i in 1:4
         pdf_i = lambda.pdf[i]
         if pdf_i != 0.0f0
             inv_pdf = 1.0f0 / pdf_i
@@ -455,9 +506,9 @@ Convert spectral radiance to sRGB:
 2. Transform XYZ to linear sRGB
 3. Apply sRGB gamma curve
 """
-@propagate_inbounds function spectral_to_srgb(L::SpectralRadiance, lambda::Wavelengths)
+@propagate_inbounds function spectral_to_srgb(table::CIEXYZTable, L::SpectralRadiance, lambda::Wavelengths)
     # Convert to XYZ
-    X, Y, Z = spectral_to_xyz(L, lambda)
+    X, Y, Z = spectral_to_xyz(table, L, lambda)
 
     # Convert to linear sRGB
     R, G, B = xyz_to_linear_srgb(X, Y, Z)
@@ -471,14 +522,14 @@ Convert spectral radiance to sRGB:
 end
 
 """
-    spectral_to_linear_rgb(L::SpectralRadiance, lambda::Wavelengths) -> (R, G, B)
+    spectral_to_linear_rgb(table::CIEXYZTable, L::SpectralRadiance, lambda::Wavelengths) -> (R, G, B)
 
 Convert spectral radiance to linear RGB (no gamma):
 1. Convert to XYZ using color matching functions
 2. Transform XYZ to linear sRGB
 """
-@propagate_inbounds function spectral_to_linear_rgb(L::SpectralRadiance, lambda::Wavelengths)
-    X, Y, Z = spectral_to_xyz(L, lambda)
+@propagate_inbounds function spectral_to_linear_rgb(table::CIEXYZTable, L::SpectralRadiance, lambda::Wavelengths)
+    X, Y, Z = spectral_to_xyz(table, L, lambda)
     R, G, B = xyz_to_linear_srgb(X, Y, Z)
     return (max(0.0f0, R), max(0.0f0, G), max(0.0f0, B))
 end
