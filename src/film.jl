@@ -99,6 +99,9 @@ struct Film{
 
     # Postprocessed output (overwritten each postprocess! call)
     postprocess::FB
+
+    # Render state - tracks iteration/sample progress for progressive rendering
+    iteration_index::Base.RefValue{Int32}
 end
 
 
@@ -173,6 +176,7 @@ function Film(
         normal,
         depth,
         postprocess,
+        Ref(Int32(0)),  # iteration_index starts at 0
     )
 end
 
@@ -299,6 +303,10 @@ function set_image!(f::Film, spectrum::Matrix{S}) where {S<:Spectrum}
 end
 
 function clear!(film::Film)
+    # Reset iteration counter for progressive rendering
+    film.iteration_index[] = Int32(0)
+
+    # Clear film buffers
     film.tiles.contrib_sum .= (RGBSpectrum(0.0f0),)
     film.tiles.filter_weight_sum .= 0.0f0
     film.pixels.xyz .= (Point3f(0),)

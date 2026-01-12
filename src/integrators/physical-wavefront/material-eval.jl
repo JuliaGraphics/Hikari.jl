@@ -1,5 +1,9 @@
 # Material evaluation and direct lighting for PhysicalWavefront
 # Handles BSDF sampling, direct lighting with MIS, and path continuation
+#
+# NOTE: All kernels take a `textures` parameter for GPU compatibility.
+# On CPU, textures is ignored (Texture structs contain their data).
+# On GPU, textures is a tuple of CLDeviceArrays, and materials contain TextureRef.
 
 # ============================================================================
 # Direct Lighting Kernel
@@ -8,7 +12,7 @@
 """
     pw_sample_direct_lighting_kernel!(shadow_queue_items, shadow_queue_size,
                                        material_queue_items, material_queue_size,
-                                       materials, lights, rgb2spec_table, num_lights, max_queued)
+                                       materials, textures, lights, rgb2spec_table, num_lights, max_queued)
 
 Sample direct lighting for all material evaluation work items.
 For each item, selects a light, samples a direction, evaluates BSDF,
@@ -18,6 +22,7 @@ and creates a shadow ray work item.
     shadow_queue_items, shadow_queue_size,
     @Const(material_queue_items), @Const(material_queue_size),
     @Const(materials),
+    @Const(textures),
     @Const(lights),        # Tuple of lights
     @Const(rgb2spec_scale),  # RGB to spectrum table scale array
     @Const(rgb2spec_coeffs), # RGB to spectrum table coefficients
@@ -50,7 +55,7 @@ and creates a shadow ray work item.
             if light_sample.pdf > 0f0 && !is_black(light_sample.Li)
                 # Evaluate BSDF for light direction
                 bsdf_f, bsdf_pdf = evaluate_spectral_material(
-                    rgb2spec_table, materials, work.material_idx,
+                    rgb2spec_table, materials, textures, work.material_idx,
                     work.wo, light_sample.wi, work.ns, work.uv, work.lambda
                 )
 
@@ -94,7 +99,7 @@ end
 """
     pw_evaluate_materials_kernel!(next_ray_queue_items, next_ray_queue_size,
                                    pixel_L, material_queue_items, material_queue_size,
-                                   materials, rgb2spec_scale, rgb2spec_coeffs, rgb2spec_res,
+                                   materials, textures, rgb2spec_scale, rgb2spec_coeffs, rgb2spec_res,
                                    max_depth, max_queued)
 
 Evaluate materials for all work items:
@@ -107,6 +112,7 @@ Evaluate materials for all work items:
     pixel_L,
     @Const(material_queue_items), @Const(material_queue_size),
     @Const(materials),
+    @Const(textures),
     @Const(rgb2spec_scale),  # RGB to spectrum table scale array
     @Const(rgb2spec_coeffs), # RGB to spectrum table coefficients
     @Const(rgb2spec_res::Int32),  # RGB to spectrum table resolution
@@ -130,7 +136,7 @@ Evaluate materials for all work items:
 
             # Sample BSDF
             sample = sample_spectral_material(
-                rgb2spec_table, materials, work.material_idx,
+                rgb2spec_table, materials, textures, work.material_idx,
                 work.wo, work.ns, work.uv, work.lambda, u, rng
             )
 

@@ -1,5 +1,9 @@
 # Surface material evaluation for VolPath
 # Handles BSDF sampling, direct lighting, and path continuation at surface hits
+#
+# NOTE: All kernels take a `textures` parameter for GPU compatibility.
+# On CPU, textures is ignored (Texture structs contain their data).
+# On GPU, textures is a tuple of CLDeviceArrays, and materials contain TextureRef.
 
 # ============================================================================
 # Process Surface Hits - Emission and Material Queue Setup
@@ -19,6 +23,7 @@ Process surface hits:
     # Input
     @Const(hit_items), @Const(hit_size),
     @Const(materials),
+    @Const(textures),
     @Const(rgb2spec_scale), @Const(rgb2spec_coeffs), @Const(rgb2spec_res::Int32),
     @Const(max_queued::Int32)
 )
@@ -37,7 +42,7 @@ Process surface hits:
             if is_emissive_dispatch(materials, work.material_idx)
                 # Get emission
                 Le = get_emission_spectral_dispatch(
-                    rgb2spec_table, materials, work.material_idx,
+                    rgb2spec_table, materials, textures, work.material_idx,
                     wo, work.n, work.uv, work.lambda
                 )
 
@@ -98,14 +103,15 @@ Process surface hits:
 end
 
 """
-    vp_process_surface_hits!(backend, state, materials)
+    vp_process_surface_hits!(backend, state, materials, textures)
 
 Process all surface hits.
 """
 function vp_process_surface_hits!(
     backend,
     state::VolPathState,
-    materials
+    materials,
+    textures
 )
     n = queue_size(state.hit_surface_queue)
     n == 0 && return nothing
@@ -116,9 +122,10 @@ function vp_process_surface_hits!(
         state.pixel_L,
         state.hit_surface_queue.items, state.hit_surface_queue.size,
         materials,
+        textures,
         state.rgb2spec_table.scale, state.rgb2spec_table.coeffs, state.rgb2spec_table.res,
         state.material_queue.capacity;
-        ndrange=Int(n)
+        ndrange=Int(state.hit_surface_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
     )
 
     KernelAbstractions.synchronize(backend)
@@ -134,6 +141,7 @@ end
     shadow_items, shadow_size,
     work::VPMaterialEvalWorkItem,
     materials,
+    textures,
     lights,
     rgb2spec_table,
     num_lights::Int32
@@ -157,7 +165,7 @@ end
     if light_sample.pdf > 0f0 && !is_black(light_sample.Li)
         # Evaluate BSDF for light direction
         bsdf_f, bsdf_pdf = evaluate_spectral_material(
-            rgb2spec_table, materials, work.material_idx,
+            rgb2spec_table, materials, textures, work.material_idx,
             work.wo, light_sample.wi, work.ns, work.uv, work.lambda
         )
 
@@ -218,6 +226,7 @@ Creates shadow rays for unoccluded light contributions.
     # Input
     @Const(material_items), @Const(material_size),
     @Const(materials),
+    @Const(textures),
     @Const(lights),
     @Const(rgb2spec_scale), @Const(rgb2spec_coeffs), @Const(rgb2spec_res::Int32),
     @Const(num_lights::Int32), @Const(max_queued::Int32)
@@ -232,14 +241,14 @@ Creates shadow rays for unoccluded light contributions.
             work = material_items[idx]
             surface_direct_lighting_inner!(
                 shadow_items, shadow_size,
-                work, materials, lights, rgb2spec_table, num_lights
+                work, materials, textures, lights, rgb2spec_table, num_lights
             )
         end
     end
 end
 
 """
-    vp_sample_surface_direct_lighting!(backend, state, materials, lights)
+    vp_sample_surface_direct_lighting!(backend, state, materials, textures, lights)
 
 Sample direct lighting at all surface material evaluation points.
 """
@@ -247,6 +256,7 @@ function vp_sample_surface_direct_lighting!(
     backend,
     state::VolPathState,
     materials,
+    textures,
     lights
 )
     n = queue_size(state.material_queue)
@@ -258,10 +268,12 @@ function vp_sample_surface_direct_lighting!(
     kernel!(
         state.shadow_queue.items, state.shadow_queue.size,
         state.material_queue.items, state.material_queue.size,
-        materials, lights,
+        materials,
+        textures,
+        lights,
         state.rgb2spec_table.scale, state.rgb2spec_table.coeffs, state.rgb2spec_table.res,
         num_lights, state.shadow_queue.capacity;
-        ndrange=Int(n)
+        ndrange=Int(state.material_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
     )
 
     KernelAbstractions.synchronize(backend)
@@ -277,6 +289,7 @@ end
     next_ray_items, next_ray_size,
     work::VPMaterialEvalWorkItem,
     materials,
+    textures,
     rgb2spec_table,
     max_depth::Int32,
     max_queued::Int32
@@ -294,7 +307,7 @@ end
 
     # Sample BSDF
     sample = sample_spectral_material(
-        rgb2spec_table, materials, work.material_idx,
+        rgb2spec_table, materials, textures, work.material_idx,
         work.wo, work.ns, work.uv, work.lambda, u, rng
     )
 
@@ -397,6 +410,7 @@ Includes Russian roulette for path termination.
     # Input
     @Const(material_items), @Const(material_size),
     @Const(materials),
+    @Const(textures),
     @Const(media),  # For determining medium after refraction
     @Const(rgb2spec_scale), @Const(rgb2spec_coeffs), @Const(rgb2spec_res::Int32),
     @Const(max_depth::Int32), @Const(max_queued::Int32)
@@ -411,14 +425,14 @@ Includes Russian roulette for path termination.
             work = material_items[idx]
             evaluate_material_inner!(
                 next_ray_items, next_ray_size,
-                work, materials, rgb2spec_table, max_depth, max_queued
+                work, materials, textures, rgb2spec_table, max_depth, max_queued
             )
         end
     end
 end
 
 """
-    vp_evaluate_materials!(backend, state, materials, media)
+    vp_evaluate_materials!(backend, state, materials, textures, media)
 
 Evaluate materials and spawn continuation rays.
 """
@@ -426,6 +440,7 @@ function vp_evaluate_materials!(
     backend,
     state::VolPathState,
     materials,
+    textures,
     media
 )
     n = queue_size(state.material_queue)
@@ -437,10 +452,12 @@ function vp_evaluate_materials!(
     kernel!(
         output_queue.items, output_queue.size,
         state.material_queue.items, state.material_queue.size,
-        materials, media,
+        materials,
+        textures,
+        media,
         state.rgb2spec_table.scale, state.rgb2spec_table.coeffs, state.rgb2spec_table.res,
         state.max_depth, output_queue.capacity;
-        ndrange=Int(n)
+        ndrange=Int(state.material_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
     )
 
     KernelAbstractions.synchronize(backend)

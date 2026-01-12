@@ -6,7 +6,7 @@
 # ============================================================================
 
 """
-    EmissiveMaterial{LeType}
+    EmissiveMaterial{LeTex}
 
 Material that emits light, enabling geometry to act as an area light source.
 
@@ -15,7 +15,7 @@ Triangles with this material will contribute direct illumination when hit
 by shadow rays and indirect illumination when hit by camera/bounce rays.
 
 # Fields
-* `Le`: Emitted radiance (color/intensity texture)
+* `Le`: Emitted radiance (color/intensity texture or TextureRef)
 * `scale`: Intensity multiplier applied to Le
 * `two_sided`: If true, emits from both sides of the surface
 
@@ -24,15 +24,19 @@ by shadow rays and indirect illumination when hit by camera/bounce rays.
 - For surfaces that both emit AND reflect, layer EmissiveMaterial with another material
 - The actual emitted radiance is `Le * scale`
 """
-struct EmissiveMaterial{LeType} <: Material
-    Le::Texture{RGBSpectrum, 2, LeType}
+struct EmissiveMaterial{LeTex} <: Material
+    Le::LeTex  # Texture{RGBSpectrum} or TextureRef{RGBSpectrum}
     scale::Float32
     two_sided::Bool
 end
 
 function EmissiveMaterial(Le::Texture, scale::Float32, two_sided::Bool)
-    LeType = typeof(Le.data)
-    EmissiveMaterial{LeType}(Le, scale, two_sided)
+    EmissiveMaterial{typeof(Le)}(Le, scale, two_sided)
+end
+
+# Constructor for TextureRef (GPU path)
+function EmissiveMaterial(Le::TextureRef{RGBSpectrum}, scale::Float32, two_sided::Bool)
+    EmissiveMaterial{typeof(Le)}(Le, scale, two_sided)
 end
 
 # ============================================================================

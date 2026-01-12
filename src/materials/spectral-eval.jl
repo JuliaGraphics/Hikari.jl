@@ -1,5 +1,9 @@
 # Spectral BSDF Evaluation Interface for PhysicalWavefront
 # Enables spectral path tracing while keeping materials as RGB containers
+#
+# NOTE: All functions take a `textures` parameter for GPU compatibility.
+# On CPU, textures is ignored (Texture structs contain their data).
+# On GPU, textures is a tuple of CLDeviceArrays, and materials contain TextureRef.
 
 # ============================================================================
 # Spectral BSDF Sample Result
@@ -30,13 +34,14 @@ end
 # They use the RGB-to-spectral uplift to convert material colors to wavelength-dependent values.
 
 """
-    sample_bsdf_spectral(table::RGBToSpectrumTable, mat::MatteMaterial, wo, n, uv, lambda, sample_u, rng) -> SpectralBSDFSample
+    sample_bsdf_spectral(table, mat::MatteMaterial, textures, wo, n, uv, lambda, sample_u, rng) -> SpectralBSDFSample
 
 Sample diffuse BSDF with spectral evaluation.
 Uses pbrt-v4 convention: work in local shading space where n = (0,0,1).
 """
 @propagate_inbounds function sample_bsdf_spectral(
-    table::RGBToSpectrumTable, mat::MatteMaterial, wo::Vec3f, n::Vec3f, uv::Point2f,
+    table::RGBToSpectrumTable, mat::MatteMaterial, textures,
+    wo::Vec3f, n::Vec3f, uv::Point2f,
     lambda::Wavelengths, sample_u::Point2f, rng::Float32
 )
     # Check for grazing angle (wo perpendicular to shading normal)
@@ -47,8 +52,8 @@ Uses pbrt-v4 convention: work in local shading space where n = (0,0,1).
     end
 
     # Get material properties (rng unused for diffuse)
-    kd_rgb = evaluate_texture(mat.Kd, uv)
-    σ = evaluate_texture(mat.σ, uv)
+    kd_rgb = eval_tex(textures, mat.Kd, uv)
+    σ = eval_tex(textures, mat.σ, uv)
 
     # Uplift to spectral
     kd_spectral = uplift_rgb(table, kd_rgb, lambda)
@@ -91,12 +96,13 @@ Uses pbrt-v4 convention: work in local shading space where n = (0,0,1).
 end
 
 """
-    sample_bsdf_spectral(table::RGBToSpectrumTable, mat::MirrorMaterial, wo, n, uv, lambda, sample_u, rng) -> SpectralBSDFSample
+    sample_bsdf_spectral(table, mat::MirrorMaterial, textures, wo, n, uv, lambda, sample_u, rng) -> SpectralBSDFSample
 
 Sample perfect specular reflection with spectral evaluation.
 """
 @propagate_inbounds function sample_bsdf_spectral(
-    table::RGBToSpectrumTable, mat::MirrorMaterial, wo::Vec3f, n::Vec3f, uv::Point2f,
+    table::RGBToSpectrumTable, mat::MirrorMaterial, textures,
+    wo::Vec3f, n::Vec3f, uv::Point2f,
     lambda::Wavelengths, sample_u::Point2f, rng::Float32
 )
     # Check for grazing angle
@@ -106,7 +112,7 @@ Sample perfect specular reflection with spectral evaluation.
     end
 
     # Get reflectance (rng and sample_u unused for perfect specular)
-    kr_rgb = evaluate_texture(mat.Kr, uv)
+    kr_rgb = eval_tex(textures, mat.Kr, uv)
     kr_spectral = uplift_rgb(table, kr_rgb, lambda)
 
     # Orient normal to face wo for reflection
@@ -120,19 +126,20 @@ Sample perfect specular reflection with spectral evaluation.
 end
 
 """
-    sample_bsdf_spectral(table::RGBToSpectrumTable, mat::GlassMaterial, wo, n, uv, lambda, sample_u, rng) -> SpectralBSDFSample
+    sample_bsdf_spectral(table, mat::GlassMaterial, textures, wo, n, uv, lambda, sample_u, rng) -> SpectralBSDFSample
 
 Sample glass BSDF with reflection or refraction.
 Uses Fresnel to choose between reflection and transmission.
 """
 @propagate_inbounds function sample_bsdf_spectral(
-    table::RGBToSpectrumTable, mat::GlassMaterial, wo::Vec3f, n::Vec3f, uv::Point2f,
+    table::RGBToSpectrumTable, mat::GlassMaterial, textures,
+    wo::Vec3f, n::Vec3f, uv::Point2f,
     lambda::Wavelengths, sample_u::Point2f, rng::Float32
 )
     # Get material properties
-    kr_rgb = evaluate_texture(mat.Kr, uv)
-    kt_rgb = evaluate_texture(mat.Kt, uv)
-    ior = evaluate_texture(mat.index, uv)
+    kr_rgb = eval_tex(textures, mat.Kr, uv)
+    kt_rgb = eval_tex(textures, mat.Kt, uv)
+    ior = eval_tex(textures, mat.index, uv)
 
     kr_spectral = uplift_rgb(table, kr_rgb, lambda)
     kt_spectral = uplift_rgb(table, kt_rgb, lambda)
@@ -178,12 +185,13 @@ Uses Fresnel to choose between reflection and transmission.
 end
 
 """
-    sample_bsdf_spectral(table::RGBToSpectrumTable, mat::PlasticMaterial, wo, n, uv, lambda, sample_u, rng) -> SpectralBSDFSample
+    sample_bsdf_spectral(table, mat::PlasticMaterial, textures, wo, n, uv, lambda, sample_u, rng) -> SpectralBSDFSample
 
 Sample plastic BSDF (diffuse + glossy specular).
 """
 @propagate_inbounds function sample_bsdf_spectral(
-    table::RGBToSpectrumTable, mat::PlasticMaterial, wo::Vec3f, n::Vec3f, uv::Point2f,
+    table::RGBToSpectrumTable, mat::PlasticMaterial, textures,
+    wo::Vec3f, n::Vec3f, uv::Point2f,
     lambda::Wavelengths, sample_u::Point2f, rng::Float32
 )
     # Check for grazing angle
@@ -193,9 +201,9 @@ Sample plastic BSDF (diffuse + glossy specular).
     end
 
     # Get material properties
-    kd_rgb = evaluate_texture(mat.Kd, uv)
-    ks_rgb = evaluate_texture(mat.Ks, uv)
-    roughness = evaluate_texture(mat.roughness, uv)
+    kd_rgb = eval_tex(textures, mat.Kd, uv)
+    ks_rgb = eval_tex(textures, mat.Ks, uv)
+    roughness = eval_tex(textures, mat.roughness, uv)
 
     kd_spectral = uplift_rgb(table, kd_rgb, lambda)
     ks_spectral = uplift_rgb(table, ks_rgb, lambda)
@@ -260,12 +268,13 @@ Sample plastic BSDF (diffuse + glossy specular).
 end
 
 """
-    sample_bsdf_spectral(table::RGBToSpectrumTable, mat::MetalMaterial, wo, n, uv, lambda, sample_u, rng) -> SpectralBSDFSample
+    sample_bsdf_spectral(table, mat::MetalMaterial, textures, wo, n, uv, lambda, sample_u, rng) -> SpectralBSDFSample
 
 Sample metal BSDF with conductor Fresnel.
 """
 @propagate_inbounds function sample_bsdf_spectral(
-    table::RGBToSpectrumTable, mat::MetalMaterial, wo::Vec3f, n::Vec3f, uv::Point2f,
+    table::RGBToSpectrumTable, mat::MetalMaterial, textures,
+    wo::Vec3f, n::Vec3f, uv::Point2f,
     lambda::Wavelengths, sample_u::Point2f, rng::Float32
 )
     # Check for grazing angle
@@ -275,10 +284,10 @@ Sample metal BSDF with conductor Fresnel.
     end
 
     # Get material properties (rng unused)
-    eta_rgb = evaluate_texture(mat.eta, uv)
-    k_rgb = evaluate_texture(mat.k, uv)
-    roughness = evaluate_texture(mat.roughness, uv)
-    reflectance_rgb = evaluate_texture(mat.reflectance, uv)
+    eta_rgb = eval_tex(textures, mat.eta, uv)
+    k_rgb = eval_tex(textures, mat.k, uv)
+    roughness = eval_tex(textures, mat.roughness, uv)
+    reflectance_rgb = eval_tex(textures, mat.reflectance, uv)
 
     reflectance_spectral = uplift_rgb(table, reflectance_rgb, lambda)
 
@@ -324,12 +333,13 @@ Sample metal BSDF with conductor Fresnel.
 end
 
 """
-    sample_bsdf_spectral(table::RGBToSpectrumTable, mat::EmissiveMaterial, wo, n, uv, lambda, sample_u, rng) -> SpectralBSDFSample
+    sample_bsdf_spectral(table, mat::EmissiveMaterial, textures, wo, n, uv, lambda, sample_u, rng) -> SpectralBSDFSample
 
 Emissive materials don't scatter - return invalid sample.
 """
 @propagate_inbounds function sample_bsdf_spectral(
-    table::RGBToSpectrumTable, mat::EmissiveMaterial, wo::Vec3f, n::Vec3f, uv::Point2f,
+    table::RGBToSpectrumTable, mat::EmissiveMaterial, textures,
+    wo::Vec3f, n::Vec3f, uv::Point2f,
     lambda::Wavelengths, sample_u::Point2f, rng::Float32
 )
     return SpectralBSDFSample()
@@ -337,7 +347,8 @@ end
 
 # Fallback for unknown materials
 @propagate_inbounds function sample_bsdf_spectral(
-    table::RGBToSpectrumTable, mat::Material, wo::Vec3f, n::Vec3f, uv::Point2f,
+    table::RGBToSpectrumTable, mat::Material, textures,
+    wo::Vec3f, n::Vec3f, uv::Point2f,
     lambda::Wavelengths, sample_u::Point2f, rng::Float32
 )
     # Check for grazing angle
@@ -378,13 +389,14 @@ end
 # ============================================================================
 
 """
-    evaluate_bsdf_spectral(table::RGBToSpectrumTable, mat, wo, wi, n, uv, lambda) -> (f::SpectralRadiance, pdf::Float32)
+    evaluate_bsdf_spectral(table, mat, textures, wo, wi, n, uv, lambda) -> (f::SpectralRadiance, pdf::Float32)
 
 Evaluate BSDF for a given pair of directions. Used for MIS in direct lighting.
 Returns the BSDF value and PDF.
 """
 @propagate_inbounds function evaluate_bsdf_spectral(
-    table::RGBToSpectrumTable, mat::MatteMaterial, wo::Vec3f, wi::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
+    table::RGBToSpectrumTable, mat::MatteMaterial, textures,
+    wo::Vec3f, wi::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
 )
     # Check if wi is in the correct hemisphere
     cos_theta_i = dot(wi, n)
@@ -398,7 +410,7 @@ Returns the BSDF value and PDF.
         return (SpectralRadiance(), 0f0)
     end
 
-    kd_rgb = evaluate_texture(mat.Kd, uv)
+    kd_rgb = eval_tex(textures, mat.Kd, uv)
     kd_spectral = uplift_rgb(table, kd_rgb, lambda)
     f = kd_spectral * (1f0 / Float32(π))
     pdf = cos_theta / Float32(π)
@@ -407,21 +419,24 @@ Returns the BSDF value and PDF.
 end
 
 @propagate_inbounds function evaluate_bsdf_spectral(
-    table::RGBToSpectrumTable, mat::MirrorMaterial, wo::Vec3f, wi::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
+    table::RGBToSpectrumTable, mat::MirrorMaterial, textures,
+    wo::Vec3f, wi::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
 )
     # Perfect specular has zero PDF for non-delta directions
     return (SpectralRadiance(), 0f0)
 end
 
 @propagate_inbounds function evaluate_bsdf_spectral(
-    table::RGBToSpectrumTable, mat::GlassMaterial, wo::Vec3f, wi::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
+    table::RGBToSpectrumTable, mat::GlassMaterial, textures,
+    wo::Vec3f, wi::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
 )
     # Specular has zero PDF for non-delta directions
     return (SpectralRadiance(), 0f0)
 end
 
 @propagate_inbounds function evaluate_bsdf_spectral(
-    table::RGBToSpectrumTable, mat::PlasticMaterial, wo::Vec3f, wi::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
+    table::RGBToSpectrumTable, mat::PlasticMaterial, textures,
+    wo::Vec3f, wi::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
 )
     cos_theta_i = dot(wi, n)
     cos_theta_o = dot(wo, n)
@@ -435,7 +450,7 @@ end
     end
 
     # Diffuse component (simplified - ignoring specular for MIS evaluation)
-    kd_rgb = evaluate_texture(mat.Kd, uv)
+    kd_rgb = eval_tex(textures, mat.Kd, uv)
     kd_spectral = uplift_rgb(table, kd_rgb, lambda)
     f = kd_spectral * (1f0 / Float32(π))
     pdf = cos_theta / Float32(π)
@@ -444,7 +459,8 @@ end
 end
 
 @propagate_inbounds function evaluate_bsdf_spectral(
-    table::RGBToSpectrumTable, mat::MetalMaterial, wo::Vec3f, wi::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
+    table::RGBToSpectrumTable, mat::MetalMaterial, textures,
+    wo::Vec3f, wi::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
 )
     # For rough metals, we'd need microfacet evaluation
     # For now, treat as specular (zero contribution)
@@ -452,7 +468,8 @@ end
 end
 
 @propagate_inbounds function evaluate_bsdf_spectral(
-    table::RGBToSpectrumTable, mat::EmissiveMaterial, wo::Vec3f, wi::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
+    table::RGBToSpectrumTable, mat::EmissiveMaterial, textures,
+    wo::Vec3f, wi::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
 )
     # Emissive materials don't scatter light (black body)
     return (SpectralRadiance(), 0f0)
@@ -460,7 +477,8 @@ end
 
 # Fallback
 @propagate_inbounds function evaluate_bsdf_spectral(
-    table::RGBToSpectrumTable, mat::Material, wo::Vec3f, wi::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
+    table::RGBToSpectrumTable, mat::Material, textures,
+    wo::Vec3f, wi::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
 )
     cos_theta_i = dot(wi, n)
     cos_theta_o = dot(wo, n)
@@ -485,25 +503,27 @@ end
 # ============================================================================
 
 """
-    get_emission_spectral(table::RGBToSpectrumTable, mat::EmissiveMaterial, wo, n, uv, lambda) -> SpectralRadiance
+    get_emission_spectral(table::RGBToSpectrumTable, mat::EmissiveMaterial, textures, wo, n, uv, lambda) -> SpectralRadiance
 
 Get spectral emission from an emissive material.
 """
 @propagate_inbounds function get_emission_spectral(
-    table::RGBToSpectrumTable, mat::EmissiveMaterial, wo::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
+    table::RGBToSpectrumTable, mat::EmissiveMaterial, textures,
+    wo::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
 )
     cos_theta = dot(wo, n)
     if !mat.two_sided && cos_theta < 0f0
         return SpectralRadiance()
     end
 
-    Le_rgb = evaluate_texture(mat.Le, uv) * mat.scale
+    Le_rgb = eval_tex(textures, mat.Le, uv) * mat.scale
     return uplift_rgb(table, Le_rgb, lambda)
 end
 
 # Non-emissive materials return zero
 @propagate_inbounds function get_emission_spectral(
-    table::RGBToSpectrumTable, mat::Material, wo::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
+    table::RGBToSpectrumTable, mat::Material, textures,
+    wo::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
 )
     return SpectralRadiance()
 end
@@ -513,39 +533,39 @@ end
 # ============================================================================
 
 """
-    get_albedo_spectral(table::RGBToSpectrumTable, mat, uv, lambda) -> SpectralRadiance
+    get_albedo_spectral(table::RGBToSpectrumTable, mat, textures, uv, lambda) -> SpectralRadiance
 
 Extract material albedo as spectral value for denoising auxiliary buffers.
 """
-@propagate_inbounds function get_albedo_spectral(table::RGBToSpectrumTable, mat::MatteMaterial, uv::Point2f, lambda::Wavelengths)
-    return uplift_rgb(table, evaluate_texture(mat.Kd, uv), lambda)
+@propagate_inbounds function get_albedo_spectral(table::RGBToSpectrumTable, mat::MatteMaterial, textures, uv::Point2f, lambda::Wavelengths)
+    return uplift_rgb(table, eval_tex(textures, mat.Kd, uv), lambda)
 end
 
-@propagate_inbounds function get_albedo_spectral(table::RGBToSpectrumTable, mat::MirrorMaterial, uv::Point2f, lambda::Wavelengths)
-    return uplift_rgb(table, evaluate_texture(mat.Kr, uv), lambda)
+@propagate_inbounds function get_albedo_spectral(table::RGBToSpectrumTable, mat::MirrorMaterial, textures, uv::Point2f, lambda::Wavelengths)
+    return uplift_rgb(table, eval_tex(textures, mat.Kr, uv), lambda)
 end
 
-@propagate_inbounds function get_albedo_spectral(table::RGBToSpectrumTable, mat::GlassMaterial, uv::Point2f, lambda::Wavelengths)
+@propagate_inbounds function get_albedo_spectral(table::RGBToSpectrumTable, mat::GlassMaterial, textures, uv::Point2f, lambda::Wavelengths)
     # For glass, use average of reflection and transmission
-    kr = evaluate_texture(mat.Kr, uv)
-    kt = evaluate_texture(mat.Kt, uv)
+    kr = eval_tex(textures, mat.Kr, uv)
+    kt = eval_tex(textures, mat.Kt, uv)
     avg = RGBSpectrum((kr.c[1] + kt.c[1]) * 0.5f0,
                       (kr.c[2] + kt.c[2]) * 0.5f0,
                       (kr.c[3] + kt.c[3]) * 0.5f0)
     return uplift_rgb(table, avg, lambda)
 end
 
-@propagate_inbounds function get_albedo_spectral(table::RGBToSpectrumTable, mat::PlasticMaterial, uv::Point2f, lambda::Wavelengths)
-    return uplift_rgb(table, evaluate_texture(mat.Kd, uv), lambda)
+@propagate_inbounds function get_albedo_spectral(table::RGBToSpectrumTable, mat::PlasticMaterial, textures, uv::Point2f, lambda::Wavelengths)
+    return uplift_rgb(table, eval_tex(textures, mat.Kd, uv), lambda)
 end
 
-@propagate_inbounds function get_albedo_spectral(table::RGBToSpectrumTable, mat::MetalMaterial, uv::Point2f, lambda::Wavelengths)
-    return uplift_rgb(table, evaluate_texture(mat.reflectance, uv), lambda)
+@propagate_inbounds function get_albedo_spectral(table::RGBToSpectrumTable, mat::MetalMaterial, textures, uv::Point2f, lambda::Wavelengths)
+    return uplift_rgb(table, eval_tex(textures, mat.reflectance, uv), lambda)
 end
 
-@propagate_inbounds function get_albedo_spectral(table::RGBToSpectrumTable, mat::EmissiveMaterial, uv::Point2f, lambda::Wavelengths)
+@propagate_inbounds function get_albedo_spectral(table::RGBToSpectrumTable, mat::EmissiveMaterial, textures, uv::Point2f, lambda::Wavelengths)
     # Normalized emission color
-    Le = evaluate_texture(mat.Le, uv)
+    Le = eval_tex(textures, mat.Le, uv)
     lum = to_Y(Le)
     if lum > 0f0
         normalized = Le / lum
@@ -554,8 +574,309 @@ end
     return SpectralRadiance()
 end
 
-@propagate_inbounds function get_albedo_spectral(table::RGBToSpectrumTable, mat::Material, uv::Point2f, lambda::Wavelengths)
+@propagate_inbounds function get_albedo_spectral(table::RGBToSpectrumTable, mat::Material, textures, uv::Point2f, lambda::Wavelengths)
     return SpectralRadiance(0.5f0)
+end
+
+# ============================================================================
+# CoatedDiffuseMaterial - LayeredBxDF Implementation (pbrt-v4 port)
+# ============================================================================
+
+"""
+    Tr(thickness, w) -> Float32
+
+Transmittance through a layer of given thickness along direction w.
+Used in LayeredBxDF random walk.
+"""
+@propagate_inbounds function layer_transmittance(thickness::Float32, w::Vec3f)::Float32
+    abs(thickness) <= eps(Float32) && return 1f0
+    exp(-abs(thickness / w[3]))
+end
+
+"""
+    sample_hg_phase_spectral(g, wo, u) -> (wi, phase_pdf)
+
+Sample direction from Henyey-Greenstein phase function.
+"""
+@propagate_inbounds function sample_hg_phase_spectral(g::Float32, wo::Vec3f, u::Point2f)
+    # Sample cos_θ from HG distribution
+    cos_θ = if abs(g) < 1f-3
+        # Isotropic case
+        1f0 - 2f0 * u[1]
+    else
+        g2 = g * g
+        sqr_term = (1f0 - g2) / (1f0 - g + 2f0 * g * u[1])
+        clamp((1f0 + g2 - sqr_term * sqr_term) / (2f0 * g), -1f0, 1f0)
+    end
+
+    sin_θ = sqrt(max(0f0, 1f0 - cos_θ * cos_θ))
+    ϕ = 2f0 * Float32(π) * u[2]
+
+    # Build local frame around -wo
+    t1, t2 = coordinate_system(-wo)
+    wi = sin_θ * cos(ϕ) * t1 + sin_θ * sin(ϕ) * t2 + cos_θ * (-wo)
+    wi = normalize(wi)
+
+    # HG phase function value (equals PDF)
+    g2 = g * g
+    denom = 1f0 + g2 - 2f0 * g * cos_θ
+    p = (1f0 - g2) / (4f0 * Float32(π) * denom * sqrt(max(1f-10, denom)))
+
+    return (wi, p)
+end
+
+"""
+    hg_phase_pdf(g, cos_θ) -> Float32
+
+Evaluate Henyey-Greenstein phase function PDF.
+"""
+@propagate_inbounds function hg_phase_pdf(g::Float32, cos_θ::Float32)::Float32
+    g2 = g * g
+    denom = 1f0 + g2 - 2f0 * g * cos_θ
+    (1f0 - g2) / (4f0 * Float32(π) * denom * sqrt(max(1f-10, denom)))
+end
+
+"""
+    sample_dielectric_transmission_spectral(eta, wo, uc) -> (wi, T, valid)
+
+Sample transmission through a dielectric interface.
+Returns transmitted direction, transmittance, and validity flag.
+"""
+@propagate_inbounds function sample_dielectric_transmission_spectral(
+    eta::Float32, wo::Vec3f, uc::Float32
+)
+    cos_θo = abs(wo[3])
+    F = fresnel_dielectric(cos_θo, eta)
+
+    # Use uc to decide reflection vs transmission
+    if uc < F
+        # Reflection - not transmission
+        return (Vec3f(0), 0f0, false)
+    end
+
+    # Compute transmitted direction using Snell's law
+    entering = wo[3] > 0f0
+    η_ratio = entering ? (1f0 / eta) : eta
+
+    sin2_θi = max(0f0, 1f0 - cos_θo^2)
+    sin2_θt = η_ratio^2 * sin2_θi
+
+    # Check for total internal reflection
+    if sin2_θt >= 1f0
+        return (Vec3f(0), 0f0, false)
+    end
+
+    cos_θt = sqrt(1f0 - sin2_θt)
+    # Flip sign based on which side we're entering
+    cos_θt = entering ? -cos_θt : cos_θt
+
+    wi = Vec3f(-η_ratio * wo[1], -η_ratio * wo[2], cos_θt)
+    wi = normalize(wi)
+
+    T = 1f0 - F
+    return (wi, T, true)
+end
+
+"""
+    sample_bsdf_spectral(table, mat::CoatedDiffuseMaterial, textures, wo, n, uv, lambda, sample_u, rng) -> SpectralBSDFSample
+
+Sample CoatedDiffuse BSDF using pbrt-v4's LayeredBxDF random walk algorithm.
+This performs a Monte Carlo estimate of the layered material response.
+"""
+@propagate_inbounds function sample_bsdf_spectral(
+    table::RGBToSpectrumTable, mat::CoatedDiffuseMaterial, textures,
+    wo::Vec3f, n::Vec3f, uv::Point2f,
+    lambda::Wavelengths, sample_u::Point2f, rng::Float32
+)
+    # Check for grazing angle
+    wo_dot_n = dot(wo, n)
+    if abs(wo_dot_n) < 1f-6
+        return SpectralBSDFSample()
+    end
+
+    # Get material properties
+    refl_rgb = eval_tex(textures, mat.reflectance, uv)
+    eta = mat.eta
+    thickness = max(eval_tex(textures, mat.thickness, uv), eps(Float32))
+    albedo_rgb = eval_tex(textures, mat.albedo, uv)
+    g_val = clamp(eval_tex(textures, mat.g, uv), -0.99f0, 0.99f0)
+
+    refl_spectral = uplift_rgb(table, refl_rgb, lambda)
+    albedo_spectral = uplift_rgb(table, albedo_rgb, lambda)
+    has_medium = !is_black(albedo_rgb)
+
+    # Build coordinate system from shading normal
+    tangent, bitangent = coordinate_system(n)
+
+    # Transform wo to local space
+    wo_local = Vec3f(dot(wo, tangent), dot(wo, bitangent), wo_dot_n)
+
+    # Two-sided: flip if entering from below
+    flip = wo_local[3] < 0f0
+    if flip
+        wo_local = -wo_local
+    end
+
+    # === LayeredBxDF sampling strategy ===
+    # For smooth coating (roughness ≈ 0), we use a simplified approach:
+    # 1. Compute Fresnel at top interface
+    # 2. Probabilistically choose reflection or transmission
+    # 3. If transmission, sample diffuse base and transmit back out
+
+    cos_θo = abs(wo_local[3])
+    F = fresnel_dielectric(cos_θo, eta)
+
+    # Use rng to decide: reflect at top interface or transmit through
+    if rng < F
+        # Specular reflection at coating surface
+        wi_local = Vec3f(-wo_local[1], -wo_local[2], wo_local[3])
+        if flip
+            wi_local = -wi_local
+        end
+
+        # Transform back to world space
+        wi = tangent * wi_local[1] + bitangent * wi_local[2] + n * wi_local[3]
+        wi = normalize(wi)
+
+        # For specular reflection, f = 1 (Fresnel already accounted in probability)
+        f_spectral = SpectralRadiance(1f0)
+        return SpectralBSDFSample(wi, f_spectral, 1f0, true, 1f0)
+    end
+
+    # Transmitted through top interface - sample the diffuse base
+    # Compute refracted direction into the coating
+    entering = true  # wo_local[3] > 0 after flip
+    η_into = 1f0 / eta
+
+    sin2_θi = max(0f0, 1f0 - cos_θo^2)
+    sin2_θt = η_into^2 * sin2_θi
+
+    if sin2_θt >= 1f0
+        # Total internal reflection (shouldn't happen for typical coating IOR)
+        return SpectralBSDFSample()
+    end
+
+    cos_θt_in = sqrt(1f0 - sin2_θt)
+
+    # Sample diffuse base layer with cosine-weighted hemisphere
+    local_diffuse_wi = cosine_sample_hemisphere(sample_u)
+    cos_θ_diffuse = local_diffuse_wi[3]
+
+    if cos_θ_diffuse < 1f-6
+        return SpectralBSDFSample()
+    end
+
+    # Compute Fresnel for light exiting the coating (from inside to outside)
+    # Note: when light travels from medium with IOR=eta to air (IOR=1), use eta as the ratio
+    F_out = fresnel_dielectric(cos_θ_diffuse, eta)
+    T_in = 1f0 - F
+    T_out = 1f0 - F_out
+
+    # Account for layer transmittance if there's absorption
+    layer_tr = if has_medium
+        # Simple absorption: Tr = exp(-thickness / |cos_θ|)
+        # Average over entry and exit paths
+        tr_in = layer_transmittance(thickness, Vec3f(0, 0, cos_θt_in))
+        tr_out = layer_transmittance(thickness, local_diffuse_wi)
+        tr_in * tr_out * albedo_spectral
+    else
+        SpectralRadiance(1f0)
+    end
+
+    # Transform diffuse sample to world space (it's in local shading frame)
+    if flip
+        local_diffuse_wi = Vec3f(local_diffuse_wi[1], local_diffuse_wi[2], -local_diffuse_wi[3])
+    end
+
+    # Refract the diffuse direction back out through the coating
+    # Simplified: for smooth coating, use the diffuse direction directly
+    # (accurate for thin coatings where refraction deviation is small)
+    wi = tangent * local_diffuse_wi[1] + bitangent * local_diffuse_wi[2] + n * local_diffuse_wi[3]
+    wi = normalize(wi)
+
+    # Total BSDF value:
+    # f = T_in * (Kd/π) * T_out * layer_transmittance
+    # pdf = (1-F) * cos_θ/π
+    diffuse_f = refl_spectral * (1f0 / Float32(π))
+    f_spectral = diffuse_f * T_in * T_out * layer_tr
+
+    pdf = (1f0 - F) * cos_θ_diffuse / Float32(π)
+
+    return SpectralBSDFSample(wi, f_spectral, pdf, false, 1f0)
+end
+
+"""
+    evaluate_bsdf_spectral(table, mat::CoatedDiffuseMaterial, textures, wo, wi, n, uv, lambda) -> (f, pdf)
+
+Evaluate CoatedDiffuse BSDF for given directions.
+"""
+@propagate_inbounds function evaluate_bsdf_spectral(
+    table::RGBToSpectrumTable, mat::CoatedDiffuseMaterial, textures,
+    wo::Vec3f, wi::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
+)
+    # Check hemisphere
+    cos_θi = dot(wi, n)
+    cos_θo = dot(wo, n)
+    if cos_θi * cos_θo < 0f0
+        # Opposite hemispheres - no contribution for reflection-only material
+        return (SpectralRadiance(), 0f0)
+    end
+
+    cos_θ = abs(cos_θi)
+    if cos_θ < 1f-6
+        return (SpectralRadiance(), 0f0)
+    end
+
+    # Get material properties
+    refl_rgb = eval_tex(textures, mat.reflectance, uv)
+    eta = mat.eta
+    thickness = max(eval_tex(textures, mat.thickness, uv), eps(Float32))
+    albedo_rgb = eval_tex(textures, mat.albedo, uv)
+
+    refl_spectral = uplift_rgb(table, refl_rgb, lambda)
+    albedo_spectral = uplift_rgb(table, albedo_rgb, lambda)
+    has_medium = !is_black(albedo_rgb)
+
+    # Compute Fresnel terms for both directions
+    F_o = fresnel_dielectric(abs(cos_θo), eta)
+    F_i = fresnel_dielectric(cos_θ, eta)
+    T_o = 1f0 - F_o
+    T_i = 1f0 - F_i
+
+    # Layer transmittance
+    layer_tr = if has_medium
+        # Simplified: constant absorption factor
+        tr = layer_transmittance(thickness, wi)
+        tr * tr * albedo_spectral
+    else
+        SpectralRadiance(1f0)
+    end
+
+    # Diffuse contribution through coating
+    diffuse_f = refl_spectral * (1f0 / Float32(π))
+    f_spectral = diffuse_f * T_o * T_i * layer_tr
+
+    # PDF is cosine-weighted for diffuse, weighted by transmission probability
+    pdf = T_o * cos_θ / Float32(π)
+
+    return (f_spectral, pdf)
+end
+
+"""
+    get_emission_spectral for CoatedDiffuseMaterial - returns zero (non-emissive).
+"""
+@propagate_inbounds function get_emission_spectral(
+    table::RGBToSpectrumTable, mat::CoatedDiffuseMaterial, textures,
+    wo::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
+)
+    return SpectralRadiance()
+end
+
+"""
+    get_albedo_spectral for CoatedDiffuseMaterial.
+"""
+@propagate_inbounds function get_albedo_spectral(table::RGBToSpectrumTable, mat::CoatedDiffuseMaterial, textures, uv::Point2f, lambda::Wavelengths)
+    return uplift_rgb(table, eval_tex(textures, mat.reflectance, uv), lambda)
 end
 
 # ============================================================================
@@ -569,28 +890,31 @@ end
     sample_bsdf_spectral for MediumInterface - forwards to wrapped material.
 """
 @propagate_inbounds function sample_bsdf_spectral(
-    table::RGBToSpectrumTable, mi::MediumInterface, wo::Vec3f, n::Vec3f, uv::Point2f,
+    table::RGBToSpectrumTable, mi::MediumInterface, textures,
+    wo::Vec3f, n::Vec3f, uv::Point2f,
     lambda::Wavelengths, sample_u::Point2f, rng::Float32
 )
-    return sample_bsdf_spectral(table, mi.material, wo, n, uv, lambda, sample_u, rng)
+    return sample_bsdf_spectral(table, mi.material, textures, wo, n, uv, lambda, sample_u, rng)
 end
 
 """
     evaluate_bsdf_spectral for MediumInterface - forwards to wrapped material.
 """
 @propagate_inbounds function evaluate_bsdf_spectral(
-    table::RGBToSpectrumTable, mi::MediumInterface, wo::Vec3f, wi::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
+    table::RGBToSpectrumTable, mi::MediumInterface, textures,
+    wo::Vec3f, wi::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
 )
-    return evaluate_bsdf_spectral(table, mi.material, wo, wi, n, uv, lambda)
+    return evaluate_bsdf_spectral(table, mi.material, textures, wo, wi, n, uv, lambda)
 end
 
 """
     get_emission_spectral for MediumInterface - forwards to wrapped material.
 """
 @propagate_inbounds function get_emission_spectral(
-    table::RGBToSpectrumTable, mi::MediumInterface, wo::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
+    table::RGBToSpectrumTable, mi::MediumInterface, textures,
+    wo::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
 )
-    return get_emission_spectral(table, mi.material, wo, n, uv, lambda)
+    return get_emission_spectral(table, mi.material, textures, wo, n, uv, lambda)
 end
 
 """
@@ -603,8 +927,8 @@ end
 """
     get_albedo_spectral for MediumInterface - forwards to wrapped material.
 """
-@propagate_inbounds function get_albedo_spectral(table::RGBToSpectrumTable, mi::MediumInterface, uv::Point2f, lambda::Wavelengths)
-    return get_albedo_spectral(table, mi.material, uv, lambda)
+@propagate_inbounds function get_albedo_spectral(table::RGBToSpectrumTable, mi::MediumInterface, textures, uv::Point2f, lambda::Wavelengths)
+    return get_albedo_spectral(table, mi.material, textures, uv, lambda)
 end
 
 # ============================================================================
@@ -617,28 +941,31 @@ end
     sample_bsdf_spectral for MediumInterfaceIdx - forwards to wrapped material.
 """
 @propagate_inbounds function sample_bsdf_spectral(
-    table::RGBToSpectrumTable, mi::MediumInterfaceIdx, wo::Vec3f, n::Vec3f, uv::Point2f,
+    table::RGBToSpectrumTable, mi::MediumInterfaceIdx, textures,
+    wo::Vec3f, n::Vec3f, uv::Point2f,
     lambda::Wavelengths, sample_u::Point2f, rng::Float32
 )
-    return sample_bsdf_spectral(table, mi.material, wo, n, uv, lambda, sample_u, rng)
+    return sample_bsdf_spectral(table, mi.material, textures, wo, n, uv, lambda, sample_u, rng)
 end
 
 """
     evaluate_bsdf_spectral for MediumInterfaceIdx - forwards to wrapped material.
 """
 @propagate_inbounds function evaluate_bsdf_spectral(
-    table::RGBToSpectrumTable, mi::MediumInterfaceIdx, wo::Vec3f, wi::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
+    table::RGBToSpectrumTable, mi::MediumInterfaceIdx, textures,
+    wo::Vec3f, wi::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
 )
-    return evaluate_bsdf_spectral(table, mi.material, wo, wi, n, uv, lambda)
+    return evaluate_bsdf_spectral(table, mi.material, textures, wo, wi, n, uv, lambda)
 end
 
 """
     get_emission_spectral for MediumInterfaceIdx - forwards to wrapped material.
 """
 @propagate_inbounds function get_emission_spectral(
-    table::RGBToSpectrumTable, mi::MediumInterfaceIdx, wo::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
+    table::RGBToSpectrumTable, mi::MediumInterfaceIdx, textures,
+    wo::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
 )
-    return get_emission_spectral(table, mi.material, wo, n, uv, lambda)
+    return get_emission_spectral(table, mi.material, textures, wo, n, uv, lambda)
 end
 
 """
@@ -651,8 +978,8 @@ end
 """
     get_albedo_spectral for MediumInterfaceIdx - forwards to wrapped material.
 """
-@propagate_inbounds function get_albedo_spectral(table::RGBToSpectrumTable, mi::MediumInterfaceIdx, uv::Point2f, lambda::Wavelengths)
-    return get_albedo_spectral(table, mi.material, uv, lambda)
+@propagate_inbounds function get_albedo_spectral(table::RGBToSpectrumTable, mi::MediumInterfaceIdx, textures, uv::Point2f, lambda::Wavelengths)
+    return get_albedo_spectral(table, mi.material, textures, uv, lambda)
 end
 
 # ============================================================================

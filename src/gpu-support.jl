@@ -74,13 +74,29 @@ function to_gpu(ArrayType, d::Hikari.Distribution1D; preserve=[])
     return Hikari.Distribution1D(func_gpu, cdf_gpu, d.func_int)
 end
 
-# GPU conversion for Distribution2D
+# GPU conversion for Distribution2D -> FlatDistribution2D
+# IMPORTANT: We convert to FlatDistribution2D to avoid nested device arrays
+# which cause SPIR-V validation errors when pointers are extracted from
+# structs loaded from device arrays and used in loops.
 function to_gpu(ArrayType, d::Hikari.Distribution2D; preserve=[])
-    # Convert each conditional distribution
-    p_conditional_gpu = [to_gpu(ArrayType, p; preserve=preserve) for p in d.p_conditional_v]
-    p_conditional_vec = to_gpu(ArrayType, p_conditional_gpu; preserve=preserve)
-    p_marginal_gpu = to_gpu(ArrayType, d.p_marginal; preserve=preserve)
-    return Hikari.Distribution2D(p_conditional_vec, p_marginal_gpu)
+    # First flatten the distribution on CPU
+    flat = Hikari.FlatDistribution2D(d)
+    # Then convert flattened version to GPU
+    return to_gpu(ArrayType, flat; preserve=preserve)
+end
+
+# GPU conversion for FlatDistribution2D
+function to_gpu(ArrayType, d::Hikari.FlatDistribution2D; preserve=[])
+    return Hikari.FlatDistribution2D(
+        to_gpu(ArrayType, d.conditional_func; preserve=preserve),
+        to_gpu(ArrayType, d.conditional_cdf; preserve=preserve),
+        to_gpu(ArrayType, d.conditional_func_int; preserve=preserve),
+        to_gpu(ArrayType, d.marginal_func; preserve=preserve),
+        to_gpu(ArrayType, d.marginal_cdf; preserve=preserve),
+        d.marginal_func_int,
+        d.nu,
+        d.nv
+    )
 end
 
 # GPU conversion for EnvironmentMap

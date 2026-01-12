@@ -23,6 +23,11 @@ end
 # GPU conversion for each material type
 # All textures are converted - to_gpu handles both data textures and constant textures
 
+# ============================================================================
+# Legacy to_gpu for materials (converts textures to GPU arrays)
+# These are deprecated - use to_gpu_with_collector instead for the TextureRef pattern
+# ============================================================================
+
 function to_gpu(ArrayType, m::Hikari.MatteMaterial)
     Kd = to_gpu(ArrayType, m.Kd)
     σ = to_gpu(ArrayType, m.σ)
@@ -72,6 +77,81 @@ function to_gpu(ArrayType, m::Hikari.MediumInterfaceIdx)
     return Hikari.MediumInterfaceIdx(gpu_material, m.inside, m.outside)
 end
 
+# ============================================================================
+# TextureRef-based GPU conversion (new pattern)
+# Converts Texture -> TextureRef using a TextureCollector
+# ============================================================================
+
+"""
+    to_gpu_ref(collector::TextureCollector, m::Material) -> Material with TextureRef
+
+Convert a material to use TextureRef instead of Texture, registering non-constant
+textures in the collector for later GPU transfer.
+"""
+function to_gpu_ref(collector::Hikari.TextureCollector, m::Hikari.MatteMaterial)
+    Kd = Hikari.texture_to_ref(m.Kd, collector)
+    σ = Hikari.texture_to_ref(m.σ, collector)
+    return Hikari.MatteMaterial(Kd, σ)
+end
+
+function to_gpu_ref(collector::Hikari.TextureCollector, m::Hikari.MirrorMaterial)
+    Kr = Hikari.texture_to_ref(m.Kr, collector)
+    return Hikari.MirrorMaterial(Kr)
+end
+
+function to_gpu_ref(collector::Hikari.TextureCollector, m::Hikari.GlassMaterial)
+    Kr = Hikari.texture_to_ref(m.Kr, collector)
+    Kt = Hikari.texture_to_ref(m.Kt, collector)
+    u_roughness = Hikari.texture_to_ref(m.u_roughness, collector)
+    v_roughness = Hikari.texture_to_ref(m.v_roughness, collector)
+    index = Hikari.texture_to_ref(m.index, collector)
+    return Hikari.GlassMaterial(Kr, Kt, u_roughness, v_roughness, index, m.remap_roughness)
+end
+
+function to_gpu_ref(collector::Hikari.TextureCollector, m::Hikari.PlasticMaterial)
+    Kd = Hikari.texture_to_ref(m.Kd, collector)
+    Ks = Hikari.texture_to_ref(m.Ks, collector)
+    roughness = Hikari.texture_to_ref(m.roughness, collector)
+    return Hikari.PlasticMaterial(Kd, Ks, roughness, m.remap_roughness)
+end
+
+function to_gpu_ref(collector::Hikari.TextureCollector, m::Hikari.MetalMaterial)
+    eta = Hikari.texture_to_ref(m.eta, collector)
+    k = Hikari.texture_to_ref(m.k, collector)
+    roughness = Hikari.texture_to_ref(m.roughness, collector)
+    reflectance = Hikari.texture_to_ref(m.reflectance, collector)
+    return Hikari.MetalMaterial(eta, k, roughness, reflectance, m.remap_roughness)
+end
+
+function to_gpu_ref(collector::Hikari.TextureCollector, m::Hikari.EmissiveMaterial)
+    Le = Hikari.texture_to_ref(m.Le, collector)
+    return Hikari.EmissiveMaterial(Le, m.scale, m.two_sided)
+end
+
+function to_gpu_ref(collector::Hikari.TextureCollector, m::Hikari.CoatedDiffuseMaterial)
+    reflectance = Hikari.texture_to_ref(m.reflectance, collector)
+    u_roughness = Hikari.texture_to_ref(m.u_roughness, collector)
+    v_roughness = Hikari.texture_to_ref(m.v_roughness, collector)
+    thickness = Hikari.texture_to_ref(m.thickness, collector)
+    albedo = Hikari.texture_to_ref(m.albedo, collector)
+    g = Hikari.texture_to_ref(m.g, collector)
+    return Hikari.CoatedDiffuseMaterial(
+        reflectance, u_roughness, v_roughness, thickness,
+        m.eta, albedo, g, m.max_depth, m.n_samples, m.remap_roughness
+    )
+end
+
+# MediumInterface - convert wrapped material
+function to_gpu_ref(collector::Hikari.TextureCollector, m::Hikari.MediumInterface)
+    gpu_material = to_gpu_ref(collector, m.material)
+    return Hikari.MediumInterface(gpu_material, m.inside, m.outside)
+end
+
+function to_gpu_ref(collector::Hikari.TextureCollector, m::Hikari.MediumInterfaceIdx)
+    gpu_material = to_gpu_ref(collector, m.material)
+    return Hikari.MediumInterfaceIdx(gpu_material, m.inside, m.outside)
+end
+
 # GPU conversion for CloudVolume - convert density array to GPU
 function to_gpu(ArrayType, m::Hikari.CloudVolume)
     density_gpu = Raycore.to_gpu(ArrayType, m.density)
@@ -109,19 +189,59 @@ end
 
 function to_gpu(ArrayType, ms::Hikari.MaterialScene)
     accel = to_gpu(ArrayType, ms.accel)
-    # Convert each material's textures to GPU, then convert the vector to device array
-    # Must use Raycore.to_gpu for the vector conversion (returns device array via argconvert)
-    #
-    # IMPORTANT: We must ensure all materials in each group have the same concrete type.
-    # When materials have different texture configurations (some with data, some constant),
-    # the naive `map` creates a vector with abstract/union element type which can't be
-    # converted to a GPU array. We use `convert_materials_to_gpu` to handle this.
+
+    # Create texture collector to gather all textures from materials
+    collector = Hikari.TextureCollector()
+
+    # Convert materials to use TextureRef (stores indices into texture tuple)
+    # All materials of the same type will have identical TextureRef types (just different indices)
     materials = map(ms.materials) do mats
-        convert_materials_to_gpu(ArrayType, mats)
+        convert_materials_to_gpu_ref(ArrayType, collector, mats)
     end
+
+    # Build texture tuple from collected textures and convert to GPU
+    # cpu_textures is a tuple of vectors, where each vector contains raw data matrices
+    # (NOT Texture structs). This avoids SPIR-V pointer-in-composite issues.
+    #
+    # Structure: (Vector{Matrix{RGBSpectrum}}, Vector{Matrix{Float32}}, ...)
+    # Each vector becomes a device array of device matrices on GPU.
+    cpu_textures = Hikari.build_texture_tuple(collector)
+    textures = map(cpu_textures) do data_vec
+        # Each element is a Vector of data matrices - convert to device array
+        # First convert each matrix to GPU, then wrap in device array
+        gpu_matrices = [to_gpu(ArrayType, mat) for mat in data_vec]
+        # Convert the vector of GPU matrices to a device array
+        Raycore.to_gpu(ArrayType, gpu_matrices)
+    end
+
     # Convert media tuple to GPU (each medium may have arrays like density grids)
     media = map(m -> to_gpu(ArrayType, m), ms.media)
-    return Hikari.MaterialScene(accel, materials, media)
+
+    return Hikari.MaterialScene(accel, materials, media, textures)
+end
+
+"""
+Convert a vector of materials to GPU using TextureRef pattern.
+All materials get converted to use TextureRef, registering textures in the collector.
+This ensures all materials of the same base type have identical concrete types.
+"""
+function convert_materials_to_gpu_ref(ArrayType, collector::Hikari.TextureCollector, mats::Vector{M}) where M
+    isempty(mats) && return Raycore.to_gpu(ArrayType, Vector{Any}())
+
+    # Convert all materials to TextureRef form
+    ref_mats = [to_gpu_ref(collector, m) for m in mats]
+
+    # All materials should now have the same type (TextureRef fields are uniform)
+    T1 = typeof(first(ref_mats))
+    typed_mats = T1[m for m in ref_mats]
+
+    return Raycore.to_gpu(ArrayType, typed_mats)
+end
+
+# Fallback for non-vector material containers
+function convert_materials_to_gpu_ref(ArrayType, collector::Hikari.TextureCollector, mats)
+    ref_mats = map(m -> to_gpu_ref(collector, m), mats)
+    Raycore.to_gpu(ArrayType, collect(ref_mats))
 end
 
 """
@@ -367,5 +487,6 @@ function Hikari.to_gpu(ArrayType, film::Film)
         KA.adapt(ArrayType, film.normal),
         KA.adapt(ArrayType, film.depth),
         KA.adapt(ArrayType, film.postprocess),
+        film.iteration_index,  # RefValue is shared across CPU/GPU
     )
 end

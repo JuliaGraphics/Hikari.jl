@@ -14,7 +14,8 @@ function build_material_scene(mesh_material_pairs::Vector{Tuple{TriangleMesh, M}
     # Build BVH with material indices
     bvh = BVH(meshes)
 
-    return MaterialScene(bvh, materials)
+    # MaterialScene expects a tuple of material vectors
+    return MaterialScene(bvh, (materials,))
 end
 
 # Compatibility: keep GeometricPrimitive for backward compatibility in basic-scene.jl

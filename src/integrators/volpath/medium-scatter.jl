@@ -36,15 +36,24 @@
         phase_val = hg_p(work.g, cos_θ)
 
         if phase_val > 0f0
-            # Compute direct lighting contribution
-            # Ld = β * Li * phase / (light_pdf * num_lights)
-            # Scale by num_lights because we selected uniformly
-            Ld = work.beta * light_sample.Li * phase_val * Float32(num_lights) / light_sample.pdf
+            # Compute direct lighting contribution following pbrt-v4 (media.cpp lines 287-300):
+            # Ld = beta * phase * Li
+            # NO PDF division here - that happens at shadow ray resolution via MIS weights
+            Ld = work.beta * phase_val * light_sample.Li
 
-            # MIS weight (for non-delta lights)
-            # r_l = r_u * phase_pdf / light_pdf
-            phase_pdf = phase_val  # HG PDF equals value
-            r_l = work.r_u * phase_pdf
+            # MIS weights following pbrt-v4 (media.cpp lines 293-297):
+            # lightPDF = ls->pdf * sampledLight->p (light PDF including selection probability)
+            # phasePDF = 0 for delta lights, else phase->PDF(wo, wi)
+            # r_u = w.r_u * phasePDF
+            # r_l = w.r_u * lightPDF
+            light_pdf = light_sample.pdf / Float32(num_lights)  # Include light selection probability
+            phase_pdf = if light_sample.is_delta
+                0f0  # Delta lights have no MIS with phase sampling
+            else
+                phase_val  # HG PDF equals value for importance sampling
+            end
+            r_u = work.r_u * phase_pdf
+            r_l = work.r_u * light_pdf
 
             # Shadow ray from scatter point to light
             shadow_origin = work.p
@@ -69,7 +78,7 @@
                 t_max,
                 work.lambda,
                 Ld,
-                work.r_u,
+                r_u,
                 r_l,
                 work.pixel_index,
                 work.medium_idx  # Shadow ray travels through same medium
@@ -242,7 +251,7 @@ function vp_sample_medium_direct_lighting!(
         media,
         state.rgb2spec_table.scale, state.rgb2spec_table.coeffs, state.rgb2spec_table.res,
         num_lights, state.shadow_queue.capacity;
-        ndrange=Int(n)
+        ndrange=Int(state.medium_scatter_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
     )
 
     KernelAbstractions.synchronize(backend)
@@ -268,7 +277,7 @@ function vp_sample_medium_scatter!(
         output_queue.items, output_queue.size,
         state.medium_scatter_queue.items, state.medium_scatter_queue.size,
         state.max_depth, output_queue.capacity;
-        ndrange=Int(n)
+        ndrange=Int(state.medium_scatter_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
     )
 
     KernelAbstractions.synchronize(backend)

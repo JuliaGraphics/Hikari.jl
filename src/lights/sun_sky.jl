@@ -11,7 +11,7 @@ scattering model (Rayleigh + Mie).
 Uses importance sampling based on pre-computed sky radiance distribution for
 efficient sampling with low variance.
 """
-struct SunSkyLight{S<:Spectrum, D<:Distribution2D} <: Light
+struct SunSkyLight{S<:Spectrum, D} <: Light
     flags::LightFlags
 
     # Sun parameters
@@ -53,7 +53,7 @@ struct SunSkyLight{S<:Spectrum, D<:Distribution2D} <: Light
         zenith_x::Float32,
         zenith_y::Float32,
         distribution::D,
-    ) where {S<:Spectrum, D<:Distribution2D}
+    ) where {S<:Spectrum, D}
         new{S, D}(
             LightInfinite, sun_direction, sun_intensity, sun_angular_radius,
             turbidity, ground_albedo, ground_enabled,

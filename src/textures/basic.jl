@@ -59,3 +59,25 @@ end
     uv_adj = Vec2f(1f0 - uv[2], uv[1])
      return _sample_texture_data(tex.data, tex.const_value, tex.isconst, uv_adj)
 end
+
+# ============================================================================
+# Direct texture data sampling (for TextureRef on GPU)
+# ============================================================================
+
+"""
+    _sample_texture_data_direct(data::AbstractMatrix{T}, uv::Point2f) -> T
+
+Sample texture data directly without Texture wrapper.
+Used by TextureRef on GPU where we store raw matrices instead of Texture structs.
+This avoids loading structs with nested device array pointers.
+
+Note: UV adjustment (flip) is done here to match evaluate_texture behavior.
+"""
+@propagate_inbounds function _sample_texture_data_direct(data::AbstractMatrix{T}, uv::Point2f)::T where T
+    # Apply the same UV adjustment as evaluate_texture
+    uv_adj = Vec2f(1f0 - uv[2], uv[1])
+    s = unsafe_trunc.(Int32, size(data))
+    idx = map(x -> unsafe_trunc(Int32, x), Int32(1) .+ ((s .- Int32(1)) .* uv_adj))
+    idx = clamp.(idx, Int32(1), s)
+    return data[idx...]
+end

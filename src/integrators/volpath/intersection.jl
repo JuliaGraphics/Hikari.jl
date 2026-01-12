@@ -240,7 +240,7 @@ function vp_trace_rays!(
         state.hit_surface_queue.items, state.hit_surface_queue.size,
         input_queue.items, input_queue.size,
         accel, state.escaped_queue.capacity;
-        ndrange=Int(n)
+        ndrange=Int(input_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
     )
 
     KernelAbstractions.synchronize(backend)
@@ -555,7 +555,7 @@ function vp_trace_shadow_rays!(
         accel, materials, media,
         state.rgb2spec_table.scale, state.rgb2spec_table.coeffs, state.rgb2spec_table.res,
         state.shadow_queue.capacity;
-        ndrange=Int(n)
+        ndrange=Int(state.shadow_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
     )
 
     KernelAbstractions.synchronize(backend)
@@ -638,7 +638,7 @@ function vp_handle_escaped_rays!(
         lights,
         state.rgb2spec_table.scale, state.rgb2spec_table.coeffs, state.rgb2spec_table.res,
         state.escaped_queue.capacity;
-        ndrange=Int(n)
+        ndrange=Int(state.escaped_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
     )
 
     KernelAbstractions.synchronize(backend)

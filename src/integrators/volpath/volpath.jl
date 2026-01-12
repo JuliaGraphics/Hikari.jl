@@ -53,6 +53,17 @@ function VolPath(;
     )
 end
 
+"""
+    clear!(integrator::VolPath)
+
+Clear the integrator's internal state (RGB accumulator) for restarting progressive rendering.
+"""
+function Hikari.clear!(vp::VolPath)
+    if vp.state !== nothing
+        KernelAbstractions.fill!(vp.state.pixel_rgb, 0f0)
+    end
+end
+
 # ============================================================================
 # Camera Ray Generation
 # ============================================================================
@@ -203,11 +214,8 @@ end
         g = pixel_rgb[rgb_base + Int32(2)] / Float32(samples)
         b = pixel_rgb[rgb_base + Int32(3)] / Float32(samples)
 
-        # sRGB gamma
-        r = linear_to_srgb(r)
-        g = linear_to_srgb(g)
-        b = linear_to_srgb(b)
-
+        # Store linear HDR values (no clamping, no gamma)
+        # Postprocessing will handle tonemapping and gamma correction
         framebuffer[py, px] = RGB{Float32}(r, g, b)
     end
 end
@@ -224,6 +232,161 @@ end
 # ============================================================================
 # Main Render Function
 # ============================================================================
+
+"""
+    render!(vp::VolPath, scene, film, camera)
+
+Render one iteration/sample using volumetric spectral wavefront path tracing.
+
+This function is allocation-free and renders a single sample, accumulating
+results in the film. The iteration index is read from and incremented in
+`film.iteration_index`.
+
+For progressive rendering, call this repeatedly. For complete rendering,
+use the main call function `(vp::VolPath)(scene, film, camera)` which wraps
+this in a loop.
+"""
+function render!(
+    vp::VolPath,
+    scene::AbstractScene,
+    film::Film,
+    camera::Camera
+)
+    img = film.framebuffer
+    accel = scene.aggregate.accel
+    materials = scene.aggregate.materials
+    textures = get_textures(scene.aggregate)
+    media = scene.aggregate.media
+    lights = scene.lights
+
+    height, width = size(img)
+    backend = KA.get_backend(img)
+
+    # Allocate or validate state
+    if vp.state === nothing ||
+       vp.state.width != width ||
+       vp.state.height != height
+        vp.state = VolPathState(backend, width, height; max_depth=vp.max_depth)
+    end
+    state = vp.state
+
+    n_pixels = width * height
+
+    # Get current iteration index and increment
+    sample_idx = film.iteration_index[] + Int32(1)
+    film.iteration_index[] = sample_idx
+
+    # Get accumulators from state (allocation-free)
+    pixel_rgb = state.pixel_rgb
+    wavelengths_per_pixel = state.wavelengths_per_pixel
+    pdf_per_pixel = state.pdf_per_pixel
+
+    # Initial medium (vacuum unless camera is inside medium)
+    initial_medium = MediumIndex()
+
+    # Clear spectral buffer (pixel_L) for this sample iteration
+    # This is per-sample, not per-render - pixel_rgb accumulates across all samples
+    reset_film!(state)
+
+    # Reset ray queue
+    reset_queue!(backend, current_ray_queue(state))
+    KA.synchronize(backend)
+
+    # Generate camera rays
+    kernel! = vp_generate_camera_rays_kernel!(backend)
+    kernel!(
+        current_ray_queue(state).items, current_ray_queue(state).size,
+        wavelengths_per_pixel, pdf_per_pixel,
+        Int32(width), Int32(height),
+        camera, sample_idx, initial_medium;
+        ndrange=Int(n_pixels)
+    )
+    KA.synchronize(backend)
+
+    # Path tracing loop - following pbrt-v4 wavefront architecture
+    for depth in 0:(vp.max_depth - 1)
+        n_rays = queue_size(current_ray_queue(state))
+        n_rays == 0 && break
+
+        # Reset work queues for this iteration
+        reset_iteration_queues!(state)
+        KA.synchronize(backend)
+
+        # Step 1: Trace rays to find intersections
+        vp_trace_rays!(backend, state, accel)
+
+        # Step 2: Sample medium interactions (delta tracking)
+        if !isempty(media)
+            n_medium = queue_size(state.medium_sample_queue)
+            if n_medium > 0
+                vp_sample_medium_interaction!(backend, state, media)
+            end
+        end
+
+        # Step 3: Handle medium scattering events
+        if !isempty(media)
+            n_scatter = queue_size(state.medium_scatter_queue)
+            if n_scatter > 0
+                if count_lights(lights) > 0
+                    vp_sample_medium_direct_lighting!(backend, state, lights, media)
+                end
+                vp_sample_medium_scatter!(backend, state)
+            end
+        end
+
+        # Step 4: Handle escaped rays (environment light)
+        n_escaped = queue_size(state.escaped_queue)
+        if n_escaped > 0 && count_lights(lights) > 0
+            vp_handle_escaped_rays!(backend, state, lights)
+        end
+
+        # Step 5: Process surface hits (emission + material eval)
+        n_hits = queue_size(state.hit_surface_queue)
+        if n_hits > 0
+            vp_process_surface_hits!(backend, state, materials, textures)
+
+            n_material = queue_size(state.material_queue)
+            if n_material > 0 && count_lights(lights) > 0
+                vp_sample_surface_direct_lighting!(backend, state, materials, textures, lights)
+            end
+
+            n_shadow = queue_size(state.shadow_queue)
+            if n_shadow > 0
+                vp_trace_shadow_rays!(backend, state, accel, materials, media)
+            end
+
+            if n_material > 0
+                vp_evaluate_materials!(backend, state, materials, textures, media)
+            end
+        end
+
+        # Swap ray queues for next iteration
+        swap_ray_queues!(state)
+    end
+
+    # Accumulate this sample's spectral radiance to RGB
+    kernel! = vp_accumulate_to_rgb_kernel!(backend)
+    kernel!(
+        pixel_rgb, state.pixel_L,
+        wavelengths_per_pixel, pdf_per_pixel,
+        state.cie_table.cie_x, state.cie_table.cie_y, state.cie_table.cie_z,
+        Int32(n_pixels);
+        ndrange=Int(n_pixels)
+    )
+    KA.synchronize(backend)
+
+    # Update film: divide by current sample count
+    kernel! = vp_finalize_film_kernel!(backend)
+    kernel!(
+        img, pixel_rgb,
+        sample_idx,  # Current number of samples
+        Int32(width), Int32(height);
+        ndrange=Int(n_pixels)
+    )
+    KA.synchronize(backend)
+
+    return nothing
+end
 
 """
     (vp::VolPath)(scene, film, camera)
@@ -247,9 +410,30 @@ function (vp::VolPath)(
     film::Film,
     camera::Camera
 )
+    # Reset iteration counter for fresh render
+    film.iteration_index[] = Int32(0)
+
+    # Clear RGB accumulator for fresh render
+    if vp.state !== nothing
+        backend = KA.get_backend(film.framebuffer)
+        KA.fill!(vp.state.pixel_rgb, 0f0)
+    end
+
+    # Render all samples by calling render! repeatedly
+    for _ in 1:vp.samples_per_pixel
+        render!(vp, scene, film, camera)
+    end
+
+    return film.postprocess
+end
+
+# Old implementation (kept for reference, can be removed):
+function _old_volpath_implementation(vp::VolPath, scene::AbstractScene, film::Film, camera::Camera)
     img = film.framebuffer
     accel = scene.aggregate.accel
     materials = scene.aggregate.materials
+    # Textures tuple for GPU compatibility (empty on CPU where Texture structs hold data)
+    textures = get_textures(scene.aggregate)
     media = scene.aggregate.media  # Get media from scene (extracted from MediumInterface materials)
     lights = scene.lights
 
@@ -352,12 +536,12 @@ function (vp::VolPath)(
             # ================================================================
             n_hits = queue_size(state.hit_surface_queue)
             if n_hits > 0
-                vp_process_surface_hits!(backend, state, materials)
+                vp_process_surface_hits!(backend, state, materials, textures)
 
                 # Step 5a: Direct lighting at surfaces
                 n_material = queue_size(state.material_queue)
                 if n_material > 0 && count_lights(lights) > 0
-                    vp_sample_surface_direct_lighting!(backend, state, materials, lights)
+                    vp_sample_surface_direct_lighting!(backend, state, materials, textures, lights)
                 end
 
                 # Step 5b: Trace shadow rays
@@ -368,7 +552,7 @@ function (vp::VolPath)(
 
                 # Step 5c: BSDF sampling for continuation rays
                 if n_material > 0
-                    vp_evaluate_materials!(backend, state, materials, media)
+                    vp_evaluate_materials!(backend, state, materials, textures, media)
                 end
             end
 

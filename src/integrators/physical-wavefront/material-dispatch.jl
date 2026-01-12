@@ -1,13 +1,17 @@
 # Material dispatch for PhysicalWavefront path tracing
 # Uses @generated functions for type-stable dispatch over Hikari's material tuple
 # Each material type implements sample_bsdf_spectral() from spectral-eval.jl
+#
+# NOTE: All dispatch functions take a `textures` parameter for GPU compatibility.
+# On CPU, textures is ignored (Texture structs contain their data).
+# On GPU, textures is a tuple of CLDeviceArrays, and materials contain TextureRef.
 
 # ============================================================================
 # Spectral Material Sampling Dispatch
 # ============================================================================
 
 """
-    sample_spectral_material(table::RGBToSpectrumTable, materials::NTuple{N}, idx::MaterialIndex, wo, ns, uv, lambda, u, rng)
+    sample_spectral_material(table::RGBToSpectrumTable, materials::NTuple{N}, textures, idx::MaterialIndex, wo, ns, uv, lambda, u, rng)
 
 Type-stable dispatch for spectral BSDF sampling over Hikari's material tuple.
 Returns SpectralBSDFSample from the appropriate material type.
@@ -15,13 +19,14 @@ Returns SpectralBSDFSample from the appropriate material type.
 Uses @generated to create efficient branching code at compile time.
 """
 @propagate_inbounds @generated function sample_spectral_material(
-    table::RGBToSpectrumTable, materials::NTuple{N,Any}, idx::MaterialIndex,
+    table::RGBToSpectrumTable, materials::NTuple{N,Any}, textures,
+    idx::MaterialIndex,
     wo::Vec3f, ns::Vec3f, uv::Point2f,
     lambda::Wavelengths, u::Point2f, rng::Float32
 ) where {N}
     branches = [quote
          if idx.material_type === UInt8($i)
-            @inbounds return sample_bsdf_spectral(table, materials[$i][idx.material_idx], wo, ns, uv, lambda, u, rng)
+            @inbounds return sample_bsdf_spectral(table, materials[$i][idx.material_idx], textures, wo, ns, uv, lambda, u, rng)
         end
     end for i in 1:N]
 
@@ -37,19 +42,20 @@ end
 # ============================================================================
 
 """
-    evaluate_spectral_material(table::RGBToSpectrumTable, materials::NTuple{N}, idx::MaterialIndex, wo, wi, ns, uv, lambda)
+    evaluate_spectral_material(table::RGBToSpectrumTable, materials::NTuple{N}, textures, idx::MaterialIndex, wo, wi, ns, uv, lambda)
 
 Type-stable dispatch for spectral BSDF evaluation.
 Returns (f::SpectralRadiance, pdf::Float32).
 """
 @propagate_inbounds @generated function evaluate_spectral_material(
-    table::RGBToSpectrumTable, materials::NTuple{N,Any}, idx::MaterialIndex,
+    table::RGBToSpectrumTable, materials::NTuple{N,Any}, textures,
+    idx::MaterialIndex,
     wo::Vec3f, wi::Vec3f, ns::Vec3f, uv::Point2f,
     lambda::Wavelengths
 ) where {N}
     branches = [quote
          if idx.material_type === UInt8($i)
-            @inbounds return evaluate_bsdf_spectral(table, materials[$i][idx.material_idx], wo, wi, ns, uv, lambda)
+            @inbounds return evaluate_bsdf_spectral(table, materials[$i][idx.material_idx], textures, wo, wi, ns, uv, lambda)
         end
     end for i in 1:N]
     quote
@@ -63,18 +69,19 @@ end
 # ============================================================================
 
 """
-    get_emission_spectral_dispatch(table::RGBToSpectrumTable, materials::NTuple{N}, idx::MaterialIndex, wo, n, uv, lambda)
+    get_emission_spectral_dispatch(table::RGBToSpectrumTable, materials::NTuple{N}, textures, idx::MaterialIndex, wo, n, uv, lambda)
 
 Type-stable dispatch for getting spectral emission from materials.
 Returns SpectralRadiance (zero for non-emissive materials).
 """
 @propagate_inbounds @generated function get_emission_spectral_dispatch(
-    table::RGBToSpectrumTable, materials::NTuple{N,Any}, idx::MaterialIndex,
+    table::RGBToSpectrumTable, materials::NTuple{N,Any}, textures,
+    idx::MaterialIndex,
     wo::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
 ) where {N}
     branches = [quote
          if idx.material_type === UInt8($i)
-            @inbounds return get_emission_spectral(table, materials[$i][idx.material_idx], wo, n, uv, lambda)
+            @inbounds return get_emission_spectral(table, materials[$i][idx.material_idx], textures, wo, n, uv, lambda)
         end
     end for i in 1:N]
 
@@ -85,18 +92,19 @@ Returns SpectralRadiance (zero for non-emissive materials).
 end
 
 """
-    get_emission_spectral_uv_dispatch(table::RGBToSpectrumTable, materials::NTuple{N}, idx::MaterialIndex, uv, lambda)
+    get_emission_spectral_uv_dispatch(table::RGBToSpectrumTable, materials::NTuple{N}, textures, idx::MaterialIndex, uv, lambda)
 
 Type-stable dispatch for getting spectral emission without directional check.
 Returns SpectralRadiance (zero for non-emissive materials).
 """
 @propagate_inbounds @generated function get_emission_spectral_uv_dispatch(
-    table::RGBToSpectrumTable, materials::NTuple{N,Any}, idx::MaterialIndex,
+    table::RGBToSpectrumTable, materials::NTuple{N,Any}, textures,
+    idx::MaterialIndex,
     uv::Point2f, lambda::Wavelengths
 ) where {N}
     branches = [quote
          if idx.material_type === UInt8($i)
-            @inbounds return get_emission_spectral(table, materials[$i][idx.material_idx], uv, lambda)
+            @inbounds return get_emission_spectral(table, materials[$i][idx.material_idx], textures, uv, lambda)
         end
     end for i in 1:N]
 
@@ -136,18 +144,19 @@ end
 # ============================================================================
 
 """
-    get_albedo_spectral_dispatch(table::RGBToSpectrumTable, materials::NTuple{N}, idx::MaterialIndex, uv, lambda)
+    get_albedo_spectral_dispatch(table::RGBToSpectrumTable, materials::NTuple{N}, textures, idx::MaterialIndex, uv, lambda)
 
 Type-stable dispatch for getting material albedo for denoising.
 Returns SpectralRadiance.
 """
 @propagate_inbounds @generated function get_albedo_spectral_dispatch(
-    table::RGBToSpectrumTable, materials::NTuple{N,Any}, idx::MaterialIndex,
+    table::RGBToSpectrumTable, materials::NTuple{N,Any}, textures,
+    idx::MaterialIndex,
     uv::Point2f, lambda::Wavelengths
 ) where {N}
     branches = [quote
          if idx.material_type === UInt8($i)
-            @inbounds return get_albedo_spectral(table, materials[$i][idx.material_idx], uv, lambda)
+            @inbounds return get_albedo_spectral(table, materials[$i][idx.material_idx], textures, uv, lambda)
         end
     end for i in 1:N]
 
@@ -186,20 +195,21 @@ end
 end
 
 """
-    evaluate_material_complete(table::RGBToSpectrumTable, materials, idx, wo, ns, n, uv, lambda, u, rng)
+    evaluate_material_complete(table::RGBToSpectrumTable, materials, textures, idx, wo, ns, n, uv, lambda, u, rng)
 
 Complete material evaluation for wavefront pipeline.
 Returns PWMaterialEvalResult with BSDF sample and emission.
 """
 @propagate_inbounds @generated function evaluate_material_complete(
-    table::RGBToSpectrumTable, materials::NTuple{N,Any}, idx::MaterialIndex,
+    table::RGBToSpectrumTable, materials::NTuple{N,Any}, textures,
+    idx::MaterialIndex,
     wo::Vec3f, ns::Vec3f, n::Vec3f, uv::Point2f,
     lambda::Wavelengths, u::Point2f, rng::Float32
 ) where {N}
     branches = [quote
          if idx.material_type === UInt8($i)
-            @inbounds sample = sample_bsdf_spectral(table, materials[$i][idx.material_idx], wo, ns, uv, lambda, u, rng)
-            @inbounds Le = get_emission_spectral(table, materials[$i][idx.material_idx], wo, n, uv, lambda)
+            @inbounds sample = sample_bsdf_spectral(table, materials[$i][idx.material_idx], textures, wo, ns, uv, lambda, u, rng)
+            @inbounds Le = get_emission_spectral(table, materials[$i][idx.material_idx], textures, wo, n, uv, lambda)
             @inbounds is_em = is_emissive(materials[$i][idx.material_idx])
             return PWMaterialEvalResult(sample, Le, is_em)
         end

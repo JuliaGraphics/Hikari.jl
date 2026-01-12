@@ -3,7 +3,6 @@
 # All integrators use the same interface: integrator(scene, film, camera)
 #
 # This scene is designed to be comparable with PbrtWavefront/examples/cat_scene.jl
-
 using GeometryBasics
 using Colors
 using Hikari

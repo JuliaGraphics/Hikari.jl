@@ -74,6 +74,11 @@ mutable struct VolPathState{Backend}
     # Film buffer (spectral radiance per pixel, 4 wavelengths)
     pixel_L::AbstractVector{Float32}
 
+    # Accumulators for progressive rendering (moved from main loop)
+    pixel_rgb::AbstractVector{Float32}  # n_pixels * 3 (RGB accumulator)
+    wavelengths_per_pixel::AbstractVector{Float32}  # n_pixels * 4 (wavelength samples)
+    pdf_per_pixel::AbstractVector{Float32}  # n_pixels * 4 (wavelength PDFs)
+
     # RGB to spectrum table
     rgb2spec_table::RGBToSpectrumTable
 
@@ -109,6 +114,12 @@ function VolPathState(
     pixel_L = KernelAbstractions.allocate(backend, Float32, n_pixels * 4)
     KernelAbstractions.fill!(pixel_L, 0f0)
 
+    # Accumulators for progressive rendering
+    pixel_rgb = KernelAbstractions.allocate(backend, Float32, n_pixels * 3)
+    KernelAbstractions.fill!(pixel_rgb, 0f0)
+    wavelengths_per_pixel = KernelAbstractions.allocate(backend, Float32, n_pixels * 4)
+    pdf_per_pixel = KernelAbstractions.allocate(backend, Float32, n_pixels * 4)
+
     # Load RGB to spectrum table and convert to appropriate array type
     rgb2spec_table_cpu = get_srgb_table()
     # Determine array type from an allocated array
@@ -131,6 +142,9 @@ function VolPathState(
         shadow_queue,
         escaped_queue,
         pixel_L,
+        pixel_rgb,
+        wavelengths_per_pixel,
+        pdf_per_pixel,
         rgb2spec_table,
         cie_table,
         Int32(max_depth),

@@ -158,8 +158,8 @@ Sample sun direction from SunSkyLight spectrally.
     # Delta distribution for sun disk
     p_light = Point3f(p + 1f6 * wi)
 
-    # Sun radiance
-    Li = uplift_rgb(table, light.sun_radiance, lambda)
+    # Sun radiance (field is sun_intensity)
+    Li = uplift_rgb(table, light.sun_intensity, lambda)
 
     return PWLightSample(Li, wi, 1f0, p_light, true)
 end
@@ -346,7 +346,9 @@ Evaluate environment light for an escaped ray direction.
     # Following pbrt-v4 ImageInfiniteLight::Le which passes direction directly
     Le_rgb = light.env_map(ray_d) * light.scale
 
-    return uplift_rgb(table, Le_rgb, lambda)
+    # Use unbounded uplift for emission (like pbrt's RGBIlluminantSpectrum)
+    # NOT uplift_rgb which is for albedo and incorrectly clamps/scales emission
+    return uplift_rgb_unbounded(table, Le_rgb, lambda)
 end
 
 """
@@ -357,8 +359,8 @@ Evaluate sun/sky light for an escaped ray direction.
 @propagate_inbounds function evaluate_environment_spectral(
     table::RGBToSpectrumTable, light::SunSkyLight, ray_d::Vec3f, lambda::Wavelengths
 )::SpectralRadiance
-    # Get sky color for direction
-    Le_rgb = sky_color(light, ray_d)
+    # Get sky + sun radiance for direction (same as le() function)
+    Le_rgb = sky_radiance(light, ray_d) + sun_disk_radiance(light, ray_d)
 
     return uplift_rgb(table, Le_rgb, lambda)
 end
@@ -452,6 +454,12 @@ end
     compute_direct_lighting_spectral(p, n, wo, beta, r_u, lambda, light_sample, bsdf_f, bsdf_pdf)
 
 Compute direct lighting contribution from a light sample with MIS.
+
+Following pbrt-v4 (surfscatter.cpp lines 288-316):
+- Ld = beta * f * Li * cos_theta (NO MIS weight or PDF division here)
+- r_u = r_u * bsdfPDF (0 for delta lights)
+- r_l = r_u * lightPDF
+- MIS weighting happens at shadow ray resolution: Ld * T_ray / (r_u * tr_r_u + r_l * tr_r_l).Average()
 """
 @propagate_inbounds function compute_direct_lighting_spectral(
     p::Point3f,
@@ -477,16 +485,9 @@ Compute direct lighting contribution from a light sample with MIS.
     # Compute cosine term
     cos_theta = abs(dot(ls.wi, n))
 
-    # MIS weight (power heuristic)
-    # For delta lights, skip MIS (bsdf_pdf doesn't matter)
-    weight = if ls.is_delta
-        1f0
-    else
-        mis_weight_spectral(ls.pdf, bsdf_pdf)
-    end
-
-    # Ld = beta * f * Li * cos_theta * weight / pdf_light
-    Ld = beta * bsdf_f * ls.Li * (cos_theta * weight / ls.pdf)
+    # Following pbrt-v4: Ld = beta * f * Li * cos_theta
+    # NO MIS weight or PDF division - that happens at shadow ray resolution
+    Ld = beta * bsdf_f * ls.Li * cos_theta
 
     if is_black(Ld)
         return PWDirectLightingResult()
@@ -504,19 +505,24 @@ Compute direct lighting contribution from a light sample with MIS.
     to_light = ls.p_light - ray_origin
     t_max = sqrt(dot(to_light, to_light)) - 1f-3
 
-    # Update r_l for MIS tracking
-    new_r_l = if ls.is_delta
-        SpectralRadiance(1f0)
+    # MIS weights following pbrt-v4 (surfscatter.cpp lines 299-305):
+    # bsdfPDF = 0 for delta lights (causes r_u to be zero, disabling BSDF MIS)
+    # r_u = w.r_u * bsdfPDF
+    # r_l = w.r_u * lightPDF
+    new_bsdf_pdf = if ls.is_delta
+        0f0  # Delta lights have no MIS with BSDF sampling
     else
-        SpectralRadiance(ls.pdf)
+        bsdf_pdf
     end
+    new_r_u = r_u * new_bsdf_pdf
+    new_r_l = r_u * ls.pdf
 
     return PWDirectLightingResult(
         ray_origin,
         ls.wi,
         t_max,
         Ld,
-        r_u,
+        new_r_u,
         new_r_l,
         true
     )

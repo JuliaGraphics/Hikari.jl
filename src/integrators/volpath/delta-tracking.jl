@@ -329,7 +329,7 @@ function vp_sample_medium_interaction!(
         media,
         state.rgb2spec_table.scale, state.rgb2spec_table.coeffs, state.rgb2spec_table.res,
         state.max_depth, state.medium_sample_queue.capacity;
-        ndrange=Int(n)
+        ndrange=Int(state.medium_sample_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
     )
 
     KernelAbstractions.synchronize(backend)

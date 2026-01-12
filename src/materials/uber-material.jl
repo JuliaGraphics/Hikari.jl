@@ -174,18 +174,21 @@ end
 
 Matte (diffuse) material with Lambertian or Oren-Nayar BRDF.
 
-* `Kd`: Spectral diffuse reflection (color texture)
+* `Kd`: Spectral diffuse reflection (color texture or TextureRef)
 * `σ`: Scalar roughness for Oren-Nayar model (0 = Lambertian)
 """
-struct MatteMaterial{KdType, σType} <: Material
-    Kd::Texture{RGBSpectrum, 2, KdType}
-    σ::Texture{Float32, 2, σType}
+struct MatteMaterial{KdTex, σTex} <: Material
+    Kd::KdTex   # Texture{RGBSpectrum} or TextureRef{RGBSpectrum}
+    σ::σTex     # Texture{Float32} or TextureRef{Float32}
 end
 
 function MatteMaterial(Kd::Texture, σ::Texture)
-    KdType = typeof(Kd.data)
-    σType = typeof(σ.data)
-    MatteMaterial{KdType, σType}(Kd, σ)
+    MatteMaterial{typeof(Kd), typeof(σ)}(Kd, σ)
+end
+
+# Constructor for TextureRef (GPU path)
+function MatteMaterial(Kd::TextureRef{RGBSpectrum}, σ::TextureRef{Float32})
+    MatteMaterial{typeof(Kd), typeof(σ)}(Kd, σ)
 end
 
 """
@@ -193,15 +196,19 @@ end
 
 Perfect mirror (specular reflection) material.
 
-* `Kr`: Spectral reflectance (color texture)
+* `Kr`: Spectral reflectance (color texture or TextureRef)
 """
-struct MirrorMaterial{KrType} <: Material
-    Kr::Texture{RGBSpectrum, 2, KrType}
+struct MirrorMaterial{KrTex} <: Material
+    Kr::KrTex   # Texture{RGBSpectrum} or TextureRef{RGBSpectrum}
 end
 
 function MirrorMaterial(Kr::Texture)
-    KrType = typeof(Kr.data)
-    MirrorMaterial{KrType}(Kr)
+    MirrorMaterial{typeof(Kr)}(Kr)
+end
+
+# Constructor for TextureRef (GPU path)
+function MirrorMaterial(Kr::TextureRef{RGBSpectrum})
+    MirrorMaterial{typeof(Kr)}(Kr)
 end
 
 """
@@ -209,19 +216,19 @@ end
 
 Glass/dielectric material with reflection and transmission.
 
-* `Kr`: Spectral reflectance
-* `Kt`: Spectral transmittance
+* `Kr`: Spectral reflectance (Texture or TextureRef)
+* `Kt`: Spectral transmittance (Texture or TextureRef)
 * `u_roughness`: Roughness in u direction (0 = perfect specular)
 * `v_roughness`: Roughness in v direction (0 = perfect specular)
 * `index`: Index of refraction
 * `remap_roughness`: Whether to remap roughness to alpha
 """
-struct GlassMaterial{KrType, KtType, RoughType, IndexType} <: Material
-    Kr::Texture{RGBSpectrum, 2, KrType}
-    Kt::Texture{RGBSpectrum, 2, KtType}
-    u_roughness::Texture{Float32, 2, RoughType}
-    v_roughness::Texture{Float32, 2, RoughType}
-    index::Texture{Float32, 2, IndexType}
+struct GlassMaterial{KrTex, KtTex, URoughTex, VRoughTex, IndexTex} <: Material
+    Kr::KrTex           # Texture{RGBSpectrum} or TextureRef{RGBSpectrum}
+    Kt::KtTex           # Texture{RGBSpectrum} or TextureRef{RGBSpectrum}
+    u_roughness::URoughTex  # Texture{Float32} or TextureRef{Float32}
+    v_roughness::VRoughTex  # Texture{Float32} or TextureRef{Float32}
+    index::IndexTex     # Texture{Float32} or TextureRef{Float32}
     remap_roughness::Bool
 end
 
@@ -230,11 +237,18 @@ function GlassMaterial(
     u_roughness::Texture, v_roughness::Texture,
     index::Texture, remap_roughness::Bool
 )
-    KrType = typeof(Kr.data)
-    KtType = typeof(Kt.data)
-    RoughType = typeof(u_roughness.data)
-    IndexType = typeof(index.data)
-    GlassMaterial{KrType, KtType, RoughType, IndexType}(
+    GlassMaterial{typeof(Kr), typeof(Kt), typeof(u_roughness), typeof(v_roughness), typeof(index)}(
+        Kr, Kt, u_roughness, v_roughness, index, remap_roughness
+    )
+end
+
+# Constructor for TextureRef (GPU path)
+function GlassMaterial(
+    Kr::TextureRef{RGBSpectrum}, Kt::TextureRef{RGBSpectrum},
+    u_roughness::TextureRef{Float32}, v_roughness::TextureRef{Float32},
+    index::TextureRef{Float32}, remap_roughness::Bool
+)
+    GlassMaterial{typeof(Kr), typeof(Kt), typeof(u_roughness), typeof(v_roughness), typeof(index)}(
         Kr, Kt, u_roughness, v_roughness, index, remap_roughness
     )
 end
@@ -244,15 +258,15 @@ end
 
 Plastic material with diffuse and glossy specular components.
 
-* `Kd`: Diffuse reflectance
-* `Ks`: Specular reflectance
+* `Kd`: Diffuse reflectance (Texture or TextureRef)
+* `Ks`: Specular reflectance (Texture or TextureRef)
 * `roughness`: Surface roughness
 * `remap_roughness`: Whether to remap roughness to alpha
 """
-struct PlasticMaterial{KdType, KsType, RoughType} <: Material
-    Kd::Texture{RGBSpectrum, 2, KdType}
-    Ks::Texture{RGBSpectrum, 2, KsType}
-    roughness::Texture{Float32, 2, RoughType}
+struct PlasticMaterial{KdTex, KsTex, RoughTex} <: Material
+    Kd::KdTex           # Texture{RGBSpectrum} or TextureRef{RGBSpectrum}
+    Ks::KsTex           # Texture{RGBSpectrum} or TextureRef{RGBSpectrum}
+    roughness::RoughTex # Texture{Float32} or TextureRef{Float32}
     remap_roughness::Bool
 end
 
@@ -260,10 +274,15 @@ function PlasticMaterial(
     Kd::Texture, Ks::Texture,
     roughness::Texture, remap_roughness::Bool
 )
-    KdType = typeof(Kd.data)
-    KsType = typeof(Ks.data)
-    RoughType = typeof(roughness.data)
-    PlasticMaterial{KdType, KsType, RoughType}(Kd, Ks, roughness, remap_roughness)
+    PlasticMaterial{typeof(Kd), typeof(Ks), typeof(roughness)}(Kd, Ks, roughness, remap_roughness)
+end
+
+# Constructor for TextureRef (GPU path)
+function PlasticMaterial(
+    Kd::TextureRef{RGBSpectrum}, Ks::TextureRef{RGBSpectrum},
+    roughness::TextureRef{Float32}, remap_roughness::Bool
+)
+    PlasticMaterial{typeof(Kd), typeof(Ks), typeof(roughness)}(Kd, Ks, roughness, remap_roughness)
 end
 
 # ============================================================================
@@ -390,7 +409,7 @@ end
 # ============================================================================
 
 """
-    MetalMaterial{EtaType, KType, RoughType}
+    MetalMaterial{EtaTex, KTex, RoughTex, ReflTex}
 
 A metal/conductor material with wavelength-dependent complex index of refraction.
 
@@ -406,22 +425,30 @@ Metals reflect light based on Fresnel equations for conductors, characterized by
 * `reflectance`: Color multiplier for Fresnel reflectance (for tinting)
 * `remap_roughness`: Whether to remap roughness to alpha
 """
-struct MetalMaterial{EtaType, KType, RoughType, ReflType} <: Material
-    eta::Texture{RGBSpectrum, 2, EtaType}
-    k::Texture{RGBSpectrum, 2, KType}
-    roughness::Texture{Float32, 2, RoughType}
-    reflectance::Texture{RGBSpectrum, 2, ReflType}
+struct MetalMaterial{EtaTex, KTex, RoughTex, ReflTex} <: Material
+    eta::EtaTex             # Texture{RGBSpectrum} or TextureRef{RGBSpectrum}
+    k::KTex                 # Texture{RGBSpectrum} or TextureRef{RGBSpectrum}
+    roughness::RoughTex     # Texture{Float32} or TextureRef{Float32}
+    reflectance::ReflTex    # Texture{RGBSpectrum} or TextureRef{RGBSpectrum}
     remap_roughness::Bool
 end
 
 function MetalMaterial(
     eta::Texture, k::Texture, roughness::Texture, reflectance::Texture, remap_roughness::Bool
 )
-    EtaType = typeof(eta.data)
-    KType = typeof(k.data)
-    RoughType = typeof(roughness.data)
-    ReflType = typeof(reflectance.data)
-    MetalMaterial{EtaType, KType, RoughType, ReflType}(eta, k, roughness, reflectance, remap_roughness)
+    MetalMaterial{typeof(eta), typeof(k), typeof(roughness), typeof(reflectance)}(
+        eta, k, roughness, reflectance, remap_roughness
+    )
+end
+
+# Constructor for TextureRef (GPU path)
+function MetalMaterial(
+    eta::TextureRef{RGBSpectrum}, k::TextureRef{RGBSpectrum},
+    roughness::TextureRef{Float32}, reflectance::TextureRef{RGBSpectrum}, remap_roughness::Bool
+)
+    MetalMaterial{typeof(eta), typeof(k), typeof(roughness), typeof(reflectance)}(
+        eta, k, roughness, reflectance, remap_roughness
+    )
 end
 
 # Backwards-compatible constructor without reflectance (defaults to white = no tint)

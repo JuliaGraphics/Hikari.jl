@@ -278,14 +278,23 @@ MaterialIndex() = MaterialIndex(UInt8(0), UInt32(0))
 # MaterialScene: wraps any accelerator (BVH, TLAS, etc.) with materials stored as a tuple of arrays
 # Each material type gets its own array, indexed by triangle.metadata::MaterialIndex
 # Also stores media tuple for volumetric rendering (empty tuple if no media)
-struct MaterialScene{Accel, Materials<:Tuple, Media<:Tuple}
+# Textures tuple is for GPU compatibility - on CPU it's empty (Texture structs hold data),
+# on GPU it contains CLDeviceArrays and materials use TextureRef to index into it.
+struct MaterialScene{Accel, Materials<:Tuple, Media<:Tuple, Textures<:Tuple}
     accel::Accel  # BVH, TLAS, or any accelerator supporting closest_hit/any_hit
     materials::Materials  # Tuple of material arrays, e.g., (Vector{MatteMaterial}, Vector{GlassMaterial})
     media::Media  # Tuple of media, e.g., (HomogeneousMedium, GridMedium) - empty () if no media
+    textures::Textures  # Tuple of texture arrays for GPU, empty () on CPU
 end
 
-# Backwards-compatible constructor (no media)
-MaterialScene(accel, materials::Tuple) = MaterialScene(accel, materials, ())
+# Backwards-compatible constructor (no media, no textures)
+MaterialScene(accel, materials::Tuple) = MaterialScene(accel, materials, (), ())
+
+# Constructor with media but no textures (CPU path)
+MaterialScene(accel, materials::Tuple, media::Tuple) = MaterialScene(accel, materials, media, ())
+
+# Helper to get textures (for unified CPU/GPU code)
+get_textures(ms::MaterialScene) = ms.textures
 
 @propagate_inbounds world_bound(ms::MaterialScene) = world_bound(ms.accel)
 
@@ -900,6 +909,7 @@ include("sampler/sampling.jl")
 include("sampler/sampler.jl")
 include("textures/mapping.jl")
 include("textures/basic.jl")
+include("textures/texture-ref.jl")
 include("textures/environment_map.jl")
 include("materials/uber-material.jl")
 include("reflection/Reflection.jl")
@@ -907,6 +917,7 @@ include("materials/bsdf.jl")
 include("materials/material.jl")
 include("materials/volume.jl")
 include("materials/emissive.jl")
+include("materials/coated-diffuse.jl")
 
 # MediumIndex and MediumInterface (needed by spectral-eval.jl for BSDF forwarding)
 include("materials/medium-interface.jl")
