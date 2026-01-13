@@ -594,15 +594,31 @@ Handle rays that escaped the scene by evaluating environment lights.
             contribution = work.beta * Le
 
             if !is_black(contribution)
-                # MIS weight
-                # If first bounce or specular, no MIS
+                # MIS weighting following pbrt-v4 (integrator.cpp HandleEscapedRays)
+                # depth=0 or specular bounce: L = beta * Le / r_u.Average()
+                # Otherwise: L = beta * Le / (r_u + r_l).Average()
+                #   where r_l = work.r_l * lightChoicePDF * light.PDF_Li(ctx, wi)
                 final_contrib = if work.depth == Int32(0) || work.specular_bounce
                     contribution / average(work.r_u)
                 else
-                    # Full MIS: 1 / (r_u + r_l).Average()
-                    # For environment light, r_l would need light PDF
-                    # Simplified for now
-                    contribution / average(work.r_u)
+                    # Full MIS: compute light sampling PDF and combine with BSDF PDF
+                    # r_l = work.r_l * lightChoicePDF * light.PDF_Li
+                    num_lights = Int32(length(lights))
+                    light_choice_pdf = num_lights > 0 ? 1f0 / Float32(num_lights) : 0f0
+
+                    # Compute PDF from environment light for this direction
+                    light_pdf = compute_env_light_pdf(lights, work.ray_d)
+                    r_l = work.r_l * light_choice_pdf * light_pdf
+
+                    # Combine r_u and r_l
+                    r_sum = work.r_u + r_l
+                    mis_denom = average(r_sum)
+
+                    if mis_denom > 1f-10
+                        contribution / mis_denom
+                    else
+                        contribution / average(work.r_u)
+                    end
                 end
 
                 # Add to pixel

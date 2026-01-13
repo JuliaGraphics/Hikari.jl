@@ -264,15 +264,31 @@ Trace shadow rays and accumulate unoccluded contributions to pixel buffer.
             occluded = hit_result[1]  # First element is the hit boolean
 
             if !occluded
-                # Add contribution to pixel
+                # Add contribution to pixel with MIS weighting
+                # Following pbrt-v4 (intersect.h RecordShadowRayResult):
+                # Ld = w.Ld / (w.r_u + w.r_l).Average()
                 pixel_idx = work.pixel_index
                 base_idx = (pixel_idx - Int32(1)) * Int32(4)
 
-                # Atomic add for each spectral channel
-                Atomix.@atomic pixel_L[base_idx + Int32(1)] += work.Ld.data[1]
-                Atomix.@atomic pixel_L[base_idx + Int32(2)] += work.Ld.data[2]
-                Atomix.@atomic pixel_L[base_idx + Int32(3)] += work.Ld.data[3]
-                Atomix.@atomic pixel_L[base_idx + Int32(4)] += work.Ld.data[4]
+                # Compute MIS weight: 1 / average(r_u + r_l)
+                # This is the key step that was missing!
+                r_sum = work.r_u + work.r_l
+                mis_weight_inv = (r_sum.data[1] + r_sum.data[2] + r_sum.data[3] + r_sum.data[4]) * 0.25f0
+
+                # Apply MIS weight to Ld
+                if mis_weight_inv > 0f0
+                    mis_weight = 1f0 / mis_weight_inv
+                    Ld1 = work.Ld.data[1] * mis_weight
+                    Ld2 = work.Ld.data[2] * mis_weight
+                    Ld3 = work.Ld.data[3] * mis_weight
+                    Ld4 = work.Ld.data[4] * mis_weight
+
+                    # Atomic add for each spectral channel
+                    Atomix.@atomic pixel_L[base_idx + Int32(1)] += Ld1
+                    Atomix.@atomic pixel_L[base_idx + Int32(2)] += Ld2
+                    Atomix.@atomic pixel_L[base_idx + Int32(3)] += Ld3
+                    Atomix.@atomic pixel_L[base_idx + Int32(4)] += Ld4
+                end
             end
         end
     end
@@ -314,15 +330,44 @@ Handle rays that escaped the scene by evaluating environment lights.
             contribution = work.beta * Le
 
             if !is_black(contribution)
-                # MIS weight for environment light
-                # If this was a specular bounce, no MIS needed
-                # Otherwise, compute weight
-                final_contrib = if work.specular_bounce
-                    contribution
+                # MIS weighting following pbrt-v4 (integrator.cpp HandleEscapedRays)
+                # depth=0 or specular bounce: L = beta * Le / r_u.Average()
+                # Otherwise: L = beta * Le / (r_u + r_l).Average()
+                #   where r_l = work.r_l * lightChoicePDF * light.PDF_Li(ctx, wi)
+
+                final_contrib = if work.depth == 0 || work.specular_bounce
+                    # No MIS needed - divide by r_u only
+                    r_u_avg = (work.r_u.data[1] + work.r_u.data[2] + work.r_u.data[3] + work.r_u.data[4]) * 0.25f0
+                    if r_u_avg > 0f0
+                        contribution / r_u_avg
+                    else
+                        contribution
+                    end
                 else
-                    # For now, use contribution directly
-                    # Full MIS would compare with BSDF sampling probability
-                    contribution
+                    # Full MIS: compute light sampling PDF and combine with BSDF PDF
+                    # r_l = work.r_l * lightChoicePDF * light.PDF_Li
+                    # For uniform light selection: lightChoicePDF = 1/num_lights
+                    # (but we handle multiple lights, so compute PDF for each that contributes)
+                    num_lights = Int32(length(lights))
+                    light_choice_pdf = if num_lights > 0
+                        1f0 / Float32(num_lights)
+                    else
+                        0f0
+                    end
+
+                    # Compute PDF from environment light for this direction
+                    light_pdf = compute_env_light_pdf(lights, work.ray_d)
+                    r_l = work.r_l * light_choice_pdf * light_pdf
+
+                    # Combine r_u and r_l
+                    r_sum = work.r_u + r_l
+                    r_avg = (r_sum.data[1] + r_sum.data[2] + r_sum.data[3] + r_sum.data[4]) * 0.25f0
+
+                    if r_avg > 0f0
+                        contribution / r_avg
+                    else
+                        contribution
+                    end
                 end
 
                 # Add to pixel

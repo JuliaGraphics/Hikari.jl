@@ -22,11 +22,12 @@ end
 
 """
 Convenience constructor that loads an environment map from a file.
+rotation: Mat3f rotation matrix (use rotation_matrix(angle_deg, axis) to create)
 """
 function EnvironmentLight(
     path::String;
     scale::RGBSpectrum=RGBSpectrum(1f0),
-    rotation::Float32=0f0,
+    rotation::Mat3f=Mat3f(I),
 )
     env_map = load_environment_map(path; rotation=rotation)
     EnvironmentLight(env_map, scale)

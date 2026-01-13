@@ -195,7 +195,9 @@ Sample environment light spectrally with importance sampling.
     # p_light at infinity
     p_light = Point3f(p + 1f6 * wi)
 
-    Li = uplift_rgb(table, Li_rgb, lambda)
+    # Use unbounded uplift for emission (like pbrt's RGBIlluminantSpectrum)
+    # NOT uplift_rgb which is for albedo and incorrectly clamps/scales emission
+    Li = uplift_rgb_unbounded(table, Li_rgb, lambda)
 
     return PWLightSample(Li, wi, pdf, p_light, false)
 end
@@ -279,7 +281,7 @@ PDF for sampling direction wi from environment light.
     uv = direction_to_uv(wi, light.env_map.rotation)
 
     # Get PDF from distribution
-    map_pdf = pdf_continuous(light.env_map.distribution, uv)
+    map_pdf = pdf(light.env_map.distribution, uv)
 
     # Convert to solid angle measure
     sin_theta = sin(Float32(π) * uv[2])
@@ -394,6 +396,31 @@ Returns total spectral radiance from infinite lights.
     rest_Le = evaluate_escaped_ray_spectral(table, Base.tail(lights), ray_d, lambda)
     return first_Le + rest_Le
 end
+
+"""
+    compute_env_light_pdf(lights::Tuple, ray_d::Vec3f)
+
+Compute PDF for sampling direction ray_d from environment-type lights.
+Used for MIS weighting in escaped ray handling.
+Following pbrt-v4: only environment/infinite lights contribute.
+"""
+@propagate_inbounds compute_env_light_pdf(::Tuple{}, ::Vec3f)::Float32 = 0f0
+
+@propagate_inbounds function compute_env_light_pdf(lights::Tuple, ray_d::Vec3f)::Float32
+    # PDF from first light (only environment lights contribute)
+    first_pdf = _env_light_pdf_single(first(lights), ray_d)
+    rest_pdf = compute_env_light_pdf(Base.tail(lights), ray_d)
+    # Sum PDFs - for MIS we typically have one dominant env light
+    return first_pdf + rest_pdf
+end
+
+# Helper to compute PDF from a single light (only EnvironmentLight has non-zero PDF)
+@propagate_inbounds function _env_light_pdf_single(light::EnvironmentLight, wi::Vec3f)::Float32
+    return pdf_li_spectral(light, Point3f(0f0, 0f0, 0f0), wi)
+end
+
+# Other light types don't contribute to environment PDF
+@propagate_inbounds _env_light_pdf_single(::Light, ::Vec3f)::Float32 = 0f0
 
 # ============================================================================
 # Power Heuristic for MIS
