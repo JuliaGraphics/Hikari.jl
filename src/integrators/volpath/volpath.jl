@@ -290,7 +290,6 @@ function render!(
 
     # Reset ray queue
     reset_queue!(backend, current_ray_queue(state))
-    KA.synchronize(backend)
 
     # Generate camera rays
     kernel! = vp_generate_camera_rays_kernel!(backend)
@@ -301,7 +300,6 @@ function render!(
         camera, sample_idx, initial_medium;
         ndrange=Int(n_pixels)
     )
-    KA.synchronize(backend)
 
     # Path tracing loop - following pbrt-v4 wavefront architecture
     for depth in 0:(vp.max_depth - 1)
@@ -310,7 +308,6 @@ function render!(
 
         # Reset work queues for this iteration
         reset_iteration_queues!(state)
-        KA.synchronize(backend)
 
         # Step 1: Trace rays to find intersections
         vp_trace_rays!(backend, state, accel)
@@ -373,7 +370,6 @@ function render!(
         Int32(n_pixels);
         ndrange=Int(n_pixels)
     )
-    KA.synchronize(backend)
 
     # Update film: divide by current sample count
     kernel! = vp_finalize_film_kernel!(backend)
@@ -383,7 +379,6 @@ function render!(
         Int32(width), Int32(height);
         ndrange=Int(n_pixels)
     )
-    KA.synchronize(backend)
 
     return nothing
 end
