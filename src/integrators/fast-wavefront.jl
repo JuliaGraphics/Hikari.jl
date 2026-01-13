@@ -67,33 +67,33 @@ end
 
 # Material property extractors using proper texture evaluation
 @propagate_inbounds function extract_fast_props(mat::MatteMaterial, uv::Point2f)
-    kd = evaluate_texture(mat.Kd, uv)
-    σ = evaluate_texture(mat.σ, uv)
+    kd = eval_tex((), mat.Kd, uv)
+    σ = eval_tex((), mat.σ, uv)
     FastMaterialProps(Vec3f(kd.c[1], kd.c[2], kd.c[3]), 0f0, clamp(σ / 90f0, 0f0, 1f0))
 end
 
 @propagate_inbounds function extract_fast_props(mat::MirrorMaterial, uv::Point2f)
-    kr = evaluate_texture(mat.Kr, uv)
+    kr = eval_tex((), mat.Kr, uv)
     FastMaterialProps(Vec3f(kr.c[1], kr.c[2], kr.c[3]), 1f0, 0f0)
 end
 
 @propagate_inbounds function extract_fast_props(mat::PlasticMaterial, uv::Point2f)
     # Plastic is a dielectric - no mirror reflections in FastWavefront
     # (true plastic specular requires BRDF evaluation which FastWavefront doesn't do)
-    kd = evaluate_texture(mat.Kd, uv)
-    roughness = evaluate_texture(mat.roughness, uv)
+    kd = eval_tex((), mat.Kd, uv)
+    roughness = eval_tex((), mat.roughness, uv)
     FastMaterialProps(Vec3f(kd.c[1], kd.c[2], kd.c[3]), 0f0, roughness)
 end
 
 @propagate_inbounds function extract_fast_props(mat::GlassMaterial, uv::Point2f)
-    kr = evaluate_texture(mat.Kr, uv)
-    roughness = evaluate_texture(mat.u_roughness, uv)
+    kr = eval_tex((), mat.Kr, uv)
+    roughness = eval_tex((), mat.u_roughness, uv)
     FastMaterialProps(Vec3f(kr.c[1], kr.c[2], kr.c[3]), 0.8f0, roughness)
 end
 
 @propagate_inbounds function extract_fast_props(mat::MetalMaterial, uv::Point2f)
-    refl = evaluate_texture(mat.reflectance, uv)
-    roughness = evaluate_texture(mat.roughness, uv)
+    refl = eval_tex((), mat.reflectance, uv)
+    roughness = eval_tex((), mat.roughness, uv)
     FastMaterialProps(Vec3f(refl.c[1], refl.c[2], refl.c[3]), 1f0, roughness)
 end
 

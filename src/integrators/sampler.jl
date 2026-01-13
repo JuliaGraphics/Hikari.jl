@@ -372,6 +372,7 @@ end
     ray = initial_ray
     lights = scene.lights
     materials = scene.aggregate.materials
+    textures = get_textures(scene.aggregate)
 
     depth = Int32(0)
     while depth <= max_depth
@@ -393,7 +394,7 @@ end
 
         # Get material and compute BSDF (or detect volume)
         idx = primitive.metadata
-        valid, is_volume, bsdf = compute_bsdf_for_material(materials, idx, si)
+        valid, is_volume, bsdf = compute_bsdf_for_material(materials, textures, idx, si)
 
         if !valid
             break
@@ -472,7 +473,7 @@ end
 # Returns a tuple to avoid Union{Nothing, BSDF} type instability
 # For volume materials, is_volume=true indicates caller should use shade_material instead of BSDF
 @propagate_inbounds @generated function compute_bsdf_for_material(
-    materials::T, idx::MaterialIndex, si::SurfaceInteraction
+    materials::T, textures, idx::MaterialIndex, si::SurfaceInteraction
 ) where {T<:Tuple}
     N = length(T.parameters)
     branches = []
@@ -483,7 +484,7 @@ end
         is_vol = mat_type <: CloudVolume
         push!(branches, quote
              if idx.material_type === UInt8($i)
-                return (true, $is_vol, compute_bsdf(materials[$i][idx.material_idx], si, false, Radiance))
+                return (true, $is_vol, compute_bsdf(materials[$i][idx.material_idx], textures, si, false, Radiance))
             end
         end)
     end

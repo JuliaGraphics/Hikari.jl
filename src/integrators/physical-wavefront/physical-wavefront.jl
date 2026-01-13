@@ -16,7 +16,7 @@ import KernelAbstractions as KA
 Holds all allocated buffers for PhysicalWavefront rendering.
 Reused across frames to avoid allocation overhead.
 """
-mutable struct PWRenderState{Arr, Table <: RGBToSpectrumTable}
+mutable struct PWRenderState{Arr, Table <: RGBToSpectrumTable, CIETable <: CIEXYZTable}
     # Dimensions
     width::Int32
     height::Int32
@@ -52,6 +52,9 @@ mutable struct PWRenderState{Arr, Table <: RGBToSpectrumTable}
 
     # RGB to spectrum lookup table (GPU-compatible)
     rgb2spec_table::Table
+
+    # CIE XYZ color matching functions for spectral->RGB conversion
+    cie_table::CIETable
 end
 
 """
@@ -89,6 +92,10 @@ function create_render_state(
     rgb2spec_table_cpu = get_srgb_table()
     rgb2spec_table = to_gpu(ArrayType, rgb2spec_table_cpu)
 
+    # Load CIE XYZ color matching functions
+    cie_table_cpu = CIEXYZTable()
+    cie_table = to_gpu(ArrayType, cie_table_cpu)
+
     return PWRenderState(
         width, height, num_pixels, max_rays,
         pixel_L, pixel_rgb,
@@ -97,7 +104,8 @@ function create_render_state(
         escaped_queue, hit_light_queue,
         material_queue, shadow_queue,
         lambda,
-        rgb2spec_table
+        rgb2spec_table,
+        cie_table
     )
 end
 
@@ -280,6 +288,7 @@ function (pw::PhysicalWavefront)(scene::AbstractScene, film::Film, camera::Camer
         pw_accumulate_sample_to_rgb!(
             backend, state.pixel_rgb, state.pixel_L,
             state.wavelengths_per_pixel, state.pdf_per_pixel,
+            state.cie_table,
             state.num_pixels
         )
     end

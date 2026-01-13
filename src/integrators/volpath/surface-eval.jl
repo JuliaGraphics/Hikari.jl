@@ -172,7 +172,7 @@ end
         if !is_black(bsdf_f)
             # Compute direct lighting contribution with MIS
             result = compute_direct_lighting_spectral(
-                work.pi, work.n, work.wo, work.beta, work.r_u, work.lambda,
+                work.pi, work.ns, work.wo, work.beta, work.r_u, work.lambda,
                 light_sample, bsdf_f, bsdf_pdf
             )
 

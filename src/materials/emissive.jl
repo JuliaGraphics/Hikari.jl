@@ -129,7 +129,7 @@ Check if a material emits light.
 EmissiveMaterial has no BSDF (pure emitter, doesn't scatter light).
 Returns an empty BSDF.
 """
-@propagate_inbounds function compute_bsdf(mat::EmissiveMaterial, si::SurfaceInteraction, ::Bool, transport)
+@propagate_inbounds function compute_bsdf(mat::EmissiveMaterial, textures, si::SurfaceInteraction, ::Bool, transport)
     # No scattering - just emission
     return BSDF(si)
 end

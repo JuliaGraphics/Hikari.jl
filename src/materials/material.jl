@@ -8,10 +8,10 @@
 """
 Compute BSDF for MatteMaterial.
 """
-@propagate_inbounds function compute_bsdf(m::MatteMaterial, si::SurfaceInteraction, ::Bool, transport)
-    r = clamp(m.Kd(si))
+@propagate_inbounds function compute_bsdf(m::MatteMaterial, textures, si::SurfaceInteraction, ::Bool, transport)
+    r = clamp(eval_tex(textures, m.Kd, si.uv))
     is_black(r) && return BSDF(si)
-    σ = clamp(m.σ(si), 0f0, 90f0)
+    σ = clamp(eval_tex(textures, m.σ, si.uv), 0f0, 90f0)
     lambertian = (σ ≈ 0.0f0)
     return BSDF(si, LambertianReflection(lambertian, r), OrenNayar(!lambertian, r, σ))
 end
@@ -19,21 +19,21 @@ end
 """
 Compute BSDF for MirrorMaterial.
 """
-@propagate_inbounds function compute_bsdf(m::MirrorMaterial, si::SurfaceInteraction, ::Bool, transport)
-    r = clamp(m.Kr(si))
+@propagate_inbounds function compute_bsdf(m::MirrorMaterial, textures, si::SurfaceInteraction, ::Bool, transport)
+    r = clamp(eval_tex(textures, m.Kr, si.uv))
     return BSDF(si, SpecularReflection(!is_black(r), r, FresnelNoOp()))
 end
 
 """
 Compute BSDF for GlassMaterial.
 """
-@propagate_inbounds function compute_bsdf(g::GlassMaterial, si::SurfaceInteraction, allow_multiple_lobes::Bool, transport)
-    η = g.index(si)
-    u_roughness = g.u_roughness(si)
-    v_roughness = g.v_roughness(si)
+@propagate_inbounds function compute_bsdf(g::GlassMaterial, textures, si::SurfaceInteraction, allow_multiple_lobes::Bool, transport)
+    η = eval_tex(textures, g.index, si.uv)
+    u_roughness = eval_tex(textures, g.u_roughness, si.uv)
+    v_roughness = eval_tex(textures, g.v_roughness, si.uv)
 
-    r = clamp(g.Kr(si))
-    t = clamp(g.Kt(si))
+    r = clamp(eval_tex(textures, g.Kr, si.uv))
+    t = clamp(eval_tex(textures, g.Kt, si.uv))
     r_black = is_black(r)
     t_black = is_black(t)
     r_black && t_black && return BSDF(si, η)
@@ -73,16 +73,16 @@ end
 """
 Compute BSDF for PlasticMaterial.
 """
-@propagate_inbounds function compute_bsdf(p::PlasticMaterial, si::SurfaceInteraction, ::Bool, transport)
+@propagate_inbounds function compute_bsdf(p::PlasticMaterial, textures, si::SurfaceInteraction, ::Bool, transport)
     # Initialize diffuse component
-    kd = clamp(p.Kd(si))
+    kd = clamp(eval_tex(textures, p.Kd, si.uv))
     bsdf_1 = LambertianReflection(!is_black(kd), kd)
     # Initialize specular component
-    ks = clamp(p.Ks(si))
+    ks = clamp(eval_tex(textures, p.Ks, si.uv))
     is_black(ks) && return BSDF(si, bsdf_1)
     # Create microfacet distribution for plastic material
     fresnel = FresnelDielectric(1.5f0, 1f0)
-    rough = p.roughness(si)
+    rough = eval_tex(textures, p.roughness, si.uv)
     p.remap_roughness && (rough = roughness_to_α(rough))
     distribution = TrowbridgeReitzDistribution(rough, rough)
     bsdf_2 = MicrofacetReflection(true, ks, distribution, fresnel, transport)
@@ -92,13 +92,13 @@ end
 """
 Compute BSDF for MetalMaterial - conductor with Fresnel reflectance.
 """
-@propagate_inbounds function compute_bsdf(m::MetalMaterial, si::SurfaceInteraction, ::Bool, transport)
+@propagate_inbounds function compute_bsdf(m::MetalMaterial, textures, si::SurfaceInteraction, ::Bool, transport)
     # Get material parameters
-    eta = clamp(m.eta(si))
-    k_val = clamp(m.k(si))
-    rough = m.roughness(si)
+    eta = clamp(eval_tex(textures, m.eta, si.uv))
+    k_val = clamp(eval_tex(textures, m.k, si.uv))
+    rough = eval_tex(textures, m.roughness, si.uv)
     # Reflectance is a color tint that multiplies the Fresnel result
-    r = clamp(m.reflectance(si))
+    r = clamp(eval_tex(textures, m.reflectance, si.uv))
 
     # Create Fresnel conductor (ni=1 for air, nt=eta, k=k_val)
     fresnel = FresnelConductor(RGBSpectrum(1f0), eta, k_val)

@@ -418,7 +418,7 @@ Returns a dummy BSDF for volume materials. Volumes don't use BSDF-based shading;
 they use ray marching in shade() instead. This method exists so that
 compute_bsdf_for_material can handle CloudVolume without special-casing.
 """
-@propagate_inbounds function compute_bsdf(::CloudVolume, si::SurfaceInteraction, ::Bool, transport)
+@propagate_inbounds function compute_bsdf(::CloudVolume, textures, si::SurfaceInteraction, ::Bool, transport)
     return BSDF(si)
 end
 

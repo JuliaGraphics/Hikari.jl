@@ -62,7 +62,7 @@ and creates a shadow ray work item.
                 if !is_black(bsdf_f)
                     # Compute direct lighting contribution with MIS
                     result = compute_direct_lighting_spectral(
-                        work.pi, work.n, work.wo, work.beta, work.r_u, work.lambda,
+                        work.pi, work.ns, work.wo, work.beta, work.r_u, work.lambda,
                         light_sample, bsdf_f, bsdf_pdf
                     )
 
@@ -207,7 +207,8 @@ function pw_sample_direct_lighting!(
     kernel!(
         shadow_queue.items, shadow_queue.size,
         material_queue.items, material_queue.size,
-        materials, lights,
+        materials, (),  # textures (empty tuple, ignored on CPU)
+        lights,
         rgb2spec_table.scale, rgb2spec_table.coeffs, rgb2spec_table.res,
         num_lights, Int32(n);
         ndrange=Int(n)
@@ -239,7 +240,7 @@ function pw_evaluate_materials!(
         next_ray_queue.items, next_ray_queue.size,
         pixel_L,
         material_queue.items, material_queue.size,
-        materials,
+        materials, (),  # textures (empty tuple, ignored on CPU)
         rgb2spec_table.scale, rgb2spec_table.coeffs, rgb2spec_table.res,
         max_depth, Int32(n);
         ndrange=Int(n)

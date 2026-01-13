@@ -164,23 +164,6 @@ end
 # Render Functions
 # =============================================================================
 
-"""
-    render_with_integrator(integrator; width=720, height=400, glass_cat=false)
-
-Render the cat scene with a specified integrator.
-
-# Example usage:
-```julia
-# FastWavefront (simple, fast)
-img = render_with_integrator(Hikari.FastWavefront(samples_per_pixel=16))
-
-# Whitted (classic ray tracing)
-img = render_with_integrator(Hikari.WhittedIntegrator(Hikari.UniformSampler(16), 5))
-
-# PhysicalWavefront (spectral path tracing)
-img = render_with_integrator(Hikari.PhysicalWavefront(samples_per_pixel=64, max_depth=8))
-```
-"""
 function render_with_integrator(integrator; width=720, height=400, glass_cat=false, use_pbrt_camera=true)
     scene = create_scene(; glass_cat=glass_cat)
     film, camera = create_film_and_camera(; width=width, height=height, use_pbrt_camera=use_pbrt_camera)
@@ -198,19 +181,19 @@ end
 # =============================================================================
 
 # Example: Render with PhysicalWavefront
-using AMDGPU
 begin
     scene = create_scene(; glass_cat=false)
-    film, camera = create_film_and_camera(; width=720, height=720, use_pbrt_camera=true)
+    film, camera = create_film_and_camera(; width=1820, height=720, use_pbrt_camera=true)
     # Choose integrator:
     integrator = Hikari.FastWavefront(samples=8)
-    integrator = Hikari.Whitted(samples=8)
-    integrator = Hikari.PhysicalWavefront(samples_per_pixel=10, max_depth=8)
-    integrator = Hikari.VolPath(samples_per_pixel=100, max_depth=8)
+    # integrator = Hikari.Whitted(samples=8)
+    # integrator = Hikari.PhysicalWavefront(samples_per_pixel=10, max_depth=8)
+    # integrator = Hikari.VolPath(samples_per_pixel=10, max_depth=8)
     gpu_film = to_gpu(Array, film)
     gpu_scene = to_gpu(Array, scene)
     Hikari.clear!(gpu_film)
     @time integrator(gpu_scene, gpu_film, camera)
+
     Hikari.postprocess!(gpu_film; exposure=1.0f0, tonemap=:aces, gamma=1.2f0)
     Array(gpu_film.postprocess)
 end

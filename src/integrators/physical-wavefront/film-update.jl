@@ -214,6 +214,7 @@ function pw_accumulate_sample_to_rgb!(
     pixel_L::AbstractVector{Float32},
     wavelengths_per_pixel::AbstractVector{Float32},
     pdf_per_pixel::AbstractVector{Float32},
+    cie_table::CIEXYZTable,
     num_pixels::Int32
 )
     # CPU implementation (GPU kernel would be similar)
@@ -241,7 +242,7 @@ function pw_accumulate_sample_to_rgb!(
         )
 
         # Convert spectral to RGB using THIS PIXEL's wavelengths
-        R, G, B = spectral_to_linear_rgb(L, lambda)
+        R, G, B = spectral_to_linear_rgb(cie_table, L, lambda)
 
         # Clamp negative values and NaN/Inf
         R = ifelse(isfinite(R), max(0.0f0, R), 0.0f0)
