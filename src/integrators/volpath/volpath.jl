@@ -31,13 +31,14 @@ mutable struct VolPath <: Integrator
     samples_per_pixel::Int32
     russian_roulette_depth::Int32
     regularize::Bool  # Apply BSDF regularization after first non-specular bounce
+    material_coherence::Symbol  # Material evaluation mode: :none, :sorted, :per_type
 
     # Cached render state
     state::Union{Nothing, VolPathState}
 end
 
 """
-    VolPath(; max_depth=8, samples_per_pixel=64, russian_roulette_depth=3, regularize=true)
+    VolPath(; max_depth=8, samples=64, russian_roulette_depth=3, regularize=true, material_coherence=:none)
 
 Create a VolPath integrator for volumetric path tracing.
 
@@ -48,18 +49,25 @@ Create a VolPath integrator for volumetric path tracing.
 - `regularize`: Apply BSDF regularization to reduce fireflies (default: true).
   When enabled, near-specular BSDFs are roughened after the first non-specular
   bounce, following pbrt-v4's approach.
+- `material_coherence`: Material evaluation strategy for GPU coherence (default: :none):
+  - `:none`: Standard evaluation (baseline)
+  - `:sorted`: Sort work items by material type before evaluation
+  - `:per_type`: Launch separate kernels per material type (pbrt-v4 style)
 """
 function VolPath(;
     max_depth::Int = 8,
     samples::Int = 64,
     russian_roulette_depth::Int = 3,
-    regularize::Bool = true
+    regularize::Bool = true,
+    material_coherence::Symbol = :none
 )
+    @assert material_coherence in (:none, :sorted, :per_type) "material_coherence must be :none, :sorted, or :per_type"
     return VolPath(
         Int32(max_depth),
         Int32(samples),
         Int32(russian_roulette_depth),
         regularize,
+        material_coherence,
         nothing
     )
 end
@@ -315,18 +323,24 @@ function render!(
         ndrange=Int(n_pixels)
     )
 
+    # Ensure multi-material queue is allocated in state for :per_type mode
+    if vp.material_coherence == :per_type
+        N = length(materials)
+        if state.multi_material_queue === nothing ||
+           length(state.multi_material_queue.queues) != N
+            state.multi_material_queue = MultiMaterialQueue{N}(backend, state.material_queue.capacity)
+        end
+    end
+    multi_queue = state.multi_material_queue
+
     # Path tracing loop - following pbrt-v4 wavefront architecture
     for depth in 0:(vp.max_depth - 1)
         n_rays = queue_size(current_ray_queue(state))
         n_rays == 0 && break
 
-        # Reset work queues for this iteration
         reset_iteration_queues!(state)
-
-        # Step 1: Trace rays to find intersections
         vp_trace_rays!(backend, state, accel)
 
-        # Step 2: Sample medium interactions (delta tracking)
         if !isempty(media)
             n_medium = queue_size(state.medium_sample_queue)
             if n_medium > 0
@@ -334,7 +348,6 @@ function render!(
             end
         end
 
-        # Step 3: Handle medium scattering events
         if !isempty(media)
             n_scatter = queue_size(state.medium_scatter_queue)
             if n_scatter > 0
@@ -345,33 +358,53 @@ function render!(
             end
         end
 
-        # Step 4: Handle escaped rays (environment light)
         n_escaped = queue_size(state.escaped_queue)
         if n_escaped > 0 && count_lights(lights) > 0
             vp_handle_escaped_rays!(backend, state, lights)
         end
 
-        # Step 5: Process surface hits (emission + material eval)
         n_hits = queue_size(state.hit_surface_queue)
         if n_hits > 0
-            vp_process_surface_hits!(backend, state, materials, textures)
+            if vp.material_coherence == :per_type && multi_queue !== nothing
+                reset_queues!(backend, multi_queue)
+                vp_process_surface_hits_coherent!(backend, state, multi_queue, materials, textures)
 
-            n_material = queue_size(state.material_queue)
-            if n_material > 0 && count_lights(lights) > 0
-                vp_sample_surface_direct_lighting!(backend, state, materials, textures, lights)
-            end
+                n_material = total_size(multi_queue)
+                if n_material > 0 && count_lights(lights) > 0
+                    vp_sample_direct_lighting_coherent!(backend, state, multi_queue, materials, textures, lights)
+                end
 
-            n_shadow = queue_size(state.shadow_queue)
-            if n_shadow > 0
-                vp_trace_shadow_rays!(backend, state, accel, materials, media)
-            end
+                n_shadow = queue_size(state.shadow_queue)
+                if n_shadow > 0
+                    vp_trace_shadow_rays!(backend, state, accel, materials, media)
+                end
 
-            if n_material > 0
-                vp_evaluate_materials!(backend, state, materials, textures, media, vp.regularize)
+                if n_material > 0
+                    vp_evaluate_materials_coherent!(backend, state, multi_queue, materials, textures, media, vp.regularize)
+                end
+            else
+                vp_process_surface_hits!(backend, state, materials, textures)
+
+                n_material = queue_size(state.material_queue)
+                if n_material > 0 && count_lights(lights) > 0
+                    vp_sample_surface_direct_lighting!(backend, state, materials, textures, lights)
+                end
+
+                n_shadow = queue_size(state.shadow_queue)
+                if n_shadow > 0
+                    vp_trace_shadow_rays!(backend, state, accel, materials, media)
+                end
+
+                if n_material > 0
+                    if vp.material_coherence == :sorted
+                        vp_evaluate_materials_sorted!(backend, state, materials, textures, media, vp.regularize)
+                    else
+                        vp_evaluate_materials!(backend, state, materials, textures, media, vp.regularize)
+                    end
+                end
             end
         end
 
-        # Swap ray queues for next iteration
         swap_ray_queues!(state)
     end
 

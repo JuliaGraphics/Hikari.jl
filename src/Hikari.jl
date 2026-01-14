@@ -988,6 +988,7 @@ include("integrators/volpath/delta-tracking.jl")
 include("integrators/volpath/medium-scatter.jl")
 include("integrators/volpath/intersection.jl")
 include("integrators/volpath/surface-eval.jl")
+include("integrators/volpath/multi-material-eval.jl")
 include("integrators/volpath/volpath.jl")
 
 include("kernel-abstractions.jl")

@@ -96,6 +96,10 @@ mutable struct VolPathState{Backend}
     max_depth::Int32
     width::Int32
     height::Int32
+
+    # Multi-material queue for :per_type coherence mode
+    # Stored as Any to allow different N values (number of material types)
+    multi_material_queue::Any  # MultiMaterialQueue{N} or nothing
 end
 
 function VolPathState(
@@ -175,7 +179,8 @@ function VolPathState(
         Int32(n_lights),
         Int32(max_depth),
         Int32(width),
-        Int32(height)
+        Int32(height),
+        nothing  # multi_material_queue - lazily initialized
     )
 end
 
