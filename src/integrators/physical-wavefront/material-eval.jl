@@ -117,7 +117,8 @@ Evaluate materials for all work items:
     @Const(rgb2spec_coeffs), # RGB to spectrum table coefficients
     @Const(rgb2spec_res::Int32),  # RGB to spectrum table resolution
     @Const(max_depth::Int32),
-    @Const(max_queued::Int32)
+    @Const(max_queued::Int32),
+    @Const(do_regularize::Bool)  # Whether to apply BSDF regularization
 )
     idx = @index(Global)
 
@@ -134,10 +135,14 @@ Evaluate materials for all work items:
             rng = rand(Float32)
             rr_sample = rand(Float32)
 
+            # Apply regularization if enabled and we've had a non-specular bounce
+            # (pbrt-v4: regularize && anyNonSpecularBounces)
+            regularize = do_regularize && work.any_non_specular_bounces
+
             # Sample BSDF
             sample = sample_spectral_material(
                 rgb2spec_table, materials, textures, work.material_idx,
-                work.wo, work.ns, work.uv, work.lambda, u, rng
+                work.wo, work.ns, work.uv, work.lambda, u, rng, regularize
             )
 
             # Check if valid sample
@@ -219,9 +224,12 @@ function pw_sample_direct_lighting!(
 end
 
 """
-    pw_evaluate_materials!(backend, next_ray_queue, pixel_L, material_queue, materials, rgb2spec_table, max_depth)
+    pw_evaluate_materials!(backend, next_ray_queue, pixel_L, material_queue, materials, rgb2spec_table, max_depth, regularize=true)
 
 Evaluate materials and spawn continuation rays.
+
+When `regularize=true`, near-specular BSDFs are roughened after the first non-specular
+bounce to reduce fireflies (matches pbrt-v4's BSDF::Regularize).
 """
 function pw_evaluate_materials!(
     backend,
@@ -230,7 +238,8 @@ function pw_evaluate_materials!(
     material_queue::PWWorkQueue{PWMaterialEvalWorkItem},
     materials,
     rgb2spec_table::RGBToSpectrumTable,
-    max_depth::Int32
+    max_depth::Int32,
+    regularize::Bool = true
 )
     n = queue_size(material_queue)
     n == 0 && return nothing
@@ -242,7 +251,7 @@ function pw_evaluate_materials!(
         material_queue.items, material_queue.size,
         materials, (),  # textures (empty tuple, ignored on CPU)
         rgb2spec_table.scale, rgb2spec_table.coeffs, rgb2spec_table.res,
-        max_depth, Int32(n);
+        max_depth, Int32(n), regularize;
         ndrange=Int(n)
     )
 

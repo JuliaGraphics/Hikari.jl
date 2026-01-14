@@ -30,25 +30,36 @@ mutable struct VolPath <: Integrator
     max_depth::Int32
     samples_per_pixel::Int32
     russian_roulette_depth::Int32
+    regularize::Bool  # Apply BSDF regularization after first non-specular bounce
 
     # Cached render state
     state::Union{Nothing, VolPathState}
 end
 
 """
-    VolPath(; max_depth=8, samples_per_pixel=64, russian_roulette_depth=3)
+    VolPath(; max_depth=8, samples_per_pixel=64, russian_roulette_depth=3, regularize=true)
 
 Create a VolPath integrator for volumetric path tracing.
+
+# Arguments
+- `max_depth`: Maximum path depth
+- `samples`: Number of samples per pixel
+- `russian_roulette_depth`: Depth at which to start Russian roulette
+- `regularize`: Apply BSDF regularization to reduce fireflies (default: true).
+  When enabled, near-specular BSDFs are roughened after the first non-specular
+  bounce, following pbrt-v4's approach.
 """
 function VolPath(;
     max_depth::Int = 8,
     samples::Int = 64,
-    russian_roulette_depth::Int = 3
+    russian_roulette_depth::Int = 3,
+    regularize::Bool = true
 )
     return VolPath(
         Int32(max_depth),
         Int32(samples),
         Int32(russian_roulette_depth),
+        regularize,
         nothing
     )
 end
@@ -353,7 +364,7 @@ function render!(
             end
 
             if n_material > 0
-                vp_evaluate_materials!(backend, state, materials, textures, media)
+                vp_evaluate_materials!(backend, state, materials, textures, media, vp.regularize)
             end
         end
 
@@ -547,7 +558,7 @@ function _old_volpath_implementation(vp::VolPath, scene::AbstractScene, film::Fi
 
                 # Step 5c: BSDF sampling for continuation rays
                 if n_material > 0
-                    vp_evaluate_materials!(backend, state, materials, textures, media)
+                    vp_evaluate_materials!(backend, state, materials, textures, media, vp.regularize)
                 end
             end
 

@@ -11,22 +11,26 @@
 # ============================================================================
 
 """
-    sample_spectral_material(table::RGBToSpectrumTable, materials::NTuple{N}, textures, idx::MaterialIndex, wo, ns, uv, lambda, u, rng)
+    sample_spectral_material(table::RGBToSpectrumTable, materials::NTuple{N}, textures, idx::MaterialIndex, wo, ns, uv, lambda, u, rng, regularize=false)
 
 Type-stable dispatch for spectral BSDF sampling over Hikari's material tuple.
 Returns SpectralBSDFSample from the appropriate material type.
 
 Uses @generated to create efficient branching code at compile time.
+
+When `regularize=true`, near-specular BSDFs will be roughened to reduce fireflies.
+This should be enabled after the first non-specular bounce (pbrt-v4 approach).
 """
 @propagate_inbounds @generated function sample_spectral_material(
     table::RGBToSpectrumTable, materials::NTuple{N,Any}, textures,
     idx::MaterialIndex,
     wo::Vec3f, ns::Vec3f, uv::Point2f,
-    lambda::Wavelengths, u::Point2f, rng::Float32
+    lambda::Wavelengths, u::Point2f, rng::Float32,
+    regularize::Bool = false
 ) where {N}
     branches = [quote
          if idx.material_type === UInt8($i)
-            @inbounds return sample_bsdf_spectral(table, materials[$i][idx.material_idx], textures, wo, ns, uv, lambda, u, rng)
+            @inbounds return sample_bsdf_spectral(table, materials[$i][idx.material_idx], textures, wo, ns, uv, lambda, u, rng, regularize)
         end
     end for i in 1:N]
 
@@ -195,20 +199,23 @@ end
 end
 
 """
-    evaluate_material_complete(table::RGBToSpectrumTable, materials, textures, idx, wo, ns, n, uv, lambda, u, rng)
+    evaluate_material_complete(table::RGBToSpectrumTable, materials, textures, idx, wo, ns, n, uv, lambda, u, rng, regularize=false)
 
 Complete material evaluation for wavefront pipeline.
 Returns PWMaterialEvalResult with BSDF sample and emission.
+
+When `regularize=true`, near-specular BSDFs will be roughened to reduce fireflies.
 """
 @propagate_inbounds @generated function evaluate_material_complete(
     table::RGBToSpectrumTable, materials::NTuple{N,Any}, textures,
     idx::MaterialIndex,
     wo::Vec3f, ns::Vec3f, n::Vec3f, uv::Point2f,
-    lambda::Wavelengths, u::Point2f, rng::Float32
+    lambda::Wavelengths, u::Point2f, rng::Float32,
+    regularize::Bool = false
 ) where {N}
     branches = [quote
          if idx.material_type === UInt8($i)
-            @inbounds sample = sample_bsdf_spectral(table, materials[$i][idx.material_idx], textures, wo, ns, uv, lambda, u, rng)
+            @inbounds sample = sample_bsdf_spectral(table, materials[$i][idx.material_idx], textures, wo, ns, uv, lambda, u, rng, regularize)
             @inbounds Le = get_emission_spectral(table, materials[$i][idx.material_idx], textures, wo, n, uv, lambda)
             @inbounds is_em = is_emissive(materials[$i][idx.material_idx])
             return PWMaterialEvalResult(sample, Le, is_em)

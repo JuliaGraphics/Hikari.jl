@@ -300,7 +300,8 @@ end
     textures,
     rgb2spec_table,
     max_depth::Int32,
-    max_queued::Int32
+    max_queued::Int32,
+    do_regularize::Bool
 )
     # Check depth limit
     new_depth = work.depth + Int32(1)
@@ -313,10 +314,14 @@ end
     rng = rand(Float32)
     rr_sample = rand(Float32)
 
+    # Apply regularization if enabled and we've had a non-specular bounce
+    # (pbrt-v4: regularize && anyNonSpecularBounces)
+    regularize = do_regularize && work.any_non_specular_bounces
+
     # Sample BSDF
     sample = sample_spectral_material(
         rgb2spec_table, materials, textures, work.material_idx,
-        work.wo, work.ns, work.uv, work.lambda, u, rng
+        work.wo, work.ns, work.uv, work.lambda, u, rng, regularize
     )
 
     # Check if valid sample
@@ -421,7 +426,8 @@ Includes Russian roulette for path termination.
     @Const(textures),
     @Const(media),  # For determining medium after refraction
     @Const(rgb2spec_scale), @Const(rgb2spec_coeffs), @Const(rgb2spec_res::Int32),
-    @Const(max_depth::Int32), @Const(max_queued::Int32)
+    @Const(max_depth::Int32), @Const(max_queued::Int32),
+    @Const(do_regularize::Bool)  # Whether to apply BSDF regularization
 )
     idx = @index(Global)
 
@@ -433,23 +439,28 @@ Includes Russian roulette for path termination.
             work = material_items[idx]
             evaluate_material_inner!(
                 next_ray_items, next_ray_size,
-                work, materials, textures, rgb2spec_table, max_depth, max_queued
+                work, materials, textures, rgb2spec_table, max_depth, max_queued,
+                do_regularize
             )
         end
     end
 end
 
 """
-    vp_evaluate_materials!(backend, state, materials, textures, media)
+    vp_evaluate_materials!(backend, state, materials, textures, media, regularize=true)
 
 Evaluate materials and spawn continuation rays.
+
+When `regularize=true`, near-specular BSDFs are roughened after the first non-specular
+bounce to reduce fireflies (matches pbrt-v4's BSDF::Regularize).
 """
 function vp_evaluate_materials!(
     backend,
     state::VolPathState,
     materials,
     textures,
-    media
+    media,
+    regularize::Bool = true
 )
     n = queue_size(state.material_queue)
     n == 0 && return nothing
@@ -464,7 +475,7 @@ function vp_evaluate_materials!(
         textures,
         media,
         state.rgb2spec_table.scale, state.rgb2spec_table.coeffs, state.rgb2spec_table.res,
-        state.max_depth, output_queue.capacity;
+        state.max_depth, output_queue.capacity, regularize;
         ndrange=Int(state.material_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
     )
 

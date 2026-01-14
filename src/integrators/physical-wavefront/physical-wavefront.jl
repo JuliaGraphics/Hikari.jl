@@ -132,27 +132,33 @@ mutable struct PhysicalWavefront <: Integrator
     samples_per_pixel::Int32
     use_denoising::Bool
     russian_roulette_depth::Int32
+    regularize::Bool  # Apply BSDF regularization after first non-specular bounce (pbrt-v4)
 
     # Cached render state (lazily allocated)
     state::Union{Nothing, PWRenderState}
 end
 
 """
-    PhysicalWavefront(; max_depth=8, samples_per_pixel=64, use_denoising=false)
+    PhysicalWavefront(; max_depth=8, samples_per_pixel=64, use_denoising=false, regularize=true)
 
 Create a PhysicalWavefront integrator.
+
+When `regularize=true` (default), near-specular BSDFs are roughened after the first
+non-specular bounce to reduce fireflies. Matches pbrt-v4's BSDF::Regularize().
 """
 function PhysicalWavefront(;
     max_depth::Int = 8,
     samples_per_pixel::Int = 64,
     use_denoising::Bool = false,
-    russian_roulette_depth::Int = 3
+    russian_roulette_depth::Int = 3,
+    regularize::Bool = true
 )
     return PhysicalWavefront(
         Int32(max_depth),
         Int32(samples_per_pixel),
         use_denoising,
         Int32(russian_roulette_depth),
+        regularize,
         nothing
     )
 end
@@ -275,7 +281,8 @@ function (pw::PhysicalWavefront)(scene::AbstractScene, film::Film, camera::Camer
             # Evaluate materials and spawn continuation rays
             pw_evaluate_materials!(
                 backend, state.ray_queue_next, state.pixel_L,
-                state.material_queue, materials, state.rgb2spec_table, pw.max_depth
+                state.material_queue, materials, state.rgb2spec_table, pw.max_depth,
+                pw.regularize
             )
 
             # Swap ray queues for next bounce
@@ -414,7 +421,8 @@ function render_single_sample!(
 
         pw_evaluate_materials!(
             backend, state.ray_queue_next, state.pixel_L,
-            state.material_queue, materials, pw.max_depth
+            state.material_queue, materials, state.rgb2spec_table, pw.max_depth,
+            pw.regularize
         )
 
         state.ray_queue, state.ray_queue_next = state.ray_queue_next, state.ray_queue
