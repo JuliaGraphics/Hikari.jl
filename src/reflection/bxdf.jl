@@ -12,57 +12,96 @@ const BSDF_ALL = UInt8(0b11111)
 end
 
 """
-Compute refracted direction `wt` given an incident direction `wi`,
-surface normal `n` in the same hemisphere as `wi` and `η`, the ratio
-of indices of refraction in the incident transmitted media respectively.
+    refract(wi::Vec3f, n::Normal3f, eta::Float32) -> (valid::Bool, wt::Vec3f)
 
-Returned boolean indicates whether a valid refracted ray was returned
-or is it the case of total internal reflection.
+Compute refracted direction `wt` given an incident direction `wi`,
+surface normal `n`, and `eta` = n_t / n_i (ratio of transmitted to incident IOR).
+
+This matches pbrt-v4's Refract() function exactly:
+- If wi comes from below the surface (cos_θi < 0), the interface is flipped
+- Returns (false, zero) for total internal reflection
+- Returns (true, wt) with the refracted direction otherwise
+
+The convention is: eta = n_transmitted / n_incident
+- For ray entering glass (n_i=1, n_t=1.5): eta = 1.5
+- For ray exiting glass (n_i=1.5, n_t=1): eta = 1/1.5 ≈ 0.67
 """
-function refract(wi::Vec3f, n::Normal3f, η::Float32)::Tuple{Bool,Vec3f}
-    # Compute cosθt using Snell's law.
+function refract(wi::Vec3f, n::Normal3f, eta::Float32)::Tuple{Bool,Vec3f}
     cos_θi = n ⋅ wi
+
+    # Potentially flip interface orientation for Snell's law (matches pbrt-v4)
+    if cos_θi < 0f0
+        eta = 1f0 / eta
+        cos_θi = -cos_θi
+        n = -n
+    end
+
+    # Compute cos_θt using Snell's law
     sin2_θi = max(0f0, 1f0 - cos_θi^2)
-    sin2_θt = (η^2) * sin2_θi
-    # Handle total internal reflection for transmission.
-    sin2_θt >= 1 && return false, Vec3f(0f0)
-    cos_θt = √(1f0 - sin2_θt)
-    wt = -η .* wi + (η * cos_θi - cos_θt) .* n
-    true, wt
+    sin2_θt = sin2_θi / (eta^2)
+
+    # Handle total internal reflection
+    sin2_θt >= 1f0 && return false, Vec3f(0f0)
+
+    cos_θt = sqrt(1f0 - sin2_θt)
+
+    # Compute refracted direction (matches pbrt-v4 exactly)
+    wt = -wi / eta + (cos_θi / eta - cos_θt) * Vec3f(n)
+    return true, wt
 end
 
 
 """
-Compute Fresnel reflection formula for dielectric materials
-and unpolarized light.
-Which describes the amount of light reflected from a surface.
+    fresnel_dielectric(cos_θi::Float32, eta::Float32) -> Float32
 
-- `cos_θi::Float32`: Cosine of the incident angle w.r.t. normal.
-- `ηi::Float32`: index of refraction for the incident media.
-- `ηt::Float32`: index of refraction for the transmitted media.
+Compute Fresnel reflection for dielectric materials (single-eta version).
+This matches pbrt-v4's FrDielectric() exactly.
+
+Arguments:
+- `cos_θi`: Cosine of incident angle (can be negative if coming from inside)
+- `eta`: Ratio n_t / n_i (transmitted IOR / incident IOR)
+
+For a ray hitting glass from air: eta = 1.5 (glass IOR)
+For a ray hitting air from inside glass: eta = 1/1.5
 """
-function fresnel_dielectric(cos_θi::Float32, ηi::Float32, ηt::Float32)
+function fresnel_dielectric(cos_θi::Float32, eta::Float32)::Float32
     cos_θi = clamp(cos_θi, -1f0, 1f0)
-    if cos_θi ≤ 0f0 # if not entering
-        ηi, ηt = ηt, ηi
-        cos_θi = abs(cos_θi)
+
+    # Potentially flip interface orientation for Fresnel equations (matches pbrt-v4)
+    if cos_θi < 0f0
+        eta = 1f0 / eta
+        cos_θi = -cos_θi
     end
-    # Compute cos_θt using Snell's law.
-    sin_θi = √max(0f0, 1f0 - cos_θi^2)
-    sin_θt = sin_θi * ηi / ηt
-    sin_θt ≥ 1f0 && return 1f0 # Handle total internal reflection.
-    cos_θt = √max(0f0, 1f0 - sin_θt^2)
 
-    r_parallel = (
-        (ηt * cos_θi - ηi * cos_θt) /
-        (ηt * cos_θi + ηi * cos_θt)
-    )
+    # Compute cos_θt using Snell's law
+    sin2_θi = 1f0 - cos_θi^2
+    sin2_θt = sin2_θi / (eta^2)
 
-    r_perp = (
-        (ηi * cos_θi - ηt * cos_θt) /
-        (ηi * cos_θi + ηt * cos_θt)
-    )
-    return 0.5f0 * (r_parallel^2 + r_perp^2)
+    # Handle total internal reflection
+    sin2_θt >= 1f0 && return 1f0
+
+    cos_θt = sqrt(1f0 - sin2_θt)
+
+    # Fresnel equations (matches pbrt-v4 exactly)
+    r_parl = (eta * cos_θi - cos_θt) / (eta * cos_θi + cos_θt)
+    r_perp = (cos_θi - eta * cos_θt) / (cos_θi + eta * cos_θt)
+
+    return 0.5f0 * (r_parl^2 + r_perp^2)
+end
+
+"""
+    fresnel_dielectric(cos_θi::Float32, ηi::Float32, ηt::Float32) -> Float32
+
+Compute Fresnel reflection for dielectric materials (two-IOR version).
+This is a convenience wrapper that computes eta = ηt / ηi.
+
+Arguments:
+- `cos_θi`: Cosine of incident angle w.r.t. normal
+- `ηi`: Index of refraction for the incident media
+- `ηt`: Index of refraction for the transmitted media
+"""
+function fresnel_dielectric(cos_θi::Float32, ηi::Float32, ηt::Float32)::Float32
+    fresnel_dielectric(cos_θi, ηt / ηi)
 end
 
 """

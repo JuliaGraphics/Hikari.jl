@@ -29,6 +29,9 @@ Compute BSDF for GlassMaterial.
 """
 @propagate_inbounds function compute_bsdf(g::GlassMaterial, textures, si::SurfaceInteraction, allow_multiple_lobes::Bool, transport)
     η = eval_tex(textures, g.index, si.uv)
+    # Handle edge case where eta is 0 (e.g., wavelength beyond stored spectrum range)
+    # This matches pbrt-v4 DielectricMaterial::GetBxDF behavior
+    η == 0f0 && (η = 1f0)
     u_roughness = eval_tex(textures, g.u_roughness, si.uv)
     v_roughness = eval_tex(textures, g.v_roughness, si.uv)
 

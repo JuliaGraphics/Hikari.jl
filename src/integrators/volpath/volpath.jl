@@ -42,12 +42,12 @@ Create a VolPath integrator for volumetric path tracing.
 """
 function VolPath(;
     max_depth::Int = 8,
-    samples_per_pixel::Int = 64,
+    samples::Int = 64,
     russian_roulette_depth::Int = 3
 )
     return VolPath(
         Int32(max_depth),
-        Int32(samples_per_pixel),
+        Int32(samples),
         Int32(russian_roulette_depth),
         nothing
     )

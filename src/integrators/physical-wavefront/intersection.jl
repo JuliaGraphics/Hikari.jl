@@ -44,7 +44,7 @@ This kernel does NOT generate shadow rays - that happens in direct lighting.
                 escaped_queue_items[new_idx] = escaped_item
             else
                 # Got a hit - extract surface info
-                mat_idx = primitive.metadata::MaterialIndex
+                raw_mat_idx = primitive.metadata::MaterialIndex
 
                 # Compute intersection point
                 pi = Point3f(work.ray.o + work.ray.d * t_hit)
@@ -60,6 +60,11 @@ This kernel does NOT generate shadow rays - that happens in direct lighting.
                 ns = compute_shading_normal(primitive, barycentric, n)
                 dpdu, dpdv = compute_tangent_frame(primitive)
                 dpdus, dpdvs = dpdu, dpdv
+
+                # Resolve MixMaterial to get the actual material index
+                # Following pbrt-v4: MixMaterial is resolved at intersection time
+                # Note: textures parameter not available here, pass nothing (CPU textures are self-contained)
+                mat_idx = resolve_mix_material(materials, nothing, raw_mat_idx, pi, wo, uv)
 
                 # Check if material is emissive
                 is_em = is_emissive_dispatch(materials, mat_idx)

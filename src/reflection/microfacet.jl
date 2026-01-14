@@ -69,15 +69,19 @@ function λ(trd::TrowbridgeReitzDistribution, w::Vec3f)::Float32
 end
 
 """
-Map [0, 1] scalar to BRDF's roughness, where values close to zero
-correspond to near-perfect specular reflection, rather than by specifying
-α values directly.
+    roughness_to_α(roughness::Float32) -> Float32
+
+Map [0, 1] scalar roughness to microfacet distribution alpha parameter.
+
+Matches pbrt-v4's TrowbridgeReitzDistribution::RoughnessToAlpha which uses
+sqrt(roughness). This provides a more intuitive perceptual mapping where
+roughness values close to zero give near-perfect specular reflection.
+
+Note: pbrt-v4 comments suggest Sqr(roughness) might be more perceptually
+uniform, but sqrt is retained for compatibility with existing scenes.
 """
 @propagate_inbounds function roughness_to_α(roughness::Float32)::Float32
-    roughness = max(1f-3, roughness)
-    x = log(roughness)
-    1.62142f0 + 0.819955f0 * x + 0.1734f0 * x*x +
-    0.0171201f0 * x*x*x + 0.000640711f0 * x*x*x*x
+    sqrt(roughness)
 end
 
 @propagate_inbounds function G1(m::MicrofacetDistribution, w::Vec3f)::Float32
@@ -278,15 +282,15 @@ function distribution_microfacet_transmission(m::UberBxDF{S}, wo::Vec3f, wi::Vec
 end
 
 @propagate_inbounds function sample_microfacet_transmission(m::UberBxDF{S}, wo::Vec3f, u::Point2f) where {S<:Spectrum}
-
     wo[3] ≈ 0f0 && return Vec3f(0f0), 0f0, S(0f0), UInt8(0)
     wh = sample_wh(m.distribution, wo, u)
     (wo ⋅ wh) < 0 && return Vec3f(0f0), 0f0, S(0f0), UInt8(0)
 
-    # η = η_t/η_i (transmitted/incident) for half-vector and BTDF formulas
-    # refract() expects η_i/η_t, so we pass 1/η
-    η = cos_θ(wo) > 0f0 ? (m.η_b / m.η_a) : (m.η_a / m.η_b)
-    refracted, wi = refract(wo, Normal3f(wh), 1f0 / η)
+    # refract() uses pbrt-v4 convention: eta = η_t / η_i
+    # When wo.z > 0 (entering): eta = η_b / η_a
+    # When wo.z < 0 (exiting): eta = η_a / η_b
+    eta = cos_θ(wo) > 0f0 ? (m.η_b / m.η_a) : (m.η_a / m.η_b)
+    refracted, wi = refract(wo, Normal3f(wh), eta)
     !refracted && return Vec3f(0f0), 0f0, S(0f0), UInt8(0)
 
     pdf = pdf_microfacet_transmission(m, wo, wi)
@@ -405,22 +409,24 @@ reflection and transmission.
         return wi, pdf, f_val, BSDF_GLOSSY | BSDF_REFLECTION
     else
         # Transmission
-        η = cos_θ(wo) > 0f0 ? (m.η_b / m.η_a) : (m.η_a / m.η_b)
-        refracted, wi = refract(wo, Normal3f(wh), 1f0 / η)
+        # refract() uses pbrt-v4 convention: eta = η_t / η_i
+        eta = cos_θ(wo) > 0f0 ? (m.η_b / m.η_a) : (m.η_a / m.η_b)
+        refracted, wi = refract(wo, Normal3f(wh), eta)
         !refracted && return Vec3f(0f0), 0f0, S(0f0), UInt8(0)
 
         # PDF: product of half-vector pdf, jacobian, and selection probability (1-F)
         d_o, d_i = wo ⋅ wh, wi ⋅ wh
-        denom = d_o + η * d_i
-        ∂wh∂wi = abs(d_i * η^2 / (denom^2))
+        denom = d_o + eta * d_i
+        ∂wh∂wi = abs(d_i * eta^2 / (denom^2))
         pdf_h = compute_pdf(m.distribution, wo, wh)
         pdf = pdf_h * ∂wh∂wi * (1f0 - F)
 
         cosθo, cosθi = cos_θ(wo), cos_θ(wi)
-        factor = m.transport === Radiance ? (1.0f0 / η) : 1.0f0
+        # Radiance transport: scale by 1/eta² (matches pbrt-v4)
+        factor = m.transport === Radiance ? (1.0f0 / eta) : 1.0f0
         dd, dg = D(m.distribution, wh), G(m.distribution, wo, wi)
         f_val = (S(1f0) - S(F)) * m.t * abs(
-            dd * dg * d_o * d_i * η^2 * factor^2
+            dd * dg * d_o * d_i * eta^2 * factor^2
             /
             (cosθi * cosθo * denom^2),
         )

@@ -38,11 +38,19 @@ Process surface hits:
 
             wo = -work.ray.d
 
+            # Resolve MixMaterial to get the actual material index
+            # Following pbrt-v4: MixMaterial is resolved at intersection time
+            # using stochastic selection based on the amount texture and a hash
+            material_idx = resolve_mix_material(
+                materials, textures, work.material_idx,
+                work.pi, wo, work.uv
+            )
+
             # Check if surface is emissive
-            if is_emissive_dispatch(materials, work.material_idx)
+            if is_emissive_dispatch(materials, material_idx)
                 # Get emission
                 Le = get_emission_spectral_dispatch(
-                    rgb2spec_table, materials, textures, work.material_idx,
+                    rgb2spec_table, materials, textures, material_idx,
                     wo, work.n, work.uv, work.lambda
                 )
 
@@ -70,15 +78,15 @@ Process surface hits:
             end
 
             # Create material evaluation work item (for non-emissive or mixed materials)
-            # Skip pure emissive materials
-            if !is_pure_emissive_dispatch(materials, work.material_idx)
+            # Skip pure emissive materials (using resolved material_idx)
+            if !is_pure_emissive_dispatch(materials, material_idx)
                 mat_work = VPMaterialEvalWorkItem(
                     work.pi,
                     work.n,
                     work.ns,
                     wo,
                     work.uv,
-                    work.material_idx,
+                    material_idx,  # Use resolved material index (MixMaterial already resolved)
                     work.lambda,
                     work.pixel_index,
                     work.beta,
