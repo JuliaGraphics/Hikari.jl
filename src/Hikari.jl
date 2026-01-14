@@ -962,6 +962,7 @@ include("lights/sun.jl")
 include("lights/sun_sky.jl")
 include("lights/ambient.jl")
 include("lights/environment.jl")
+include("lights/light-sampler.jl")
 
 include("integrators/sampler.jl")
 include("integrators/sppm.jl")

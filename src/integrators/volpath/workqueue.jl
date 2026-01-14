@@ -85,6 +85,13 @@ mutable struct VolPathState{Backend}
     # CIE XYZ color matching table
     cie_table::CIEXYZTable
 
+    # Light sampler data for power-weighted light selection
+    # Stored as flat arrays for GPU compatibility
+    light_sampler_p::AbstractVector{Float32}    # PMF values
+    light_sampler_q::AbstractVector{Float32}    # Alias thresholds
+    light_sampler_alias::AbstractVector{Int32}  # Alias indices
+    num_lights::Int32
+
     # Render parameters
     max_depth::Int32
     width::Int32
@@ -94,7 +101,8 @@ end
 function VolPathState(
     backend,
     width::Integer,
-    height::Integer;
+    height::Integer,
+    lights::Tuple;
     max_depth::Integer = 8,
     queue_capacity::Integer = width * height
 )
@@ -130,6 +138,20 @@ function VolPathState(
     cie_table_cpu = CIEXYZTable()
     cie_table = to_gpu(ArrayType, cie_table_cpu)
 
+    # Build power-weighted light sampler
+    n_lights = length(lights)
+    if n_lights > 0
+        sampler = PowerLightSampler(lights)
+        sampler_data = LightSamplerData(sampler)
+        light_sampler_p = ArrayType(sampler_data.p)
+        light_sampler_q = ArrayType(sampler_data.q)
+        light_sampler_alias = ArrayType(sampler_data.alias)
+    else
+        light_sampler_p = ArrayType{Float32}(undef, 0)
+        light_sampler_q = ArrayType{Float32}(undef, 0)
+        light_sampler_alias = ArrayType{Int32}(undef, 0)
+    end
+
     VolPathState(
         backend,
         ray_queue_a,
@@ -147,6 +169,10 @@ function VolPathState(
         pdf_per_pixel,
         rgb2spec_table,
         cie_table,
+        light_sampler_p,
+        light_sampler_q,
+        light_sampler_alias,
+        Int32(n_lights),
         Int32(max_depth),
         Int32(width),
         Int32(height)

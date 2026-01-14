@@ -5,12 +5,19 @@
 # Medium Direct Lighting Inner Function
 # ============================================================================
 
-"""Inner function for medium direct lighting - can use return statements."""
+"""Inner function for medium direct lighting - can use return statements.
+
+Uses power-weighted light sampling via alias table for better importance sampling
+in scenes with lights of varying intensities (pbrt-v4's PowerLightSampler approach).
+"""
 @propagate_inbounds function medium_direct_lighting_inner!(
     shadow_items, shadow_size,
     work::VPMediumScatterWorkItem,
     lights,
     rgb2spec_table,
+    light_sampler_p,
+    light_sampler_q,
+    light_sampler_alias,
     num_lights::Int32,
     max_queued::Int32
 )
@@ -21,9 +28,15 @@
     u_light = rand(Point2f)
     light_select = rand(Float32)
 
-    # Select light uniformly
-    light_idx = floor_int32(light_select * Float32(num_lights)) + Int32(1)
-    light_idx = min(light_idx, num_lights)
+    # Select light using power-weighted alias table sampling
+    light_idx, light_pmf = sample_light_sampler(
+        light_sampler_p, light_sampler_q, light_sampler_alias, light_select
+    )
+
+    # Validate index
+    if light_idx < Int32(1) || light_idx > num_lights || light_pmf <= 0f0
+        return
+    end
 
     # Sample the light
     light_sample = sample_light_from_tuple(
@@ -46,7 +59,8 @@
             # phasePDF = 0 for delta lights, else phase->PDF(wo, wi)
             # r_u = w.r_u * phasePDF
             # r_l = w.r_u * lightPDF
-            light_pdf = light_sample.pdf / Float32(num_lights)  # Include light selection probability
+            # Now using power-weighted PMF instead of uniform 1/num_lights
+            light_pdf = light_sample.pdf * light_pmf  # Include light selection probability
             phase_pdf = if light_sample.is_delta
                 0f0  # Delta lights have no MIS with phase sampling
             else
@@ -102,7 +116,7 @@ end
 """
     vp_medium_direct_lighting_kernel!(...)
 
-Sample direct lighting at medium scattering events.
+Sample direct lighting at medium scattering events using power-weighted light sampling.
 Creates shadow rays for each scatter point.
 """
 @kernel inbounds=true function vp_medium_direct_lighting_kernel!(
@@ -113,6 +127,7 @@ Creates shadow rays for each scatter point.
     @Const(lights),
     @Const(media),
     @Const(rgb2spec_scale), @Const(rgb2spec_coeffs), @Const(rgb2spec_res::Int32),
+    @Const(light_sampler_p), @Const(light_sampler_q), @Const(light_sampler_alias),
     @Const(num_lights::Int32), @Const(max_queued::Int32)
 )
     idx = @index(Global)
@@ -125,7 +140,9 @@ Creates shadow rays for each scatter point.
             work = scatter_items[idx]
             medium_direct_lighting_inner!(
                 shadow_items, shadow_size,
-                work, lights, rgb2spec_table, num_lights, max_queued
+                work, lights, rgb2spec_table,
+                light_sampler_p, light_sampler_q, light_sampler_alias,
+                num_lights, max_queued
             )
         end
     end
@@ -228,9 +245,10 @@ end
 # ============================================================================
 
 """
-    vp_sample_medium_direct_lighting!(backend, state, scene, media)
+    vp_sample_medium_direct_lighting!(backend, state, lights, media)
 
 Sample direct lighting at all medium scatter points.
+Uses power-weighted light sampling from state.light_sampler_* arrays.
 """
 function vp_sample_medium_direct_lighting!(
     backend,
@@ -241,8 +259,6 @@ function vp_sample_medium_direct_lighting!(
     n = queue_size(state.medium_scatter_queue)
     n == 0 && return nothing
 
-    num_lights = count_lights(lights)
-
     kernel! = vp_medium_direct_lighting_kernel!(backend)
     kernel!(
         state.shadow_queue.items, state.shadow_queue.size,
@@ -250,7 +266,8 @@ function vp_sample_medium_direct_lighting!(
         lights,
         media,
         state.rgb2spec_table.scale, state.rgb2spec_table.coeffs, state.rgb2spec_table.res,
-        num_lights, state.shadow_queue.capacity;
+        state.light_sampler_p, state.light_sampler_q, state.light_sampler_alias,
+        state.num_lights, state.shadow_queue.capacity;
         ndrange=Int(state.medium_scatter_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
     )
 
