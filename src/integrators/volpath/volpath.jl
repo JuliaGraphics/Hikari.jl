@@ -263,9 +263,12 @@ function render!(
     backend = KA.get_backend(img)
 
     # Allocate or validate state
+    # Must check backend too - reusing state from different backend causes corruption
+    # (e.g., OpenCL device arrays used with CPU backend)
     if vp.state === nothing ||
        vp.state.width != width ||
-       vp.state.height != height
+       vp.state.height != height ||
+       vp.state.backend !== backend
         vp.state = VolPathState(backend, width, height; max_depth=vp.max_depth)
     end
     state = vp.state
@@ -436,9 +439,11 @@ function _old_volpath_implementation(vp::VolPath, scene::AbstractScene, film::Fi
     backend = KA.get_backend(img)
 
     # Allocate or validate state
+    # Must check backend too - reusing state from different backend causes corruption
     if vp.state === nothing ||
        vp.state.width != width ||
-       vp.state.height != height
+       vp.state.height != height ||
+       vp.state.backend !== backend
         vp.state = VolPathState(backend, width, height; max_depth=vp.max_depth)
     end
     state = vp.state
