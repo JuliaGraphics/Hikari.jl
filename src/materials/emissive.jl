@@ -182,3 +182,6 @@ For emissive materials, we return the normalized emission color.
         return RGBSpectrum(0f0)
     end
 end
+
+"""Type alias: `Emissive` is the same as `EmissiveMaterial`"""
+const Emissive = EmissiveMaterial

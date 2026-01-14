@@ -297,6 +297,8 @@ _to_texture(v::Real) = Texture(Float32(v))
 # For color tuples/vectors (use Tuple{Real,Real,Real} to handle mixed Int/Float)
 _to_texture(v::Tuple{Real,Real,Real}) = Texture(RGBSpectrum(Float32(v[1]), Float32(v[2]), Float32(v[3])))
 _to_texture(v::AbstractVector{<:Real}) = length(v) == 3 ? Texture(RGBSpectrum(Float32.(v)...)) : error("Expected 3-element color")
+# Support Colors.jl RGB types (RGB, RGBA, etc.)
+_to_texture(c::Colorant) = Texture(RGBSpectrum(Float32(red(c)), Float32(green(c)), Float32(blue(c))))
 
 """
     MatteMaterial(; Kd=RGBSpectrum(0.5), σ=0.0)
@@ -500,3 +502,114 @@ function MetalMaterial(;
 )
     MetalMaterial(_to_texture(eta), _to_texture(k), _to_texture(roughness), _to_texture(reflectance), remap_roughness)
 end
+
+# ============================================================================
+# Clean Type Aliases - shorter names without "Material" suffix
+# ============================================================================
+
+"""Type alias: `Diffuse` is the same as `MatteMaterial`"""
+const Diffuse = MatteMaterial
+
+"""Type alias: `Mirror` is the same as `MirrorMaterial`"""
+const Mirror = MirrorMaterial
+
+"""Type alias: `Dielectric` is the same as `GlassMaterial`"""
+const Dielectric = GlassMaterial
+
+"""Type alias: `Plastic` is the same as `PlasticMaterial`"""
+const Plastic = PlasticMaterial
+
+"""Type alias: `Conductor` is the same as `MetalMaterial`"""
+const Conductor = MetalMaterial
+
+# ============================================================================
+# Metal Preset Constructors - convenient ways to create common metals
+# ============================================================================
+
+# Metal optical constants (approximate values at 550nm from pbrt-v4)
+# These are the complex index of refraction values: n + ik
+const _COPPER_ETA = (0.27f0, 0.68f0, 1.22f0)
+const _COPPER_K = (3.61f0, 2.63f0, 2.29f0)
+
+const _GOLD_ETA = (0.14f0, 0.38f0, 1.44f0)
+const _GOLD_K = (3.98f0, 2.75f0, 1.95f0)
+
+const _SILVER_ETA = (0.16f0, 0.14f0, 0.13f0)
+const _SILVER_K = (4.03f0, 3.59f0, 2.62f0)
+
+const _ALUMINUM_ETA = (1.35f0, 0.97f0, 0.60f0)
+const _ALUMINUM_K = (7.47f0, 6.40f0, 5.30f0)
+
+const _IRON_ETA = (2.95f0, 2.93f0, 2.59f0)
+const _IRON_K = (3.10f0, 2.99f0, 2.74f0)
+
+"""
+    Gold(; roughness=0.0, reflectance=(1,1,1), remap_roughness=true)
+
+Create a gold conductor material with realistic optical constants.
+
+# Examples
+```julia
+Gold()                          # Polished gold
+Gold(roughness=0.1)             # Brushed gold
+Gold(roughness=0.3)             # Matte gold
+```
+"""
+Gold(; roughness=0f0, reflectance=(1f0, 1f0, 1f0), remap_roughness=true) =
+    Conductor(eta=_GOLD_ETA, k=_GOLD_K, roughness=roughness, reflectance=reflectance, remap_roughness=remap_roughness)
+
+"""
+    Silver(; roughness=0.0, reflectance=(1,1,1), remap_roughness=true)
+
+Create a silver conductor material with realistic optical constants.
+
+# Examples
+```julia
+Silver()                        # Polished silver
+Silver(roughness=0.05)          # Slightly brushed
+```
+"""
+Silver(; roughness=0f0, reflectance=(1f0, 1f0, 1f0), remap_roughness=true) =
+    Conductor(eta=_SILVER_ETA, k=_SILVER_K, roughness=roughness, reflectance=reflectance, remap_roughness=remap_roughness)
+
+"""
+    Copper(; roughness=0.0, reflectance=(1,1,1), remap_roughness=true)
+
+Create a copper conductor material with realistic optical constants.
+
+# Examples
+```julia
+Copper()                        # Polished copper
+Copper(roughness=0.2)           # Weathered copper
+```
+"""
+Copper(; roughness=0f0, reflectance=(1f0, 1f0, 1f0), remap_roughness=true) =
+    Conductor(eta=_COPPER_ETA, k=_COPPER_K, roughness=roughness, reflectance=reflectance, remap_roughness=remap_roughness)
+
+"""
+    Aluminum(; roughness=0.0, reflectance=(1,1,1), remap_roughness=true)
+
+Create an aluminum conductor material with realistic optical constants.
+
+# Examples
+```julia
+Aluminum()                      # Polished aluminum
+Aluminum(roughness=0.1)         # Brushed aluminum
+```
+"""
+Aluminum(; roughness=0f0, reflectance=(1f0, 1f0, 1f0), remap_roughness=true) =
+    Conductor(eta=_ALUMINUM_ETA, k=_ALUMINUM_K, roughness=roughness, reflectance=reflectance, remap_roughness=remap_roughness)
+
+"""
+    Iron(; roughness=0.0, reflectance=(1,1,1), remap_roughness=true)
+
+Create an iron conductor material with realistic optical constants.
+
+# Examples
+```julia
+Iron()                          # Polished iron
+Iron(roughness=0.3)             # Rough cast iron
+```
+"""
+Iron(; roughness=0f0, reflectance=(1f0, 1f0, 1f0), remap_roughness=true) =
+    Conductor(eta=_IRON_ETA, k=_IRON_K, roughness=roughness, reflectance=reflectance, remap_roughness=remap_roughness)

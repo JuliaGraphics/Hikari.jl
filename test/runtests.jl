@@ -9,3 +9,4 @@ using JET
 include("materials.jl")
 include("type_stability.jl")
 include("film.jl")
+include("gpu_compat.jl")

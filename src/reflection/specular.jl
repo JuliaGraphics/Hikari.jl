@@ -70,23 +70,27 @@ and return the value of BxDF for the pair of directions.
 `sample` parameter isn't needed for the δ-distribution.
 """
 @propagate_inbounds function sample_specular_transmission(s::UberBxDF{S}, wo::Vec3f, ::Point2f)::Tuple{Vec3f,Float32,S,UInt8} where {S}
-
-    # Figure out which η is incident and which is transmitted.
+    # refract() uses pbrt-v4 convention: eta = η_t / η_i
+    # η_a is typically 1.0 (air), η_b is typically glass IOR (e.g., 1.5)
+    # When entering (wo.z > 0): incident=air, transmitted=glass, eta = η_b / η_a
+    # When exiting (wo.z < 0): incident=glass, transmitted=air, eta = η_a / η_b
     entering = cos_θ(wo) > 0
-    η_i = entering ? s.η_a : s.η_b
-    η_t = entering ? s.η_b : s.η_a
-    # Compute ray direction for specular transmission.
-    valid, wi = refract(
-        wo, face_forward(Normal3f(0f0, 0f0, 1f0), wo), η_i / η_t,
-    )
-    # Total internal reflection.
-    !valid && return Vec3f(0f0), 0f0, S(0f0), UInt8(0)
-    pdf = 1f0
+    eta = entering ? (s.η_b / s.η_a) : (s.η_a / s.η_b)
 
+    # Compute ray direction for specular transmission
+    valid, wi = refract(wo, face_forward(Normal3f(0f0, 0f0, 1f0), wo), eta)
+
+    # Total internal reflection
+    !valid && return Vec3f(0f0), 0f0, S(0f0), UInt8(0)
+
+    pdf = 1f0
     cos_wi = cos_θ(wi)
     ft = s.t * (S(1.0f0) - s.fresnel(cos_wi))
-    # Account for non-symmetry with transmission to different medium.
-    s.transport === Radiance && (ft *= (η_i^2) / (η_t^2))
+
+    # Account for non-symmetry with transmission to different medium
+    # Scale factor is (η_i / η_t)² = 1/eta² for radiance transport
+    s.transport === Radiance && (ft /= eta^2)
+
     return wi, pdf, ft / abs(cos_wi), UInt8(0)
 end
 
@@ -109,22 +113,21 @@ and return the value of BxDF for the pair of directions.
         return wi, fd, fd * f.r / abs(cos_θ(wi)), sampled_type
     end
 
-    # Figure out which η is incident and which is transmitted.
-    if cos_θ(wo) > 0
-        η_i, η_t = f.η_a, f.η_b
-    else
-        η_i, η_t = f.η_b, f.η_a
-    end
-    # Compute ray direction for specular transmission.
-    refracted, wi = refract(
-        wo, face_forward(Normal3f(0f0, 0f0, 1f0), wo), η_i / η_t,
-    )
+    # refract() uses pbrt-v4 convention: eta = η_t / η_i
+    entering = cos_θ(wo) > 0
+    eta = entering ? (f.η_b / f.η_a) : (f.η_a / f.η_b)
+
+    # Compute ray direction for specular transmission
+    refracted, wi = refract(wo, face_forward(Normal3f(0f0, 0f0, 1f0), wo), eta)
     !refracted && return wi, fd, RGBSpectrum(0f0), UInt8(0)
 
     pdf = 1f0 - fd
     ft = f.t * pdf
-    # Account for non-symmetry with transmission to different medium.
-    f.transport === Radiance && (ft *= (η_i^2) / (η_t^2))
+
+    # Account for non-symmetry with transmission to different medium
+    # Scale factor is (η_i / η_t)² = 1/eta² for radiance transport
+    f.transport === Radiance && (ft /= eta^2)
+
     sampled_type = BSDF_SPECULAR | BSDF_TRANSMISSION
     return wi, pdf, ft / abs(cos_θ(wi)), sampled_type
 end

@@ -126,3 +126,6 @@ end
 
 # Mark as non-emissive
 is_emissive(::CoatedDiffuseMaterial) = false
+
+"""Type alias: `CoatedDiffuse` is the same as `CoatedDiffuseMaterial`"""
+const CoatedDiffuse = CoatedDiffuseMaterial
