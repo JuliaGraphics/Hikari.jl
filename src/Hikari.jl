@@ -931,6 +931,10 @@ include("spectral/spectral.jl")
 include("spectral/color.jl")
 include("spectral/uplift.jl")
 include("materials/spectral-eval.jl")
+
+# Stratified sampler (needs murmur_hash_64a from spectral-eval.jl)
+include("sampler/stratified.jl")
+
 include("primitive.jl")
 
 # GeometricPrimitive convenience constructor for MaterialScene

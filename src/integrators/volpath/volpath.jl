@@ -32,13 +32,14 @@ mutable struct VolPath <: Integrator
     russian_roulette_depth::Int32
     regularize::Bool  # Apply BSDF regularization after first non-specular bounce
     material_coherence::Symbol  # Material evaluation mode: :none, :sorted, :per_type
+    max_component_value::Float32  # Firefly suppression: clamp RGB components (pbrt-v4 style)
 
     # Cached render state
     state::Union{Nothing, VolPathState}
 end
 
 """
-    VolPath(; max_depth=8, samples=64, russian_roulette_depth=3, regularize=true, material_coherence=:none)
+    VolPath(; max_depth=8, samples=64, russian_roulette_depth=3, regularize=true, material_coherence=:none, max_component_value=Inf32)
 
 Create a VolPath integrator for volumetric path tracing.
 
@@ -53,13 +54,17 @@ Create a VolPath integrator for volumetric path tracing.
   - `:none`: Standard evaluation (baseline)
   - `:sorted`: Sort work items by material type before evaluation
   - `:per_type`: Launch separate kernels per material type (pbrt-v4 style)
+- `max_component_value`: Maximum RGB component value before clamping (default: Inf32).
+  When set to a finite value, RGB values are scaled down if any component exceeds this.
+  This is pbrt-v4's firefly suppression mechanism. Try values like 10.0 or 100.0.
 """
 function VolPath(;
     max_depth::Int = 8,
     samples::Int = 64,
     russian_roulette_depth::Int = 3,
     regularize::Bool = true,
-    material_coherence::Symbol = :none
+    material_coherence::Symbol = :none,
+    max_component_value::Real = Inf32
 )
     @assert material_coherence in (:none, :sorted, :per_type) "material_coherence must be :none, :sorted, or :per_type"
     return VolPath(
@@ -68,6 +73,7 @@ function VolPath(;
         Int32(russian_roulette_depth),
         regularize,
         material_coherence,
+        Float32(max_component_value),
         nothing
     )
 end
@@ -109,10 +115,12 @@ Generate camera rays with per-pixel wavelength sampling.
         x = u_int32(mod(pixel_idx, width)) + Int32(1)
         y = u_int32(div(pixel_idx, width)) + Int32(1)
 
-        # Random jitter and wavelength sample
-        jitter_x = rand(Float32)
-        jitter_y = rand(Float32)
-        wavelength_u = rand(Float32)
+        # Stratified sampling: deterministic samples based on (pixel, sample_index)
+        # Uses R2 quasi-random sequence with per-pixel Cranley-Patterson rotation
+        pixel_sample = compute_pixel_sample(Int32(x), Int32(y), sample_idx)
+        jitter_x = pixel_sample.jitter_x
+        jitter_y = pixel_sample.jitter_y
+        wavelength_u = pixel_sample.wavelength_u
 
         # Sample wavelengths for this pixel
         lambda = sample_wavelengths_visible(wavelength_u)
@@ -172,7 +180,8 @@ end
     @Const(wavelengths_per_pixel),
     @Const(pdf_per_pixel),
     @Const(cie_x), @Const(cie_y), @Const(cie_z),
-    @Const(n_pixels::Int32)
+    @Const(n_pixels::Int32),
+    @Const(max_component_value::Float32)
 )
     pixel_idx = @index(Global)
 
@@ -207,6 +216,16 @@ end
 
         # Convert spectral to linear RGB
         R, G, B = spectral_to_linear_rgb(cie_table, L, lambda)
+
+        # Apply maxComponentValue clamping (pbrt-v4 firefly suppression)
+        # This preserves color hue while preventing extremely bright values
+        m = max(R, max(G, B))
+        if m > max_component_value
+            scale = max_component_value / m
+            R *= scale
+            G *= scale
+            B *= scale
+        end
 
         # Accumulate
         rgb_base = (pixel_idx - Int32(1)) * Int32(3)
@@ -412,7 +431,8 @@ function render!(
         pixel_rgb, state.pixel_L,
         wavelengths_per_pixel, pdf_per_pixel,
         state.cie_table.cie_x, state.cie_table.cie_y, state.cie_table.cie_z,
-        Int32(n_pixels);
+        Int32(n_pixels),
+        vp.max_component_value;
         ndrange=Int(n_pixels)
     )
 
