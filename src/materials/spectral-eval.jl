@@ -894,6 +894,264 @@ end
 end
 
 # ============================================================================
+# pbrt-v4 Compatible RNG and Hash Functions for LayeredBxDF
+# ============================================================================
+# These functions exactly match pbrt-v4's implementation for deterministic
+# random number generation within LayeredBxDF. This is critical for
+# reproducibility and correct firefly-free rendering.
+#
+# Reference: pbrt-v4 src/pbrt/util/hash.h, src/pbrt/util/rng.h
+
+"""
+    murmur_hash_64a(data::NTuple{N,UInt8}, seed::UInt64) -> UInt64
+
+MurmurHash2 64-bit hash function, exactly matching pbrt-v4's MurmurHash64A.
+Reference: https://github.com/explosion/murmurhash/blob/master/murmurhash/MurmurHash2.cpp
+"""
+@inline function murmur_hash_64a(data::NTuple{N,UInt8}, seed::UInt64=UInt64(0))::UInt64 where N
+    m = 0xc6a4a7935bd1e995
+    r = 47
+
+    h = seed ⊻ (UInt64(N) * m)
+
+    # Process 8-byte chunks
+    n_chunks = N ÷ 8
+    @inbounds for i in 0:(n_chunks-1)
+        # Read 8 bytes as UInt64 (little-endian)
+        k = UInt64(data[8*i + 1]) |
+            (UInt64(data[8*i + 2]) << 8) |
+            (UInt64(data[8*i + 3]) << 16) |
+            (UInt64(data[8*i + 4]) << 24) |
+            (UInt64(data[8*i + 5]) << 32) |
+            (UInt64(data[8*i + 6]) << 40) |
+            (UInt64(data[8*i + 7]) << 48) |
+            (UInt64(data[8*i + 8]) << 56)
+
+        k *= m
+        k ⊻= k >> r
+        k *= m
+
+        h ⊻= k
+        h *= m
+    end
+
+    # Handle remaining bytes (switch fallthrough in C++)
+    remaining = N & 7
+    offset = 8 * n_chunks
+    @inbounds if remaining >= 7
+        h ⊻= UInt64(data[offset + 7]) << 48
+    end
+    @inbounds if remaining >= 6
+        h ⊻= UInt64(data[offset + 6]) << 40
+    end
+    @inbounds if remaining >= 5
+        h ⊻= UInt64(data[offset + 5]) << 32
+    end
+    @inbounds if remaining >= 4
+        h ⊻= UInt64(data[offset + 4]) << 24
+    end
+    @inbounds if remaining >= 3
+        h ⊻= UInt64(data[offset + 3]) << 16
+    end
+    @inbounds if remaining >= 2
+        h ⊻= UInt64(data[offset + 2]) << 8
+    end
+    @inbounds if remaining >= 1
+        h ⊻= UInt64(data[offset + 1])
+        h *= m
+    end
+
+    h ⊻= h >> r
+    h *= m
+    h ⊻= h >> r
+
+    return h
+end
+
+"""
+    mix_bits(v::UInt64) -> UInt64
+
+Bit mixing function from pbrt-v4's hash.h.
+Reference: http://zimbry.blogspot.ch/2011/09/better-bit-mixing-improving-on.html
+"""
+@inline function mix_bits(v::UInt64)::UInt64
+    v ⊻= v >> 31
+    v *= 0x7fb5d329728ea185
+    v ⊻= v >> 27
+    v *= 0x81dadef4bc2dd44d
+    v ⊻= v >> 33
+    return v
+end
+
+"""
+    float32_to_bytes(v::Float32) -> NTuple{4,UInt8}
+
+GPU-compatible conversion of Float32 to bytes using Core.bitcast.
+"""
+@inline function float32_to_bytes(v::Float32)::NTuple{4,UInt8}
+    bits = Core.bitcast(UInt32, v)
+    return (
+        UInt8(bits & 0xff),
+        UInt8((bits >> 8) & 0xff),
+        UInt8((bits >> 16) & 0xff),
+        UInt8((bits >> 24) & 0xff)
+    )
+end
+
+"""
+    uint64_to_bytes(v::UInt64) -> NTuple{8,UInt8}
+
+GPU-compatible conversion of UInt64 to bytes.
+"""
+@inline function uint64_to_bytes(v::UInt64)::NTuple{8,UInt8}
+    return (
+        UInt8(v & 0xff),
+        UInt8((v >> 8) & 0xff),
+        UInt8((v >> 16) & 0xff),
+        UInt8((v >> 24) & 0xff),
+        UInt8((v >> 32) & 0xff),
+        UInt8((v >> 40) & 0xff),
+        UInt8((v >> 48) & 0xff),
+        UInt8((v >> 56) & 0xff)
+    )
+end
+
+"""
+    pbrt_hash(args...) -> UInt64
+
+Hash function matching pbrt-v4's variadic Hash() template.
+Packs arguments into a byte buffer and applies MurmurHash64A.
+Uses GPU-compatible bit manipulation instead of reinterpret.
+"""
+@inline function pbrt_hash(v::Float32)::UInt64
+    bytes = float32_to_bytes(v)
+    murmur_hash_64a(bytes, UInt64(0))
+end
+
+@inline function pbrt_hash(v::UInt64)::UInt64
+    bytes = uint64_to_bytes(v)
+    murmur_hash_64a(bytes, UInt64(0))
+end
+
+@inline function pbrt_hash(v::Vec3f)::UInt64
+    # Vec3f is 12 bytes (3 x Float32)
+    x_bytes = float32_to_bytes(v[1])
+    y_bytes = float32_to_bytes(v[2])
+    z_bytes = float32_to_bytes(v[3])
+    bytes = (x_bytes..., y_bytes..., z_bytes...)
+    murmur_hash_64a(bytes, UInt64(0))
+end
+
+@inline function pbrt_hash(seed::UInt64, v::Vec3f)::UInt64
+    # Hash(seed, wo) - combine seed with vector
+    seed_bytes = uint64_to_bytes(seed)
+    x_bytes = float32_to_bytes(v[1])
+    y_bytes = float32_to_bytes(v[2])
+    z_bytes = float32_to_bytes(v[3])
+    bytes = (seed_bytes..., x_bytes..., y_bytes..., z_bytes...)
+    murmur_hash_64a(bytes, UInt64(0))
+end
+
+@inline function pbrt_hash(a::UInt64, b::Float32)::UInt64
+    a_bytes = uint64_to_bytes(a)
+    b_bytes = float32_to_bytes(b)
+    bytes = (a_bytes..., b_bytes...)
+    murmur_hash_64a(bytes, UInt64(0))
+end
+
+@inline function pbrt_hash(a::Float32, b::Point2f)::UInt64
+    a_bytes = float32_to_bytes(a)
+    bx_bytes = float32_to_bytes(b[1])
+    by_bytes = float32_to_bytes(b[2])
+    bytes = (a_bytes..., bx_bytes..., by_bytes...)
+    murmur_hash_64a(bytes, UInt64(0))
+end
+
+# PCG32 Random Number Generator - GPU-compatible functional implementation
+# Exact port of pbrt-v4's RNG class but using immutable state
+const PCG32_DEFAULT_STATE = 0x853c49e6748fea9b
+const PCG32_DEFAULT_STREAM = 0xda3e39cb94b95bdb
+const PCG32_MULT = 0x5851f42d4c957f2d
+
+"""
+    PCG32State
+
+GPU-compatible immutable PCG32 random number generator state.
+Uses tuple-like struct for stack allocation on GPU.
+"""
+struct PCG32State
+    state::UInt64
+    inc::UInt64
+end
+
+"""
+    pcg32_init(seq_index::UInt64, seed::UInt64) -> PCG32State
+
+Initialize PCG32 with sequence index and seed, matching pbrt-v4's SetSequence.
+Returns initialized state.
+"""
+@inline function pcg32_init(seq_index::UInt64, seed::UInt64)::PCG32State
+    inc = (seq_index << 1) | UInt64(1)
+    state = UInt64(0)
+
+    # First advance
+    state = state * PCG32_MULT + inc
+
+    # Add seed
+    state += seed
+
+    # Second advance
+    state = state * PCG32_MULT + inc
+
+    return PCG32State(state, inc)
+end
+
+@inline function pcg32_init(seq_index::UInt64)::PCG32State
+    pcg32_init(seq_index, mix_bits(seq_index))
+end
+
+"""
+    pcg32_uniform_u32(rng::PCG32State) -> (UInt32, PCG32State)
+
+Generate uniform random UInt32 and return new state.
+Matching pbrt-v4's Uniform<uint32_t>().
+"""
+@inline function pcg32_uniform_u32(rng::PCG32State)::Tuple{UInt32, PCG32State}
+    oldstate = rng.state
+    newstate = oldstate * PCG32_MULT + rng.inc
+    # Keep intermediate values as UInt64, then mask to UInt32
+    xorshifted = ((oldstate >> 18) ⊻ oldstate) >> 27
+    rot = oldstate >> 59
+    xorshifted32 = UInt32(xorshifted & 0xFFFFFFFF)
+    rot32 = UInt32(rot & 0x1F)
+    result = (xorshifted32 >> rot32) | (xorshifted32 << ((32 - rot32) & 31))
+    return (result, PCG32State(newstate, rng.inc))
+end
+
+"""
+    pcg32_uniform_f32(rng::PCG32State) -> (Float32, PCG32State)
+
+Generate uniform random Float32 in [0, 1) and return new state.
+Matching pbrt-v4's Uniform<float>().
+"""
+@inline function pcg32_uniform_f32(rng::PCG32State)::Tuple{Float32, PCG32State}
+    u32, new_rng = pcg32_uniform_u32(rng)
+    # 0x1p-32f = 2^-32 as Float32 ≈ 2.3283064e-10
+    f = min(Float32(1) - eps(Float32), Float32(u32) * 2.3283064f-10)
+    return (f, new_rng)
+end
+
+"""
+    sample_exponential(u::Float32, a::Float32) -> Float32
+
+Sample from exponential distribution with rate parameter a.
+Returns -log(1-u)/a, matching pbrt-v4's SampleExponential.
+"""
+@inline function sample_exponential(u::Float32, a::Float32)::Float32
+    return -log(1f0 - u) / a
+end
+
+# ============================================================================
 # CoatedDiffuseMaterial - LayeredBxDF Implementation (pbrt-v4 port)
 # ============================================================================
 
@@ -1000,21 +1258,308 @@ The wo direction is in local shading space where z is the surface normal.
     return (wi, T, true)
 end
 
+# ============================================================================
+# LayeredBxDF Helper Functions - Dielectric Interface Sampling
+# ============================================================================
+# These functions implement the top (dielectric) and bottom (diffuse) interfaces
+# for the LayeredBxDF random walk algorithm, matching pbrt-v4 exactly.
+
+"""
+    BxDFReflTransFlags - Flags for controlling reflection/transmission sampling
+"""
+const BXDF_REFLECTION = UInt8(1)
+const BXDF_TRANSMISSION = UInt8(2)
+const BXDF_ALL = UInt8(3)
+
+"""
+    LayeredBSDFSample - Internal sample result for LayeredBxDF interfaces
+
+Contains the sampled direction, BSDF value, pdf, and flags indicating
+whether the sample is reflection/transmission and specular/glossy.
+"""
+struct LayeredBSDFSample
+    f::SpectralRadiance      # BSDF value (spectral)
+    wi::Vec3f                # Sampled direction
+    pdf::Float32             # Probability density
+    is_reflection::Bool      # True if reflection, false if transmission
+    is_specular::Bool        # True if delta distribution
+    eta::Float32             # Relative IOR (for transmission)
+    valid::Bool              # Whether sample is valid
+end
+
+LayeredBSDFSample() = LayeredBSDFSample(SpectralRadiance(), Vec3f(0), 0f0, false, false, 1f0, false)
+
+"""
+    sample_dielectric_interface(wo, uc, u, alpha_x, alpha_y, eta, refl_trans_flags) -> LayeredBSDFSample
+
+Sample the dielectric coating interface (top layer in CoatedDiffuse).
+Handles both smooth (specular) and rough (microfacet) dielectric surfaces.
+
+This matches pbrt-v4's DielectricBxDF::Sample_f exactly.
+"""
+@propagate_inbounds function sample_dielectric_interface(
+    wo::Vec3f, uc::Float32, u::Point2f,
+    alpha_x::Float32, alpha_y::Float32, eta::Float32,
+    refl_trans_flags::UInt8
+)
+    is_smooth = trowbridge_reitz_effectively_smooth(alpha_x, alpha_y)
+
+    if is_smooth || eta == 1f0
+        # Sample perfect specular dielectric BSDF
+        cos_θo = wo[3]
+        R = fresnel_dielectric(cos_θo, eta)
+        T = 1f0 - R
+
+        # Compute probabilities for sampling reflection vs transmission
+        pr = (refl_trans_flags & BXDF_REFLECTION) != 0 ? R : 0f0
+        pt = (refl_trans_flags & BXDF_TRANSMISSION) != 0 ? T : 0f0
+
+        if pr == 0f0 && pt == 0f0
+            return LayeredBSDFSample()
+        end
+
+        if uc < pr / (pr + pt)
+            # Sample perfect specular reflection
+            wi = Vec3f(-wo[1], -wo[2], wo[3])
+            f_val = R / abs(wi[3])
+            pdf = pr / (pr + pt)
+            return LayeredBSDFSample(SpectralRadiance(f_val), wi, pdf, true, true, 1f0, true)
+        else
+            # Sample perfect specular transmission
+            # Compute refracted direction
+            valid, wi, etap = refract_pbrt(wo, eta)
+            if !valid
+                return LayeredBSDFSample()
+            end
+
+            f_val = T / abs(wi[3])
+            pdf = pt / (pr + pt)
+            return LayeredBSDFSample(SpectralRadiance(f_val), wi, pdf, false, true, etap, true)
+        end
+    else
+        # Sample rough dielectric BSDF using microfacet distribution
+        wm = trowbridge_reitz_sample_wm(wo, u, alpha_x, alpha_y)
+        cos_θo_m = dot(wo, wm)
+
+        R = fresnel_dielectric(cos_θo_m, eta)
+        T = 1f0 - R
+
+        pr = (refl_trans_flags & BXDF_REFLECTION) != 0 ? R : 0f0
+        pt = (refl_trans_flags & BXDF_TRANSMISSION) != 0 ? T : 0f0
+
+        if pr == 0f0 && pt == 0f0
+            return LayeredBSDFSample()
+        end
+
+        if uc < pr / (pr + pt)
+            # Sample reflection at rough dielectric interface
+            wi = reflect(wo, wm)
+            if !same_hemisphere(wo, wi)
+                return LayeredBSDFSample()
+            end
+
+            # Compute PDF of rough dielectric reflection
+            pdf_m = trowbridge_reitz_pdf(wo, wm, alpha_x, alpha_y)
+            pdf = pdf_m / (4f0 * abs(cos_θo_m)) * pr / (pr + pt)
+
+            D = trowbridge_reitz_d(wm, alpha_x, alpha_y)
+            G = trowbridge_reitz_g(wo, wi, alpha_x, alpha_y)
+            f_val = D * G * R / (4f0 * wo[3] * wi[3])
+
+            return LayeredBSDFSample(SpectralRadiance(f_val), wi, pdf, true, false, 1f0, true)
+        else
+            # Sample transmission at rough dielectric interface
+            valid, wi, etap = refract_microfacet(wo, wm, eta)
+            if !valid || same_hemisphere(wo, wi) || wi[3] == 0f0
+                return LayeredBSDFSample()
+            end
+
+            # Compute PDF of rough dielectric transmission
+            denom = (dot(wi, wm) + dot(wo, wm) / etap)^2
+            dwm_dwi = abs(dot(wi, wm)) / denom
+            pdf_m = trowbridge_reitz_pdf(wo, wm, alpha_x, alpha_y)
+            pdf = pdf_m * dwm_dwi * pt / (pr + pt)
+
+            D = trowbridge_reitz_d(wm, alpha_x, alpha_y)
+            G = trowbridge_reitz_g(wo, wi, alpha_x, alpha_y)
+            f_val = T * D * G * abs(dot(wi, wm) * dot(wo, wm) / (wi[3] * wo[3] * denom))
+
+            return LayeredBSDFSample(SpectralRadiance(f_val), wi, pdf, false, false, etap, true)
+        end
+    end
+end
+
+"""
+    refract_pbrt(wo, eta) -> (valid, wi, etap)
+
+Compute refracted direction using pbrt-v4 convention.
+eta = n_transmitted / n_incident
+Returns (valid, wi, effective_eta).
+"""
+@inline function refract_pbrt(wo::Vec3f, eta::Float32)
+    cos_θi = wo[3]
+    # Flip eta if entering from below (wo.z < 0)
+    etap = cos_θi > 0f0 ? eta : (1f0 / eta)
+
+    sin2_θi = max(0f0, 1f0 - cos_θi^2)
+    sin2_θt = sin2_θi / (etap^2)
+
+    # Total internal reflection check
+    if sin2_θt >= 1f0
+        return (false, Vec3f(0), 1f0)
+    end
+
+    cos_θt = sqrt(1f0 - sin2_θt)
+    # Flip cos_θt sign to match wo hemisphere convention
+    cos_θt_signed = cos_θi > 0f0 ? -cos_θt : cos_θt
+
+    wi = Vec3f(-wo[1] / etap, -wo[2] / etap, cos_θt_signed)
+    wi = normalize(wi)
+
+    return (true, wi, etap)
+end
+
+"""
+    refract_microfacet(wo, wm, eta) -> (valid, wi, etap)
+
+Compute refracted direction through a microfacet with normal wm.
+"""
+@inline function refract_microfacet(wo::Vec3f, wm::Vec3f, eta::Float32)
+    cos_θi = dot(wo, wm)
+    etap = cos_θi > 0f0 ? eta : (1f0 / eta)
+
+    sin2_θi = max(0f0, 1f0 - cos_θi^2)
+    sin2_θt = sin2_θi / (etap^2)
+
+    if sin2_θt >= 1f0
+        return (false, Vec3f(0), 1f0)
+    end
+
+    cos_θt = sqrt(1f0 - sin2_θt)
+    # Sign convention: transmitted ray goes to opposite side of microfacet
+    cos_θt_signed = cos_θi > 0f0 ? -cos_θt : cos_θt
+
+    # Refracted direction formula: wi = -wo/etap + (cos_θi/etap + cos_θt) * wm
+    wi = -wo / etap + (cos_θi / etap + cos_θt_signed) * wm
+    wi = normalize(wi)
+
+    return (true, wi, etap)
+end
+
+"""
+    reflect(wo, n) -> wi
+
+Compute reflected direction: wi = -wo + 2*dot(wo,n)*n
+"""
+@inline function reflect(wo::Vec3f, n::Vec3f)::Vec3f
+    return -wo + 2f0 * dot(wo, n) * n
+end
+
+"""
+    same_hemisphere(w1, w2) -> Bool
+
+Check if two directions are in the same hemisphere (both have same sign of z).
+"""
+@inline same_hemisphere(w1::Vec3f, w2::Vec3f)::Bool = w1[3] * w2[3] > 0f0
+
+"""
+    sample_diffuse_interface(wo, u, reflectance) -> LayeredBSDFSample
+
+Sample the diffuse base layer (bottom in CoatedDiffuse).
+This is a simple cosine-weighted hemisphere sampler.
+"""
+@propagate_inbounds function sample_diffuse_interface(
+    wo::Vec3f, u::Point2f, reflectance::SpectralRadiance,
+    refl_trans_flags::UInt8
+)
+    # Diffuse only reflects, never transmits
+    if (refl_trans_flags & BXDF_REFLECTION) == 0
+        return LayeredBSDFSample()
+    end
+
+    # Cosine-weighted hemisphere sampling
+    wi = cosine_sample_hemisphere(u)
+
+    # Ensure wi is in same hemisphere as wo
+    if wo[3] < 0f0
+        wi = Vec3f(wi[1], wi[2], -wi[3])
+    end
+
+    cos_θi = abs(wi[3])
+    if cos_θi < 1f-6
+        return LayeredBSDFSample()
+    end
+
+    # Lambertian: f = R/π, pdf = cos_θ/π
+    f = reflectance * (1f0 / Float32(π))
+    pdf = cos_θi / Float32(π)
+
+    return LayeredBSDFSample(f, wi, pdf, true, false, 1f0, true)
+end
+
+"""
+    eval_diffuse_interface(wo, wi, reflectance) -> (f, pdf)
+
+Evaluate diffuse BSDF for given directions.
+"""
+@propagate_inbounds function eval_diffuse_interface(
+    wo::Vec3f, wi::Vec3f, reflectance::SpectralRadiance
+)
+    if !same_hemisphere(wo, wi)
+        return (SpectralRadiance(), 0f0)
+    end
+    f = reflectance * (1f0 / Float32(π))
+    pdf = abs(wi[3]) / Float32(π)
+    return (f, pdf)
+end
+
+"""
+    pdf_diffuse_interface(wo, wi) -> Float32
+
+Compute PDF of diffuse sampling.
+"""
+@inline function pdf_diffuse_interface(wo::Vec3f, wi::Vec3f)::Float32
+    if !same_hemisphere(wo, wi)
+        return 0f0
+    end
+    return abs(wi[3]) / Float32(π)
+end
+
+"""
+    power_heuristic(nf, fPdf, ng, gPdf) -> Float32
+
+Balance heuristic for MIS with power=2.
+"""
+@inline function power_heuristic(nf::Int, fPdf::Float32, ng::Int, gPdf::Float32)::Float32
+    f = nf * fPdf
+    g = ng * gPdf
+    f_sq = f * f
+    g_sq = g * g
+    if f_sq + g_sq == 0f0
+        return 0f0
+    end
+    return f_sq / (f_sq + g_sq)
+end
+
 """
     sample_bsdf_spectral(table, mat::CoatedDiffuseMaterial, textures, wo, n, uv, lambda, sample_u, rng, regularize=false) -> SpectralBSDFSample
 
-Sample CoatedDiffuse BSDF using pbrt-v4's LayeredBxDF approach.
+Sample CoatedDiffuse BSDF using pbrt-v4's LayeredBxDF random walk algorithm.
 
-For smooth coatings: Fresnel-weighted specular/diffuse sampling
-For rough coatings: Microfacet interface with diffuse base
+This is a 100% port of pbrt-v4's LayeredBxDF::Sample_f. The algorithm:
+1. Sample entrance interface (top dielectric for wo.z > 0)
+2. If reflection at entrance: return immediately with pdfIsProportional=true
+3. If transmission: start random walk through layers
+4. At each depth: possibly scatter in medium, then sample interface
+5. When ray exits through transmission: return the accumulated sample
+6. Russian roulette for path termination
 
-When `regularize=true`, the coating's microfacet alpha is increased to reduce fireflies
-from near-specular paths (matches pbrt-v4 BSDF::Regularize).
+When `regularize=true`, the coating's microfacet alpha is increased to reduce fireflies.
 """
 @propagate_inbounds function sample_bsdf_spectral(
     table::RGBToSpectrumTable, mat::CoatedDiffuseMaterial, textures,
     wo::Vec3f, n::Vec3f, uv::Point2f,
-    lambda::Wavelengths, sample_u::Point2f, rng::Float32,
+    lambda::Wavelengths, sample_u::Point2f, rng_in::Float32,
     regularize::Bool = false
 )
     # Check for grazing angle
@@ -1038,7 +1583,7 @@ from near-specular paths (matches pbrt-v4 BSDF::Regularize).
     alpha_x = mat.remap_roughness ? roughness_to_α(u_roughness) : u_roughness
     alpha_y = mat.remap_roughness ? roughness_to_α(v_roughness) : v_roughness
 
-    # Apply regularization if requested (pbrt-v4: doubles alpha if < 0.3, clamps to [0.1, 0.3])
+    # Apply regularization if requested
     if regularize
         alpha_x = regularize_alpha(alpha_x)
         alpha_y = regularize_alpha(alpha_y)
@@ -1048,192 +1593,311 @@ from near-specular paths (matches pbrt-v4 BSDF::Regularize).
     albedo_spectral = uplift_rgb(table, albedo_rgb, lambda)
     has_medium = !is_black(albedo_rgb)
 
+    max_depth = Int(mat.max_depth)
+
     # Build coordinate system from shading normal
     tangent, bitangent = coordinate_system(n)
 
     # Transform wo to local space
     wo_local = Vec3f(dot(wo, tangent), dot(wo, bitangent), wo_dot_n)
 
-    # Two-sided: flip if entering from below
-    flip = wo_local[3] < 0f0
-    if flip
+    # Two-sided handling: flip if entering from below
+    flip_wi = wo_local[3] < 0f0
+    if flip_wi
         wo_local = -wo_local
     end
 
-    cos_θo = abs(wo_local[3])
+    # Determine entrance interface (top for wo.z > 0, which is always true after flip)
+    entered_top = true  # After flip, wo_local.z > 0, so we enter from top
 
-    # Check if coating is effectively smooth
-    is_smooth = trowbridge_reitz_effectively_smooth(alpha_x, alpha_y)
+    # === Sample entrance interface ===
+    # Use rng_in and sample_u for entrance sampling
+    bs = sample_dielectric_interface(wo_local, rng_in, sample_u, alpha_x, alpha_y, eta, BXDF_ALL)
 
-    if is_smooth
-        # === Smooth coating: Fresnel-weighted sampling ===
-        F = fresnel_dielectric(cos_θo, eta)
+    if !bs.valid || bs.pdf == 0f0 || bs.wi[3] == 0f0
+        return SpectralBSDFSample()
+    end
 
-        if rng < F
-            # Specular reflection at coating surface
-            wi_local = Vec3f(-wo_local[1], -wo_local[2], wo_local[3])
-            if flip
-                wi_local = -wi_local
-            end
-
-            wi = tangent * wi_local[1] + bitangent * wi_local[2] + n * wi_local[3]
-            wi = normalize(wi)
-
-            f_spectral = SpectralRadiance(1f0)
-            return SpectralBSDFSample(wi, f_spectral, 1f0, true, 1f0)
+    # If reflection at entrance: return immediately (pdfIsProportional case)
+    if bs.is_reflection
+        wi_local = bs.wi
+        if flip_wi
+            wi_local = -wi_local
         end
-
-        # Transmitted through - sample diffuse base
-        sin2_θi = max(0f0, 1f0 - cos_θo^2)
-        sin2_θt = sin2_θi / (eta^2)
-
-        if sin2_θt >= 1f0
-            return SpectralBSDFSample()
-        end
-
-        cos_θt_in = sqrt(1f0 - sin2_θt)
-
-        local_diffuse_wi = cosine_sample_hemisphere(sample_u)
-        cos_θ_diffuse = local_diffuse_wi[3]
-
-        if cos_θ_diffuse < 1f-6
-            return SpectralBSDFSample()
-        end
-
-        F_out = fresnel_dielectric(cos_θ_diffuse, eta)
-        T_in = 1f0 - F
-        T_out = 1f0 - F_out
-
-        layer_tr = if has_medium
-            tr_in = layer_transmittance(thickness, Vec3f(0, 0, cos_θt_in))
-            tr_out = layer_transmittance(thickness, local_diffuse_wi)
-            tr_in * tr_out * albedo_spectral
-        else
-            SpectralRadiance(1f0)
-        end
-
-        if flip
-            local_diffuse_wi = Vec3f(local_diffuse_wi[1], local_diffuse_wi[2], -local_diffuse_wi[3])
-        end
-
-        wi = tangent * local_diffuse_wi[1] + bitangent * local_diffuse_wi[2] + n * local_diffuse_wi[3]
+        wi = tangent * wi_local[1] + bitangent * wi_local[2] + n * wi_local[3]
         wi = normalize(wi)
 
-        diffuse_f = refl_spectral * (1f0 / Float32(π))
-        f_spectral = diffuse_f * T_in * T_out * layer_tr
+        # pdfIsProportional=true means the pdf is only proportional, not exact
+        # For specular, f already includes proper weighting
+        return SpectralBSDFSample(wi, bs.f, bs.pdf, bs.is_specular, 1f0)
+    end
 
-        pdf = (1f0 - F) * cos_θ_diffuse / Float32(π)
+    # === Begin random walk through layers ===
+    w = bs.wi
+    specular_path = bs.is_specular
+    f = bs.f * abs(w[3])  # f * AbsCosTheta(wi)
+    pdf = bs.pdf
+    z = entered_top ? thickness : 0f0  # Start at bottom of coating after transmission
 
-        return SpectralBSDFSample(wi, f_spectral, pdf, false, 1f0)
-    else
-        # === Rough coating: Microfacet interface ===
-        # Sample microfacet normal using TrowbridgeReitz VNDF
-        wm = trowbridge_reitz_sample_wm(wo_local, sample_u, alpha_x, alpha_y)
+    # Initialize deterministic RNG for random walk (GPU-compatible functional style)
+    # Use Hash(seed, wo) combined with Hash(uc, u) for reproducibility
+    seed = UInt64(0)  # pbrt uses GetOptions().seed, we use 0
+    rng = pcg32_init(pbrt_hash(seed, wo_local), pbrt_hash(rng_in, sample_u))
 
-        cos_θo_m = dot(wo_local, wm)
-        if cos_θo_m < 0f0
+    for depth in 0:(max_depth-1)
+        # Possibly terminate with Russian Roulette
+        rr_beta = max_component(f) / pdf
+        if depth > 3 && rr_beta < 0.25f0
+            q = max(0f0, 1f0 - rr_beta)
+            rr_val, rng = pcg32_uniform_f32(rng)
+            if rr_val < q
+                return SpectralBSDFSample()
+            end
+            pdf *= 1f0 - q
+        end
+
+        if w[3] == 0f0
             return SpectralBSDFSample()
         end
 
-        F = fresnel_dielectric(cos_θo_m, eta)
+        if has_medium
+            # Sample potential scattering in medium
+            sigma_t = 1f0
+            exp_u, rng = pcg32_uniform_f32(rng)
+            dz = sample_exponential(exp_u, sigma_t / abs(w[3]))
+            zp = w[3] > 0f0 ? (z + dz) : (z - dz)
 
-        if rng < F
-            # Reflect off microfacet
-            wi_local = -wo_local + 2f0 * cos_θo_m * wm
-
-            if wi_local[3] * wo_local[3] < 0f0
+            if zp == z
                 return SpectralBSDFSample()
             end
 
-            if flip
+            if 0f0 < zp && zp < thickness
+                # Scattering event within the medium
+                phase_u1, rng = pcg32_uniform_f32(rng)
+                phase_u2, rng = pcg32_uniform_f32(rng)
+                wi_phase, phase_p = sample_hg_phase_spectral(g_val, -w, Point2f(phase_u1, phase_u2))
+                if phase_p == 0f0 || wi_phase[3] == 0f0
+                    return SpectralBSDFSample()
+                end
+                f = f * albedo_spectral * phase_p
+                pdf *= phase_p
+                specular_path = false
+                w = wi_phase
+                z = zp
+                continue
+            end
+
+            # Clamp to layer boundary
+            z = clamp(zp, 0f0, thickness)
+        else
+            # No medium: advance directly to other interface
+            z = (z == thickness) ? 0f0 : thickness
+            f = f * layer_transmittance(thickness, w)
+        end
+
+        # Determine which interface we're at
+        at_bottom = z == 0f0
+
+        # Sample interface BSDF
+        uc, rng = pcg32_uniform_f32(rng)
+        u1, rng = pcg32_uniform_f32(rng)
+        u2, rng = pcg32_uniform_f32(rng)
+        u = Point2f(u1, u2)
+
+        if at_bottom
+            # Sample diffuse base (reflection only)
+            bs_interface = sample_diffuse_interface(-w, u, refl_spectral, BXDF_ALL)
+        else
+            # Sample dielectric top (can reflect or transmit)
+            bs_interface = sample_dielectric_interface(-w, uc, u, alpha_x, alpha_y, eta, BXDF_ALL)
+        end
+
+        if !bs_interface.valid || bs_interface.pdf == 0f0 || bs_interface.wi[3] == 0f0
+            return SpectralBSDFSample()
+        end
+
+        f = f * bs_interface.f
+        pdf *= bs_interface.pdf
+        specular_path = specular_path && bs_interface.is_specular
+        w = bs_interface.wi
+
+        # Check if path has exited the layers (transmission through an interface)
+        if !bs_interface.is_reflection
+            # Ray has exited - determine final direction flags
+            wi_local = w
+            if flip_wi
                 wi_local = -wi_local
             end
 
             wi = tangent * wi_local[1] + bitangent * wi_local[2] + n * wi_local[3]
             wi = normalize(wi)
 
-            # Microfacet BRDF for dielectric reflection
-            D = trowbridge_reitz_d(wm, alpha_x, alpha_y)
-            G = trowbridge_reitz_g(wo_local, wi_local, alpha_x, alpha_y)
-
-            cos_i = abs(wi_local[3])
-            cos_o = abs(wo_local[3])
-
-            pdf_m = trowbridge_reitz_pdf(wo_local, wm, alpha_x, alpha_y)
-            pdf = F * pdf_m / (4f0 * abs(cos_θo_m))
-
-            f = D * G / (4f0 * cos_i * cos_o)
-
-            return SpectralBSDFSample(wi, SpectralRadiance(f), pdf, false, 1f0)
-        else
-            # Transmit through coating to diffuse base
-            local_diffuse_wi = cosine_sample_hemisphere(sample_u)
-            cos_θ_diffuse = local_diffuse_wi[3]
-
-            if cos_θ_diffuse < 1f-6
-                return SpectralBSDFSample()
-            end
-
-            # Average Fresnel transmission through rough interface
-            T_in = 1f0 - F
-            F_out = fresnel_dielectric(cos_θ_diffuse, eta)
-            T_out = 1f0 - F_out
-
-            layer_tr = if has_medium
-                tr_in = layer_transmittance(thickness, Vec3f(0, 0, cos_θo))
-                tr_out = layer_transmittance(thickness, local_diffuse_wi)
-                tr_in * tr_out * albedo_spectral
-            else
-                SpectralRadiance(1f0)
-            end
-
-            if flip
-                local_diffuse_wi = Vec3f(local_diffuse_wi[1], local_diffuse_wi[2], -local_diffuse_wi[3])
-            end
-
-            wi = tangent * local_diffuse_wi[1] + bitangent * local_diffuse_wi[2] + n * local_diffuse_wi[3]
-            wi = normalize(wi)
-
-            diffuse_f = refl_spectral * (1f0 / Float32(π))
-            f_spectral = diffuse_f * T_in * T_out * layer_tr
-
-            pdf = (1f0 - F) * cos_θ_diffuse / Float32(π)
-
-            return SpectralBSDFSample(wi, f_spectral, pdf, false, 1f0)
+            # pdfIsProportional=true for LayeredBxDF
+            return SpectralBSDFSample(wi, f, pdf, specular_path, bs_interface.eta)
         end
+
+        # Continuing random walk: multiply by AbsCosTheta for next segment
+        f = f * abs(bs_interface.wi[3])
+    end
+
+    # Max depth reached without exiting
+    return SpectralBSDFSample()
+end
+
+"""
+    eval_dielectric_interface(wo, wi, alpha_x, alpha_y, eta) -> (f, pdf)
+
+Evaluate the dielectric interface BSDF for given directions.
+Returns (f_value, pdf) for the given wo/wi pair.
+"""
+@propagate_inbounds function eval_dielectric_interface(
+    wo::Vec3f, wi::Vec3f, alpha_x::Float32, alpha_y::Float32, eta::Float32
+)
+    is_smooth = trowbridge_reitz_effectively_smooth(alpha_x, alpha_y)
+
+    if is_smooth || eta == 1f0
+        # Specular dielectric: f = 0 for non-delta directions
+        return (SpectralRadiance(), 0f0)
+    end
+
+    # Rough dielectric evaluation
+    if same_hemisphere(wo, wi)
+        # Reflection
+        wh = normalize(wo + wi)
+        if wh[3] < 0f0
+            wh = -wh
+        end
+
+        cos_θo_h = dot(wo, wh)
+        R = fresnel_dielectric(cos_θo_h, eta)
+
+        D = trowbridge_reitz_d(wh, alpha_x, alpha_y)
+        G = trowbridge_reitz_g(wo, wi, alpha_x, alpha_y)
+
+        f_val = D * G * R / (4f0 * wo[3] * wi[3])
+        pdf = trowbridge_reitz_pdf(wo, wh, alpha_x, alpha_y) / (4f0 * abs(cos_θo_h))
+
+        return (SpectralRadiance(f_val), pdf)
+    else
+        # Transmission
+        etap = wo[3] > 0f0 ? eta : (1f0 / eta)
+
+        # Compute half vector for transmission
+        wh = normalize(wo + wi * etap)
+        if wh[3] < 0f0
+            wh = -wh
+        end
+
+        cos_θo_h = dot(wo, wh)
+        cos_θi_h = dot(wi, wh)
+
+        # Check for same side condition
+        if cos_θo_h * cos_θi_h > 0f0
+            return (SpectralRadiance(), 0f0)
+        end
+
+        R = fresnel_dielectric(cos_θo_h, eta)
+        T = 1f0 - R
+
+        denom = (cos_θi_h + cos_θo_h / etap)^2
+        D = trowbridge_reitz_d(wh, alpha_x, alpha_y)
+        G = trowbridge_reitz_g(wo, wi, alpha_x, alpha_y)
+
+        f_val = T * D * G * abs(cos_θi_h * cos_θo_h / (wo[3] * wi[3] * denom))
+
+        dwm_dwi = abs(cos_θi_h) / denom
+        pdf = trowbridge_reitz_pdf(wo, wh, alpha_x, alpha_y) * dwm_dwi
+
+        return (SpectralRadiance(f_val), pdf)
+    end
+end
+
+"""
+    pdf_dielectric_interface(wo, wi, alpha_x, alpha_y, eta, refl_trans_flags) -> Float32
+
+Compute PDF of dielectric interface sampling.
+"""
+@propagate_inbounds function pdf_dielectric_interface(
+    wo::Vec3f, wi::Vec3f, alpha_x::Float32, alpha_y::Float32, eta::Float32,
+    refl_trans_flags::UInt8 = BXDF_ALL
+)
+    is_smooth = trowbridge_reitz_effectively_smooth(alpha_x, alpha_y)
+
+    if is_smooth || eta == 1f0
+        return 0f0  # Specular has delta PDF
+    end
+
+    if same_hemisphere(wo, wi)
+        # Reflection
+        if (refl_trans_flags & BXDF_REFLECTION) == 0
+            return 0f0
+        end
+
+        wh = normalize(wo + wi)
+        if wh[3] < 0f0
+            wh = -wh
+        end
+
+        cos_θo_h = abs(dot(wo, wh))
+        R = fresnel_dielectric(cos_θo_h, eta)
+        T = 1f0 - R
+
+        pr = (refl_trans_flags & BXDF_REFLECTION) != 0 ? R : 0f0
+        pt = (refl_trans_flags & BXDF_TRANSMISSION) != 0 ? T : 0f0
+
+        pdf = trowbridge_reitz_pdf(wo, wh, alpha_x, alpha_y) / (4f0 * cos_θo_h)
+        return pdf * pr / (pr + pt)
+    else
+        # Transmission
+        if (refl_trans_flags & BXDF_TRANSMISSION) == 0
+            return 0f0
+        end
+
+        etap = wo[3] > 0f0 ? eta : (1f0 / eta)
+        wh = normalize(wo + wi * etap)
+        if wh[3] < 0f0
+            wh = -wh
+        end
+
+        cos_θo_h = dot(wo, wh)
+        cos_θi_h = dot(wi, wh)
+
+        if cos_θo_h * cos_θi_h > 0f0
+            return 0f0
+        end
+
+        R = fresnel_dielectric(abs(cos_θo_h), eta)
+        T = 1f0 - R
+
+        pr = (refl_trans_flags & BXDF_REFLECTION) != 0 ? R : 0f0
+        pt = (refl_trans_flags & BXDF_TRANSMISSION) != 0 ? T : 0f0
+
+        denom = (cos_θi_h + cos_θo_h / etap)^2
+        dwm_dwi = abs(cos_θi_h) / denom
+        pdf = trowbridge_reitz_pdf(wo, wh, alpha_x, alpha_y) * dwm_dwi
+
+        return pdf * pt / (pr + pt)
     end
 end
 
 """
     evaluate_bsdf_spectral(table, mat::CoatedDiffuseMaterial, textures, wo, wi, n, uv, lambda) -> (f, pdf)
 
-Evaluate CoatedDiffuse BSDF for given directions.
-Supports both smooth and rough coatings.
+Evaluate CoatedDiffuse BSDF using pbrt-v4's LayeredBxDF::f random walk algorithm.
+
+This is a 100% port of pbrt-v4's LayeredBxDF::f. The algorithm uses nSamples
+random walks to estimate the BSDF value using Monte Carlo integration with MIS.
 """
 @propagate_inbounds function evaluate_bsdf_spectral(
     table::RGBToSpectrumTable, mat::CoatedDiffuseMaterial, textures,
     wo::Vec3f, wi::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
 )
-    # Check hemisphere
-    cos_θi = dot(wi, n)
-    cos_θo = dot(wo, n)
-    if cos_θi * cos_θo < 0f0
-        # Opposite hemispheres - no contribution for reflection-only material
-        return (SpectralRadiance(), 0f0)
-    end
-
-    abs_cos_θi = abs(cos_θi)
-    abs_cos_θo = abs(cos_θo)
-
-    if abs_cos_θi < 1f-6 || abs_cos_θo < 1f-6
-        return (SpectralRadiance(), 0f0)
-    end
-
     # Get material properties
     refl_rgb = eval_tex(textures, mat.reflectance, uv)
     eta = mat.eta
     thickness = max(eval_tex(textures, mat.thickness, uv), eps(Float32))
     albedo_rgb = eval_tex(textures, mat.albedo, uv)
+    g_val = clamp(eval_tex(textures, mat.g, uv), -0.99f0, 0.99f0)
 
     # Get roughness parameters
     u_roughness = eval_tex(textures, mat.u_roughness, uv)
@@ -1246,83 +1910,357 @@ Supports both smooth and rough coatings.
     albedo_spectral = uplift_rgb(table, albedo_rgb, lambda)
     has_medium = !is_black(albedo_rgb)
 
+    n_samples = Int(mat.n_samples)
+    max_depth = Int(mat.max_depth)
+
     # Build local frame
     tangent, bitangent = coordinate_system(n)
+    cos_θo = dot(wo, n)
+    cos_θi = dot(wi, n)
+
     wo_local = Vec3f(dot(wo, tangent), dot(wo, bitangent), cos_θo)
     wi_local = Vec3f(dot(wi, tangent), dot(wi, bitangent), cos_θi)
 
-    # Two-sided handling
-    flip = wo_local[3] < 0f0
-    if flip
+    # Two-sided handling: flip if entering from below
+    if wo_local[3] < 0f0
         wo_local = -wo_local
         wi_local = -wi_local
     end
 
+    # Check for grazing angles
+    if abs(wo_local[3]) < 1f-6 || abs(wi_local[3]) < 1f-6
+        return (SpectralRadiance(), 0f0)
+    end
+
+    # Determine entrance interface (always top after flip)
+    entered_top = true
+
+    # Determine exit interface based on wo/wi hemisphere relationship
+    same_hemi = same_hemisphere(wo_local, wi_local)
+    # For CoatedDiffuse (twoSided=true), exit_z logic:
+    # SameHemisphere(wo,wi) ^ enteredTop -> if true, exit at bottom (z=0)
+    exit_at_bottom = same_hemi ⊻ entered_top
+    exit_z = exit_at_bottom ? 0f0 : thickness
+
+    # Initialize result
+    f_result = SpectralRadiance()
+
+    # Account for reflection at entrance interface (same hemisphere case)
+    if same_hemi
+        enter_f, _ = eval_dielectric_interface(wo_local, wi_local, alpha_x, alpha_y, eta)
+        f_result = f_result + enter_f * Float32(n_samples)
+    end
+
+    # Initialize RNG for evaluation (GPU-compatible functional style)
+    seed = UInt64(0)
+    rng = pcg32_init(pbrt_hash(seed, wo_local), pbrt_hash(wi_local))
+
     is_smooth = trowbridge_reitz_effectively_smooth(alpha_x, alpha_y)
 
-    if is_smooth
-        # Smooth coating - only diffuse contribution (specular is delta)
-        F_o = fresnel_dielectric(abs(wo_local[3]), eta)
-        F_i = fresnel_dielectric(abs(wi_local[3]), eta)
-        T_o = 1f0 - F_o
-        T_i = 1f0 - F_i
+    for s in 1:n_samples
+        # Sample transmission through entrance interface (wo direction)
+        uc, rng = pcg32_uniform_f32(rng)
+        u1, rng = pcg32_uniform_f32(rng)
+        u2, rng = pcg32_uniform_f32(rng)
+        wos = sample_dielectric_interface(wo_local, uc, Point2f(u1, u2), alpha_x, alpha_y, eta, BXDF_TRANSMISSION)
+        if !wos.valid || wos.pdf == 0f0 || wos.wi[3] == 0f0
+            continue
+        end
 
-        layer_tr = if has_medium
-            tr = layer_transmittance(thickness, wi_local)
-            tr * tr * albedo_spectral
+        # Sample "virtual light" from exit interface (wi direction)
+        uc, rng = pcg32_uniform_f32(rng)
+        u1, rng = pcg32_uniform_f32(rng)
+        u2, rng = pcg32_uniform_f32(rng)
+        if exit_at_bottom
+            # Exit through diffuse base
+            wis = sample_diffuse_interface(wi_local, Point2f(u1, u2), refl_spectral, BXDF_TRANSMISSION)
         else
-            SpectralRadiance(1f0)
+            # Exit through dielectric top
+            wis = sample_dielectric_interface(wi_local, uc, Point2f(u1, u2), alpha_x, alpha_y, eta, BXDF_TRANSMISSION)
+        end
+        if !wis.valid || wis.pdf == 0f0 || wis.wi[3] == 0f0
+            continue
         end
 
-        diffuse_f = refl_spectral * (1f0 / Float32(π))
-        f_spectral = diffuse_f * T_o * T_i * layer_tr
+        # Initialize random walk state
+        beta = wos.f * abs(wos.wi[3]) / wos.pdf
+        z = entered_top ? thickness : 0f0
+        w = wos.wi
 
-        pdf = T_o * abs(wi_local[3]) / Float32(π)
+        for depth in 0:(max_depth-1)
+            # Russian Roulette termination
+            if depth > 3 && max_component(beta) < 0.25f0
+                q = max(0f0, 1f0 - max_component(beta))
+                rr_val, rng = pcg32_uniform_f32(rng)
+                if rr_val < q
+                    break
+                end
+                beta = beta / (1f0 - q)
+            end
 
-        return (f_spectral, pdf)
-    else
-        # Rough coating - both specular and diffuse contributions
-        # Compute half-vector for reflection
-        wh = normalize(wo_local + wi_local)
-        if wh[3] < 0f0
-            wh = -wh
+            if has_medium
+                # Sample medium scattering
+                sigma_t = 1f0
+                exp_u, rng = pcg32_uniform_f32(rng)
+                dz = sample_exponential(exp_u, sigma_t / abs(w[3]))
+                zp = w[3] > 0f0 ? (z + dz) : (z - dz)
+
+                if zp == z
+                    continue
+                end
+
+                if 0f0 < zp && zp < thickness
+                    # Scattering within medium - NEE contribution through exit
+                    if exit_at_bottom
+                        # Exit interface is diffuse - always non-specular
+                        wt = power_heuristic(1, wis.pdf, 1, hg_phase_pdf(g_val, dot(-w, -wis.wi)))
+                        f_exit, _ = eval_diffuse_interface(-w, -wis.wi, refl_spectral)
+                    else
+                        if !is_smooth
+                            wt = power_heuristic(1, wis.pdf, 1, hg_phase_pdf(g_val, dot(-w, -wis.wi)))
+                        else
+                            wt = 1f0
+                        end
+                        f_exit, _ = eval_dielectric_interface(-w, -wis.wi, alpha_x, alpha_y, eta)
+                    end
+
+                    phase_val = hg_phase_pdf(g_val, dot(-w, -wis.wi))
+                    f_result = f_result + beta * albedo_spectral * phase_val * wt *
+                               layer_transmittance(zp - exit_z, wis.wi) * wis.f / wis.pdf
+
+                    # Sample phase function for next segment
+                    phase_u1, rng = pcg32_uniform_f32(rng)
+                    phase_u2, rng = pcg32_uniform_f32(rng)
+                    wi_phase, phase_p = sample_hg_phase_spectral(g_val, -w, Point2f(phase_u1, phase_u2))
+                    if phase_p == 0f0 || wi_phase[3] == 0f0
+                        break
+                    end
+
+                    beta = beta * albedo_spectral * phase_p / phase_p
+                    w = wi_phase
+                    z = zp
+
+                    # NEE through exit interface after phase scattering
+                    if ((z < exit_z && w[3] > 0f0) || (z > exit_z && w[3] < 0f0))
+                        if exit_at_bottom
+                            f_exit2, exit_pdf = eval_diffuse_interface(-w, wi_local, refl_spectral)
+                        else
+                            if !is_smooth
+                                f_exit2, _ = eval_dielectric_interface(-w, wi_local, alpha_x, alpha_y, eta)
+                                exit_pdf = pdf_dielectric_interface(-w, wi_local, alpha_x, alpha_y, eta, BXDF_TRANSMISSION)
+                            else
+                                continue  # Specular exit - no NEE
+                            end
+                        end
+                        if max_component(f_exit2) > 0f0
+                            wt2 = power_heuristic(1, phase_p, 1, exit_pdf)
+                            f_result = f_result + beta * layer_transmittance(zp - exit_z, wi_phase) * f_exit2 * wt2
+                        end
+                    end
+
+                    continue
+                end
+
+                z = clamp(zp, 0f0, thickness)
+            else
+                # No medium: advance to other interface
+                z = (z == thickness) ? 0f0 : thickness
+                beta = beta * layer_transmittance(thickness, w)
+            end
+
+            # Scattering at interface
+            at_exit = z == exit_z
+
+            if at_exit
+                # At exit interface - sample reflection to continue walk
+                uc, rng = pcg32_uniform_f32(rng)
+                u1, rng = pcg32_uniform_f32(rng)
+                u2, rng = pcg32_uniform_f32(rng)
+                if exit_at_bottom
+                    bs = sample_diffuse_interface(-w, Point2f(u1, u2), refl_spectral, BXDF_REFLECTION)
+                else
+                    bs = sample_dielectric_interface(-w, uc, Point2f(u1, u2), alpha_x, alpha_y, eta, BXDF_REFLECTION)
+                end
+                if !bs.valid || bs.pdf == 0f0 || bs.wi[3] == 0f0
+                    break
+                end
+                beta = beta * bs.f * abs(bs.wi[3]) / bs.pdf
+                w = bs.wi
+            else
+                # At non-exit interface - add NEE contribution
+                non_exit_is_specular = (z == thickness) ? is_smooth : false  # top is dielectric, bottom is diffuse
+
+                if !non_exit_is_specular
+                    # Add NEE to exit direction
+                    if z == thickness
+                        # At top (dielectric)
+                        f_nee, _ = eval_dielectric_interface(-w, -wis.wi, alpha_x, alpha_y, eta)
+                    else
+                        # At bottom (diffuse)
+                        f_nee, _ = eval_diffuse_interface(-w, -wis.wi, refl_spectral)
+                    end
+
+                    if max_component(f_nee) > 0f0
+                        wt = 1f0
+                        if !exit_at_bottom || !is_smooth
+                            # MIS weight
+                            if z == thickness
+                                nee_pdf = pdf_dielectric_interface(-w, -wis.wi, alpha_x, alpha_y, eta)
+                            else
+                                nee_pdf = pdf_diffuse_interface(-w, -wis.wi)
+                            end
+                            wt = power_heuristic(1, wis.pdf, 1, nee_pdf)
+                        end
+                        f_result = f_result + beta * f_nee * abs(wis.wi[3]) * wt *
+                                   layer_transmittance(thickness, wis.wi) * wis.f / wis.pdf
+                    end
+                end
+
+                # Sample new direction
+                uc, rng = pcg32_uniform_f32(rng)
+                u1, rng = pcg32_uniform_f32(rng)
+                u2, rng = pcg32_uniform_f32(rng)
+                if z == thickness
+                    bs = sample_dielectric_interface(-w, uc, Point2f(u1, u2), alpha_x, alpha_y, eta, BXDF_REFLECTION)
+                else
+                    bs = sample_diffuse_interface(-w, Point2f(u1, u2), refl_spectral, BXDF_REFLECTION)
+                end
+                if !bs.valid || bs.pdf == 0f0 || bs.wi[3] == 0f0
+                    break
+                end
+
+                beta = beta * bs.f * abs(bs.wi[3]) / bs.pdf
+                w = bs.wi
+
+                # NEE through exit after scattering
+                if !is_smooth || exit_at_bottom
+                    if exit_at_bottom
+                        f_exit3, _ = eval_diffuse_interface(-w, wi_local, refl_spectral)
+                    else
+                        f_exit3, _ = eval_dielectric_interface(-w, wi_local, alpha_x, alpha_y, eta)
+                    end
+
+                    if max_component(f_exit3) > 0f0
+                        wt3 = 1f0
+                        if !non_exit_is_specular
+                            if exit_at_bottom
+                                exit_pdf3 = pdf_diffuse_interface(-w, wi_local)
+                            else
+                                exit_pdf3 = pdf_dielectric_interface(-w, wi_local, alpha_x, alpha_y, eta, BXDF_TRANSMISSION)
+                            end
+                            wt3 = power_heuristic(1, bs.pdf, 1, exit_pdf3)
+                        end
+                        f_result = f_result + beta * layer_transmittance(thickness, bs.wi) * f_exit3 * wt3
+                    end
+                end
+            end
         end
-
-        cos_θo_h = dot(wo_local, wh)
-        F_spec = fresnel_dielectric(abs(cos_θo_h), eta)
-
-        # Specular contribution: D * F * G / (4 * cos_i * cos_o)
-        D = trowbridge_reitz_d(wh, alpha_x, alpha_y)
-        G = trowbridge_reitz_g(wo_local, wi_local, alpha_x, alpha_y)
-
-        f_spec = D * F_spec * G / (4f0 * abs(wi_local[3]) * abs(wo_local[3]))
-
-        # Diffuse contribution with Fresnel transmission
-        F_o = fresnel_dielectric(abs(wo_local[3]), eta)
-        F_i = fresnel_dielectric(abs(wi_local[3]), eta)
-        T_o = 1f0 - F_o
-        T_i = 1f0 - F_i
-
-        layer_tr = if has_medium
-            tr = layer_transmittance(thickness, wi_local)
-            tr * tr * albedo_spectral
-        else
-            SpectralRadiance(1f0)
-        end
-
-        diffuse_f = refl_spectral * (1f0 / Float32(π))
-        f_diff = diffuse_f * T_o * T_i * layer_tr
-
-        # Combined BSDF
-        f_spectral = SpectralRadiance(f_spec) + f_diff
-
-        # Combined PDF
-        pdf_spec = F_o * trowbridge_reitz_pdf(wo_local, wh, alpha_x, alpha_y) / (4f0 * abs(cos_θo_h))
-        pdf_diff = T_o * abs(wi_local[3]) / Float32(π)
-        pdf = pdf_spec + pdf_diff
-
-        return (f_spectral, pdf)
     end
+
+    f_result = f_result / Float32(n_samples)
+
+    # Compute PDF using a simplified estimate
+    # The full LayeredBxDF::PDF is complex; we use a reasonable approximation
+    pdf = pdf_layered_bsdf(wo_local, wi_local, alpha_x, alpha_y, eta, n_samples, max_depth, refl_spectral, has_medium, g_val, thickness)
+
+    return (f_result, pdf)
+end
+
+"""
+    pdf_layered_bsdf(...) -> Float32
+
+Compute PDF for LayeredBxDF using Monte Carlo estimation.
+This is a simplified version of pbrt-v4's LayeredBxDF::PDF.
+"""
+@propagate_inbounds function pdf_layered_bsdf(
+    wo::Vec3f, wi::Vec3f,
+    alpha_x::Float32, alpha_y::Float32, eta::Float32,
+    n_samples::Int, max_depth::Int,
+    refl_spectral::SpectralRadiance,
+    has_medium::Bool, g_val::Float32, thickness::Float32
+)
+    # Initialize RNG (GPU-compatible functional style)
+    seed = UInt64(0)
+    rng = pcg32_init(pbrt_hash(seed, wi), pbrt_hash(wo))
+
+    entered_top = true
+    same_hemi = same_hemisphere(wo, wi)
+    is_smooth = trowbridge_reitz_effectively_smooth(alpha_x, alpha_y)
+
+    pdf_sum = 0f0
+
+    # Add entrance reflection PDF (same hemisphere)
+    if same_hemi
+        if is_smooth
+            # Specular - delta PDF contribution
+            pdf_sum += Float32(n_samples) * 0f0  # Delta has no continuous PDF
+        else
+            pdf_sum += Float32(n_samples) * pdf_dielectric_interface(wo, wi, alpha_x, alpha_y, eta, BXDF_REFLECTION)
+        end
+    end
+
+    for s in 1:n_samples
+        if same_hemi
+            # TRT term
+            # Sample transmission through top
+            uc1, rng = pcg32_uniform_f32(rng)
+            u1, rng = pcg32_uniform_f32(rng)
+            u2, rng = pcg32_uniform_f32(rng)
+            wos = sample_dielectric_interface(wo, uc1, Point2f(u1, u2), alpha_x, alpha_y, eta, BXDF_TRANSMISSION)
+
+            uc2, rng = pcg32_uniform_f32(rng)
+            u3, rng = pcg32_uniform_f32(rng)
+            u4, rng = pcg32_uniform_f32(rng)
+            wis = sample_dielectric_interface(wi, uc2, Point2f(u3, u4), alpha_x, alpha_y, eta, BXDF_TRANSMISSION)
+
+            if wos.valid && wos.pdf > 0f0 && wis.valid && wis.pdf > 0f0
+                if is_smooth
+                    # Specular top - just use bottom PDF
+                    pdf_sum += pdf_diffuse_interface(-wos.wi, -wis.wi)
+                else
+                    # MIS between paths
+                    u5, rng = pcg32_uniform_f32(rng)
+                    u6, rng = pcg32_uniform_f32(rng)
+                    rs = sample_diffuse_interface(-wos.wi, Point2f(u5, u6), refl_spectral, BXDF_ALL)
+                    if rs.valid && rs.pdf > 0f0
+                        r_pdf = pdf_diffuse_interface(-wos.wi, -wis.wi)
+                        wt = power_heuristic(1, wis.pdf, 1, r_pdf)
+                        pdf_sum += wt * r_pdf
+
+                        t_pdf = pdf_dielectric_interface(-rs.wi, wi, alpha_x, alpha_y, eta)
+                        wt2 = power_heuristic(1, rs.pdf, 1, t_pdf)
+                        pdf_sum += wt2 * t_pdf
+                    end
+                end
+            end
+        else
+            # TT term
+            uc1, rng = pcg32_uniform_f32(rng)
+            u1, rng = pcg32_uniform_f32(rng)
+            u2, rng = pcg32_uniform_f32(rng)
+            wos = sample_dielectric_interface(wo, uc1, Point2f(u1, u2), alpha_x, alpha_y, eta, BXDF_TRANSMISSION)
+            if !wos.valid || wos.pdf == 0f0 || wos.is_reflection
+                continue
+            end
+
+            u3, rng = pcg32_uniform_f32(rng)
+            u4, rng = pcg32_uniform_f32(rng)
+            wis = sample_diffuse_interface(wi, Point2f(u3, u4), refl_spectral, BXDF_TRANSMISSION)
+            if !wis.valid || wis.pdf == 0f0 || wis.is_reflection
+                continue
+            end
+
+            if is_smooth
+                pdf_sum += pdf_diffuse_interface(-wos.wi, wi)
+            else
+                pdf_sum += (pdf_dielectric_interface(wo, -wis.wi, alpha_x, alpha_y, eta) +
+                           pdf_diffuse_interface(-wos.wi, wi)) / 2f0
+            end
+        end
+    end
+
+    # Return mixture of PDF estimate and constant PDF (as per pbrt-v4)
+    return lerp(0.9f0, 1f0 / (4f0 * Float32(π)), pdf_sum / Float32(n_samples))
 end
 
 """

@@ -377,3 +377,158 @@ Convert a scalar value to uniform spectral radiance.
 @propagate_inbounds function uplift_scalar(value::Float32, lambda::Wavelengths)
     return SpectralRadiance(value)
 end
+
+# =============================================================================
+# D65 Illuminant Spectrum (CIE Standard Illuminant D65)
+# =============================================================================
+# Data from pbrt-v4's CIE_Illum_D6500 - interleaved wavelength,value pairs
+# The D65 illuminant represents average daylight with CCT ~6500K
+# Values are normalized so that Y=100 at 560nm (CIE convention)
+
+"""
+    D65_ILLUMINANT_WAVELENGTHS
+
+Wavelength sample points for D65 illuminant spectrum (300-830nm, 5nm intervals).
+"""
+const D65_ILLUMINANT_WAVELENGTHS = (
+    300f0, 305f0, 310f0, 315f0, 320f0, 325f0, 330f0, 335f0, 340f0, 345f0,
+    350f0, 355f0, 360f0, 365f0, 370f0, 375f0, 380f0, 385f0, 390f0, 395f0,
+    400f0, 405f0, 410f0, 415f0, 420f0, 425f0, 430f0, 435f0, 440f0, 445f0,
+    450f0, 455f0, 460f0, 465f0, 470f0, 475f0, 480f0, 485f0, 490f0, 495f0,
+    500f0, 505f0, 510f0, 515f0, 520f0, 525f0, 530f0, 535f0, 540f0, 545f0,
+    550f0, 555f0, 560f0, 565f0, 570f0, 575f0, 580f0, 585f0, 590f0, 595f0,
+    600f0, 605f0, 610f0, 615f0, 620f0, 625f0, 630f0, 635f0, 640f0, 645f0,
+    650f0, 655f0, 660f0, 665f0, 670f0, 675f0, 680f0, 685f0, 690f0, 695f0,
+    700f0, 705f0, 710f0, 715f0, 720f0, 725f0, 730f0, 735f0, 740f0, 745f0,
+    750f0, 755f0, 760f0, 765f0, 770f0, 775f0, 780f0, 785f0, 790f0, 795f0,
+    800f0, 805f0, 810f0, 815f0, 820f0, 825f0, 830f0
+)
+
+"""
+    D65_ILLUMINANT_VALUES
+
+D65 illuminant spectral power distribution values (normalized to 100 at 560nm).
+"""
+const D65_ILLUMINANT_VALUES = (
+    0.0341f0, 1.6643f0, 3.2945f0, 11.7652f0, 20.236f0, 28.6447f0, 37.0535f0,
+    38.5011f0, 39.9488f0, 42.4302f0, 44.9117f0, 45.775f0, 46.6383f0, 49.3637f0,
+    52.0891f0, 51.0323f0, 49.9755f0, 52.3118f0, 54.6482f0, 68.7015f0, 82.7549f0,
+    87.1204f0, 91.486f0, 92.4589f0, 93.4318f0, 90.057f0, 86.6823f0, 95.7736f0,
+    104.865f0, 110.936f0, 117.008f0, 117.41f0, 117.812f0, 116.336f0, 114.861f0,
+    115.392f0, 115.923f0, 112.367f0, 108.811f0, 109.082f0, 109.354f0, 108.578f0,
+    107.802f0, 106.296f0, 104.79f0, 106.239f0, 107.689f0, 106.047f0, 104.405f0,
+    104.225f0, 104.046f0, 102.023f0, 100.0f0, 98.1671f0, 96.3342f0, 96.0611f0,
+    95.788f0, 92.2368f0, 88.6856f0, 89.3459f0, 90.0062f0, 89.8026f0, 89.5991f0,
+    88.6489f0, 87.6987f0, 85.4936f0, 83.2886f0, 83.4939f0, 83.6992f0, 81.863f0,
+    80.0268f0, 80.1207f0, 80.2146f0, 81.2462f0, 82.2778f0, 80.281f0, 78.2842f0,
+    74.0027f0, 69.7213f0, 70.6652f0, 71.6091f0, 72.979f0, 74.349f0, 67.9765f0,
+    61.604f0, 65.7448f0, 69.8856f0, 72.4863f0, 75.087f0, 69.3398f0, 63.5927f0,
+    55.0054f0, 46.4182f0, 56.6118f0, 66.8054f0, 65.0941f0, 63.3828f0, 63.8434f0,
+    64.304f0, 61.8779f0, 59.4519f0, 55.7054f0, 51.959f0, 54.6998f0, 57.4406f0,
+    58.8765f0, 60.3125f0
+)
+
+"""
+    sample_d65(lambda::Float32) -> Float32
+
+Sample the D65 illuminant spectrum at wavelength lambda (nm).
+Uses linear interpolation between tabulated values.
+"""
+@propagate_inbounds function sample_d65(lambda::Float32)::Float32
+    # Clamp to valid range
+    if lambda <= 300f0
+        return D65_ILLUMINANT_VALUES[1]
+    elseif lambda >= 830f0
+        return D65_ILLUMINANT_VALUES[107]
+    end
+
+    # Find interval (5nm spacing starting at 300nm)
+    t = (lambda - 300f0) / 5f0
+    idx = floor(Int32, t) + Int32(1)
+    idx = clamp(idx, Int32(1), Int32(106))
+
+    # Linear interpolation
+    frac = t - floor(t)
+    @inbounds begin
+        v0 = D65_ILLUMINANT_VALUES[idx]
+        v1 = D65_ILLUMINANT_VALUES[idx + 1]
+    end
+    return v0 * (1f0 - frac) + v1 * frac
+end
+
+"""
+    sample_d65_spectral(lambda::Wavelengths) -> SpectralRadiance
+
+Sample D65 illuminant at multiple wavelengths.
+"""
+@propagate_inbounds function sample_d65_spectral(lambda::Wavelengths)::SpectralRadiance
+    @inbounds begin
+        v1 = sample_d65(lambda.lambda[1])
+        v2 = sample_d65(lambda.lambda[2])
+        v3 = sample_d65(lambda.lambda[3])
+        v4 = sample_d65(lambda.lambda[4])
+    end
+    # Normalize by D65 value at 560nm (=100) to get relative SPD
+    # This makes the illuminant multiply correctly with sigmoid polynomial
+    return SpectralRadiance((v1 / 100f0, v2 / 100f0, v3 / 100f0, v4 / 100f0))
+end
+
+# =============================================================================
+# RGB to Illuminant Spectrum (for light sources)
+# =============================================================================
+
+"""
+    rgb_to_spectral_sigmoid_illuminant(table::RGBToSpectrumTable, r, g, b, lambda) -> SpectralRadiance
+
+Convert RGB to spectral radiance for illuminants/light sources.
+Following pbrt-v4's RGBIlluminantSpectrum: multiplies sigmoid polynomial by D65 illuminant.
+
+This is the correct conversion for environment maps and other light sources that
+are specified in sRGB. The D65 multiplication is necessary because sRGB's white
+point is D65, so an RGB=(1,1,1) light source should emit a D65-like spectrum.
+"""
+@propagate_inbounds function rgb_to_spectral_sigmoid_illuminant(
+    table::RGBToSpectrumTable, r::Float32, g::Float32, b::Float32, lambda::Wavelengths
+)::SpectralRadiance
+    # Find scale factor (like RGBUnboundedSpectrum)
+    m = max(r, g, b)
+    if m <= 0.0f0
+        return SpectralRadiance(0.0f0)
+    end
+
+    # Get polynomial for normalized color
+    # pbrt-v4 uses scale = 2*m and normalizes by scale
+    scale = 2f0 * m
+    poly = rgb_to_spectrum(table, r / scale, g / scale, b / scale)
+
+    # Sample polynomial at wavelengths and multiply by D65 illuminant
+    # Following pbrt-v4's RGBIlluminantSpectrum::Sample()
+    @inbounds begin
+        d65 = sample_d65_spectral(lambda)
+        v1 = scale * poly(lambda.lambda[1]) * d65.data[1]
+        v2 = scale * poly(lambda.lambda[2]) * d65.data[2]
+        v3 = scale * poly(lambda.lambda[3]) * d65.data[3]
+        v4 = scale * poly(lambda.lambda[4]) * d65.data[4]
+    end
+    return SpectralRadiance((v1, v2, v3, v4))
+end
+
+"""
+    uplift_rgb_illuminant(table::RGBToSpectrumTable, rgb::RGBSpectrum, lambda::Wavelengths) -> SpectralRadiance
+
+Convert RGB to spectral radiance for illuminants (light sources, environment maps).
+Following pbrt-v4's RGBIlluminantSpectrum which multiplies by the D65 illuminant spectrum.
+
+Use this for:
+- Environment maps (ImageInfiniteLight)
+- Any RGB-specified light source
+
+Do NOT use for:
+- Material reflectance/albedo (use uplift_rgb instead)
+- Emission from non-illuminant sources
+"""
+@propagate_inbounds function uplift_rgb_illuminant(
+    table::RGBToSpectrumTable, rgb::RGBSpectrum, lambda::Wavelengths
+)::SpectralRadiance
+    @inbounds return rgb_to_spectral_sigmoid_illuminant(table, rgb.c[1], rgb.c[2], rgb.c[3], lambda)
+end
