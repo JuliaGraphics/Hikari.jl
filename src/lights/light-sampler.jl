@@ -312,14 +312,15 @@ end
     4f0 * Float32(π) * luminance(light.i)
 end
 
+# Helper to get total distribution integral (dispatch on distribution type)
+distribution_integral(d::Distribution2D) = d.p_marginal.func_int
+distribution_integral(d::FlatDistribution2D) = d.marginal_func_int
+
 @propagate_inbounds function estimate_light_power(light::EnvironmentLight)
-    # Use the pre-computed distribution's total power
-    # The distribution.func_int is the integral of the luminance over the image
-    # Multiply by 4π sr (full sphere solid angle)
-    total = light.env_map.distribution.func_int
+    # Use the helper to get total power from the distribution (works with both Distribution2D types)
+    total = distribution_integral(light.env_map.distribution)
     # The distribution integral is already weighted by sin(theta), so multiply by 2π for phi
-    # This gives total power proportional to average radiance * 4π
-    Float32(total) * 2f0 * Float32(π) * light.scale
+    Float32(total) * 2f0 * Float32(π) * luminance(light.scale)
 end
 
 """

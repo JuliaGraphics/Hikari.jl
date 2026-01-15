@@ -348,9 +348,10 @@ Evaluate environment light for an escaped ray direction.
     # Following pbrt-v4 ImageInfiniteLight::Le which passes direction directly
     Le_rgb = light.env_map(ray_d) * light.scale
 
-    # Use unbounded uplift for emission (like pbrt's RGBIlluminantSpectrum)
-    # NOT uplift_rgb which is for albedo and incorrectly clamps/scales emission
-    return uplift_rgb_unbounded(table, Le_rgb, lambda)
+    # Use illuminant uplift for environment lights (like pbrt's RGBIlluminantSpectrum)
+    # This multiplies by the D65 illuminant spectrum, which is necessary because
+    # sRGB environment maps assume D65 white point
+    return uplift_rgb_illuminant(table, Le_rgb, lambda)
 end
 
 """

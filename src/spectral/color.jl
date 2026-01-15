@@ -457,19 +457,51 @@ where CMF is the color matching function and pdf is the wavelength sampling PDF.
 end
 
 # =============================================================================
-# XYZ to sRGB Conversion
+# XYZ to sRGB Conversion with Chromatic Adaptation
 # =============================================================================
+
+# Note: The chromatic adaptation from Equal-Energy (E) illuminant to D65 is
+# pre-computed and inlined in xyz_e_to_linear_srgb() for performance.
+# The combined matrix sRGB_from_XYZ * WHITE_BALANCE_E_TO_D65 converts
+# XYZ (in E illuminant space) directly to linear sRGB (D65).
+#
+# Bradford matrices and derivation:
+# LMS_FROM_XYZ = [0.8951 0.2664 -0.1614; -0.7502 1.7135 0.0367; 0.0389 -0.0685 1.0296]
+# XYZ_FROM_LMS = inverse of above
+# E white point: (1/3, 1/3), D65 white point: (0.31272, 0.32903)
+# WHITE_BALANCE_E_TO_D65 = XYZ_FROM_LMS * diag(D65_lms/E_lms) * LMS_FROM_XYZ
+# SRGB_FROM_XYZ_E = sRGB_from_XYZ * WHITE_BALANCE_E_TO_D65
 
 """
     xyz_to_linear_srgb(X::Float32, Y::Float32, Z::Float32) -> (R, G, B)
 
 Convert CIE XYZ to linear sRGB color space.
 Uses the standard XYZ to sRGB matrix (D65 white point).
+Note: This assumes XYZ is already in D65 illuminant space.
 """
 @propagate_inbounds function xyz_to_linear_srgb(X::Float32, Y::Float32, Z::Float32)
     R =  3.2404542f0 * X - 1.5371385f0 * Y - 0.4985314f0 * Z
     G = -0.9692660f0 * X + 1.8760108f0 * Y + 0.0415560f0 * Z
     B =  0.0556434f0 * X - 0.2040259f0 * Y + 1.0572252f0 * Z
+    return (R, G, B)
+end
+
+"""
+    xyz_e_to_linear_srgb(X::Float32, Y::Float32, Z::Float32) -> (R, G, B)
+
+Convert CIE XYZ (in Equal-Energy illuminant space) to linear sRGB (D65).
+This applies Bradford chromatic adaptation from E to D65 before the XYZ-to-sRGB
+transformation. Use this for spectral rendering where wavelength sampling assumes
+an equal-energy white spectrum.
+
+Matrix values are inlined for performance and to avoid const reload issues.
+"""
+@propagate_inbounds function xyz_e_to_linear_srgb(X::Float32, Y::Float32, Z::Float32)
+    # Pre-computed: sRGB_from_XYZ * WHITE_BALANCE_E_TO_D65
+    # Verified: xyz_e_to_linear_srgb(1,1,1) ≈ (1,1,1)
+    R =  3.1462066f0 * X - 1.666208f0   * Y - 0.48011315f0 * Z
+    G = -0.99555516f0 * X + 1.9558191f0  * Y + 0.03977213f0 * Z
+    B =  0.063599624f0 * X - 0.21459788f0 * Y + 1.1509721f0  * Z
     return (R, G, B)
 end
 
@@ -516,15 +548,16 @@ end
 
 Convert spectral radiance to sRGB:
 1. Convert to XYZ using color matching functions
-2. Transform XYZ to linear sRGB
-3. Apply sRGB gamma curve
+2. Apply chromatic adaptation from E illuminant to D65
+3. Transform XYZ to linear sRGB
+4. Apply sRGB gamma curve
 """
 @propagate_inbounds function spectral_to_srgb(table::CIEXYZTable, L::SpectralRadiance, lambda::Wavelengths)
     # Convert to XYZ
     X, Y, Z = spectral_to_xyz(table, L, lambda)
 
-    # Convert to linear sRGB
-    R, G, B = xyz_to_linear_srgb(X, Y, Z)
+    # Convert to linear sRGB with E→D65 chromatic adaptation
+    R, G, B = xyz_e_to_linear_srgb(X, Y, Z)
 
     # Apply gamma (clamp negative values first)
     R = linear_to_srgb_gamma(max(0.0f0, R))
@@ -539,11 +572,17 @@ end
 
 Convert spectral radiance to linear RGB (no gamma):
 1. Convert to XYZ using color matching functions
-2. Transform XYZ to linear sRGB
+2. Apply chromatic adaptation from E illuminant to D65
+3. Transform XYZ to linear sRGB
+
+Note: Uses xyz_e_to_linear_srgb which includes Bradford chromatic adaptation
+from Equal-Energy (E) illuminant to D65. This is necessary because the spectral
+wavelength sampling produces XYZ values relative to an equal-energy white,
+but sRGB is defined relative to D65.
 """
 @propagate_inbounds function spectral_to_linear_rgb(table::CIEXYZTable, L::SpectralRadiance, lambda::Wavelengths)
     X, Y, Z = spectral_to_xyz(table, L, lambda)
-    R, G, B = xyz_to_linear_srgb(X, Y, Z)
+    R, G, B = xyz_e_to_linear_srgb(X, Y, Z)
     return (max(0.0f0, R), max(0.0f0, G), max(0.0f0, B))
 end
 
