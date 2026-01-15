@@ -1,6 +1,49 @@
 # Work queues for VolPath wavefront integrator
 # Reuses PWWorkQueue pattern from PhysicalWavefront
 
+using StructArrays
+
+# ============================================================================
+# SOA/AOS Array Allocation (following pbrt-v4's SOA pattern)
+# ============================================================================
+
+# Trait: should this type be decomposed into SOA?
+# Only work item structs get SOA - their fields become separate contiguous arrays.
+# Nested types (Ray, Vec3f, Spectrum, etc.) stay flat since they're small and
+# accessed as units. The SOA benefit comes from coalesced access when threads
+# read the same field across different work items.
+function _should_soa(::Type{T}) where T
+    T <: VPRayWorkItem && return true
+    T <: VPMaterialEvalWorkItem && return true
+    T <: VPShadowRayWorkItem && return true
+    T <: VPHitSurfaceWorkItem && return true
+    T <: VPMediumSampleWorkItem && return true
+    T <: VPMediumScatterWorkItem && return true
+    T <: VPEscapedRayWorkItem && return true
+    return false
+end
+
+# Allocate array with AOS (soa=false) or SOA (soa=true) layout.
+# Both support identical indexing: arr[i] returns T, arr[i] = val stores T.
+function allocate_array(backend, ::Type{T}, n::Integer; soa::Bool=false) where T
+    soa ? _allocate_soa(backend, T, n) : KernelAbstractions.allocate(backend, T, n)
+end
+
+function _allocate_soa(backend, ::Type{T}, n::Integer) where T
+    if !_should_soa(T)
+        return KernelAbstractions.allocate(backend, T, n)
+    end
+    if fieldcount(T) > 0
+        fnames = fieldnames(T)
+        ftypes = fieldtypes(T)
+        components = NamedTuple{fnames}(
+            ntuple(i -> _allocate_soa(backend, ftypes[i], n), length(fnames))
+        )
+        return StructArray{T}(components)
+    end
+    return KernelAbstractions.allocate(backend, T, n)
+end
+
 # ============================================================================
 # Generic Work Queue (same as PhysicalWavefront)
 # ============================================================================
@@ -17,8 +60,8 @@ struct VPWorkQueue{T, V<:AbstractVector{T}, S<:AbstractVector{Int32}}
     capacity::Int32
 end
 
-function VPWorkQueue{T}(backend, capacity::Integer) where T
-    items = KernelAbstractions.allocate(backend, T, capacity)
+function VPWorkQueue{T}(backend, capacity::Integer; soa::Bool=false) where T
+    items = allocate_array(backend, T, capacity; soa=soa)
     size = KernelAbstractions.allocate(backend, Int32, 1)
     KernelAbstractions.fill!(size, Int32(0))
     VPWorkQueue{T, typeof(items), typeof(size)}(items, size, Int32(capacity))
@@ -85,16 +128,28 @@ mutable struct VolPathState{Backend}
     # CIE XYZ color matching table
     cie_table::CIEXYZTable
 
+    # Light sampler data for power-weighted light selection
+    # Stored as flat arrays for GPU compatibility
+    light_sampler_p::AbstractVector{Float32}    # PMF values
+    light_sampler_q::AbstractVector{Float32}    # Alias thresholds
+    light_sampler_alias::AbstractVector{Int32}  # Alias indices
+    num_lights::Int32
+
     # Render parameters
     max_depth::Int32
     width::Int32
     height::Int32
+
+    # Multi-material queue for :per_type coherence mode
+    # Stored as Any to allow different N values (number of material types)
+    multi_material_queue::Any  # MultiMaterialQueue{N} or nothing
 end
 
 function VolPathState(
     backend,
     width::Integer,
-    height::Integer;
+    height::Integer,
+    lights::Tuple;
     max_depth::Integer = 8,
     queue_capacity::Integer = width * height
 )
@@ -130,6 +185,20 @@ function VolPathState(
     cie_table_cpu = CIEXYZTable()
     cie_table = to_gpu(ArrayType, cie_table_cpu)
 
+    # Build power-weighted light sampler
+    n_lights = length(lights)
+    if n_lights > 0
+        sampler = PowerLightSampler(lights)
+        sampler_data = LightSamplerData(sampler)
+        light_sampler_p = ArrayType(sampler_data.p)
+        light_sampler_q = ArrayType(sampler_data.q)
+        light_sampler_alias = ArrayType(sampler_data.alias)
+    else
+        light_sampler_p = ArrayType{Float32}(undef, 0)
+        light_sampler_q = ArrayType{Float32}(undef, 0)
+        light_sampler_alias = ArrayType{Int32}(undef, 0)
+    end
+
     VolPathState(
         backend,
         ray_queue_a,
@@ -147,9 +216,14 @@ function VolPathState(
         pdf_per_pixel,
         rgb2spec_table,
         cie_table,
+        light_sampler_p,
+        light_sampler_q,
+        light_sampler_alias,
+        Int32(n_lights),
         Int32(max_depth),
         Int32(width),
-        Int32(height)
+        Int32(height),
+        nothing  # multi_material_queue - lazily initialized
     )
 end
 

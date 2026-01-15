@@ -135,8 +135,7 @@ function vp_process_surface_hits!(
         state.material_queue.capacity;
         ndrange=Int(state.hit_surface_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
     )
-
-    KernelAbstractions.synchronize(backend)
+    # No synchronize needed - OpenCL commands queue in order
     return nothing
 end
 
@@ -144,7 +143,11 @@ end
 # Direct Lighting Inner Function
 # ============================================================================
 
-"""Inner function for surface direct lighting - can use return statements."""
+"""Inner function for surface direct lighting - can use return statements.
+
+Uses power-weighted light sampling via alias table for better importance sampling
+in scenes with lights of varying intensities (pbrt-v4's PowerLightSampler approach).
+"""
 @propagate_inbounds function surface_direct_lighting_inner!(
     shadow_items, shadow_size,
     work::VPMaterialEvalWorkItem,
@@ -152,6 +155,9 @@ end
     textures,
     lights,
     rgb2spec_table,
+    light_sampler_p,
+    light_sampler_q,
+    light_sampler_alias,
     num_lights::Int32
 )
     # Skip if no lights
@@ -161,9 +167,16 @@ end
     u_light = rand(Point2f)
     light_select = rand(Float32)
 
-    # Select light uniformly
-    light_idx = floor_int32(light_select * Float32(num_lights)) + Int32(1)
-    light_idx = min(light_idx, num_lights)
+    # Select light using power-weighted alias table sampling
+    # Returns (1-based index, PMF for that light)
+    light_idx, light_pmf = sample_light_sampler(
+        light_sampler_p, light_sampler_q, light_sampler_alias, light_select
+    )
+
+    # Validate index (should always be valid if sampler was built correctly)
+    if light_idx < Int32(1) || light_idx > num_lights || light_pmf <= 0f0
+        return
+    end
 
     # Sample the light
     light_sample = sample_light_from_tuple(
@@ -185,8 +198,12 @@ end
             )
 
             if result.valid
-                # Scale by number of lights
-                scaled_Ld = result.Ld * Float32(num_lights)
+                # Following pbrt-v4 (surfscatter.cpp lines 299-315):
+                # - Ld = beta * f * Li (no PDF division - that happens at shadow ray resolution)
+                # - r_l = r_u * lightPDF where lightPDF = ls.pdf * light_pmf
+                # compute_direct_lighting_spectral already sets r_l = r_u * ls.pdf
+                # So we multiply by light_pmf to get the full light PDF in r_l
+                scaled_r_l = result.r_l * light_pmf
 
                 # Create shadow ray
                 shadow_ray = Raycore.Ray(
@@ -199,9 +216,9 @@ end
                     shadow_ray,
                     result.t_max,
                     work.lambda,
-                    scaled_Ld,
+                    result.Ld,  # NOT divided by light_pmf - MIS handles this
                     result.r_u,
-                    result.r_l,
+                    scaled_r_l,
                     work.pixel_index,
                     work.current_medium  # Shadow ray starts in same medium
                 )
@@ -225,7 +242,7 @@ end
 """
     vp_sample_surface_direct_lighting_kernel!(...)
 
-Sample direct lighting at surface hits.
+Sample direct lighting at surface hits using power-weighted light sampling.
 Creates shadow rays for unoccluded light contributions.
 """
 @kernel inbounds=true function vp_sample_surface_direct_lighting_kernel!(
@@ -237,6 +254,7 @@ Creates shadow rays for unoccluded light contributions.
     @Const(textures),
     @Const(lights),
     @Const(rgb2spec_scale), @Const(rgb2spec_coeffs), @Const(rgb2spec_res::Int32),
+    @Const(light_sampler_p), @Const(light_sampler_q), @Const(light_sampler_alias),
     @Const(num_lights::Int32), @Const(max_queued::Int32)
 )
     idx = @index(Global)
@@ -249,7 +267,9 @@ Creates shadow rays for unoccluded light contributions.
             work = material_items[idx]
             surface_direct_lighting_inner!(
                 shadow_items, shadow_size,
-                work, materials, textures, lights, rgb2spec_table, num_lights
+                work, materials, textures, lights, rgb2spec_table,
+                light_sampler_p, light_sampler_q, light_sampler_alias,
+                num_lights
             )
         end
     end
@@ -259,6 +279,7 @@ end
     vp_sample_surface_direct_lighting!(backend, state, materials, textures, lights)
 
 Sample direct lighting at all surface material evaluation points.
+Uses power-weighted light sampling from state.light_sampler_* arrays.
 """
 function vp_sample_surface_direct_lighting!(
     backend,
@@ -270,8 +291,6 @@ function vp_sample_surface_direct_lighting!(
     n = queue_size(state.material_queue)
     n == 0 && return nothing
 
-    num_lights = count_lights(lights)
-
     kernel! = vp_sample_surface_direct_lighting_kernel!(backend)
     kernel!(
         state.shadow_queue.items, state.shadow_queue.size,
@@ -280,7 +299,8 @@ function vp_sample_surface_direct_lighting!(
         textures,
         lights,
         state.rgb2spec_table.scale, state.rgb2spec_table.coeffs, state.rgb2spec_table.res,
-        num_lights, state.shadow_queue.capacity;
+        state.light_sampler_p, state.light_sampler_q, state.light_sampler_alias,
+        state.num_lights, state.shadow_queue.capacity;
         ndrange=Int(state.material_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
     )
 
@@ -300,7 +320,8 @@ end
     textures,
     rgb2spec_table,
     max_depth::Int32,
-    max_queued::Int32
+    max_queued::Int32,
+    do_regularize::Bool
 )
     # Check depth limit
     new_depth = work.depth + Int32(1)
@@ -313,10 +334,14 @@ end
     rng = rand(Float32)
     rr_sample = rand(Float32)
 
+    # Apply regularization if enabled and we've had a non-specular bounce
+    # (pbrt-v4: regularize && anyNonSpecularBounces)
+    regularize = do_regularize && work.any_non_specular_bounces
+
     # Sample BSDF
     sample = sample_spectral_material(
         rgb2spec_table, materials, textures, work.material_idx,
-        work.wo, work.ns, work.uv, work.lambda, u, rng
+        work.wo, work.ns, work.uv, work.lambda, u, rng, regularize
     )
 
     # Check if valid sample
@@ -421,7 +446,8 @@ Includes Russian roulette for path termination.
     @Const(textures),
     @Const(media),  # For determining medium after refraction
     @Const(rgb2spec_scale), @Const(rgb2spec_coeffs), @Const(rgb2spec_res::Int32),
-    @Const(max_depth::Int32), @Const(max_queued::Int32)
+    @Const(max_depth::Int32), @Const(max_queued::Int32),
+    @Const(do_regularize::Bool)  # Whether to apply BSDF regularization
 )
     idx = @index(Global)
 
@@ -433,23 +459,28 @@ Includes Russian roulette for path termination.
             work = material_items[idx]
             evaluate_material_inner!(
                 next_ray_items, next_ray_size,
-                work, materials, textures, rgb2spec_table, max_depth, max_queued
+                work, materials, textures, rgb2spec_table, max_depth, max_queued,
+                do_regularize
             )
         end
     end
 end
 
 """
-    vp_evaluate_materials!(backend, state, materials, textures, media)
+    vp_evaluate_materials!(backend, state, materials, textures, media, regularize=true)
 
 Evaluate materials and spawn continuation rays.
+
+When `regularize=true`, near-specular BSDFs are roughened after the first non-specular
+bounce to reduce fireflies (matches pbrt-v4's BSDF::Regularize).
 """
 function vp_evaluate_materials!(
     backend,
     state::VolPathState,
     materials,
     textures,
-    media
+    media,
+    regularize::Bool = true
 )
     n = queue_size(state.material_queue)
     n == 0 && return nothing
@@ -464,7 +495,7 @@ function vp_evaluate_materials!(
         textures,
         media,
         state.rgb2spec_table.scale, state.rgb2spec_table.coeffs, state.rgb2spec_table.res,
-        state.max_depth, output_queue.capacity;
+        state.max_depth, output_queue.capacity, regularize;
         ndrange=Int(state.material_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
     )
 

@@ -42,7 +42,8 @@ Uses pbrt-v4 convention: work in local shading space where n = (0,0,1).
 @propagate_inbounds function sample_bsdf_spectral(
     table::RGBToSpectrumTable, mat::MatteMaterial, textures,
     wo::Vec3f, n::Vec3f, uv::Point2f,
-    lambda::Wavelengths, sample_u::Point2f, rng::Float32
+    lambda::Wavelengths, sample_u::Point2f, rng::Float32,
+    regularize::Bool = false
 )
     # Check for grazing angle (wo perpendicular to shading normal)
     # This matches pbrt-v4's wo.z == 0 check in BSDF::Sample_f
@@ -106,7 +107,8 @@ Sample perfect specular reflection with spectral evaluation.
 @propagate_inbounds function sample_bsdf_spectral(
     table::RGBToSpectrumTable, mat::MirrorMaterial, textures,
     wo::Vec3f, n::Vec3f, uv::Point2f,
-    lambda::Wavelengths, sample_u::Point2f, rng::Float32
+    lambda::Wavelengths, sample_u::Point2f, rng::Float32,
+    regularize::Bool = false
 )
     # Check for grazing angle
     wo_dot_n = dot(wo, n)
@@ -137,7 +139,8 @@ Uses Fresnel to choose between reflection and transmission.
 @propagate_inbounds function sample_bsdf_spectral(
     table::RGBToSpectrumTable, mat::GlassMaterial, textures,
     wo::Vec3f, n::Vec3f, uv::Point2f,
-    lambda::Wavelengths, sample_u::Point2f, rng::Float32
+    lambda::Wavelengths, sample_u::Point2f, rng::Float32,
+    regularize::Bool = false
 )
     # Get material properties
     kr_rgb = eval_tex(textures, mat.Kr, uv)
@@ -194,7 +197,7 @@ Uses Fresnel to choose between reflection and transmission.
 end
 
 """
-    sample_bsdf_spectral(table, mat::PlasticMaterial, textures, wo, n, uv, lambda, sample_u, rng) -> SpectralBSDFSample
+    sample_bsdf_spectral(table, mat::PlasticMaterial, textures, wo, n, uv, lambda, sample_u, rng, regularize=false) -> SpectralBSDFSample
 
 Sample plastic BSDF using CoatedDiffuse model (as per pbrt-v4).
 
@@ -202,11 +205,15 @@ In pbrt-v4, "plastic" material is converted to "coateddiffuse" with:
 - Kd → reflectance
 - roughness → roughness (for coating)
 - eta = 1.5 (typical plastic IOR)
+
+When `regularize=true`, the microfacet alpha is increased to reduce fireflies
+from near-specular paths (matches pbrt-v4 BSDF::Regularize).
 """
 @propagate_inbounds function sample_bsdf_spectral(
     table::RGBToSpectrumTable, mat::PlasticMaterial, textures,
     wo::Vec3f, n::Vec3f, uv::Point2f,
-    lambda::Wavelengths, sample_u::Point2f, rng::Float32
+    lambda::Wavelengths, sample_u::Point2f, rng::Float32,
+    regularize::Bool = false
 )
     # Check for grazing angle
     wo_dot_n = dot(wo, n)
@@ -223,6 +230,11 @@ In pbrt-v4, "plastic" material is converted to "coateddiffuse" with:
         roughness_to_α(roughness)
     else
         roughness
+    end
+
+    # Apply regularization if requested (pbrt-v4: doubles alpha if < 0.3, clamps to [0.1, 0.3])
+    if regularize
+        alpha = regularize_alpha(alpha)
     end
 
     refl_spectral = uplift_rgb(table, kd_rgb, lambda)
@@ -478,17 +490,21 @@ Evaluate plastic BSDF using CoatedDiffuse model (as per pbrt-v4).
 end
 
 """
-    sample_bsdf_spectral(table, mat::MetalMaterial, textures, wo, n, uv, lambda, sample_u, rng) -> SpectralBSDFSample
+    sample_bsdf_spectral(table, mat::MetalMaterial, textures, wo, n, uv, lambda, sample_u, rng, regularize=false) -> SpectralBSDFSample
 
 Sample metal BSDF with conductor Fresnel.
 Matches pbrt-v4's ConductorBxDF::Sample_f exactly.
 
 The implementation works in local shading coordinates where n = (0,0,1), then transforms back.
+
+When `regularize=true`, the microfacet alpha is increased to reduce fireflies
+from near-specular paths (matches pbrt-v4 BSDF::Regularize).
 """
 @propagate_inbounds function sample_bsdf_spectral(
     table::RGBToSpectrumTable, mat::MetalMaterial, textures,
     wo_world::Vec3f, n::Vec3f, uv::Point2f,
-    lambda::Wavelengths, sample_u::Point2f, rng::Float32
+    lambda::Wavelengths, sample_u::Point2f, rng::Float32,
+    regularize::Bool = false
 )
     # Build local coordinate frame (matches pbrt-v4's BSDF shading frame)
     tangent, bitangent = coordinate_system(n)
@@ -509,6 +525,12 @@ The implementation works in local shading coordinates where n = (0,0,1), then tr
     # Compute alpha values (matches pbrt-v4's roughness remapping)
     alpha_x = mat.remap_roughness ? roughness_to_α(roughness) : roughness
     alpha_y = alpha_x  # Isotropic for now
+
+    # Apply regularization if requested (pbrt-v4: doubles alpha if < 0.3, clamps to [0.1, 0.3])
+    if regularize
+        alpha_x = regularize_alpha(alpha_x)
+        alpha_y = regularize_alpha(alpha_y)
+    end
 
     # Clamp alpha to minimum value if not smooth (matches pbrt-v4 TrowbridgeReitzDistribution constructor)
     if !trowbridge_reitz_effectively_smooth(alpha_x, alpha_y)
@@ -585,7 +607,8 @@ Emissive materials don't scatter - return invalid sample.
 @propagate_inbounds function sample_bsdf_spectral(
     table::RGBToSpectrumTable, mat::EmissiveMaterial, textures,
     wo::Vec3f, n::Vec3f, uv::Point2f,
-    lambda::Wavelengths, sample_u::Point2f, rng::Float32
+    lambda::Wavelengths, sample_u::Point2f, rng::Float32,
+    regularize::Bool = false
 )
     return SpectralBSDFSample()
 end
@@ -594,7 +617,8 @@ end
 @propagate_inbounds function sample_bsdf_spectral(
     table::RGBToSpectrumTable, mat::Material, textures,
     wo::Vec3f, n::Vec3f, uv::Point2f,
-    lambda::Wavelengths, sample_u::Point2f, rng::Float32
+    lambda::Wavelengths, sample_u::Point2f, rng::Float32,
+    regularize::Bool = false
 )
     # Check for grazing angle
     wo_dot_n = dot(wo, n)
@@ -977,17 +1001,21 @@ The wo direction is in local shading space where z is the surface normal.
 end
 
 """
-    sample_bsdf_spectral(table, mat::CoatedDiffuseMaterial, textures, wo, n, uv, lambda, sample_u, rng) -> SpectralBSDFSample
+    sample_bsdf_spectral(table, mat::CoatedDiffuseMaterial, textures, wo, n, uv, lambda, sample_u, rng, regularize=false) -> SpectralBSDFSample
 
 Sample CoatedDiffuse BSDF using pbrt-v4's LayeredBxDF approach.
 
 For smooth coatings: Fresnel-weighted specular/diffuse sampling
 For rough coatings: Microfacet interface with diffuse base
+
+When `regularize=true`, the coating's microfacet alpha is increased to reduce fireflies
+from near-specular paths (matches pbrt-v4 BSDF::Regularize).
 """
 @propagate_inbounds function sample_bsdf_spectral(
     table::RGBToSpectrumTable, mat::CoatedDiffuseMaterial, textures,
     wo::Vec3f, n::Vec3f, uv::Point2f,
-    lambda::Wavelengths, sample_u::Point2f, rng::Float32
+    lambda::Wavelengths, sample_u::Point2f, rng::Float32,
+    regularize::Bool = false
 )
     # Check for grazing angle
     wo_dot_n = dot(wo, n)
@@ -1009,6 +1037,12 @@ For rough coatings: Microfacet interface with diffuse base
     # Remap roughness if needed
     alpha_x = mat.remap_roughness ? roughness_to_α(u_roughness) : u_roughness
     alpha_y = mat.remap_roughness ? roughness_to_α(v_roughness) : v_roughness
+
+    # Apply regularization if requested (pbrt-v4: doubles alpha if < 0.3, clamps to [0.1, 0.3])
+    if regularize
+        alpha_x = regularize_alpha(alpha_x)
+        alpha_y = regularize_alpha(alpha_y)
+    end
 
     refl_spectral = uplift_rgb(table, refl_rgb, lambda)
     albedo_spectral = uplift_rgb(table, albedo_rgb, lambda)
@@ -1313,7 +1347,7 @@ end
 # ============================================================================
 
 """
-    sample_bsdf_spectral(table, mat::ThinDielectricMaterial, textures, wo, n, uv, lambda, sample_u, rng) -> SpectralBSDFSample
+    sample_bsdf_spectral(table, mat::ThinDielectricMaterial, textures, wo, n, uv, lambda, sample_u, rng, regularize=false) -> SpectralBSDFSample
 
 Sample thin dielectric BSDF matching pbrt-v4's ThinDielectricBxDF::Sample_f.
 
@@ -1330,7 +1364,8 @@ Key physics (pbrt-v4 lines 225-230):
 @propagate_inbounds function sample_bsdf_spectral(
     table::RGBToSpectrumTable, mat::ThinDielectricMaterial, textures,
     wo::Vec3f, n::Vec3f, uv::Point2f,
-    lambda::Wavelengths, sample_u::Point2f, rng::Float32
+    lambda::Wavelengths, sample_u::Point2f, rng::Float32,
+    regularize::Bool = false
 )
     # Check for grazing angle
     wo_dot_n = dot(wo, n)
@@ -1427,7 +1462,7 @@ end
 # ============================================================================
 
 """
-    sample_bsdf_spectral(table, mat::DiffuseTransmissionMaterial, textures, wo, n, uv, lambda, sample_u, rng) -> SpectralBSDFSample
+    sample_bsdf_spectral(table, mat::DiffuseTransmissionMaterial, textures, wo, n, uv, lambda, sample_u, rng, regularize=false) -> SpectralBSDFSample
 
 Sample diffuse transmission BSDF matching pbrt-v4's DiffuseTransmissionBxDF::Sample_f.
 
@@ -1437,7 +1472,8 @@ and transmission (opposite hemisphere). Sampling is proportional to max(R) and m
 @propagate_inbounds function sample_bsdf_spectral(
     table::RGBToSpectrumTable, mat::DiffuseTransmissionMaterial, textures,
     wo::Vec3f, n::Vec3f, uv::Point2f,
-    lambda::Wavelengths, sample_u::Point2f, rng::Float32
+    lambda::Wavelengths, sample_u::Point2f, rng::Float32,
+    regularize::Bool = false
 )
     # Check for grazing angle
     wo_dot_n = dot(wo, n)
@@ -1598,7 +1634,7 @@ end
 # ============================================================================
 
 """
-    sample_bsdf_spectral(table, mat::CoatedConductorMaterial, textures, wo, n, uv, lambda, sample_u, rng) -> SpectralBSDFSample
+    sample_bsdf_spectral(table, mat::CoatedConductorMaterial, textures, wo, n, uv, lambda, sample_u, rng, regularize=false) -> SpectralBSDFSample
 
 Sample CoatedConductor BSDF using pbrt-v4's LayeredBxDF approach.
 
@@ -1609,11 +1645,15 @@ This is a layered material with:
 Key pbrt-v4 details (materials.cpp lines 345-392):
 - Conductor eta/k are scaled by interface IOR: ce /= ieta, ck /= ieta
 - If reflectance mode: k = 2 * sqrt(r) / sqrt(1 - r), eta = 1
+
+When `regularize=true`, both interface and conductor microfacet alphas are increased
+to reduce fireflies from near-specular paths (matches pbrt-v4 BSDF::Regularize).
 """
 @propagate_inbounds function sample_bsdf_spectral(
     table::RGBToSpectrumTable, mat::CoatedConductorMaterial, textures,
     wo::Vec3f, n::Vec3f, uv::Point2f,
-    lambda::Wavelengths, sample_u::Point2f, rng::Float32
+    lambda::Wavelengths, sample_u::Point2f, rng::Float32,
+    regularize::Bool = false
 )
     # Check for grazing angle
     wo_dot_n = dot(wo, n)
@@ -1637,6 +1677,14 @@ Key pbrt-v4 details (materials.cpp lines 345-392):
     cv_roughness = eval_tex(textures, mat.conductor_v_roughness, uv)
     c_alpha_x = mat.remap_roughness ? roughness_to_α(cu_roughness) : cu_roughness
     c_alpha_y = mat.remap_roughness ? roughness_to_α(cv_roughness) : cv_roughness
+
+    # Apply regularization if requested (pbrt-v4: doubles alpha if < 0.3, clamps to [0.1, 0.3])
+    if regularize
+        i_alpha_x = regularize_alpha(i_alpha_x)
+        i_alpha_y = regularize_alpha(i_alpha_y)
+        c_alpha_x = regularize_alpha(c_alpha_x)
+        c_alpha_y = regularize_alpha(c_alpha_y)
+    end
 
     # Get conductor eta/k - either from eta/k textures or derived from reflectance
     local ce_spectral::SpectralRadiance
@@ -2191,9 +2239,10 @@ end
 @propagate_inbounds function sample_bsdf_spectral(
     table::RGBToSpectrumTable, mi::MediumInterface, textures,
     wo::Vec3f, n::Vec3f, uv::Point2f,
-    lambda::Wavelengths, sample_u::Point2f, rng::Float32
+    lambda::Wavelengths, sample_u::Point2f, rng::Float32,
+    regularize::Bool = false
 )
-    return sample_bsdf_spectral(table, mi.material, textures, wo, n, uv, lambda, sample_u, rng)
+    return sample_bsdf_spectral(table, mi.material, textures, wo, n, uv, lambda, sample_u, rng, regularize)
 end
 
 """
@@ -2242,9 +2291,10 @@ end
 @propagate_inbounds function sample_bsdf_spectral(
     table::RGBToSpectrumTable, mi::MediumInterfaceIdx, textures,
     wo::Vec3f, n::Vec3f, uv::Point2f,
-    lambda::Wavelengths, sample_u::Point2f, rng::Float32
+    lambda::Wavelengths, sample_u::Point2f, rng::Float32,
+    regularize::Bool = false
 )
-    return sample_bsdf_spectral(table, mi.material, textures, wo, n, uv, lambda, sample_u, rng)
+    return sample_bsdf_spectral(table, mi.material, textures, wo, n, uv, lambda, sample_u, rng, regularize)
 end
 
 """

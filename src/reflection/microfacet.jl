@@ -84,6 +84,20 @@ uniform, but sqrt is retained for compatibility with existing scenes.
     sqrt(roughness)
 end
 
+"""
+    regularize_alpha(α::Float32) -> Float32
+
+Regularize a microfacet distribution alpha value to reduce fireflies from
+near-specular paths. Matches pbrt-v4's TrowbridgeReitzDistribution::Regularize().
+
+If α < 0.3, doubles it and clamps to [0.1, 0.3]. This increases the roughness
+of near-specular surfaces after the first non-specular bounce, reducing variance
+from paths that hit nearly-specular surfaces.
+"""
+@propagate_inbounds function regularize_alpha(α::Float32)::Float32
+    α < 0.3f0 ? clamp(2f0 * α, 0.1f0, 0.3f0) : α
+end
+
 @propagate_inbounds function G1(m::MicrofacetDistribution, w::Vec3f)::Float32
     1f0 / (1f0 + λ(m, w))
 end

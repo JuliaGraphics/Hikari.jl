@@ -30,25 +30,44 @@ mutable struct VolPath <: Integrator
     max_depth::Int32
     samples_per_pixel::Int32
     russian_roulette_depth::Int32
+    regularize::Bool  # Apply BSDF regularization after first non-specular bounce
+    material_coherence::Symbol  # Material evaluation mode: :none, :sorted, :per_type
 
     # Cached render state
     state::Union{Nothing, VolPathState}
 end
 
 """
-    VolPath(; max_depth=8, samples_per_pixel=64, russian_roulette_depth=3)
+    VolPath(; max_depth=8, samples=64, russian_roulette_depth=3, regularize=true, material_coherence=:none)
 
 Create a VolPath integrator for volumetric path tracing.
+
+# Arguments
+- `max_depth`: Maximum path depth
+- `samples`: Number of samples per pixel
+- `russian_roulette_depth`: Depth at which to start Russian roulette
+- `regularize`: Apply BSDF regularization to reduce fireflies (default: true).
+  When enabled, near-specular BSDFs are roughened after the first non-specular
+  bounce, following pbrt-v4's approach.
+- `material_coherence`: Material evaluation strategy for GPU coherence (default: :none):
+  - `:none`: Standard evaluation (baseline)
+  - `:sorted`: Sort work items by material type before evaluation
+  - `:per_type`: Launch separate kernels per material type (pbrt-v4 style)
 """
 function VolPath(;
     max_depth::Int = 8,
     samples::Int = 64,
-    russian_roulette_depth::Int = 3
+    russian_roulette_depth::Int = 3,
+    regularize::Bool = true,
+    material_coherence::Symbol = :none
 )
+    @assert material_coherence in (:none, :sorted, :per_type) "material_coherence must be :none, :sorted, or :per_type"
     return VolPath(
         Int32(max_depth),
         Int32(samples),
         Int32(russian_roulette_depth),
+        regularize,
+        material_coherence,
         nothing
     )
 end
@@ -263,6 +282,7 @@ function render!(
     backend = KA.get_backend(img)
 
     # Allocate or validate state
+<<<<<<< HEAD
     # Must check backend too - reusing state from different backend causes corruption
     # (e.g., OpenCL device arrays used with CPU backend)
     if vp.state === nothing ||
@@ -270,6 +290,15 @@ function render!(
        vp.state.height != height ||
        vp.state.backend !== backend
         vp.state = VolPathState(backend, width, height; max_depth=vp.max_depth)
+=======
+    # Note: Rebuild state if lights changed (num_lights mismatch) to update light sampler
+    n_lights = count_lights(lights)
+    if vp.state === nothing ||
+       vp.state.width != width ||
+       vp.state.height != height ||
+       vp.state.num_lights != n_lights
+        vp.state = VolPathState(backend, width, height, lights; max_depth=vp.max_depth)
+>>>>>>> a14949cf8990c36268f7f051d64df5ce7d455e31
     end
     state = vp.state
 
@@ -304,18 +333,24 @@ function render!(
         ndrange=Int(n_pixels)
     )
 
+    # Ensure multi-material queue is allocated in state for :per_type mode
+    if vp.material_coherence == :per_type
+        N = length(materials)
+        if state.multi_material_queue === nothing ||
+           length(state.multi_material_queue.queues) != N
+            state.multi_material_queue = MultiMaterialQueue{N}(backend, state.material_queue.capacity)
+        end
+    end
+    multi_queue = state.multi_material_queue
+
     # Path tracing loop - following pbrt-v4 wavefront architecture
     for depth in 0:(vp.max_depth - 1)
         n_rays = queue_size(current_ray_queue(state))
         n_rays == 0 && break
 
-        # Reset work queues for this iteration
         reset_iteration_queues!(state)
-
-        # Step 1: Trace rays to find intersections
         vp_trace_rays!(backend, state, accel)
 
-        # Step 2: Sample medium interactions (delta tracking)
         if !isempty(media)
             n_medium = queue_size(state.medium_sample_queue)
             if n_medium > 0
@@ -323,7 +358,6 @@ function render!(
             end
         end
 
-        # Step 3: Handle medium scattering events
         if !isempty(media)
             n_scatter = queue_size(state.medium_scatter_queue)
             if n_scatter > 0
@@ -334,33 +368,51 @@ function render!(
             end
         end
 
-        # Step 4: Handle escaped rays (environment light)
         n_escaped = queue_size(state.escaped_queue)
         if n_escaped > 0 && count_lights(lights) > 0
             vp_handle_escaped_rays!(backend, state, lights)
         end
 
-        # Step 5: Process surface hits (emission + material eval)
         n_hits = queue_size(state.hit_surface_queue)
         if n_hits > 0
-            vp_process_surface_hits!(backend, state, materials, textures)
+            if vp.material_coherence == :per_type && multi_queue !== nothing
+                reset_queues!(backend, multi_queue)
+                vp_process_surface_hits_coherent!(backend, state, multi_queue, materials, textures)
 
-            n_material = queue_size(state.material_queue)
-            if n_material > 0 && count_lights(lights) > 0
-                vp_sample_surface_direct_lighting!(backend, state, materials, textures, lights)
-            end
+                # Following pbrt-v4: launch kernels unconditionally, let them check size internally
+                # This avoids expensive GPU→CPU sync from queue_size() / total_size() calls
+                if count_lights(lights) > 0
+                    vp_sample_direct_lighting_coherent!(backend, state, multi_queue, materials, textures, lights)
+                end
 
-            n_shadow = queue_size(state.shadow_queue)
-            if n_shadow > 0
+                # Shadow rays still need size check since it's a different queue
+                # But we can batch this with other checks later
                 vp_trace_shadow_rays!(backend, state, accel, materials, media)
-            end
 
-            if n_material > 0
-                vp_evaluate_materials!(backend, state, materials, textures, media)
+                vp_evaluate_materials_coherent!(backend, state, multi_queue, materials, textures, media, vp.regularize)
+            else
+                vp_process_surface_hits!(backend, state, materials, textures)
+
+                n_material = queue_size(state.material_queue)
+                if n_material > 0 && count_lights(lights) > 0
+                    vp_sample_surface_direct_lighting!(backend, state, materials, textures, lights)
+                end
+
+                n_shadow = queue_size(state.shadow_queue)
+                if n_shadow > 0
+                    vp_trace_shadow_rays!(backend, state, accel, materials, media)
+                end
+
+                if n_material > 0
+                    if vp.material_coherence == :sorted
+                        vp_evaluate_materials_sorted!(backend, state, materials, textures, media, vp.regularize)
+                    else
+                        vp_evaluate_materials!(backend, state, materials, textures, media, vp.regularize)
+                    end
+                end
             end
         end
 
-        # Swap ray queues for next iteration
         swap_ray_queues!(state)
     end
 
@@ -424,169 +476,3 @@ function (vp::VolPath)(
 
     return film.postprocess
 end
-
-# Old implementation (kept for reference, can be removed):
-function _old_volpath_implementation(vp::VolPath, scene::AbstractScene, film::Film, camera::Camera)
-    img = film.framebuffer
-    accel = scene.aggregate.accel
-    materials = scene.aggregate.materials
-    # Textures tuple for GPU compatibility (empty on CPU where Texture structs hold data)
-    textures = get_textures(scene.aggregate)
-    media = scene.aggregate.media  # Get media from scene (extracted from MediumInterface materials)
-    lights = scene.lights
-
-    height, width = size(img)
-    backend = KA.get_backend(img)
-
-    # Allocate or validate state
-    # Must check backend too - reusing state from different backend causes corruption
-    if vp.state === nothing ||
-       vp.state.width != width ||
-       vp.state.height != height ||
-       vp.state.backend !== backend
-        vp.state = VolPathState(backend, width, height; max_depth=vp.max_depth)
-    end
-    state = vp.state
-
-    n_pixels = width * height
-
-    # Allocate accumulators
-    pixel_rgb = KA.allocate(backend, Float32, n_pixels * 3)
-    KA.fill!(pixel_rgb, 0f0)
-    wavelengths_per_pixel = KA.allocate(backend, Float32, n_pixels * 4)
-    pdf_per_pixel = KA.allocate(backend, Float32, n_pixels * 4)
-
-    # Initial medium (vacuum unless camera is inside medium)
-    initial_medium = MediumIndex()
-
-    # Render samples
-    for sample_idx in 1:vp.samples_per_pixel
-        # Clear spectral film for this sample
-        reset_film!(state)
-
-        # Reset ray queue
-        reset_queue!(backend, current_ray_queue(state))
-        KA.synchronize(backend)
-
-        # Generate camera rays
-        kernel! = vp_generate_camera_rays_kernel!(backend)
-        kernel!(
-            current_ray_queue(state).items, current_ray_queue(state).size,
-            wavelengths_per_pixel, pdf_per_pixel,
-            Int32(width), Int32(height),
-            camera, Int32(sample_idx), initial_medium;
-            ndrange=Int(n_pixels)
-        )
-        KA.synchronize(backend)
-
-        # Path tracing loop - following pbrt-v4 wavefront architecture
-        for depth in 0:(vp.max_depth - 1)
-            n_rays = queue_size(current_ray_queue(state))
-            n_rays == 0 && break
-
-            # Reset work queues for this iteration
-            reset_iteration_queues!(state)
-            KA.synchronize(backend)
-
-            # ================================================================
-            # Step 1: Trace rays to find intersections
-            # Routes rays in medium -> medium_sample_queue (with t_max)
-            # Routes rays NOT in medium -> hit_surface_queue or escaped_queue
-            # ================================================================
-            vp_trace_rays!(backend, state, accel)
-
-            # ================================================================
-            # Step 2: Sample medium interactions (delta tracking)
-            # Processes medium_sample_queue with bounded t_max
-            # Outputs: medium_scatter_queue, hit_surface_queue, escaped_queue
-            # ================================================================
-            if !isempty(media)
-                n_medium = queue_size(state.medium_sample_queue)
-                if n_medium > 0
-                    vp_sample_medium_interaction!(backend, state, media)
-                end
-            end
-
-            # ================================================================
-            # Step 3: Handle medium scattering events
-            # Process real scatter events from delta tracking
-            # ================================================================
-            if !isempty(media)
-                n_scatter = queue_size(state.medium_scatter_queue)
-                if n_scatter > 0
-                    # Direct lighting at scatter points
-                    if count_lights(lights) > 0
-                        vp_sample_medium_direct_lighting!(backend, state, lights, media)
-                    end
-                    # Phase function sampling for continuation
-                    vp_sample_medium_scatter!(backend, state)
-                end
-            end
-
-            # ================================================================
-            # Step 4: Handle escaped rays (environment light)
-            # ================================================================
-            n_escaped = queue_size(state.escaped_queue)
-            if n_escaped > 0 && count_lights(lights) > 0
-                vp_handle_escaped_rays!(backend, state, lights)
-            end
-
-            # ================================================================
-            # Step 5: Process surface hits (emission + material eval)
-            # ================================================================
-            n_hits = queue_size(state.hit_surface_queue)
-            if n_hits > 0
-                vp_process_surface_hits!(backend, state, materials, textures)
-
-                # Step 5a: Direct lighting at surfaces
-                n_material = queue_size(state.material_queue)
-                if n_material > 0 && count_lights(lights) > 0
-                    vp_sample_surface_direct_lighting!(backend, state, materials, textures, lights)
-                end
-
-                # Step 5b: Trace shadow rays
-                n_shadow = queue_size(state.shadow_queue)
-                if n_shadow > 0
-                    vp_trace_shadow_rays!(backend, state, accel, materials, media)
-                end
-
-                # Step 5c: BSDF sampling for continuation rays
-                if n_material > 0
-                    vp_evaluate_materials!(backend, state, materials, textures, media)
-                end
-            end
-
-            # Swap ray queues for next iteration
-            swap_ray_queues!(state)
-        end
-
-        # Accumulate this sample's spectral radiance to RGB
-        kernel! = vp_accumulate_to_rgb_kernel!(backend)
-        kernel!(
-            pixel_rgb, state.pixel_L,
-            wavelengths_per_pixel, pdf_per_pixel,
-            state.cie_table.cie_x, state.cie_table.cie_y, state.cie_table.cie_z,
-            Int32(n_pixels);
-            ndrange=Int(n_pixels)
-        )
-        KA.synchronize(backend)
-    end
-
-    # Finalize: divide by samples and gamma correct
-    kernel! = vp_finalize_film_kernel!(backend)
-    kernel!(
-        img, pixel_rgb,
-        vp.samples_per_pixel,
-        Int32(width), Int32(height);
-        ndrange=Int(n_pixels)
-    )
-
-    KA.synchronize(backend)
-    return film.postprocess
-end
-
-# ============================================================================
-# Utilities
-# ============================================================================
-
-# isempty_tuple is defined in physical-wavefront.jl
