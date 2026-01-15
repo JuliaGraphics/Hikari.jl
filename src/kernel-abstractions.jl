@@ -141,6 +141,39 @@ function to_gpu_ref(collector::Hikari.TextureCollector, m::Hikari.CoatedDiffuseM
     )
 end
 
+# ThinDielectricMaterial - no textures, just scalar eta
+function to_gpu_ref(collector::Hikari.TextureCollector, m::Hikari.ThinDielectricMaterial)
+    return m  # No textures to convert
+end
+
+# DiffuseTransmissionMaterial - reflectance and transmittance textures
+function to_gpu_ref(collector::Hikari.TextureCollector, m::Hikari.DiffuseTransmissionMaterial)
+    reflectance = Hikari.texture_to_ref(m.reflectance, collector)
+    transmittance = Hikari.texture_to_ref(m.transmittance, collector)
+    return Hikari.DiffuseTransmissionMaterial(reflectance, transmittance, m.scale)
+end
+
+# CoatedConductorMaterial - many texture fields
+function to_gpu_ref(collector::Hikari.TextureCollector, m::Hikari.CoatedConductorMaterial)
+    interface_u_roughness = Hikari.texture_to_ref(m.interface_u_roughness, collector)
+    interface_v_roughness = Hikari.texture_to_ref(m.interface_v_roughness, collector)
+    conductor_eta = Hikari.texture_to_ref(m.conductor_eta, collector)
+    conductor_k = Hikari.texture_to_ref(m.conductor_k, collector)
+    reflectance = Hikari.texture_to_ref(m.reflectance, collector)
+    conductor_u_roughness = Hikari.texture_to_ref(m.conductor_u_roughness, collector)
+    conductor_v_roughness = Hikari.texture_to_ref(m.conductor_v_roughness, collector)
+    thickness = Hikari.texture_to_ref(m.thickness, collector)
+    albedo = Hikari.texture_to_ref(m.albedo, collector)
+    g = Hikari.texture_to_ref(m.g, collector)
+    return Hikari.CoatedConductorMaterial(
+        interface_u_roughness, interface_v_roughness, m.interface_eta,
+        conductor_eta, conductor_k, reflectance,
+        conductor_u_roughness, conductor_v_roughness,
+        thickness, albedo, g,
+        m.max_depth, m.n_samples, m.remap_roughness, m.use_eta_k
+    )
+end
+
 # MediumInterface - convert wrapped material
 function to_gpu_ref(collector::Hikari.TextureCollector, m::Hikari.MediumInterface)
     gpu_material = to_gpu_ref(collector, m.material)

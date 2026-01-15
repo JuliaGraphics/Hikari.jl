@@ -135,8 +135,7 @@ function vp_process_surface_hits!(
         state.material_queue.capacity;
         ndrange=Int(state.hit_surface_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
     )
-
-    KernelAbstractions.synchronize(backend)
+    # No synchronize needed - OpenCL commands queue in order
     return nothing
 end
 

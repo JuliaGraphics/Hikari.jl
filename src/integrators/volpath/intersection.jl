@@ -242,8 +242,7 @@ function vp_trace_rays!(
         accel, state.escaped_queue.capacity;
         ndrange=Int(input_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
     )
-
-    KernelAbstractions.synchronize(backend)
+    # No synchronize needed - OpenCL commands queue in order
     return nothing
 end
 
@@ -557,8 +556,7 @@ function vp_trace_shadow_rays!(
         state.shadow_queue.capacity;
         ndrange=Int(state.shadow_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
     )
-
-    KernelAbstractions.synchronize(backend)
+    # No synchronize needed - OpenCL commands queue in order
     return nothing
 end
 
@@ -656,7 +654,6 @@ function vp_handle_escaped_rays!(
         state.escaped_queue.capacity;
         ndrange=Int(state.escaped_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
     )
-
-    KernelAbstractions.synchronize(backend)
+    # No synchronize needed - OpenCL commands queue in order
     return nothing
 end

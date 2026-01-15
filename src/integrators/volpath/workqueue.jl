@@ -1,6 +1,49 @@
 # Work queues for VolPath wavefront integrator
 # Reuses PWWorkQueue pattern from PhysicalWavefront
 
+using StructArrays
+
+# ============================================================================
+# SOA/AOS Array Allocation (following pbrt-v4's SOA pattern)
+# ============================================================================
+
+# Trait: should this type be decomposed into SOA?
+# Only work item structs get SOA - their fields become separate contiguous arrays.
+# Nested types (Ray, Vec3f, Spectrum, etc.) stay flat since they're small and
+# accessed as units. The SOA benefit comes from coalesced access when threads
+# read the same field across different work items.
+function _should_soa(::Type{T}) where T
+    T <: VPRayWorkItem && return true
+    T <: VPMaterialEvalWorkItem && return true
+    T <: VPShadowRayWorkItem && return true
+    T <: VPHitSurfaceWorkItem && return true
+    T <: VPMediumSampleWorkItem && return true
+    T <: VPMediumScatterWorkItem && return true
+    T <: VPEscapedRayWorkItem && return true
+    return false
+end
+
+# Allocate array with AOS (soa=false) or SOA (soa=true) layout.
+# Both support identical indexing: arr[i] returns T, arr[i] = val stores T.
+function allocate_array(backend, ::Type{T}, n::Integer; soa::Bool=false) where T
+    soa ? _allocate_soa(backend, T, n) : KernelAbstractions.allocate(backend, T, n)
+end
+
+function _allocate_soa(backend, ::Type{T}, n::Integer) where T
+    if !_should_soa(T)
+        return KernelAbstractions.allocate(backend, T, n)
+    end
+    if fieldcount(T) > 0
+        fnames = fieldnames(T)
+        ftypes = fieldtypes(T)
+        components = NamedTuple{fnames}(
+            ntuple(i -> _allocate_soa(backend, ftypes[i], n), length(fnames))
+        )
+        return StructArray{T}(components)
+    end
+    return KernelAbstractions.allocate(backend, T, n)
+end
+
 # ============================================================================
 # Generic Work Queue (same as PhysicalWavefront)
 # ============================================================================
@@ -17,8 +60,8 @@ struct VPWorkQueue{T, V<:AbstractVector{T}, S<:AbstractVector{Int32}}
     capacity::Int32
 end
 
-function VPWorkQueue{T}(backend, capacity::Integer) where T
-    items = KernelAbstractions.allocate(backend, T, capacity)
+function VPWorkQueue{T}(backend, capacity::Integer; soa::Bool=false) where T
+    items = allocate_array(backend, T, capacity; soa=soa)
     size = KernelAbstractions.allocate(backend, Int32, 1)
     KernelAbstractions.fill!(size, Int32(0))
     VPWorkQueue{T, typeof(items), typeof(size)}(items, size, Int32(capacity))

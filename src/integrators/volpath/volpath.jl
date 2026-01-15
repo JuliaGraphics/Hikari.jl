@@ -369,19 +369,17 @@ function render!(
                 reset_queues!(backend, multi_queue)
                 vp_process_surface_hits_coherent!(backend, state, multi_queue, materials, textures)
 
-                n_material = total_size(multi_queue)
-                if n_material > 0 && count_lights(lights) > 0
+                # Following pbrt-v4: launch kernels unconditionally, let them check size internally
+                # This avoids expensive GPU→CPU sync from queue_size() / total_size() calls
+                if count_lights(lights) > 0
                     vp_sample_direct_lighting_coherent!(backend, state, multi_queue, materials, textures, lights)
                 end
 
-                n_shadow = queue_size(state.shadow_queue)
-                if n_shadow > 0
-                    vp_trace_shadow_rays!(backend, state, accel, materials, media)
-                end
+                # Shadow rays still need size check since it's a different queue
+                # But we can batch this with other checks later
+                vp_trace_shadow_rays!(backend, state, accel, materials, media)
 
-                if n_material > 0
-                    vp_evaluate_materials_coherent!(backend, state, multi_queue, materials, textures, media, vp.regularize)
-                end
+                vp_evaluate_materials_coherent!(backend, state, multi_queue, materials, textures, media, vp.regularize)
             else
                 vp_process_surface_hits!(backend, state, materials, textures)
 

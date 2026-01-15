@@ -108,28 +108,33 @@ to the queue matching their material type.
 
             # Check emission
             if is_emissive_dispatch(materials, material_idx)
+                # Get emission - pass wo and n like the standard version
                 Le = get_emission_spectral_dispatch(
                     rgb2spec_table, materials, textures, material_idx,
-                    work.uv, work.lambda
+                    wo, work.n, work.uv, work.lambda
                 )
 
                 if !is_black(Le)
-                    # MIS weight for emissive hit
-                    weight = if work.specular_bounce
-                        1f0
+                    # Apply path throughput
+                    contribution = work.beta * Le
+
+                    # MIS weight: on first bounce or specular, no MIS
+                    # Match the standard vp_process_surface_hits_kernel! logic exactly
+                    final_contrib = if work.depth == Int32(0) || work.specular_bounce
+                        contribution / average(work.r_u)
                     else
-                        light_pdf = 0f0  # TODO: proper light PDF for area lights
-                        r_l = work.r_l * light_pdf
-                        1f0 / average(work.r_u + r_l)
+                        # Full MIS weight
+                        contribution / average(work.r_u + work.r_l)
                     end
 
-                    L_contrib = work.beta * Le * weight
+                    # Add to pixel
+                    pixel_idx = work.pixel_index
+                    base_idx = (pixel_idx - Int32(1)) * Int32(4)
 
-                    # Accumulate emission
-                    base = (work.pixel_index - Int32(1)) * Int32(4)
-                    for i in Int32(1):Int32(4)
-                        Atomix.@atomic pixel_L[base + i] += L_contrib[i]
-                    end
+                    Atomix.@atomic pixel_L[base_idx + Int32(1)] += final_contrib[1]
+                    Atomix.@atomic pixel_L[base_idx + Int32(2)] += final_contrib[2]
+                    Atomix.@atomic pixel_L[base_idx + Int32(3)] += final_contrib[3]
+                    Atomix.@atomic pixel_L[base_idx + Int32(4)] += final_contrib[4]
                 end
             end
 
@@ -403,7 +408,6 @@ function _copy_multi_to_standard!(backend, state::VolPathState, multi_queue::Mul
     size_arr[1] = Int32(total)
     copyto!(state.material_queue.size, size_arr)
 
-    KernelAbstractions.synchronize(backend)
     return nothing
 end
 
@@ -467,16 +471,20 @@ function vp_process_surface_hits_coherent!(
         state.hit_surface_queue.capacity;
         ndrange=Int(state.hit_surface_queue.capacity)
     )
-
-    KernelAbstractions.synchronize(backend)
     return nothing
 end
 
 """
     vp_evaluate_materials_coherent!(backend, state, multi_queue, materials, textures, media, regularize)
 
-Evaluate materials using per-type queues - launches one kernel per type.
-Each kernel processes only items of that type (no branching).
+Evaluate materials using per-type queues with type-specialized kernels.
+
+Following pbrt-v4's approach: each material type gets its own kernel launch with
+the concrete material array passed directly. Julia specializes the kernel on the
+material array element type, eliminating dispatch overhead.
+
+This is the 1:1 port of pbrt-v4's ForEachType(EvaluateMaterialCallback{...}, Material::Types())
+pattern from surfscatter.cpp.
 """
 function vp_evaluate_materials_coherent!(
     backend,
@@ -484,19 +492,22 @@ function vp_evaluate_materials_coherent!(
     multi_queue::MultiMaterialQueue{N},
     materials::NTuple{N, Any},
     textures,
-    media,
+    _media,  # Unused - media handling is in _evaluate_typed_material! via work.current_medium
     regularize::Bool = true
 ) where {N}
     output_queue = next_ray_queue(state)
 
-    # Process each type's queue with specialized kernel
+    # pbrt-v4 pattern: for each material type, launch specialized kernel
+    # Julia specializes vp_evaluate_single_type_kernel! on mat_array's element type
+    #
+    # NOTE: We launch with capacity (not actual size) to avoid GPU→CPU sync.
+    # pbrt-v4 does the same - launches maxQueueSize threads and checks size inside kernel.
+    # This means N × capacity threads total, but idle threads early-exit.
     for type_idx in 1:N
         type_queue = multi_queue.queues[type_idx]
-        n_type = queue_size(type_queue)
-        n_type == 0 && continue
+        mat_array = materials[type_idx]  # Concrete Vector{MatType}
 
-        mat_array = materials[type_idx]
-
+        # Launch type-specialized kernel (Julia specializes on mat_array type)
         kernel! = vp_evaluate_single_type_kernel!(backend)
         kernel!(
             output_queue.items, output_queue.size,
@@ -505,18 +516,48 @@ function vp_evaluate_materials_coherent!(
             textures,
             state.rgb2spec_table.scale, state.rgb2spec_table.coeffs, state.rgb2spec_table.res,
             state.max_depth, output_queue.capacity, regularize;
+            ndrange=Int(type_queue.capacity)  # pbrt-v4 ForAllQueued pattern
+        )
+    end
+end
+
+"""Copy items from multi_queue to standard material_queue."""
+function _copy_multi_to_material_queue!(backend, state::VolPathState, multi_queue::MultiMaterialQueue{N}) where {N}
+    reset_queue!(backend, state.material_queue)
+
+    # Copy each type queue sequentially (simpler than fused kernel)
+    for type_idx in 1:N
+        type_queue = multi_queue.queues[type_idx]
+        kernel! = _copy_queue_kernel!(backend)
+        kernel!(
+            state.material_queue.items, state.material_queue.size,
+            type_queue.items, type_queue.size,
+            state.material_queue.capacity;
             ndrange=Int(type_queue.capacity)
         )
     end
+end
 
-    KernelAbstractions.synchronize(backend)
-    return nothing
+@kernel inbounds=true function _copy_queue_kernel!(
+    dst_items, dst_size,
+    @Const(src_items), @Const(src_size),
+    @Const(max_dst::Int32)
+)
+    idx = @index(Global)
+    @inbounds if idx <= src_size[1]
+        work = src_items[idx]
+        new_idx = Atomix.@atomic dst_size[1] += Int32(1)
+        if new_idx <= max_dst
+            dst_items[new_idx] = work
+        end
+    end
 end
 
 """
     vp_sample_direct_lighting_coherent!(backend, state, multi_queue, materials, textures, lights)
 
 Sample direct lighting using per-type material queues.
+Iterates over items in multi_queue directly without copying.
 """
 function vp_sample_direct_lighting_coherent!(
     backend,
@@ -526,30 +567,42 @@ function vp_sample_direct_lighting_coherent!(
     textures,
     lights
 ) where {N}
-    # For direct lighting, we can use the same approach:
-    # process each type's queue separately
+    # Process each per-type queue for direct lighting
+    # This avoids the need to copy items before direct lighting
     for type_idx in 1:N
         type_queue = multi_queue.queues[type_idx]
         n_type = queue_size(type_queue)
-        n_type == 0 && continue
-
-        # Use existing direct lighting kernel but with per-type queue
-        kernel! = vp_sample_surface_direct_lighting_kernel!(backend)
-        kernel!(
-            state.shadow_queue.items, state.shadow_queue.size,
-            type_queue.items, type_queue.size,
-            materials,
-            textures,
-            lights,
-            state.rgb2spec_table.scale, state.rgb2spec_table.coeffs, state.rgb2spec_table.res,
-            state.light_sampler_p, state.light_sampler_q, state.light_sampler_alias,
-            state.num_lights,
-            state.shadow_queue.capacity;
-            ndrange=Int(type_queue.capacity)
-        )
+        if n_type > 0
+            # Use the per-type queue's items directly for direct lighting sampling
+            vp_sample_direct_lighting_from_queue!(backend, state, type_queue, materials, textures, lights)
+        end
     end
+end
 
-    KernelAbstractions.synchronize(backend)
+"""Sample direct lighting from a specific material queue (helper for coherent mode)."""
+function vp_sample_direct_lighting_from_queue!(
+    backend,
+    state::VolPathState,
+    mat_queue::VPWorkQueue{VPMaterialEvalWorkItem},
+    materials,
+    textures,
+    lights
+)
+    n = queue_size(mat_queue)
+    n == 0 && return nothing
+
+    kernel! = vp_sample_surface_direct_lighting_kernel!(backend)
+    kernel!(
+        state.shadow_queue.items, state.shadow_queue.size,
+        mat_queue.items, mat_queue.size,
+        materials,
+        textures,
+        lights,
+        state.rgb2spec_table.scale, state.rgb2spec_table.coeffs, state.rgb2spec_table.res,
+        state.light_sampler_p, state.light_sampler_q, state.light_sampler_alias,
+        state.num_lights, state.shadow_queue.capacity;
+        ndrange=Int(mat_queue.capacity)
+    )
     return nothing
 end
 
@@ -611,8 +664,6 @@ function vp_evaluate_materials_sorted!(
         state.max_depth, output_queue.capacity, regularize;
         ndrange=Int(n_total)
     )
-
-    KernelAbstractions.synchronize(backend)
     return nothing
 end
 
@@ -625,7 +676,6 @@ function _count_material_types(backend, queue::VPWorkQueue{VPMaterialEvalWorkIte
     if n > 0
         kernel! = _count_types_kernel!(backend)
         kernel!(counts_gpu, queue.items, queue.size, Int32(N); ndrange=Int(queue.capacity))
-        KernelAbstractions.synchronize(backend)
     end
 
     return Int.(Array(counts_gpu))
@@ -669,7 +719,6 @@ function _scatter_by_material_type!(
             Int32(N);
             ndrange=Int(src_queue.capacity)
         )
-        KernelAbstractions.synchronize(backend)
     end
 end
 
