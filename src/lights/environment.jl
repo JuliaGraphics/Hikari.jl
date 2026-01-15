@@ -49,14 +49,13 @@ Tuple of (radiance, incident direction, pdf, visibility tester)
     # Importance sample the environment map based on luminance
     uv, map_pdf = sample_continuous(e.env_map.distribution, u)
 
-    # Convert UV to direction
+    # Convert UV to direction using equal-area mapping
     wi = uv_to_direction(uv, e.env_map.rotation)
 
     # Convert PDF from image space to solid angle
-    # pdf_solidangle = pdf_image / (2π² sin(θ))
-    θ = uv[2] * π
-    sin_θ = sin(θ)
-    pdf = sin_θ > 0f0 ? map_pdf / (2f0 * π * π * sin_θ) : 0f0
+    # For equal-area mapping: pdf_solidangle = pdf_image / (4π)
+    # This is because equal-area mapping preserves solid angle uniformity
+    pdf = map_pdf / (4f0 * Float32(π))
 
     # Sample the environment map
     radiance = e.scale * e.env_map(wi)
@@ -91,10 +90,8 @@ function sample_le(
     wi = uv_to_direction(uv, e.env_map.rotation)
 
     # Convert PDF from image space to solid angle
-    # For equirectangular: pdf_solidangle = pdf_image / (2π² sin(θ))
-    θ = uv[2] * π
-    sin_θ = sin(θ)
-    pdf_dir = sin_θ > 0f0 ? map_pdf / (2f0 * π * π * sin_θ) : 0f0
+    # For equal-area mapping: pdf_solidangle = pdf_image / (4π)
+    pdf_dir = map_pdf / (4f0 * Float32(π))
 
     # Ray direction is -wi (pointing into the scene)
     ray_dir = -wi
@@ -121,7 +118,7 @@ function sample_le(
     light_normal = Normal3f(wi)
 
     # PDF for position on disk
-    pdf_pos = 1f0 / (π * scene.world_radius^2)
+    pdf_pos = 1f0 / (Float32(π) * scene.world_radius^2)
 
     # Sample radiance in the direction wi (the direction light comes FROM)
     radiance = e.scale * e.env_map(wi)
@@ -143,16 +140,15 @@ PDF for sampling a particular direction from the environment light.
 Returns the probability density for importance sampling this direction.
 """
 function pdf_li(e::EnvironmentLight, ::Interaction, wi::Vec3f)::Float32
-    # Convert direction to UV
+    # Convert direction to UV using equal-area mapping
     uv = direction_to_uv(wi, e.env_map.rotation)
 
     # Get PDF from 2D distribution
     map_pdf = pdf(e.env_map.distribution, uv)
 
     # Convert from image space to solid angle
-    θ = uv[2] * π
-    sin_θ = sin(θ)
-    sin_θ > 0f0 ? map_pdf / (2f0 * π * π * sin_θ) : 0f0
+    # For equal-area mapping: pdf_solidangle = pdf_image / (4π)
+    map_pdf / (4f0 * Float32(π))
 end
 
 """

@@ -2,9 +2,12 @@
 Environment map texture for HDR image-based lighting.
 Supports sampling by direction vector (for environment lights).
 Includes importance sampling distribution based on luminance.
+
+Uses equal-area (octahedral) mapping like pbrt-v4's ImageInfiniteLight.
+Expects SQUARE images in equal-area format.
 """
 struct EnvironmentMap{S<:Spectrum, T<:AbstractMatrix{S}, D}
-    """HDR image data (lat-long / equirectangular format)."""
+    """HDR image data in equal-area (octahedral) format. Must be square."""
     data::T
 
     """Rotation matrix (render space to light/map space). Apply inverse to transform directions."""
@@ -19,16 +22,21 @@ struct EnvironmentMap{S<:Spectrum, T<:AbstractMatrix{S}, D}
     end
 
     function EnvironmentMap(data::AbstractMatrix{S}, rotation::Mat3f=Mat3f(I)) where {S<:Spectrum}
-        # Build luminance-weighted distribution for importance sampling
-        # Weight by sin(θ) to account for solid angle distortion in equirectangular maps
         h, w = size(data)
+
+        # pbrt-v4 expects square images for equal-area mapping
+        if h != w
+            @warn "Environment map is not square ($w x $h). pbrt-v4 uses equal-area mapping which expects square images."
+        end
+
+        # Build luminance-weighted distribution for importance sampling
+        # For equal-area mapping, NO sin(θ) weighting is needed because
+        # equal-area projection already preserves solid angle uniformity.
+        # This matches pbrt-v4's Image::GetSamplingDistribution() for equal-area images.
         luminance = Matrix{Float32}(undef, h, w)
         for v in 1:h
-            # θ goes from 0 (top, +Y) to π (bottom, -Y)
-            θ = π * (v - 0.5f0) / h
-            sin_θ = sin(θ)
             for u in 1:w
-                luminance[v, u] = to_Y(data[v, u]) * sin_θ
+                luminance[v, u] = to_Y(data[v, u])
             end
         end
         distribution = Distribution2D(luminance)
@@ -55,6 +63,173 @@ function rotation_matrix(angle_degrees::Real, axis::Vec3f)::Mat3f
     )
 end
 
+# =============================================================================
+# Equal-Area Sphere Mapping (pbrt-v4 octahedral mapping)
+# =============================================================================
+
+"""
+    equal_area_sphere_to_square(d::Vec3f) -> Point2f
+
+Convert a direction vector to equal-area square UV coordinates.
+This is pbrt-v4's octahedral/equal-area mapping used for environment maps.
+
+Reference: Clarberg, "Fast Equal-Area Mapping of the (Hemi)Sphere using SIMD"
+"""
+@propagate_inbounds function equal_area_sphere_to_square(d::Vec3f)::Point2f
+    x, y, z = abs(d[1]), abs(d[2]), abs(d[3])
+
+    # Compute the radius r = sqrt(1 - |z|)
+    r = sqrt(1f0 - z)
+
+    # Compute the argument to atan (detect a=0 to avoid div-by-zero)
+    a = max(x, y)
+    b = a == 0f0 ? 0f0 : min(x, y) / a
+
+    # Polynomial approximation of atan(x)*2/pi, x=b
+    # Coefficients for 6th degree minimax approximation of atan(x)*2/pi, x=[0,1]
+    t1 = 0.406758566246788489601959989f-5
+    t2 = 0.636226545274016134946890922156f0
+    t3 = 0.61572017898280213493197203466f-2
+    t4 = -0.247333733281268944196501420480f0
+    t5 = 0.881770664775316294736387951347f-1
+    t6 = 0.419038818029165735901852432784f-1
+    t7 = -0.251390972343483509333252996350f-1
+
+    # Evaluate polynomial: t1 + b*(t2 + b*(t3 + b*(t4 + b*(t5 + b*(t6 + b*t7)))))
+    phi = t1 + b * (t2 + b * (t3 + b * (t4 + b * (t5 + b * (t6 + b * t7)))))
+
+    # Extend phi if the input is in the range 45-90 degrees (x < y)
+    if x < y
+        phi = 1f0 - phi
+    end
+
+    # Find (u,v) based on (r,phi)
+    v = phi * r
+    u = r - v
+
+    # Southern hemisphere -> mirror u,v
+    if d[3] < 0f0
+        u, v = v, u
+        u = 1f0 - u
+        v = 1f0 - v
+    end
+
+    # Move (u,v) to the correct quadrant based on the signs of (x,y)
+    u = copysign(u, d[1])
+    v = copysign(v, d[2])
+
+    # Transform (u,v) from [-1,1] to [0,1]
+    Point2f(0.5f0 * (u + 1f0), 0.5f0 * (v + 1f0))
+end
+
+"""
+    equal_area_square_to_sphere(p::Point2f) -> Vec3f
+
+Convert equal-area square UV coordinates to a direction vector.
+Inverse of equal_area_sphere_to_square.
+
+Reference: pbrt-v4's EqualAreaSquareToSphere
+"""
+@propagate_inbounds function equal_area_square_to_sphere(p::Point2f)::Vec3f
+    # Transform p from [0,1]² to [-1,1]² and compute absolute values
+    u = 2f0 * p[1] - 1f0
+    v = 2f0 * p[2] - 1f0
+    up = abs(u)
+    vp = abs(v)
+
+    # Compute radius r as signed distance from diagonal
+    signed_distance = 1f0 - (up + vp)
+    d = abs(signed_distance)
+    r = 1f0 - d
+
+    # Compute angle φ for square to sphere mapping
+    phi = (r == 0f0 ? 1f0 : (vp - up) / r + 1f0) * Float32(π) / 4f0
+
+    # Find z coordinate for spherical direction
+    z = copysign(1f0 - r * r, signed_distance)
+
+    # Compute cos(φ) and sin(φ) for original quadrant and return vector
+    cos_phi = copysign(cos(phi), u)
+    sin_phi = copysign(sin(phi), v)
+
+    # Compute x, y from cylindrical coordinates
+    # r_cyl = r * sqrt(2 - r²)
+    r_cyl = r * sqrt(2f0 - r * r)
+
+    Vec3f(cos_phi * r_cyl, sin_phi * r_cyl, z)
+end
+
+"""
+    wrap_equal_area_square(uv::Point2f) -> Point2f
+
+Wrap UV coordinates for equal-area sphere mapping (octahedral wrapping).
+Handles coordinates outside [0,1]² by mirroring appropriately.
+"""
+@propagate_inbounds function wrap_equal_area_square(uv::Point2f)::Point2f
+    u, v = uv[1], uv[2]
+
+    if u < 0f0
+        u = -u           # mirror across u = 0
+        v = 1f0 - v      # mirror across v = 0.5
+    elseif u > 1f0
+        u = 2f0 - u      # mirror across u = 1
+        v = 1f0 - v      # mirror across v = 0.5
+    end
+
+    if v < 0f0
+        u = 1f0 - u      # mirror across u = 0.5
+        v = -v           # mirror across v = 0
+    elseif v > 1f0
+        u = 1f0 - u      # mirror across u = 0.5
+        v = 2f0 - v      # mirror across v = 1
+    end
+
+    Point2f(u, v)
+end
+
+# =============================================================================
+# Direction <-> UV conversion (with rotation support)
+# =============================================================================
+
+"""
+    direction_to_uv_equal_area(dir::Vec3f, rotation::Mat3f) -> Point2f
+
+Convert direction to UV using equal-area (octahedral) mapping.
+This is what pbrt-v4 uses for ImageInfiniteLight.
+
+The rotation matrix transforms from render space to light/map space.
+"""
+@propagate_inbounds function direction_to_uv_equal_area(dir::Vec3f, rotation::Mat3f)::Point2f
+    # Transform direction from render space to light space (inverse = transpose)
+    dir_light = transpose(rotation) * dir
+    equal_area_sphere_to_square(dir_light)
+end
+
+"""
+    uv_to_direction_equal_area(uv::Point2f, rotation::Mat3f) -> Vec3f
+
+Convert UV to direction using equal-area (octahedral) mapping.
+Inverse of direction_to_uv_equal_area.
+"""
+@propagate_inbounds function uv_to_direction_equal_area(uv::Point2f, rotation::Mat3f)::Vec3f
+    dir_light = equal_area_square_to_sphere(uv)
+    # Transform from light space to render space
+    rotation * dir_light
+end
+
+# Default direction_to_uv and uv_to_direction now use equal-area (pbrt-v4 compatible)
+@propagate_inbounds function direction_to_uv(dir::Vec3f, rotation::Mat3f)::Point2f
+    direction_to_uv_equal_area(dir, rotation)
+end
+
+@propagate_inbounds function uv_to_direction(uv::Point2f, rotation::Mat3f)::Vec3f
+    uv_to_direction_equal_area(uv, rotation)
+end
+
+# =============================================================================
+# Equirectangular Mapping (lat-long, legacy - for non-pbrt-v4 images)
+# =============================================================================
+
 """
 Convert a direction vector to equirectangular UV coordinates.
 Uses standard lat-long mapping where:
@@ -64,7 +239,7 @@ Uses standard lat-long mapping where:
 The rotation matrix transforms from render space to light/map space.
 We apply the INVERSE (transpose for orthogonal matrices) to get the direction in map space.
 """
-@propagate_inbounds function direction_to_uv(dir::Vec3f, rotation::Mat3f)::Point2f
+@propagate_inbounds function direction_to_uv_equirect(dir::Vec3f, rotation::Mat3f)::Point2f
     # Transform direction from render space to light space (inverse = transpose)
     dir_light = transpose(rotation) * dir
 
@@ -88,12 +263,12 @@ end
 
 """
 Convert equirectangular UV coordinates to a direction vector.
-Inverse of direction_to_uv.
+Inverse of direction_to_uv_equirect.
 
 The rotation matrix transforms from render space to light/map space.
 We apply the rotation (not inverse) to transform from light space back to render space.
 """
-@propagate_inbounds function uv_to_direction(uv::Point2f, rotation::Mat3f)::Vec3f
+@propagate_inbounds function uv_to_direction_equirect(uv::Point2f, rotation::Mat3f)::Vec3f
     # Convert UV to spherical coordinates
     # U: [0, 1] -> φ ∈ [-π, π]
     φ = uv[1] * 2f0 * Float32(π) - Float32(π)
