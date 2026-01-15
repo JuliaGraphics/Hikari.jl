@@ -282,23 +282,14 @@ function render!(
     backend = KA.get_backend(img)
 
     # Allocate or validate state
-<<<<<<< HEAD
-    # Must check backend too - reusing state from different backend causes corruption
-    # (e.g., OpenCL device arrays used with CPU backend)
-    if vp.state === nothing ||
-       vp.state.width != width ||
-       vp.state.height != height ||
-       vp.state.backend !== backend
-        vp.state = VolPathState(backend, width, height; max_depth=vp.max_depth)
-=======
     # Note: Rebuild state if lights changed (num_lights mismatch) to update light sampler
     n_lights = count_lights(lights)
     if vp.state === nothing ||
-       vp.state.width != width ||
-       vp.state.height != height ||
-       vp.state.num_lights != n_lights
+            vp.state.width != width ||
+            vp.state.height != height ||
+            vp.state.num_lights != n_lights ||
+            vp.state.backend !== backend
         vp.state = VolPathState(backend, width, height, lights; max_depth=vp.max_depth)
->>>>>>> a14949cf8990c36268f7f051d64df5ce7d455e31
     end
     state = vp.state
 
