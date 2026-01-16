@@ -110,6 +110,10 @@ Implements delta tracking following pbrt-v4's SampleMediumInteraction.
     r_l = work.r_l
     scattered = false
 
+    # Ray state for deflection (mutable during tracking)
+    ray_o = work.ray.o
+    ray_d = work.ray.d
+
     # Tracking loop (bounded iterations for GPU)
     max_iterations = Int32(1000)
     for _ in 1:max_iterations
@@ -144,7 +148,7 @@ Implements delta tracking following pbrt-v4's SampleMediumInteraction.
         end
 
         # Sample medium properties at interaction point
-        p = Point3f(work.ray.o + work.ray.d * t_sample)
+        p = Point3f(ray_o + ray_d * t_sample)
         mp = sample_point_dispatch(rgb2spec_table, media, medium_type_idx, p, work.lambda)
 
         # Compute transmittance for this segment (from t to t_sample)
@@ -194,7 +198,7 @@ Implements delta tracking following pbrt-v4's SampleMediumInteraction.
             # Push to scatter queue for phase function sampling
             scatter_item = VPMediumScatterWorkItem(
                 p,
-                -work.ray.d,  # wo points back toward camera
+                -ray_d,  # wo points back toward camera (use deflected direction)
                 work.ray.time,
                 work.lambda,
                 work.pixel_index,
@@ -233,6 +237,11 @@ Implements delta tracking following pbrt-v4's SampleMediumInteraction.
 
             t = t_sample
 
+            # Apply ray deflection (for gravitational lensing / curved spacetime)
+            # Update ray origin to current position and bend direction
+            ray_o = p
+            ray_d = apply_deflection_dispatch(media, medium_type_idx, p, ray_d, dt)
+
             # Check if throughput is too low
             if is_black(beta) || is_black(r_u)
                 return
@@ -251,7 +260,7 @@ Implements delta tracking following pbrt-v4's SampleMediumInteraction.
     if !work.has_surface_hit
         # Ray escaped scene (t_max was Infinity)
         escaped_item = VPEscapedRayWorkItem(
-            work.ray.d,
+            ray_d,  # Use deflected direction for environment lookup
             work.lambda,
             work.pixel_index,
             beta,

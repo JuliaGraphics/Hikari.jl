@@ -449,3 +449,27 @@ end
 
     return RayMajorantSegment(t_min, t_max, σ_maj)
 end
+
+# ============================================================================
+# Ray Deflection (for spacetime curvature / gravitational lensing)
+# ============================================================================
+
+"""
+    apply_deflection(medium, p, ray_d, dt) -> Vec3f
+
+Apply ray deflection due to medium properties at position p.
+Default implementation: no deflection (returns ray_d unchanged).
+
+Media that bend light (e.g., SpacetimeMedium for gravitational lensing)
+should override this method.
+
+Arguments:
+- medium: The medium the ray is traveling through
+- p: Current position along the ray
+- ray_d: Current ray direction (normalized)
+- dt: Step size (for scaling deflection)
+
+Returns:
+- New ray direction (should be normalized)
+"""
+@propagate_inbounds apply_deflection(medium, p::Point3f, ray_d::Vec3f, dt::Float32) = ray_d

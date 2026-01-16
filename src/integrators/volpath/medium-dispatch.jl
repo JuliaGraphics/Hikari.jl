@@ -160,3 +160,39 @@ end
 @propagate_inbounds function is_emissive_dispatch(medium::Medium, idx::Int32)
     return is_emissive(medium)
 end
+
+# ============================================================================
+# Ray Deflection Dispatch (for gravitational lensing / spacetime curvature)
+# ============================================================================
+
+"""Apply ray deflection - helper for with_medium"""
+@propagate_inbounds function _apply_deflection_helper(medium, p::Point3f, ray_d::Vec3f, dt::Float32)
+    return apply_deflection(medium, p, ray_d, dt)
+end
+
+"""
+    apply_deflection_dispatch(media, idx, p, ray_d, dt) -> Vec3f
+
+Type-stable dispatch for applying ray deflection in a medium.
+Uses with_medium pattern for GPU compatibility.
+"""
+@propagate_inbounds function apply_deflection_dispatch(
+    media::NTuple{N,Any},
+    idx::Int32,
+    p::Point3f,
+    ray_d::Vec3f,
+    dt::Float32
+) where {N}
+    return with_medium(_apply_deflection_helper, media, idx, p, ray_d, dt)
+end
+
+# Single medium fallback
+@propagate_inbounds function apply_deflection_dispatch(
+    medium::Medium,
+    idx::Int32,
+    p::Point3f,
+    ray_d::Vec3f,
+    dt::Float32
+)
+    return apply_deflection(medium, p, ray_d, dt)
+end

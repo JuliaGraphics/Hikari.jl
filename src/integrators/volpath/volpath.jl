@@ -266,11 +266,11 @@ use the main call function `(vp::VolPath)(scene, film, camera)` which wraps
 this in a loop.
 """
 function render!(
-    vp::VolPath,
-    scene::AbstractScene,
-    film::Film,
-    camera::Camera
-)
+        vp::VolPath,
+        scene::AbstractScene,
+        film::Film,
+        camera::Camera
+    )
     img = film.framebuffer
     accel = scene.aggregate.accel
     materials = scene.aggregate.materials
@@ -298,6 +298,7 @@ function render!(
     # Get current iteration index and increment
     sample_idx = film.iteration_index[] + Int32(1)
     film.iteration_index[] = sample_idx
+    @show sample_idx
 
     # Get accumulators from state (allocation-free)
     pixel_rgb = state.pixel_rgb

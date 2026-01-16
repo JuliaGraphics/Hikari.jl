@@ -294,17 +294,17 @@ end
 @propagate_inbounds function estimate_light_power(light::DirectionalLight)
     # Directional lights illuminate the entire scene uniformly
     # Their "power" is proportional to intensity for importance sampling
-    luminance(light.i) * 1e6f0  # Large factor since they affect whole scene
+    luminance(light.i) * Float32(1e6)  # Large factor since they affect whole scene
 end
 
 @propagate_inbounds function estimate_light_power(light::SunLight)
     # Similar to directional light
-    luminance(light.l) * 1e6f0
+    luminance(light.l) * Float32(1e6)
 end
 
 @propagate_inbounds function estimate_light_power(light::SunSkyLight)
     # Sun contributes most of the direct illumination
-    luminance(light.sun_intensity) * 1e6f0
+    luminance(light.sun_intensity) * Float32(1e6)
 end
 
 @propagate_inbounds function estimate_light_power(light::AmbientLight)
