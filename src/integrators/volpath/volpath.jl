@@ -32,13 +32,22 @@ mutable struct VolPath <: Integrator
     russian_roulette_depth::Int32
     regularize::Bool  # Apply BSDF regularization after first non-specular bounce
     material_coherence::Symbol  # Material evaluation mode: :none, :sorted, :per_type
+    max_component_value::Float32  # Firefly suppression: clamp RGB components (pbrt-v4 style)
+    filter_params::GPUFilterParams  # Filter for pixel reconstruction (pbrt-v4 style)
+
+    # Film sensor parameters (pbrt-v4 style PixelSensor)
+    iso::Float32  # ISO sensitivity (100 = baseline)
+    exposure_time::Float32  # Exposure time in seconds (default 1.0)
+    white_balance::Float32  # Color temperature in Kelvin (0 = use E illuminant, else adapt to D65)
 
     # Cached render state
     state::Union{Nothing, VolPathState}
 end
 
 """
-    VolPath(; max_depth=8, samples=64, russian_roulette_depth=3, regularize=true, material_coherence=:none)
+    VolPath(; max_depth=8, samples=64, russian_roulette_depth=3, regularize=true,
+            material_coherence=:none, max_component_value=Inf32, filter=BoxFilter(),
+            iso=100, exposure_time=1.0, white_balance=0)
 
 Create a VolPath integrator for volumetric path tracing.
 
@@ -53,13 +62,32 @@ Create a VolPath integrator for volumetric path tracing.
   - `:none`: Standard evaluation (baseline)
   - `:sorted`: Sort work items by material type before evaluation
   - `:per_type`: Launch separate kernels per material type (pbrt-v4 style)
+- `max_component_value`: Maximum RGB component value before clamping (default: Inf32).
+  When set to a finite value, RGB values are scaled down if any component exceeds this.
+  This is pbrt-v4's firefly suppression mechanism. Try values like 10.0 or 100.0.
+- `filter`: Pixel reconstruction filter (default: BoxFilter()).
+  Supports BoxFilter, TriangleFilter, GaussianFilter, MitchellFilter, LanczosSincFilter.
+  Filter determines how samples contribute to pixel values based on their position.
+- `iso`: ISO sensitivity (default: 100). Higher values = brighter image.
+  Combined with exposure_time to compute imagingRatio = exposure_time * iso / 100
+  following pbrt-v4's PixelSensor.
+- `exposure_time`: Exposure time in seconds (default: 1.0).
+- `white_balance`: Color temperature in Kelvin for white balance (default: 0).
+  When 0, uses Equal-Energy (E) illuminant → D65 adaptation.
+  When > 0, adapts from specified color temperature → D65 using Bradford chromatic adaptation.
+  Common values: 5000 (daylight), 6500 (D65), 3200 (tungsten).
 """
 function VolPath(;
     max_depth::Int = 8,
     samples::Int = 64,
     russian_roulette_depth::Int = 3,
     regularize::Bool = true,
-    material_coherence::Symbol = :none
+    material_coherence::Symbol = :none,
+    max_component_value::Real = Inf32,
+    filter::AbstractFilter = BoxFilter(),
+    iso::Real = 100,
+    exposure_time::Real = 1.0,
+    white_balance::Real = 0
 )
     @assert material_coherence in (:none, :sorted, :per_type) "material_coherence must be :none, :sorted, or :per_type"
     return VolPath(
@@ -68,6 +96,11 @@ function VolPath(;
         Int32(russian_roulette_depth),
         regularize,
         material_coherence,
+        Float32(max_component_value),
+        GPUFilterParams(filter),
+        Float32(iso),
+        Float32(exposure_time),
+        Float32(white_balance),
         nothing
     )
 end
@@ -75,11 +108,12 @@ end
 """
     clear!(integrator::VolPath)
 
-Clear the integrator's internal state (RGB accumulator) for restarting progressive rendering.
+Clear the integrator's internal state (RGB and weight accumulators) for restarting progressive rendering.
 """
 function Hikari.clear!(vp::VolPath)
     if vp.state !== nothing
         KernelAbstractions.fill!(vp.state.pixel_rgb, 0f0)
+        KernelAbstractions.fill!(vp.state.pixel_weight_sum, 0f0)
     end
 end
 
@@ -90,16 +124,19 @@ end
 """
     vp_generate_camera_rays_kernel!(...)
 
-Generate camera rays with per-pixel wavelength sampling.
+Generate camera rays with per-pixel wavelength sampling and filter weight computation.
+Following pbrt-v4's GetCameraSample: samples the filter, computes offset and weight.
 """
 @kernel inbounds=true function vp_generate_camera_rays_kernel!(
     ray_items, ray_size,
     wavelengths_per_pixel,
     pdf_per_pixel,
+    filter_weight_per_pixel,
     @Const(width::Int32), @Const(height::Int32),
     @Const(camera),
     @Const(sample_idx::Int32),
-    @Const(initial_medium_idx)
+    @Const(initial_medium_idx),
+    @Const(filter_params::GPUFilterParams)
 )
     idx = @index(Global)
     num_pixels = width * height
@@ -109,10 +146,18 @@ Generate camera rays with per-pixel wavelength sampling.
         x = u_int32(mod(pixel_idx, width)) + Int32(1)
         y = u_int32(div(pixel_idx, width)) + Int32(1)
 
-        # Random jitter and wavelength sample
-        jitter_x = rand(Float32)
-        jitter_y = rand(Float32)
-        wavelength_u = rand(Float32)
+        # Stratified sampling: deterministic samples based on (pixel, sample_index)
+        # Uses R2 quasi-random sequence with per-pixel Cranley-Patterson rotation
+        pixel_sample = compute_pixel_sample(Int32(x), Int32(y), sample_idx)
+        wavelength_u = pixel_sample.wavelength_u
+
+        # Sample the filter to get offset and weight (pbrt-v4 style)
+        # The filter sample uses the pixel jitter values as the 2D random input
+        filter_u = Point2f(pixel_sample.jitter_x, pixel_sample.jitter_y)
+        filter_sample = gpu_filter_sample(filter_params, filter_u)
+
+        # Store filter weight for this sample (used in accumulation)
+        filter_weight_per_pixel[idx] = filter_sample.weight
 
         # Sample wavelengths for this pixel
         lambda = sample_wavelengths_visible(wavelength_u)
@@ -128,10 +173,11 @@ Generate camera rays with per-pixel wavelength sampling.
         pdf_per_pixel[base + Int32(3)] = lambda.pdf[3]
         pdf_per_pixel[base + Int32(4)] = lambda.pdf[4]
 
-        # Film position with jitter (flip Y for camera convention)
+        # Film position with filter offset (flip Y for camera convention)
+        # pbrt-v4: cs.pFilm = pPixel + fs.p + Vector2f(0.5f, 0.5f)
         p_film = Point2f(
-            Float32(x) - 0.5f0 + jitter_x,
-            Float32(height) - Float32(y) + 0.5f0 + jitter_y
+            Float32(x) + filter_sample.p[1],
+            Float32(height) - Float32(y) + 1f0 + filter_sample.p[2]
         )
 
         camera_sample = CameraSample(p_film, Point2f(0.5f0, 0.5f0), 0f0)
@@ -166,13 +212,34 @@ end
 # Film Accumulation
 # ============================================================================
 
+"""
+    vp_accumulate_to_rgb_kernel!(...)
+
+Accumulate spectral radiance to RGB with filter weight support.
+Following pbrt-v4's RGBFilm::AddSample and PixelSensor::ToSensorRGB:
+- Convert spectral L to XYZ using CIE matching functions
+- Apply white balance (Bradford chromatic adaptation from source → D65)
+- Convert XYZ to linear sRGB
+- Apply imagingRatio = exposure_time * iso / 100 (pbrt-v4 style)
+- Apply maxComponentValue clamping for firefly suppression
+- Accumulate weighted RGB: rgbSum += weight * rgb
+- Accumulate weight: weightSum += weight
+"""
 @kernel inbounds=true function vp_accumulate_to_rgb_kernel!(
     pixel_rgb,
+    pixel_weight_sum,
     @Const(pixel_L),
     @Const(wavelengths_per_pixel),
     @Const(pdf_per_pixel),
+    @Const(filter_weight_per_pixel),
     @Const(cie_x), @Const(cie_y), @Const(cie_z),
-    @Const(n_pixels::Int32)
+    @Const(n_pixels::Int32),
+    @Const(max_component_value::Float32),
+    @Const(imaging_ratio::Float32),
+    # White balance matrix (3x3, row-major: m11,m12,m13,m21,m22,m23,m31,m32,m33)
+    @Const(wb_m11::Float32), @Const(wb_m12::Float32), @Const(wb_m13::Float32),
+    @Const(wb_m21::Float32), @Const(wb_m22::Float32), @Const(wb_m23::Float32),
+    @Const(wb_m31::Float32), @Const(wb_m32::Float32), @Const(wb_m33::Float32)
 )
     pixel_idx = @index(Global)
 
@@ -205,21 +272,64 @@ end
 
         lambda = Wavelengths(lambda_tuple, pdf_tuple)
 
-        # Convert spectral to linear RGB
-        R, G, B = spectral_to_linear_rgb(cie_table, L, lambda)
+        # Convert spectral to XYZ
+        X, Y, Z = spectral_to_xyz(cie_table, L, lambda)
 
-        # Accumulate
+        # Apply white balance (Bradford chromatic adaptation matrix: XYZ → XYZ')
+        # This transforms from source illuminant to D65
+        X_wb = wb_m11 * X + wb_m12 * Y + wb_m13 * Z
+        Y_wb = wb_m21 * X + wb_m22 * Y + wb_m23 * Z
+        Z_wb = wb_m31 * X + wb_m32 * Y + wb_m33 * Z
+
+        # Convert XYZ (now in D65 space) to linear sRGB
+        R, G, B = xyz_to_linear_srgb(X_wb, Y_wb, Z_wb)
+
+        # Clamp negative values
+        R = max(0f0, R)
+        G = max(0f0, G)
+        B = max(0f0, B)
+
+        # Apply imagingRatio (pbrt-v4: exposure_time * iso / 100)
+        # This is the key brightness/ISO scaling
+        R *= imaging_ratio
+        G *= imaging_ratio
+        B *= imaging_ratio
+
+        # Apply maxComponentValue clamping (pbrt-v4 firefly suppression)
+        # This preserves color hue while preventing extremely bright values
+        m = max(R, max(G, B))
+        if m > max_component_value
+            scale = max_component_value / m
+            R *= scale
+            G *= scale
+            B *= scale
+        end
+
+        # Get filter weight for this sample (pbrt-v4 style weighted accumulation)
+        weight = filter_weight_per_pixel[pixel_idx]
+
+        # Accumulate weighted RGB (pbrt-v4: pixel.rgbSum[c] += weight * rgb[c])
         rgb_base = (pixel_idx - Int32(1)) * Int32(3)
-        Atomix.@atomic pixel_rgb[rgb_base + Int32(1)] += R
-        Atomix.@atomic pixel_rgb[rgb_base + Int32(2)] += G
-        Atomix.@atomic pixel_rgb[rgb_base + Int32(3)] += B
+        Atomix.@atomic pixel_rgb[rgb_base + Int32(1)] += weight * R
+        Atomix.@atomic pixel_rgb[rgb_base + Int32(2)] += weight * G
+        Atomix.@atomic pixel_rgb[rgb_base + Int32(3)] += weight * B
+
+        # Accumulate weight (pbrt-v4: pixel.weightSum += weight)
+        Atomix.@atomic pixel_weight_sum[pixel_idx] += weight
     end
 end
 
+"""
+    vp_finalize_film_kernel!(...)
+
+Finalize film by dividing weighted RGB sum by weight sum.
+Following pbrt-v4's RGBFilm::GetPixelRGB:
+- rgb = rgbSum / weightSum (if weightSum != 0)
+"""
 @kernel inbounds=true function vp_finalize_film_kernel!(
     framebuffer,
     @Const(pixel_rgb),
-    @Const(samples::Int32),
+    @Const(pixel_weight_sum),
     @Const(width::Int32), @Const(height::Int32)
 )
     pixel_idx = @index(Global)
@@ -229,9 +339,19 @@ end
         py = ((pixel_idx - Int32(1)) ÷ width) + Int32(1)
 
         rgb_base = (pixel_idx - Int32(1)) * Int32(3)
-        r = pixel_rgb[rgb_base + Int32(1)] / Float32(samples)
-        g = pixel_rgb[rgb_base + Int32(2)] / Float32(samples)
-        b = pixel_rgb[rgb_base + Int32(3)] / Float32(samples)
+        weight_sum = pixel_weight_sum[pixel_idx]
+
+        # Normalize by weight sum (pbrt-v4 style)
+        if weight_sum > 0f0
+            inv_weight = 1f0 / weight_sum
+            r = pixel_rgb[rgb_base + Int32(1)] * inv_weight
+            g = pixel_rgb[rgb_base + Int32(2)] * inv_weight
+            b = pixel_rgb[rgb_base + Int32(3)] * inv_weight
+        else
+            r = 0f0
+            g = 0f0
+            b = 0f0
+        end
 
         # Store linear HDR values (no clamping, no gamma)
         # Postprocessing will handle tonemapping and gamma correction
@@ -285,11 +405,13 @@ function render!(
     # Note: Rebuild state if lights changed (num_lights mismatch) to update light sampler
     n_lights = count_lights(lights)
     if vp.state === nothing ||
-            vp.state.width != width ||
-            vp.state.height != height ||
-            vp.state.num_lights != n_lights ||
-            vp.state.backend !== backend
-        vp.state = VolPathState(backend, width, height, lights; max_depth=vp.max_depth)
+       vp.state.width != width ||
+       vp.state.height != height ||
+       vp.state.num_lights != n_lights
+        # Pass scene_radius for proper light power estimation (pbrt-v4 style)
+        vp.state = VolPathState(backend, width, height, lights;
+                                max_depth=vp.max_depth,
+                                scene_radius=scene.world_radius)
     end
     state = vp.state
 
@@ -302,8 +424,10 @@ function render!(
 
     # Get accumulators from state (allocation-free)
     pixel_rgb = state.pixel_rgb
+    pixel_weight_sum = state.pixel_weight_sum
     wavelengths_per_pixel = state.wavelengths_per_pixel
     pdf_per_pixel = state.pdf_per_pixel
+    filter_weight_per_pixel = state.filter_weight_per_pixel
 
     # Initial medium (vacuum unless camera is inside medium)
     initial_medium = MediumIndex()
@@ -315,13 +439,13 @@ function render!(
     # Reset ray queue
     reset_queue!(backend, current_ray_queue(state))
 
-    # Generate camera rays
+    # Generate camera rays with filter sampling (pbrt-v4 style)
     kernel! = vp_generate_camera_rays_kernel!(backend)
     kernel!(
         current_ray_queue(state).items, current_ray_queue(state).size,
-        wavelengths_per_pixel, pdf_per_pixel,
+        wavelengths_per_pixel, pdf_per_pixel, filter_weight_per_pixel,
         Int32(width), Int32(height),
-        camera, sample_idx, initial_medium;
+        camera, sample_idx, initial_medium, vp.filter_params;
         ndrange=Int(n_pixels)
     )
 
@@ -408,21 +532,40 @@ function render!(
         swap_ray_queues!(state)
     end
 
-    # Accumulate this sample's spectral radiance to RGB
+    # Compute sensor parameters for spectral-to-RGB conversion (pbrt-v4 style PixelSensor)
+    # imagingRatio = exposure_time * iso / 100 (pbrt-v4 convention)
+    imaging_ratio = vp.exposure_time * vp.iso / 100f0
+
+    # White balance matrix (Bradford chromatic adaptation from source illuminant to D65)
+    # If white_balance == 0, use identity (E illuminant, no adaptation needed for E→D65 since
+    # our spectral→XYZ already uses CIE standard observer which assumes E illuminant)
+    wb_matrix = if vp.white_balance > 0f0
+        compute_white_balance_matrix(vp.white_balance)
+    else
+        # Identity matrix for E illuminant (already D65-referenced via CIE observer)
+        @SMatrix Float32[1 0 0; 0 1 0; 0 0 1]
+    end
+
+    # Accumulate this sample's spectral radiance to RGB with filter weights (pbrt-v4 style)
     kernel! = vp_accumulate_to_rgb_kernel!(backend)
     kernel!(
-        pixel_rgb, state.pixel_L,
-        wavelengths_per_pixel, pdf_per_pixel,
+        pixel_rgb, pixel_weight_sum, state.pixel_L,
+        wavelengths_per_pixel, pdf_per_pixel, filter_weight_per_pixel,
         state.cie_table.cie_x, state.cie_table.cie_y, state.cie_table.cie_z,
-        Int32(n_pixels);
+        Int32(n_pixels),
+        vp.max_component_value,
+        imaging_ratio,
+        # White balance matrix (3x3, row-major)
+        wb_matrix[1,1], wb_matrix[1,2], wb_matrix[1,3],
+        wb_matrix[2,1], wb_matrix[2,2], wb_matrix[2,3],
+        wb_matrix[3,1], wb_matrix[3,2], wb_matrix[3,3];
         ndrange=Int(n_pixels)
     )
 
-    # Update film: divide by current sample count
+    # Update film: divide weighted sum by weight sum (pbrt-v4 style)
     kernel! = vp_finalize_film_kernel!(backend)
     kernel!(
-        img, pixel_rgb,
-        sample_idx,  # Current number of samples
+        img, pixel_rgb, pixel_weight_sum,
         Int32(width), Int32(height);
         ndrange=Int(n_pixels)
     )
@@ -455,10 +598,11 @@ function (vp::VolPath)(
     # Reset iteration counter for fresh render
     film.iteration_index[] = Int32(0)
 
-    # Clear RGB accumulator for fresh render
+    # Clear RGB and weight accumulators for fresh render
     if vp.state !== nothing
         backend = KA.get_backend(film.framebuffer)
         KA.fill!(vp.state.pixel_rgb, 0f0)
+        KA.fill!(vp.state.pixel_weight_sum, 0f0)
     end
 
     # Render all samples by calling render! repeatedly

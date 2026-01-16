@@ -220,12 +220,19 @@ struct PowerLightSampler <: LightSampler
 end
 
 """
-    PowerLightSampler(lights::Tuple)
+    PowerLightSampler(lights::Tuple; scene_radius::Float32=10f0)
 
 Construct a power-based light sampler from a tuple of lights.
 Estimates light power using luminance of the light's intensity/radiance.
+
+For infinite lights (DirectionalLight, EnvironmentLight), the scene_radius
+is needed to compute meaningful power estimates following pbrt-v4's approach.
+
+# Arguments
+- `lights::Tuple`: Tuple of light sources
+- `scene_radius::Float32`: Radius of the scene's bounding sphere (default: 10.0)
 """
-function PowerLightSampler(lights::Tuple)
+function PowerLightSampler(lights::Tuple; scene_radius::Float32=10f0)
     n = length(lights)
     if n == 0
         return PowerLightSampler(AliasTable(Float32[]))
@@ -234,7 +241,7 @@ function PowerLightSampler(lights::Tuple)
     # Compute power estimate for each light
     powers = Vector{Float32}(undef, n)
     for i in 1:n
-        powers[i] = estimate_light_power(lights[i])
+        powers[i] = estimate_light_power(lights[i], scene_radius)
     end
 
     # If all powers are zero, fall back to uniform
@@ -269,58 +276,65 @@ end
 # ============================================================================
 
 """
-    estimate_light_power(light) -> Float32
+    estimate_light_power(light, scene_radius::Float32) -> Float32
 
 Estimate the total power (flux) of a light for importance sampling.
 Following pbrt-v4's Light::Phi() which returns total emitted power.
 
-For point/spot lights: Phi = 4π * I
-For directional lights: Phi = I (power per unit area, effectively infinite total)
-For environment lights: Use average radiance * 4π (solid angle of sphere)
+For point/spot lights: Phi = 4π * I (or 2π * I * cone_factor for spot)
+For directional lights: Phi = π * sceneRadius² * I
+For environment lights: Phi = 4π² * sceneRadius² * average_radiance
+
+The scene_radius is required for infinite lights to compute meaningful power.
 """
-@propagate_inbounds estimate_light_power(light::Light) = 1f0  # Fallback
+@propagate_inbounds estimate_light_power(light::Light, ::Float32) = 1f0  # Fallback
 
-@propagate_inbounds function estimate_light_power(light::PointLight)
+@propagate_inbounds function estimate_light_power(light::PointLight, ::Float32)
+    # pbrt-v4: 4 * Pi * scale * I->Sample(lambda)
     # Total power = 4π * intensity
-    # Use luminance of RGB as scalar estimate
     4f0 * Float32(π) * luminance(light.i)
 end
 
-@propagate_inbounds function estimate_light_power(light::SpotLight)
-    # Approximate: use full 4π * I for simplicity (actual is smaller due to cone)
-    4f0 * Float32(π) * luminance(light.i)
+@propagate_inbounds function estimate_light_power(light::SpotLight, ::Float32)
+    # pbrt-v4: scale * Iemit * 2 * Pi * ((1 - cosFalloffStart) + (cosFalloffStart - cosFalloffEnd) / 2)
+    # Hikari stores: cos_falloff_start and cos_total_width (= cosFalloffEnd)
+    # Formula simplifies to: 2π * I * (1 - 0.5*(cosFalloffStart + cosFalloffEnd))
+    cone_factor = 1f0 - 0.5f0 * (light.cos_falloff_start + light.cos_total_width)
+    2f0 * Float32(π) * luminance(light.i) * cone_factor
 end
 
-@propagate_inbounds function estimate_light_power(light::DirectionalLight)
-    # Directional lights illuminate the entire scene uniformly
-    # Their "power" is proportional to intensity for importance sampling
-    luminance(light.i) * Float32(1e6)  # Large factor since they affect whole scene
+@propagate_inbounds function estimate_light_power(light::DirectionalLight, scene_radius::Float32)
+    # pbrt-v4: scale * Lemit * Pi * Sqr(sceneRadius)
+    Float32(π) * scene_radius^2 * luminance(light.i)
 end
 
-@propagate_inbounds function estimate_light_power(light::SunLight)
+@propagate_inbounds function estimate_light_power(light::SunLight, scene_radius::Float32)
     # Similar to directional light
-    luminance(light.l) * Float32(1e6)
+    Float32(π) * scene_radius^2 * luminance(light.l)
 end
 
-@propagate_inbounds function estimate_light_power(light::SunSkyLight)
+@propagate_inbounds function estimate_light_power(light::SunSkyLight, scene_radius::Float32)
     # Sun contributes most of the direct illumination
-    luminance(light.sun_intensity) * Float32(1e6)
+    Float32(π) * scene_radius^2 * luminance(light.sun_intensity)
 end
 
-@propagate_inbounds function estimate_light_power(light::AmbientLight)
+@propagate_inbounds function estimate_light_power(light::AmbientLight, ::Float32)
     # Ambient lights provide uniform illumination - less important for direct lighting
-    4f0 * Float32(π) * luminance(light.i)
+    # Use small weight since they don't contribute to direct lighting variance reduction
+    4f0 * Float32(π) * luminance(light.i) * 0.1f0
 end
 
 # Helper to get total distribution integral (dispatch on distribution type)
 distribution_integral(d::Distribution2D) = d.p_marginal.func_int
 distribution_integral(d::FlatDistribution2D) = d.marginal_func_int
 
-@propagate_inbounds function estimate_light_power(light::EnvironmentLight)
-    # Use the helper to get total power from the distribution (works with both Distribution2D types)
+@propagate_inbounds function estimate_light_power(light::EnvironmentLight, scene_radius::Float32)
+    # pbrt-v4: 4 * Pi * Pi * Sqr(sceneRadius) * scale * sumL / (width * height)
+    # The distribution integral gives us sum of luminance-weighted pixels
+    # We approximate average radiance from this
     total = distribution_integral(light.env_map.distribution)
-    # The distribution integral is already weighted by sin(theta), so multiply by 2π for phi
-    Float32(total) * 2f0 * Float32(π) * luminance(light.scale)
+    # Power = 4π² * r² * average_radiance * scale
+    4f0 * Float32(π)^2 * scene_radius^2 * Float32(total) * luminance(light.scale)
 end
 
 """
@@ -415,19 +429,24 @@ end
 # ============================================================================
 
 """
-    create_light_sampler(lights::Tuple; method::Symbol=:power) -> LightSampler
+    create_light_sampler(lights::Tuple; method::Symbol=:power, scene_radius::Float32=10f0) -> LightSampler
 
 Create a light sampler for the given lights.
+
+# Arguments
+- `lights::Tuple`: Tuple of light sources
+- `method::Symbol`: Sampling method (`:uniform` or `:power`)
+- `scene_radius::Float32`: Scene bounding sphere radius (for power-weighted sampling of infinite lights)
 
 # Methods
 - `:uniform`: Uniform random selection (baseline)
 - `:power`: Power-weighted selection (recommended for varying light intensities)
 """
-function create_light_sampler(lights::Tuple; method::Symbol=:power)
+function create_light_sampler(lights::Tuple; method::Symbol=:power, scene_radius::Float32=10f0)
     if method == :uniform
         return UniformLightSampler(lights)
     elseif method == :power
-        return PowerLightSampler(lights)
+        return PowerLightSampler(lights; scene_radius=scene_radius)
     else
         error("Unknown light sampler method: $method")
     end

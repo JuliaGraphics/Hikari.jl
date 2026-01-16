@@ -19,124 +19,38 @@ Film sensor parameters for physically-based image formation.
 Matches pbrt-v4's film sensor simulation.
 
 # Fields
-- `iso`: ISO sensitivity (default 100). Higher = brighter. Scales output linearly.
+- `iso`: ISO sensitivity (default 100). Higher = brighter.
+- `exposure_time`: Exposure time in seconds (default 1.0).
 - `white_balance`: Color temperature in Kelvin for white balance (default 0 = disabled).
   When set, applies Bradford chromatic adaptation from the illuminant to D65.
+
+The imaging ratio is computed as: `imagingRatio = exposure_time * iso / 100`
+This matches pbrt-v4's PixelSensor behavior.
 
 # Example
 ```julia
 # Nikon D850 settings from pbrt bunny-cloud scene
-sensor = FilmSensor(iso=90, white_balance=5000)
+sensor = FilmSensor(iso=90, exposure_time=1.0, white_balance=5000)
 postprocess!(film; sensor=sensor, tonemap=:aces)
 ```
 """
 struct FilmSensor
     iso::Float32
+    exposure_time::Float32  # Exposure time in seconds
     white_balance::Float32  # Color temperature in Kelvin, 0 = disabled
 end
 
-FilmSensor(; iso::Real=100, white_balance::Real=0) = FilmSensor(Float32(iso), Float32(white_balance))
+FilmSensor(; iso::Real=100, exposure_time::Real=1.0, white_balance::Real=0) =
+    FilmSensor(Float32(iso), Float32(exposure_time), Float32(white_balance))
 
 # Default sensor (no adjustment)
-const DEFAULT_SENSOR = FilmSensor(iso=100f0, white_balance=0f0)
+const DEFAULT_SENSOR = FilmSensor(iso=100f0, exposure_time=1f0, white_balance=0f0)
 
 # ============================================================================
 # White Balance - Bradford Chromatic Adaptation
 # ============================================================================
-# Converts from source illuminant white point to D65 (sRGB white point)
-
-# Bradford transformation matrices (XYZ <-> LMS cone response)
-const LMS_FROM_XYZ = @SMatrix Float32[
-     0.8951  0.2664 -0.1614;
-    -0.7502  1.7135  0.0367;
-     0.0389 -0.0685  1.0296
-]
-
-const XYZ_FROM_LMS = @SMatrix Float32[
-    0.9870 -0.1471  0.1600;
-    0.4323  0.5184  0.0493;
-   -0.0085  0.0400  0.9685
-]
-
-# D65 white point in xy chromaticity
-const D65_WHITE_XY = (0.31272f0, 0.32903f0)
-
-"""
-    planckian_xy(T::Float32) -> (x, y)
-
-Compute CIE xy chromaticity coordinates for a Planckian (blackbody) radiator
-at temperature T in Kelvin. Valid for 1667K to 25000K.
-"""
-@propagate_inbounds function planckian_xy(T::Float32)
-    # Approximation from CIE 015:2004
-    T2 = T * T
-    T3 = T2 * T
-
-    # x chromaticity
-    x = if T <= 4000f0
-        -0.2661239f9 / T3 - 0.2343589f6 / T2 + 0.8776956f3 / T + 0.179910f0
-    else
-        -3.0258469f9 / T3 + 2.1070379f6 / T2 + 0.2226347f3 / T + 0.240390f0
-    end
-
-    # y chromaticity
-    x2 = x * x
-    x3 = x2 * x
-    y = if T <= 2222f0
-        -1.1063814f0 * x3 - 1.34811020f0 * x2 + 2.18555832f0 * x - 0.20219683f0
-    elseif T <= 4000f0
-        -0.9549476f0 * x3 - 1.37418593f0 * x2 + 2.09137015f0 * x - 0.16748867f0
-    else
-        3.0817580f0 * x3 - 5.87338670f0 * x2 + 3.75112997f0 * x - 0.37001483f0
-    end
-
-    return (x, y)
-end
-
-"""
-    xy_to_XYZ(x, y) -> (X, Y, Z)
-
-Convert CIE xy chromaticity to XYZ with Y=1.
-"""
-@propagate_inbounds function xy_to_XYZ(x::Float32, y::Float32)
-    Y = 1f0
-    X = x / y
-    Z = (1f0 - x - y) / y
-    return (X, Y, Z)
-end
-
-"""
-    compute_white_balance_matrix(src_temp::Float32) -> SMatrix{3,3,Float32}
-
-Compute the Bradford chromatic adaptation matrix to transform
-from source illuminant (at color temperature src_temp) to D65.
-"""
-function compute_white_balance_matrix(src_temp::Float32)
-    # Get source and destination white points
-    src_xy = planckian_xy(src_temp)
-    dst_xy = D65_WHITE_XY
-
-    # Convert to XYZ
-    src_XYZ = xy_to_XYZ(src_xy[1], src_xy[2])
-    dst_XYZ = xy_to_XYZ(dst_xy[1], dst_xy[2])
-
-    # Transform to LMS cone response space
-    src_LMS = LMS_FROM_XYZ * SVector{3,Float32}(src_XYZ...)
-    dst_LMS = LMS_FROM_XYZ * SVector{3,Float32}(dst_XYZ...)
-
-    # Compute diagonal scaling matrix in LMS space
-    scale_L = dst_LMS[1] / src_LMS[1]
-    scale_M = dst_LMS[2] / src_LMS[2]
-    scale_S = dst_LMS[3] / src_LMS[3]
-    LMS_scale = @SMatrix Float32[
-        scale_L 0 0;
-        0 scale_M 0;
-        0 0 scale_S
-    ]
-
-    # Full Bradford transform: XYZ -> LMS -> scale -> XYZ
-    return XYZ_FROM_LMS * LMS_scale * LMS_FROM_XYZ
-end
+# Note: Core functions (LMS_FROM_XYZ, XYZ_FROM_LMS, D65_WHITE_XY, planckian_xy,
+# xy_to_XYZ, compute_white_balance_matrix) are defined in spectral/color.jl
 
 """
     apply_white_balance(r, g, b, wb_matrix) -> (r', g', b')
@@ -272,7 +186,7 @@ end
 
 @kernel inbounds=true function postprocess_kernel!(dst, @Const(src), exposure::Float32, tonemap_mode::UInt8,
                                       inv_gamma::Float32, apply_gamma::Bool, white_point::Float32,
-                                      iso_scale::Float32, apply_wb::Bool,
+                                      imaging_ratio::Float32, apply_wb::Bool,
                                       wb11::Float32, wb12::Float32, wb13::Float32,
                                       wb21::Float32, wb22::Float32, wb23::Float32,
                                       wb31::Float32, wb32::Float32, wb33::Float32)
@@ -293,10 +207,10 @@ end
                                           wb31, wb32, wb33)
         end
 
-        # Apply ISO scaling (relative to ISO 100 baseline)
-        r = r * iso_scale
-        g = g * iso_scale
-        b = b * iso_scale
+        # Apply imaging ratio (pbrt-v4: exposure_time * iso / 100)
+        r = r * imaging_ratio
+        g = g * imaging_ratio
+        b = b * imaging_ratio
 
         # Apply tonemapping
         r, g, b = _apply_tonemap(r, g, b, tonemap_mode, white_point)
@@ -370,9 +284,8 @@ function postprocess!(film::Film;
 
     # Sensor parameters
     actual_sensor = isnothing(sensor) ? DEFAULT_SENSOR : sensor
-    # ISO scaling: pbrt uses imagingRatio = exposureTime * ISO / 100
-    # Since exposure is already a multiplier, we just scale by ISO/100
-    iso_scale = actual_sensor.iso / 100f0
+    # pbrt-v4 imagingRatio = exposureTime * ISO / 100
+    imaging_ratio = actual_sensor.exposure_time * actual_sensor.iso / 100f0
 
     # White balance matrix
     apply_wb = actual_sensor.white_balance > 0f0
@@ -401,7 +314,7 @@ function postprocess!(film::Film;
     backend = KernelAbstractions.get_backend(src)
     kernel! = postprocess_kernel!(backend)
     kernel!(dst, src, exp_f32, tonemap_mode, inv_gamma, apply_gamma, wp_f32,
-            iso_scale, apply_wb,
+            imaging_ratio, apply_wb,
             wb_matrix[1,1], wb_matrix[1,2], wb_matrix[1,3],
             wb_matrix[2,1], wb_matrix[2,2], wb_matrix[2,3],
             wb_matrix[3,1], wb_matrix[3,2], wb_matrix[3,3];
