@@ -119,8 +119,10 @@ mutable struct VolPathState{Backend}
 
     # Accumulators for progressive rendering (moved from main loop)
     pixel_rgb::AbstractVector{Float32}  # n_pixels * 3 (RGB accumulator)
+    pixel_weight_sum::AbstractVector{Float32}  # n_pixels (filter weight accumulator)
     wavelengths_per_pixel::AbstractVector{Float32}  # n_pixels * 4 (wavelength samples)
     pdf_per_pixel::AbstractVector{Float32}  # n_pixels * 4 (wavelength PDFs)
+    filter_weight_per_pixel::AbstractVector{Float32}  # n_pixels (filter weight per sample)
 
     # RGB to spectrum table
     rgb2spec_table::RGBToSpectrumTable
@@ -151,7 +153,8 @@ function VolPathState(
     height::Integer,
     lights::Tuple;
     max_depth::Integer = 8,
-    queue_capacity::Integer = width * height
+    queue_capacity::Integer = width * height,
+    scene_radius::Float32 = 10f0  # Scene bounding sphere radius for light power estimation
 )
     n_pixels = width * height
 
@@ -172,8 +175,11 @@ function VolPathState(
     # Accumulators for progressive rendering
     pixel_rgb = KernelAbstractions.allocate(backend, Float32, n_pixels * 3)
     KernelAbstractions.fill!(pixel_rgb, 0f0)
+    pixel_weight_sum = KernelAbstractions.allocate(backend, Float32, n_pixels)
+    KernelAbstractions.fill!(pixel_weight_sum, 0f0)
     wavelengths_per_pixel = KernelAbstractions.allocate(backend, Float32, n_pixels * 4)
     pdf_per_pixel = KernelAbstractions.allocate(backend, Float32, n_pixels * 4)
+    filter_weight_per_pixel = KernelAbstractions.allocate(backend, Float32, n_pixels)
 
     # Load RGB to spectrum table and convert to appropriate array type
     rgb2spec_table_cpu = get_srgb_table()
@@ -185,10 +191,10 @@ function VolPathState(
     cie_table_cpu = CIEXYZTable()
     cie_table = to_gpu(ArrayType, cie_table_cpu)
 
-    # Build power-weighted light sampler
+    # Build power-weighted light sampler (using scene_radius for infinite light power estimation)
     n_lights = length(lights)
     if n_lights > 0
-        sampler = PowerLightSampler(lights)
+        sampler = PowerLightSampler(lights; scene_radius=scene_radius)
         sampler_data = LightSamplerData(sampler)
         light_sampler_p = ArrayType(sampler_data.p)
         light_sampler_q = ArrayType(sampler_data.q)
@@ -212,8 +218,10 @@ function VolPathState(
         escaped_queue,
         pixel_L,
         pixel_rgb,
+        pixel_weight_sum,
         wavelengths_per_pixel,
         pdf_per_pixel,
+        filter_weight_per_pixel,
         rgb2spec_table,
         cie_table,
         light_sampler_p,

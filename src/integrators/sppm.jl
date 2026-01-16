@@ -597,13 +597,7 @@ function estimate_direct(
     Ld
 end
 
-@propagate_inbounds function power_heuristic(
-    nf::Int64, f_pdf::Float32, ng::Int64, g_pdf::Float32,
-)
-    f = (nf * f_pdf)^2
-    g = (ng * g_pdf)^2
-    f / (f + g)
-end
+# Note: power_heuristic is defined in materials/spectral-eval.jl
 
 @propagate_inbounds function compute_light_power_distribution(
     scene::AbstractScene,

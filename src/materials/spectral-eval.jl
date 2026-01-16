@@ -3301,15 +3301,7 @@ Transform direction from local (shading) space to world space.
     return tangent * local_dir[1] + bitangent * local_dir[2] + n * local_dir[3]
 end
 
-"""
-    reflect(wo, n) -> Vec3f
-
-Compute reflection direction.
-"""
-@propagate_inbounds function reflect(wo::Vec3f, n::Vec3f)::Vec3f
-    return 2f0 * dot(wo, n) * n - wo
-end
-
+# Note: reflect is defined earlier in this file
 # Note: fresnel_dielectric is defined in reflection/bxdf.jl - do not duplicate here
 
 """
@@ -3423,12 +3415,7 @@ Get sin(φ) of a direction in local coordinates (matches pbrt-v4's SinPhi).
     return sin_θ == 0f0 ? 0f0 : clamp(w[2] / sin_θ, -1f0, 1f0)
 end
 
-"""
-    same_hemisphere(w, wp) -> Bool
-
-Check if two directions are in the same hemisphere (matches pbrt-v4's SameHemisphere).
-"""
-@inline same_hemisphere(w::Vec3f, wp::Vec3f)::Bool = w[3] * wp[3] > 0f0
+# Note: same_hemisphere is defined earlier in this file
 
 """
     fr_complex(cos_theta_i, eta, k) -> Float32

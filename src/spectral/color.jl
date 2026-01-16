@@ -457,6 +457,113 @@ where CMF is the color matching function and pdf is the wavelength sampling PDF.
 end
 
 # =============================================================================
+# Bradford Chromatic Adaptation
+# =============================================================================
+
+# Bradford transform matrices for chromatic adaptation
+# Used to transform XYZ from one illuminant to another via LMS cone response space
+const LMS_FROM_XYZ = @SMatrix Float32[
+     0.8951f0   0.2664f0  -0.1614f0;
+    -0.7502f0   1.7135f0   0.0367f0;
+     0.0389f0  -0.0685f0   1.0296f0
+]
+
+const XYZ_FROM_LMS = @SMatrix Float32[
+     0.9869929f0  -0.1470543f0   0.1599627f0;
+     0.4323053f0   0.5183603f0   0.0492912f0;
+    -0.0085287f0   0.0400428f0   0.9684867f0
+]
+
+# D65 white point in xy chromaticity (standard for sRGB)
+const D65_WHITE_XY = (0.31272f0, 0.32903f0)
+
+"""
+    planckian_xy(T::Float32) -> (x, y)
+
+Compute CIE xy chromaticity coordinates for a Planckian (blackbody) radiator
+at temperature T in Kelvin. Valid for 1667K to 25000K.
+"""
+@propagate_inbounds function planckian_xy(T::Float32)
+    # Approximation from CIE 015:2004
+    T2 = T * T
+    T3 = T2 * T
+
+    # x chromaticity
+    x = if T <= 4000f0
+        -0.2661239f9 / T3 - 0.2343589f6 / T2 + 0.8776956f3 / T + 0.179910f0
+    else
+        -3.0258469f9 / T3 + 2.1070379f6 / T2 + 0.2226347f3 / T + 0.240390f0
+    end
+
+    # y chromaticity
+    x2 = x * x
+    x3 = x2 * x
+    y = if T <= 2222f0
+        -1.1063814f0 * x3 - 1.34811020f0 * x2 + 2.18555832f0 * x - 0.20219683f0
+    elseif T <= 4000f0
+        -0.9549476f0 * x3 - 1.37418593f0 * x2 + 2.09137015f0 * x - 0.16748867f0
+    else
+        3.0817580f0 * x3 - 5.87338670f0 * x2 + 3.75112997f0 * x - 0.37001483f0
+    end
+
+    return (x, y)
+end
+
+"""
+    xy_to_XYZ(x, y) -> (X, Y, Z)
+
+Convert CIE xy chromaticity to XYZ with Y=1.
+"""
+@propagate_inbounds function xy_to_XYZ(x::Float32, y::Float32)
+    Y = 1f0
+    X = x / y
+    Z = (1f0 - x - y) / y
+    return (X, Y, Z)
+end
+
+"""
+    compute_white_balance_matrix(src_temp::Float32) -> SMatrix{3,3,Float32}
+
+Compute the Bradford chromatic adaptation matrix to transform
+from source illuminant (at color temperature src_temp in Kelvin) to D65.
+
+This is used for white balancing: colors captured under a light source at
+`src_temp` Kelvin are transformed to appear as if they were captured under D65.
+
+# Example
+```julia
+# Adapt from 5000K (warm daylight) to D65
+wb_matrix = compute_white_balance_matrix(5000f0)
+```
+"""
+function compute_white_balance_matrix(src_temp::Float32)
+    # Get source and destination white points
+    src_xy = planckian_xy(src_temp)
+    dst_xy = D65_WHITE_XY
+
+    # Convert to XYZ
+    src_XYZ = xy_to_XYZ(src_xy[1], src_xy[2])
+    dst_XYZ = xy_to_XYZ(dst_xy[1], dst_xy[2])
+
+    # Transform to LMS cone response space
+    src_LMS = LMS_FROM_XYZ * SVector{3,Float32}(src_XYZ...)
+    dst_LMS = LMS_FROM_XYZ * SVector{3,Float32}(dst_XYZ...)
+
+    # Compute diagonal scaling matrix in LMS space
+    scale_L = dst_LMS[1] / src_LMS[1]
+    scale_M = dst_LMS[2] / src_LMS[2]
+    scale_S = dst_LMS[3] / src_LMS[3]
+    LMS_scale = @SMatrix Float32[
+        scale_L 0 0;
+        0 scale_M 0;
+        0 0 scale_S
+    ]
+
+    # Full Bradford transform: XYZ -> LMS -> scale -> XYZ
+    return XYZ_FROM_LMS * LMS_scale * LMS_FROM_XYZ
+end
+
+# =============================================================================
 # XYZ to sRGB Conversion with Chromatic Adaptation
 # =============================================================================
 
@@ -465,7 +572,7 @@ end
 # The combined matrix sRGB_from_XYZ * WHITE_BALANCE_E_TO_D65 converts
 # XYZ (in E illuminant space) directly to linear sRGB (D65).
 #
-# Bradford matrices and derivation:
+# Bradford matrices and derivation (for reference):
 # LMS_FROM_XYZ = [0.8951 0.2664 -0.1614; -0.7502 1.7135 0.0367; 0.0389 -0.0685 1.0296]
 # XYZ_FROM_LMS = inverse of above
 # E white point: (1/3, 1/3), D65 white point: (0.31272, 0.32903)
