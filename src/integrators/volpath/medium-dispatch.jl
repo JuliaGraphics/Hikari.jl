@@ -72,6 +72,11 @@ end
     return is_emissive(medium)
 end
 
+"""Create majorant iterator - helper for with_medium"""
+@propagate_inbounds function _create_majorant_iterator_helper(medium, table::RGBToSpectrumTable, ray::Raycore.Ray, t_max::Float32, λ::Wavelengths)
+    return create_majorant_iterator(table, medium, ray, t_max, λ)
+end
+
 # ============================================================================
 # Medium Point Sampling Dispatch
 # ============================================================================
@@ -159,4 +164,39 @@ end
 
 @propagate_inbounds function is_emissive_dispatch(medium::Medium, idx::Int32)
     return is_emissive(medium)
+end
+
+# ============================================================================
+# Majorant Iterator Creation Dispatch
+# ============================================================================
+
+"""
+    create_majorant_iterator_dispatch(table, media, idx, ray, t_max, λ) -> MajorantIterator
+
+Type-stable dispatch for creating a majorant iterator from medium.
+Uses with_medium pattern for GPU compatibility.
+
+Returns either HomogeneousMajorantIterator or DDAMajorantIterator depending on medium type.
+"""
+@propagate_inbounds function create_majorant_iterator_dispatch(
+    table::RGBToSpectrumTable,
+    media::NTuple{N,Any},
+    idx::Int32,
+    ray::Raycore.Ray,
+    t_max::Float32,
+    λ::Wavelengths
+) where {N}
+    return with_medium(_create_majorant_iterator_helper, media, idx, table, ray, t_max, λ)
+end
+
+# Single medium fallback
+@propagate_inbounds function create_majorant_iterator_dispatch(
+    table::RGBToSpectrumTable,
+    medium::Medium,
+    idx::Int32,
+    ray::Raycore.Ray,
+    t_max::Float32,
+    λ::Wavelengths
+)
+    return create_majorant_iterator(table, medium, ray, t_max, λ)
 end

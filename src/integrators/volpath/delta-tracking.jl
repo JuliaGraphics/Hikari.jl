@@ -79,7 +79,10 @@ end
     sample_medium_interaction!(...)
 
 Inner function for medium sampling with bounded t_max.
-Implements delta tracking following pbrt-v4's SampleMediumInteraction.
+Implements delta tracking following pbrt-v4's SampleT_maj pattern.
+
+Now uses DDA majorant iterator for GridMedium to get per-voxel majorant bounds,
+significantly reducing null scattering events in sparse heterogeneous media.
 """
 @propagate_inbounds function sample_medium_interaction!(
     # Output queues
@@ -97,156 +100,43 @@ Implements delta tracking following pbrt-v4's SampleMediumInteraction.
     medium_type_idx = work.medium_idx.medium_type
     t_max = work.t_max
 
-    # Get majorant for this ray segment
-    majorant = get_majorant_dispatch(
+    # Create majorant iterator (DDA for GridMedium, single-segment for HomogeneousMedium)
+    iter = create_majorant_iterator_dispatch(
         rgb2spec_table, media, medium_type_idx,
-        work.ray, 0f0, t_max, work.lambda
+        work.ray, t_max, work.lambda
     )
 
     # Delta tracking state
-    t = majorant.t_min
     beta = work.beta
     r_u = work.r_u
     r_l = work.r_l
-    scattered = false
 
-    # Tracking loop (bounded iterations for GPU)
-    max_iterations = Int32(1000)
-    for _ in 1:max_iterations
-        # Sample exponential distance
-        u = rand(Float32)
-        σ_maj_0 = majorant.σ_maj[1]  # Use first wavelength for sampling
+    # Accumulated transmittance across segments (reset after each interaction)
+    T_maj_accum = SpectralRadiance(1f0)
 
-        if σ_maj_0 < 1f-10
-            # No extinction - ray passes through entire segment
-            t = majorant.t_max
-            break
-        end
+    # Dispatch to type-specific iteration
+    result = sample_T_maj_loop!(
+        iter, T_maj_accum, beta, r_u, r_l,
+        scatter_items, scatter_size,
+        pixel_L,
+        work, media, medium_type_idx, rgb2spec_table, max_depth, max_queued
+    )
 
-        # Sample distance: t' = t - ln(1-u) / σ_maj
-        dt = -log(max(1f-10, 1f0 - u)) / σ_maj_0
-        t_sample = t + dt
+    # Unpack result
+    beta = result.beta
+    r_u = result.r_u
+    r_l = result.r_l
+    done = result.done
 
-        if t_sample >= majorant.t_max
-            # Reached end of medium segment without interaction
-            # Update throughput for remaining distance
-            # Following pbrt-v4: apply T_maj and normalize by T_maj[0]
-            dt_remain = majorant.t_max - t
-            T_maj = exp(-dt_remain * majorant.σ_maj)
-            T_maj_0 = T_maj[1]  # First wavelength (index 1 in Julia)
-            if T_maj_0 > 1f-10
-                beta = beta * T_maj / T_maj_0
-                r_u = r_u * T_maj / T_maj_0
-                r_l = r_l * T_maj / T_maj_0
-            end
-            t = majorant.t_max
-            break
-        end
-
-        # Sample medium properties at interaction point
-        p = Point3f(work.ray.o + work.ray.d * t_sample)
-        mp = sample_point_dispatch(rgb2spec_table, media, medium_type_idx, p, work.lambda)
-
-        # Compute transmittance for this segment (from t to t_sample)
-        # Following pbrt-v4: T_maj is computed fresh for each segment
-        T_maj = exp(-dt * majorant.σ_maj)
-
-        # Add emission if present (always, scaled by sigma_a/sigma_maj)
-        if !is_black(mp.Le) && work.depth < max_depth
-            pr = σ_maj_0 * T_maj[1]
-            if pr > 1f-10
-                r_e = r_u * majorant.σ_maj * T_maj / pr
-                if !is_black(r_e)
-                    Le_contrib = beta * mp.σ_a * T_maj * mp.Le / (pr * average(r_e))
-                    add_to_pixel!(pixel_L, work.pixel_index, Le_contrib, work.lambda)
-                end
-            end
-        end
-
-        # Compute event probabilities
-        p_absorb = mp.σ_a[1] / σ_maj_0
-        p_scatter = mp.σ_s[1] / σ_maj_0
-        p_null = max(0f0, 1f0 - p_absorb - p_scatter)
-
-        # Sample event type
-        u_event = rand(Float32)
-
-        if u_event < p_absorb
-            # === ABSORPTION ===
-            # Path terminates
-            beta = SpectralRadiance(0f0)
-            return  # Done
-
-        elseif u_event < p_absorb + p_scatter
-            # === REAL SCATTERING ===
-            if work.depth >= max_depth
-                return  # Max depth reached
-            end
-
-            # Update beta and r_u for scattering
-            # Following pbrt-v4: beta *= T_maj * sigma_s / pdf
-            pdf = T_maj[1] * mp.σ_s[1]
-            if pdf > 1f-10
-                beta = beta * T_maj * mp.σ_s / pdf
-                r_u = r_u * T_maj * mp.σ_s / pdf
-            end
-
-            # Push to scatter queue for phase function sampling
-            scatter_item = VPMediumScatterWorkItem(
-                p,
-                -work.ray.d,  # wo points back toward camera
-                work.ray.time,
-                work.lambda,
-                work.pixel_index,
-                beta,
-                r_u,
-                work.depth,
-                work.medium_idx,
-                mp.g
-            )
-
-            @inbounds begin
-                new_idx = @atomic scatter_size[1] += Int32(1)
-                if new_idx <= max_queued
-                    scatter_items[new_idx] = scatter_item
-                end
-            end
-            scattered = true
-            return
-
-        else
-            # === NULL SCATTERING ===
-            # Continue tracking with updated throughput
-            # Following pbrt-v4: beta *= T_maj * sigma_n / pdf
-            σ_n = majorant.σ_maj - mp.σ_a - mp.σ_s
-            # Clamp negative values element-wise
-            σ_n = SpectralRadiance(max(σ_n[1], 0f0), max(σ_n[2], 0f0), max(σ_n[3], 0f0), max(σ_n[4], 0f0))
-
-            pdf = T_maj[1] * σ_n[1]
-            if pdf > 1f-10
-                beta = beta * T_maj * σ_n / pdf
-                r_u = r_u * T_maj * σ_n / pdf
-                r_l = r_l * T_maj * majorant.σ_maj / pdf
-            else
-                beta = SpectralRadiance(0f0)
-            end
-
-            t = t_sample
-
-            # Check if throughput is too low
-            if is_black(beta) || is_black(r_u)
-                return
-            end
-        end
+    # If we terminated early (absorption or scatter), we're done
+    if done
+        return
     end
 
     # Ray survived to t_max - process what's at the end
     if is_black(beta) || is_black(r_u) || work.depth >= max_depth
         return
     end
-
-    # Finalize throughput
-    # (T_maj already applied in the loop when we reach t_max)
 
     if !work.has_surface_hit
         # Ray escaped scene (t_max was Infinity)
@@ -279,9 +169,9 @@ Implements delta tracking following pbrt-v4's SampleMediumInteraction.
             work.hit_material_idx,
             work.lambda,
             work.pixel_index,
-            beta,      # Updated throughput after medium traversal
-            r_u,       # Updated r_u
-            r_l,       # Updated r_l
+            beta,
+            r_u,
+            r_l,
             work.depth,
             work.eta_scale,
             work.specular_bounce,
@@ -299,6 +189,257 @@ Implements delta tracking following pbrt-v4's SampleMediumInteraction.
         end
     end
     return
+end
+
+# Result type for sample_T_maj_loop!
+struct SampleTMajResult
+    beta::SpectralRadiance
+    r_u::SpectralRadiance
+    r_l::SpectralRadiance
+    done::Bool  # true if terminated (absorption/scatter), false if reached end
+end
+
+"""
+    sample_T_maj_loop!(iter::HomogeneousMajorantIterator, ...) -> SampleTMajResult
+
+Delta tracking loop for homogeneous medium (single segment).
+"""
+@propagate_inbounds function sample_T_maj_loop!(
+    iter::HomogeneousMajorantIterator,
+    T_maj_accum::SpectralRadiance,
+    beta::SpectralRadiance,
+    r_u::SpectralRadiance,
+    r_l::SpectralRadiance,
+    scatter_items, scatter_size,
+    pixel_L,
+    work::VPMediumSampleWorkItem,
+    media,
+    medium_type_idx::Int32,
+    rgb2spec_table,
+    max_depth::Int32,
+    max_queued::Int32
+)
+    # Get the single segment
+    seg_result = homogeneous_next(iter)
+    if seg_result === nothing
+        return SampleTMajResult(beta, r_u, r_l, false)
+    end
+    seg, _ = seg_result
+
+    # Sample within segment
+    return sample_segment!(
+        seg, T_maj_accum, beta, r_u, r_l,
+        scatter_items, scatter_size,
+        pixel_L,
+        work, media, medium_type_idx, rgb2spec_table, max_depth, max_queued
+    )
+end
+
+"""
+    sample_T_maj_loop!(iter::DDAMajorantIterator, ...) -> SampleTMajResult
+
+Delta tracking loop for heterogeneous medium using DDA majorant iterator.
+Iterates over voxel segments with per-voxel majorant bounds.
+"""
+@propagate_inbounds function sample_T_maj_loop!(
+    iter::DDAMajorantIterator,
+    T_maj_accum::SpectralRadiance,
+    beta::SpectralRadiance,
+    r_u::SpectralRadiance,
+    r_l::SpectralRadiance,
+    scatter_items, scatter_size,
+    pixel_L,
+    work::VPMediumSampleWorkItem,
+    media,
+    medium_type_idx::Int32,
+    rgb2spec_table,
+    max_depth::Int32,
+    max_queued::Int32
+)
+    # Iterate over DDA segments (bounded for GPU)
+    max_segments = Int32(256)  # Reasonable upper bound for majorant grid traversal
+
+    current_iter = iter
+    for _ in 1:max_segments
+        seg_result = dda_next(current_iter)
+        if seg_result === nothing
+            # No more segments - ray survived
+            break
+        end
+        seg, new_iter = seg_result
+        current_iter = new_iter
+
+        # Sample within this segment
+        result = sample_segment!(
+            seg, T_maj_accum, beta, r_u, r_l,
+            scatter_items, scatter_size,
+            pixel_L,
+            work, media, medium_type_idx, rgb2spec_table, max_depth, max_queued
+        )
+
+        if result.done
+            # Terminated (absorption or scatter)
+            return result
+        end
+
+        # Update state for next segment
+        beta = result.beta
+        r_u = result.r_u
+        r_l = result.r_l
+        # T_maj_accum is reset to 1.0 inside sample_segment! after interactions
+        T_maj_accum = SpectralRadiance(1f0)
+    end
+
+    return SampleTMajResult(beta, r_u, r_l, false)
+end
+
+"""
+    sample_segment!(seg, T_maj_accum, beta, r_u, r_l, ...) -> SampleTMajResult
+
+Sample interactions within a single majorant segment.
+Following pbrt-v4's inner loop of SampleT_maj.
+"""
+@propagate_inbounds function sample_segment!(
+    seg::RayMajorantSegment,
+    T_maj_accum::SpectralRadiance,
+    beta::SpectralRadiance,
+    r_u::SpectralRadiance,
+    r_l::SpectralRadiance,
+    scatter_items, scatter_size,
+    pixel_L,
+    work::VPMediumSampleWorkItem,
+    media,
+    medium_type_idx::Int32,
+    rgb2spec_table,
+    max_depth::Int32,
+    max_queued::Int32
+)
+    σ_maj = seg.σ_maj
+    σ_maj_0 = σ_maj[1]
+
+    # Handle zero-majorant segment (empty voxel)
+    if σ_maj_0 < 1f-10
+        # Just apply transmittance for this segment (which is 1.0 for zero extinction)
+        # No need to sample - ray passes through
+        return SampleTMajResult(beta, r_u, r_l, false)
+    end
+
+    t = seg.t_min
+    t_max_seg = seg.t_max
+
+    # Inner sampling loop (bounded iterations)
+    max_samples = Int32(100)
+    for _ in 1:max_samples
+        # Sample exponential distance
+        u = rand(Float32)
+        dt = -log(max(1f-10, 1f0 - u)) / σ_maj_0
+        t_sample = t + dt
+
+        if t_sample >= t_max_seg
+            # Passed end of segment without interaction
+            # Apply transmittance for remaining distance
+            dt_remain = t_max_seg - t
+            T_maj = exp(-dt_remain * σ_maj)
+            T_maj_0 = T_maj[1]
+            if T_maj_0 > 1f-10
+                beta = beta * T_maj / T_maj_0
+                r_u = r_u * T_maj / T_maj_0
+                r_l = r_l * T_maj / T_maj_0
+            end
+            # Continue to next segment
+            return SampleTMajResult(beta, r_u, r_l, false)
+        end
+
+        # Compute transmittance for this step
+        T_maj = exp(-dt * σ_maj)
+
+        # Sample medium properties at interaction point
+        p = Point3f(work.ray.o + work.ray.d * t_sample)
+        mp = sample_point_dispatch(rgb2spec_table, media, medium_type_idx, p, work.lambda)
+
+        # Add emission if present
+        if !is_black(mp.Le) && work.depth < max_depth
+            pr = σ_maj_0 * T_maj[1]
+            if pr > 1f-10
+                r_e = r_u * σ_maj * T_maj / pr
+                if !is_black(r_e)
+                    Le_contrib = beta * mp.σ_a * T_maj * mp.Le / (pr * average(r_e))
+                    add_to_pixel!(pixel_L, work.pixel_index, Le_contrib, work.lambda)
+                end
+            end
+        end
+
+        # Compute event probabilities
+        p_absorb = mp.σ_a[1] / σ_maj_0
+        p_scatter = mp.σ_s[1] / σ_maj_0
+
+        # Sample event type
+        u_event = rand(Float32)
+
+        if u_event < p_absorb
+            # === ABSORPTION ===
+            return SampleTMajResult(SpectralRadiance(0f0), r_u, r_l, true)
+
+        elseif u_event < p_absorb + p_scatter
+            # === REAL SCATTERING ===
+            if work.depth >= max_depth
+                return SampleTMajResult(beta, r_u, r_l, true)
+            end
+
+            # Update beta and r_u for scattering
+            pdf = T_maj[1] * mp.σ_s[1]
+            if pdf > 1f-10
+                beta = beta * T_maj * mp.σ_s / pdf
+                r_u = r_u * T_maj * mp.σ_s / pdf
+            end
+
+            # Push to scatter queue
+            scatter_item = VPMediumScatterWorkItem(
+                p,
+                -work.ray.d,
+                work.ray.time,
+                work.lambda,
+                work.pixel_index,
+                beta,
+                r_u,
+                work.depth,
+                work.medium_idx,
+                mp.g
+            )
+
+            @inbounds begin
+                new_idx = @atomic scatter_size[1] += Int32(1)
+                if new_idx <= max_queued
+                    scatter_items[new_idx] = scatter_item
+                end
+            end
+            return SampleTMajResult(beta, r_u, r_l, true)
+
+        else
+            # === NULL SCATTERING ===
+            σ_n = σ_maj - mp.σ_a - mp.σ_s
+            σ_n = SpectralRadiance(max(σ_n[1], 0f0), max(σ_n[2], 0f0), max(σ_n[3], 0f0), max(σ_n[4], 0f0))
+
+            pdf = T_maj[1] * σ_n[1]
+            if pdf > 1f-10
+                beta = beta * T_maj * σ_n / pdf
+                r_u = r_u * T_maj * σ_n / pdf
+                r_l = r_l * T_maj * σ_maj / pdf
+            else
+                return SampleTMajResult(SpectralRadiance(0f0), r_u, r_l, true)
+            end
+
+            t = t_sample
+
+            # Check throughput
+            if is_black(beta) || is_black(r_u)
+                return SampleTMajResult(beta, r_u, r_l, true)
+            end
+        end
+    end
+
+    # Exceeded max samples within segment
+    return SampleTMajResult(beta, r_u, r_l, false)
 end
 
 # ============================================================================
