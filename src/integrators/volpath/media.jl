@@ -143,19 +143,24 @@ function HomogeneousMajorantIterator(t_min::Float32, t_max::Float32, σ_maj::Spe
 end
 
 """
-    homogeneous_next(iter::HomogeneousMajorantIterator) -> (RayMajorantSegment, HomogeneousMajorantIterator) or nothing
+    homogeneous_next(iter::HomogeneousMajorantIterator) -> (RayMajorantSegment, HomogeneousMajorantIterator, Bool)
 
 Return the single majorant segment for homogeneous media.
-Returns `nothing` on second call (iterator exhausted).
+Returns (seg, new_iter, true) if valid, (invalid_seg, exhausted_iter, false) if exhausted.
+
+The Bool indicates validity: true = has segment, false = exhausted.
 """
 @propagate_inbounds function homogeneous_next(iter::HomogeneousMajorantIterator)
     if iter.called || iter.t_min >= iter.t_max
-        return nothing
+        # Return invalid/exhausted state
+        invalid_seg = RayMajorantSegment()
+        exhausted_iter = HomogeneousMajorantIterator()
+        return (invalid_seg, exhausted_iter, false)
     end
 
     seg = RayMajorantSegment(iter.t_min, iter.t_max, iter.σ_maj)
     new_iter = HomogeneousMajorantIterator(iter.t_min, iter.t_max, iter.σ_maj, true)
-    return (seg, new_iter)
+    return (seg, new_iter, true)
 end
 
 # ============================================================================
@@ -377,10 +382,12 @@ Following PBRT-v4's DDAMajorantIterator constructor.
 end
 
 """
-    dda_next(iter::DDAMajorantIterator) -> (RayMajorantSegment, DDAMajorantIterator) or nothing
+    dda_next(iter::DDAMajorantIterator) -> (RayMajorantSegment, DDAMajorantIterator, Bool)
 
 Advance the DDA iterator and return the next majorant segment.
-Returns `nothing` when iteration is complete (t_min >= t_max).
+Returns (seg, new_iter, true) if valid, (invalid_seg, exhausted_iter, false) if exhausted.
+
+The Bool indicates validity: true = has segment, false = exhausted.
 
 Since structs are immutable in Julia, this returns a new iterator with updated state.
 Following PBRT-v4's DDAMajorantIterator::Next().
@@ -391,7 +398,9 @@ Following PBRT-v4's DDAMajorantIterator::Next().
 
     # Check if done
     if t_min >= t_max
-        return nothing
+        invalid_seg = RayMajorantSegment()
+        exhausted_iter = DDAMajorantIterator(iter.grid)
+        return (invalid_seg, exhausted_iter, false)
     end
 
     next_crossing_t = iter.next_crossing_t
@@ -401,24 +410,26 @@ Following PBRT-v4's DDAMajorantIterator::Next().
     # Using bit manipulation like PBRT for branchless selection
     # bits = (t_x < t_y) << 2 + (t_x < t_z) << 1 + (t_y < t_z)
     t_x, t_y, t_z = next_crossing_t[1], next_crossing_t[2], next_crossing_t[3]
-    bits = ((t_x < t_y) ? 4 : 0) + ((t_x < t_z) ? 2 : 0) + ((t_y < t_z) ? 1 : 0)
+    # IMPORTANT: Use Int32 literals to avoid Int64 which causes SPIR-V "Unsupported integer width" error
+    # See spirv-int64-ifelse-mwe.jl for minimal reproduction case
+    bits = ((t_x < t_y) ? Int32(4) : Int32(0)) + ((t_x < t_z) ? Int32(2) : Int32(0)) + ((t_y < t_z) ? Int32(1) : Int32(0))
 
     # Lookup table: cmpToAxis[bits] gives the axis to step
     # cmpToAxis = [2, 1, 2, 1, 2, 2, 0, 0]  (0-indexed in C++)
     # Julia 1-indexed: axis 1=X, 2=Y, 3=Z
-    step_axis = if bits == 0
+    step_axis = if bits == Int32(0)
         Int32(3)  # Z axis
-    elseif bits == 1
+    elseif bits == Int32(1)
         Int32(2)  # Y axis
-    elseif bits == 2
+    elseif bits == Int32(2)
         Int32(3)  # Z axis
-    elseif bits == 3
+    elseif bits == Int32(3)
         Int32(2)  # Y axis
-    elseif bits == 4
+    elseif bits == Int32(4)
         Int32(3)  # Z axis
-    elseif bits == 5
+    elseif bits == Int32(5)
         Int32(3)  # Z axis
-    elseif bits == 6
+    elseif bits == Int32(6)
         Int32(1)  # X axis
     else  # bits == 7
         Int32(1)  # X axis
@@ -474,7 +485,7 @@ Following PBRT-v4's DDAMajorantIterator::Next().
         (new_voxel_x, new_voxel_y, new_voxel_z)
     )
 
-    return (seg, new_iter)
+    return (seg, new_iter, true)
 end
 
 # ============================================================================

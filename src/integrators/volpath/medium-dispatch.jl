@@ -11,9 +11,7 @@
 Execute function `f` with the medium at index `idx`, passing additional `args`.
 The function is called as `f(medium, args...)` where `medium` has a concrete type.
 
-This provides type-stable medium dispatch by using compile-time unrolled if-branches.
-The closure receives the medium as its first argument plus any additional args,
-avoiding variable capture issues on GPU.
+This provides type-stable medium dispatch by using Raycore.getindex_unrolled for GPU compatibility.
 
 # Example
 ```julia
@@ -32,17 +30,18 @@ mp = with_medium(_sample_point_helper, media, idx, table, p, λ)
         return :(error("with_medium: empty media tuple"))
     end
 
-    # Build unrolled if-else chain
-    expr = :(f(media[$N], args...))
+    if N == 1
+        # Single medium - no branching needed
+        return :(@inbounds f(media[$(Int32(1))], args...))
+    end
 
-    for i in (N-1):-1:1
-        expr = quote
-            if idx == Int32($i)
-                f(media[$i], args...)
-            else
-                $expr
-            end
-        end
+    # Build unrolled if-else chain
+    # Start with the last index (fallback)
+    expr = :(@inbounds f(media[$(Int32(N))], args...))
+
+    # Build backwards from N-1 to 1
+    for i in N-1:-1:1
+        expr = :(idx == Int32($i) ? (@inbounds f(media[$(Int32(i))], args...)) : $expr)
     end
 
     return expr

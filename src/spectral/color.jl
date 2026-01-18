@@ -440,7 +440,7 @@ where CMF is the color matching function and pdf is the wavelength sampling PDF.
     Y_sum = 0.0f0
     Z_sum = 0.0f0
 
-    for i in 1:4
+    for i in Int32(1):Int32(4)
         pdf_i = lambda.pdf[i]
         if pdf_i != 0.0f0
             inv_pdf = 1.0f0 / pdf_i

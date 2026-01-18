@@ -61,27 +61,15 @@ end
 
 # Utility functions
 @propagate_inbounds function average(s::SampledSpectrum{N}) where {N}
-    sum = 0.0f0
-    for i in 1:N
-        sum += s.data[i]
-    end
-    return sum / N
+    return sum(s.data) / N
 end
 
 @propagate_inbounds function max_component(s::SampledSpectrum{N}) where {N}
-    m = s.data[1]
-    for i in 2:N
-        m = max(m, s.data[i])
-    end
-    return m
+    return maximum(s.data)
 end
 
 @propagate_inbounds function min_component(s::SampledSpectrum{N}) where {N}
-    m = s.data[1]
-    for i in 2:N
-        m = min(m, s.data[i])
-    end
-    return m
+    return minimum(s.data)
 end
 
 @propagate_inbounds is_black(s::SampledSpectrum{N}) where {N} = all(x -> x == 0.0f0, s.data)
@@ -89,17 +77,11 @@ end
 
 # Check for NaN/Inf
 @propagate_inbounds function has_nan(s::SampledSpectrum{N}) where {N}
-    for i in 1:N
-        isnan(s.data[i]) && return true
-    end
-    return false
+    return any(isnan, s.data)
 end
 
 @propagate_inbounds function has_inf(s::SampledSpectrum{N}) where {N}
-    for i in 1:N
-        isinf(s.data[i]) && return true
-    end
-    return false
+    return any(isinf, s.data)
 end
 
 # Safe division (avoid NaN)

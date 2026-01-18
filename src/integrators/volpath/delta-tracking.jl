@@ -19,9 +19,9 @@
     lambda::Wavelengths
 )
     base = (pixel_index - Int32(1)) * Int32(4)
-    @inbounds for i in 1:4
+    @inbounds for i in Int32(1):Int32(4)
         # Atomic add for thread safety
-        Atomix.@atomic pixel_L[base + Int32(i)] += L[i]
+        Atomix.@atomic pixel_L[base + i] += L[i]
     end
 end
 
@@ -29,18 +29,6 @@ end
 # Delta Tracking Kernel (processes VPMediumSampleWorkItem)
 # ============================================================================
 
-"""
-    vp_sample_medium_kernel!(...)
-
-Process rays in medium using delta tracking with known t_max from intersection.
-This follows pbrt-v4's architecture where intersection happens FIRST.
-
-For each ray:
-1. Run delta tracking up to t_max
-2. If absorption: terminate path
-3. If real scatter: push to medium_scatter_queue
-4. If escape (reach t_max): process stored surface hit or escaped ray
-"""
 @kernel inbounds=true function vp_sample_medium_kernel!(
     # Output queues
     scatter_items, scatter_size,                       # Real scatter events -> phase sampling
@@ -84,6 +72,38 @@ Implements delta tracking following pbrt-v4's SampleT_maj pattern.
 Now uses DDA majorant iterator for GridMedium to get per-voxel majorant bounds,
 significantly reducing null scattering events in sparse heterogeneous media.
 """
+
+"""Helper to call sample_T_maj_loop! with created iterator (no capture)"""
+@propagate_inbounds function _sample_with_iterator_helper(
+    medium,
+    table::RGBToSpectrumTable,
+    ray::Raycore.Ray,
+    t_max::Float32,
+    λ::Wavelengths,
+    T_maj_accum::SpectralRadiance,
+    beta::SpectralRadiance,
+    r_u::SpectralRadiance,
+    r_l::SpectralRadiance,
+    scatter_items, scatter_size,
+    pixel_L,
+    work::VPMediumSampleWorkItem,
+    media,
+    medium_type_idx::Int32,
+    max_depth::Int32,
+    max_queued::Int32
+)
+    # Create iterator specific to this medium type
+    iter = create_majorant_iterator(table, medium, ray, t_max, λ)
+
+    # Call type-stable iteration (dispatches on iter type)
+    return sample_T_maj_loop!(
+        iter, T_maj_accum, beta, r_u, r_l,
+        scatter_items, scatter_size,
+        pixel_L,
+        work, media, medium_type_idx, table, max_depth, max_queued
+    )
+end
+
 @propagate_inbounds function sample_medium_interaction!(
     # Output queues
     scatter_items, scatter_size,
@@ -100,12 +120,6 @@ significantly reducing null scattering events in sparse heterogeneous media.
     medium_type_idx = work.medium_idx.medium_type
     t_max = work.t_max
 
-    # Create majorant iterator (DDA for GridMedium, single-segment for HomogeneousMedium)
-    iter = create_majorant_iterator_dispatch(
-        rgb2spec_table, media, medium_type_idx,
-        work.ray, t_max, work.lambda
-    )
-
     # Delta tracking state
     beta = work.beta
     r_u = work.r_u
@@ -114,12 +128,15 @@ significantly reducing null scattering events in sparse heterogeneous media.
     # Accumulated transmittance across segments (reset after each interaction)
     T_maj_accum = SpectralRadiance(1f0)
 
-    # Dispatch to type-specific iteration
-    result = sample_T_maj_loop!(
-        iter, T_maj_accum, beta, r_u, r_l,
+    # Use with_medium pattern to avoid Union types (GPU-safe)
+    result = with_medium(
+        _sample_with_iterator_helper,
+        media, medium_type_idx,
+        rgb2spec_table, work.ray, t_max, work.lambda,
+        T_maj_accum, beta, r_u, r_l,
         scatter_items, scatter_size,
         pixel_L,
-        work, media, medium_type_idx, rgb2spec_table, max_depth, max_queued
+        work, media, medium_type_idx, max_depth, max_queued
     )
 
     # Unpack result
@@ -220,11 +237,10 @@ Delta tracking loop for homogeneous medium (single segment).
     max_queued::Int32
 )
     # Get the single segment
-    seg_result = homogeneous_next(iter)
-    if seg_result === nothing
+    seg, _, valid = homogeneous_next(iter)
+    if !valid
         return SampleTMajResult(beta, r_u, r_l, false)
     end
-    seg, _ = seg_result
 
     # Sample within segment
     return sample_segment!(
@@ -260,13 +276,12 @@ Iterates over voxel segments with per-voxel majorant bounds.
     max_segments = Int32(256)  # Reasonable upper bound for majorant grid traversal
 
     current_iter = iter
-    for _ in 1:max_segments
-        seg_result = dda_next(current_iter)
-        if seg_result === nothing
+    for _ in Int32(1):max_segments
+        seg, new_iter, valid = dda_next(current_iter)
+        if !valid
             # No more segments - ray survived
             break
         end
-        seg, new_iter = seg_result
         current_iter = new_iter
 
         # Sample within this segment
@@ -329,7 +344,7 @@ Following pbrt-v4's inner loop of SampleT_maj.
 
     # Inner sampling loop (bounded iterations)
     max_samples = Int32(100)
-    for _ in 1:max_samples
+    for _ in Int32(1):max_samples
         # Sample exponential distance
         u = rand(Float32)
         dt = -log(max(1f-10, 1f0 - u)) / σ_maj_0
