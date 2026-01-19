@@ -6,6 +6,56 @@
 # 2. Rays in medium are routed to medium_sample_queue with t_max
 # 3. This kernel runs delta tracking up to t_max
 # 4. If ray survives to t_max, it processes the stored surface hit
+#
+# Medium sampling uses deterministic RNG seeded from ray geometry (pbrt-v4 pattern)
+# because delta tracking requires unbounded samples (not suitable for Sobol).
+
+# ============================================================================
+# GPU-compatible LCG RNG for Medium Sampling
+# ============================================================================
+
+# LCG constants (same as pbrt-v4)
+const LCG_MULTIPLIER = UInt64(0x5DEECE66D)
+const LCG_INCREMENT = UInt64(11)
+const FLOAT32_SCALE = 2.3283064365386963f-10  # 1/(2^32)
+
+"""
+    lcg_init(ray_o, ray_d, t_max) -> UInt64
+
+Initialize LCG state from ray geometry for deterministic medium sampling.
+Following pbrt-v4's RNG initialization: Hash(ray.o, tMax), Hash(ray.d)
+"""
+@inline function lcg_init(ray_o::Point3f, ray_d::Vec3f, t_max::Float32)::UInt64
+    # Hash ray origin and t_max
+    ox = reinterpret(UInt32, ray_o[1])
+    oy = reinterpret(UInt32, ray_o[2])
+    oz = reinterpret(UInt32, ray_o[3])
+    tm = reinterpret(UInt32, t_max)
+
+    # Hash ray direction
+    dx = reinterpret(UInt32, ray_d[1])
+    dy = reinterpret(UInt32, ray_d[2])
+    dz = reinterpret(UInt32, ray_d[3])
+
+    # Combine using mix_bits (GPU-safe hash function from spectral-eval.jl)
+    seed1 = mix_bits(u_uint64(ox) ⊻ (u_uint64(oy) << 16) ⊻ (u_uint64(oz) << 32) ⊻ u_uint64(tm))
+    seed2 = mix_bits(u_uint64(dx) ⊻ (u_uint64(dy) << 16) ⊻ (u_uint64(dz) << 32))
+
+    return seed1 ⊻ seed2
+end
+
+"""
+    lcg_next(state) -> (UInt64, Float32)
+
+Generate next random Float32 in [0,1) and return new state.
+GPU-compatible LCG.
+"""
+@inline function lcg_next(state::UInt64)::Tuple{UInt64, Float32}
+    new_state = state * LCG_MULTIPLIER + LCG_INCREMENT
+    # Use upper 32 bits for random value (better quality than lower bits)
+    r = Float32(u_uint32(new_state >> 32)) * FLOAT32_SCALE
+    return (new_state, min(r, ONE_MINUS_EPSILON))
+end
 
 # ============================================================================
 # Helper: Add contribution to pixel
@@ -84,6 +134,7 @@ significantly reducing null scattering events in sparse heterogeneous media.
     beta::SpectralRadiance,
     r_u::SpectralRadiance,
     r_l::SpectralRadiance,
+    rng_state::UInt64,
     scatter_items, scatter_size,
     pixel_L,
     work::VPMediumSampleWorkItem,
@@ -97,7 +148,7 @@ significantly reducing null scattering events in sparse heterogeneous media.
 
     # Call type-stable iteration (dispatches on iter type)
     return sample_T_maj_loop!(
-        iter, T_maj_accum, beta, r_u, r_l,
+        iter, T_maj_accum, beta, r_u, r_l, rng_state,
         scatter_items, scatter_size,
         pixel_L,
         work, media, medium_type_idx, table, max_depth, max_queued
@@ -125,6 +176,10 @@ end
     r_u = work.r_u
     r_l = work.r_l
 
+    # Initialize deterministic RNG from ray geometry (pbrt-v4 pattern)
+    # Medium sampling uses LCG because delta tracking requires unbounded samples
+    rng_state = lcg_init(work.ray.o, work.ray.d, t_max)
+
     # Accumulated transmittance across segments (reset after each interaction)
     T_maj_accum = SpectralRadiance(1f0)
 
@@ -133,7 +188,7 @@ end
         _sample_with_iterator_helper,
         media, medium_type_idx,
         rgb2spec_table, work.ray, t_max, work.lambda,
-        T_maj_accum, beta, r_u, r_l,
+        T_maj_accum, beta, r_u, r_l, rng_state,
         scatter_items, scatter_size,
         pixel_L,
         work, media, medium_type_idx, max_depth, max_queued
@@ -213,6 +268,7 @@ struct SampleTMajResult
     beta::SpectralRadiance
     r_u::SpectralRadiance
     r_l::SpectralRadiance
+    rng_state::UInt64  # Updated RNG state for continuation
     done::Bool  # true if terminated (absorption/scatter), false if reached end
 end
 
@@ -220,6 +276,7 @@ end
     sample_T_maj_loop!(iter::HomogeneousMajorantIterator, ...) -> SampleTMajResult
 
 Delta tracking loop for homogeneous medium (single segment).
+Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
 """
 @propagate_inbounds function sample_T_maj_loop!(
     iter::HomogeneousMajorantIterator,
@@ -227,6 +284,7 @@ Delta tracking loop for homogeneous medium (single segment).
     beta::SpectralRadiance,
     r_u::SpectralRadiance,
     r_l::SpectralRadiance,
+    rng_state::UInt64,
     scatter_items, scatter_size,
     pixel_L,
     work::VPMediumSampleWorkItem,
@@ -239,12 +297,12 @@ Delta tracking loop for homogeneous medium (single segment).
     # Get the single segment
     seg, _, valid = homogeneous_next(iter)
     if !valid
-        return SampleTMajResult(beta, r_u, r_l, false)
+        return SampleTMajResult(beta, r_u, r_l, rng_state, false)
     end
 
     # Sample within segment
     return sample_segment!(
-        seg, T_maj_accum, beta, r_u, r_l,
+        seg, T_maj_accum, beta, r_u, r_l, rng_state,
         scatter_items, scatter_size,
         pixel_L,
         work, media, medium_type_idx, rgb2spec_table, max_depth, max_queued
@@ -256,6 +314,7 @@ end
 
 Delta tracking loop for heterogeneous medium using DDA majorant iterator.
 Iterates over voxel segments with per-voxel majorant bounds.
+Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
 """
 @propagate_inbounds function sample_T_maj_loop!(
     iter::DDAMajorantIterator,
@@ -263,6 +322,7 @@ Iterates over voxel segments with per-voxel majorant bounds.
     beta::SpectralRadiance,
     r_u::SpectralRadiance,
     r_l::SpectralRadiance,
+    rng_state::UInt64,
     scatter_items, scatter_size,
     pixel_L,
     work::VPMediumSampleWorkItem,
@@ -276,6 +336,7 @@ Iterates over voxel segments with per-voxel majorant bounds.
     max_segments = Int32(256)  # Reasonable upper bound for majorant grid traversal
 
     current_iter = iter
+    current_rng = rng_state
     for _ in Int32(1):max_segments
         seg, new_iter, valid = dda_next(current_iter)
         if !valid
@@ -286,7 +347,7 @@ Iterates over voxel segments with per-voxel majorant bounds.
 
         # Sample within this segment
         result = sample_segment!(
-            seg, T_maj_accum, beta, r_u, r_l,
+            seg, T_maj_accum, beta, r_u, r_l, current_rng,
             scatter_items, scatter_size,
             pixel_L,
             work, media, medium_type_idx, rgb2spec_table, max_depth, max_queued
@@ -301,18 +362,20 @@ Iterates over voxel segments with per-voxel majorant bounds.
         beta = result.beta
         r_u = result.r_u
         r_l = result.r_l
+        current_rng = result.rng_state
         # T_maj_accum is reset to 1.0 inside sample_segment! after interactions
         T_maj_accum = SpectralRadiance(1f0)
     end
 
-    return SampleTMajResult(beta, r_u, r_l, false)
+    return SampleTMajResult(beta, r_u, r_l, current_rng, false)
 end
 
 """
-    sample_segment!(seg, T_maj_accum, beta, r_u, r_l, ...) -> SampleTMajResult
+    sample_segment!(seg, T_maj_accum, beta, r_u, r_l, rng_state, ...) -> SampleTMajResult
 
 Sample interactions within a single majorant segment.
 Following pbrt-v4's inner loop of SampleT_maj.
+Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
 """
 @propagate_inbounds function sample_segment!(
     seg::RayMajorantSegment,
@@ -320,6 +383,7 @@ Following pbrt-v4's inner loop of SampleT_maj.
     beta::SpectralRadiance,
     r_u::SpectralRadiance,
     r_l::SpectralRadiance,
+    rng_state::UInt64,
     scatter_items, scatter_size,
     pixel_L,
     work::VPMediumSampleWorkItem,
@@ -336,17 +400,20 @@ Following pbrt-v4's inner loop of SampleT_maj.
     if σ_maj_0 < 1f-10
         # Just apply transmittance for this segment (which is 1.0 for zero extinction)
         # No need to sample - ray passes through
-        return SampleTMajResult(beta, r_u, r_l, false)
+        return SampleTMajResult(beta, r_u, r_l, rng_state, false)
     end
 
     t = seg.t_min
     t_max_seg = seg.t_max
 
+    # Current RNG state (will be updated in loop)
+    current_rng = rng_state
+
     # Inner sampling loop (bounded iterations)
     max_samples = Int32(100)
     for _ in Int32(1):max_samples
-        # Sample exponential distance
-        u = rand(Float32)
+        # Sample exponential distance using LCG
+        current_rng, u = lcg_next(current_rng)
         dt = -log(max(1f-10, 1f0 - u)) / σ_maj_0
         t_sample = t + dt
 
@@ -362,7 +429,7 @@ Following pbrt-v4's inner loop of SampleT_maj.
                 r_l = r_l * T_maj / T_maj_0
             end
             # Continue to next segment
-            return SampleTMajResult(beta, r_u, r_l, false)
+            return SampleTMajResult(beta, r_u, r_l, current_rng, false)
         end
 
         # Compute transmittance for this step
@@ -388,17 +455,17 @@ Following pbrt-v4's inner loop of SampleT_maj.
         p_absorb = mp.σ_a[1] / σ_maj_0
         p_scatter = mp.σ_s[1] / σ_maj_0
 
-        # Sample event type
-        u_event = rand(Float32)
+        # Sample event type using LCG
+        current_rng, u_event = lcg_next(current_rng)
 
         if u_event < p_absorb
             # === ABSORPTION ===
-            return SampleTMajResult(SpectralRadiance(0f0), r_u, r_l, true)
+            return SampleTMajResult(SpectralRadiance(0f0), r_u, r_l, current_rng, true)
 
         elseif u_event < p_absorb + p_scatter
             # === REAL SCATTERING ===
             if work.depth >= max_depth
-                return SampleTMajResult(beta, r_u, r_l, true)
+                return SampleTMajResult(beta, r_u, r_l, current_rng, true)
             end
 
             # Update beta and r_u for scattering
@@ -428,7 +495,7 @@ Following pbrt-v4's inner loop of SampleT_maj.
                     scatter_items[new_idx] = scatter_item
                 end
             end
-            return SampleTMajResult(beta, r_u, r_l, true)
+            return SampleTMajResult(beta, r_u, r_l, current_rng, true)
 
         else
             # === NULL SCATTERING ===
@@ -441,20 +508,20 @@ Following pbrt-v4's inner loop of SampleT_maj.
                 r_u = r_u * T_maj * σ_n / pdf
                 r_l = r_l * T_maj * σ_maj / pdf
             else
-                return SampleTMajResult(SpectralRadiance(0f0), r_u, r_l, true)
+                return SampleTMajResult(SpectralRadiance(0f0), r_u, r_l, current_rng, true)
             end
 
             t = t_sample
 
             # Check throughput
             if is_black(beta) || is_black(r_u)
-                return SampleTMajResult(beta, r_u, r_l, true)
+                return SampleTMajResult(beta, r_u, r_l, current_rng, true)
             end
         end
     end
 
     # Exceeded max samples within segment
-    return SampleTMajResult(beta, r_u, r_l, false)
+    return SampleTMajResult(beta, r_u, r_l, current_rng, false)
 end
 
 # ============================================================================

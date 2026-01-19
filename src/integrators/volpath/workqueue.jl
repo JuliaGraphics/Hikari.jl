@@ -20,6 +20,7 @@ function _should_soa(::Type{T}) where T
     T <: VPMediumSampleWorkItem && return true
     T <: VPMediumScatterWorkItem && return true
     T <: VPEscapedRayWorkItem && return true
+    T <: VPRaySamples && return true  # Pre-computed samples per pixel
     return false
 end
 
@@ -124,6 +125,10 @@ mutable struct VolPathState{Backend}
     pdf_per_pixel::AbstractVector{Float32}  # n_pixels * 4 (wavelength PDFs)
     filter_weight_per_pixel::AbstractVector{Float32}  # n_pixels (filter weight per sample)
 
+    # Pre-computed Sobol samples per pixel (pbrt-v4 RaySamples / PixelSampleState)
+    # Updated each bounce via vp_generate_ray_samples_kernel!
+    pixel_samples::Any  # StructArray{VPRaySamples} - SOA layout for GPU coalescing
+
     # RGB to spectrum table
     rgb2spec_table::RGBToSpectrumTable
 
@@ -181,6 +186,10 @@ function VolPathState(
     pdf_per_pixel = KernelAbstractions.allocate(backend, Float32, n_pixels * 4)
     filter_weight_per_pixel = KernelAbstractions.allocate(backend, Float32, n_pixels)
 
+    # Pre-computed Sobol samples per pixel (pbrt-v4 RaySamples style)
+    # Using SOA layout for GPU coalesced access
+    pixel_samples = _allocate_soa(backend, VPRaySamples, n_pixels)
+
     # Load RGB to spectrum table and convert to appropriate array type
     rgb2spec_table_cpu = get_srgb_table()
     # Determine array type from an allocated array
@@ -222,6 +231,7 @@ function VolPathState(
         wavelengths_per_pixel,
         pdf_per_pixel,
         filter_weight_per_pixel,
+        pixel_samples,
         rgb2spec_table,
         cie_table,
         light_sampler_p,

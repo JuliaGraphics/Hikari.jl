@@ -147,6 +147,8 @@ end
 
 Uses power-weighted light sampling via alias table for better importance sampling
 in scenes with lights of varying intensities (pbrt-v4's PowerLightSampler approach).
+
+Now uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
 """
 @propagate_inbounds function surface_direct_lighting_inner!(
     shadow_items, shadow_size,
@@ -158,14 +160,18 @@ in scenes with lights of varying intensities (pbrt-v4's PowerLightSampler approa
     light_sampler_p,
     light_sampler_q,
     light_sampler_alias,
-    num_lights::Int32
+    num_lights::Int32,
+    # Pre-computed Sobol samples (SOA layout)
+    pixel_samples_direct_uc,
+    pixel_samples_direct_u
 )
     # Skip if no lights
     num_lights < Int32(1) && return
 
-    # Random numbers for light sampling
-    u_light = rand(Point2f)
-    light_select = rand(Float32)
+    # Use pre-computed Sobol samples for light sampling (pbrt-v4 RaySamples.direct)
+    pixel_idx = work.pixel_index
+    u_light = pixel_samples_direct_u[pixel_idx]
+    light_select = pixel_samples_direct_uc[pixel_idx]
 
     # Select light using power-weighted alias table sampling
     # Returns (1-based index, PMF for that light)
@@ -244,6 +250,8 @@ end
 
 Sample direct lighting at surface hits using power-weighted light sampling.
 Creates shadow rays for unoccluded light contributions.
+
+Uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
 """
 @kernel inbounds=true function vp_sample_surface_direct_lighting_kernel!(
     # Output
@@ -255,7 +263,9 @@ Creates shadow rays for unoccluded light contributions.
     @Const(lights),
     @Const(rgb2spec_scale), @Const(rgb2spec_coeffs), @Const(rgb2spec_res::Int32),
     @Const(light_sampler_p), @Const(light_sampler_q), @Const(light_sampler_alias),
-    @Const(num_lights::Int32), @Const(max_queued::Int32)
+    @Const(num_lights::Int32), @Const(max_queued::Int32),
+    # Pre-computed Sobol samples (SOA layout)
+    @Const(pixel_samples_direct_uc), @Const(pixel_samples_direct_u)
 )
     idx = @index(Global)
 
@@ -269,7 +279,8 @@ Creates shadow rays for unoccluded light contributions.
                 shadow_items, shadow_size,
                 work, materials, textures, lights, rgb2spec_table,
                 light_sampler_p, light_sampler_q, light_sampler_alias,
-                num_lights
+                num_lights,
+                pixel_samples_direct_uc, pixel_samples_direct_u
             )
         end
     end
@@ -280,6 +291,7 @@ end
 
 Sample direct lighting at all surface material evaluation points.
 Uses power-weighted light sampling from state.light_sampler_* arrays.
+Uses pre-computed Sobol samples from state.pixel_samples.
 """
 function vp_sample_surface_direct_lighting!(
     backend,
@@ -291,6 +303,9 @@ function vp_sample_surface_direct_lighting!(
     n = queue_size(state.material_queue)
     n == 0 && return nothing
 
+    # Access SOA components of pixel_samples
+    pixel_samples = state.pixel_samples
+
     kernel! = vp_sample_surface_direct_lighting_kernel!(backend)
     kernel!(
         state.shadow_queue.items, state.shadow_queue.size,
@@ -300,7 +315,8 @@ function vp_sample_surface_direct_lighting!(
         lights,
         state.rgb2spec_table.scale, state.rgb2spec_table.coeffs, state.rgb2spec_table.res,
         state.light_sampler_p, state.light_sampler_q, state.light_sampler_alias,
-        state.num_lights, state.shadow_queue.capacity;
+        state.num_lights, state.shadow_queue.capacity,
+        pixel_samples.direct_uc, pixel_samples.direct_u;
         ndrange=Int(state.material_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
     )
 
@@ -312,7 +328,10 @@ end
 # BSDF Sampling Inner Function
 # ============================================================================
 
-"""Inner function for material evaluation - can use return statements."""
+"""Inner function for material evaluation - can use return statements.
+
+Now uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
+"""
 @propagate_inbounds function evaluate_material_inner!(
     next_ray_items, next_ray_size,
     work::VPMaterialEvalWorkItem,
@@ -321,7 +340,11 @@ end
     rgb2spec_table,
     max_depth::Int32,
     max_queued::Int32,
-    do_regularize::Bool
+    do_regularize::Bool,
+    # Pre-computed Sobol samples (SOA layout)
+    pixel_samples_indirect_uc,
+    pixel_samples_indirect_u,
+    pixel_samples_indirect_rr
 )
     # Check depth limit
     new_depth = work.depth + Int32(1)
@@ -329,10 +352,11 @@ end
         return
     end
 
-    # Random numbers for BSDF sampling
-    u = rand(Point2f)
-    rng = rand(Float32)
-    rr_sample = rand(Float32)
+    # Use pre-computed Sobol samples for BSDF sampling (pbrt-v4 RaySamples.indirect)
+    pixel_idx = work.pixel_index
+    u = pixel_samples_indirect_u[pixel_idx]
+    rng = pixel_samples_indirect_uc[pixel_idx]
+    rr_sample = pixel_samples_indirect_rr[pixel_idx]
 
     # Apply regularization if enabled and we've had a non-specular bounce
     # (pbrt-v4: regularize && anyNonSpecularBounces)
@@ -436,6 +460,8 @@ end
 
 Sample BSDF at surface hits to generate continuation rays.
 Includes Russian roulette for path termination.
+
+Uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
 """
 @kernel inbounds=true function vp_evaluate_materials_kernel!(
     # Output
@@ -447,7 +473,9 @@ Includes Russian roulette for path termination.
     @Const(media),  # For determining medium after refraction
     @Const(rgb2spec_scale), @Const(rgb2spec_coeffs), @Const(rgb2spec_res::Int32),
     @Const(max_depth::Int32), @Const(max_queued::Int32),
-    @Const(do_regularize::Bool)  # Whether to apply BSDF regularization
+    @Const(do_regularize::Bool),  # Whether to apply BSDF regularization
+    # Pre-computed Sobol samples (SOA layout)
+    @Const(pixel_samples_indirect_uc), @Const(pixel_samples_indirect_u), @Const(pixel_samples_indirect_rr)
 )
     idx = @index(Global)
 
@@ -460,7 +488,8 @@ Includes Russian roulette for path termination.
             evaluate_material_inner!(
                 next_ray_items, next_ray_size,
                 work, materials, textures, rgb2spec_table, max_depth, max_queued,
-                do_regularize
+                do_regularize,
+                pixel_samples_indirect_uc, pixel_samples_indirect_u, pixel_samples_indirect_rr
             )
         end
     end
@@ -473,6 +502,8 @@ Evaluate materials and spawn continuation rays.
 
 When `regularize=true`, near-specular BSDFs are roughened after the first non-specular
 bounce to reduce fireflies (matches pbrt-v4's BSDF::Regularize).
+
+Uses pre-computed Sobol samples from state.pixel_samples.
 """
 function vp_evaluate_materials!(
     backend,
@@ -487,6 +518,9 @@ function vp_evaluate_materials!(
 
     output_queue = next_ray_queue(state)
 
+    # Access SOA components of pixel_samples
+    pixel_samples = state.pixel_samples
+
     kernel! = vp_evaluate_materials_kernel!(backend)
     kernel!(
         output_queue.items, output_queue.size,
@@ -495,7 +529,8 @@ function vp_evaluate_materials!(
         textures,
         media,
         state.rgb2spec_table.scale, state.rgb2spec_table.coeffs, state.rgb2spec_table.res,
-        state.max_depth, output_queue.capacity, regularize;
+        state.max_depth, output_queue.capacity, regularize,
+        pixel_samples.indirect_uc, pixel_samples.indirect_u, pixel_samples.indirect_rr;
         ndrange=Int(state.material_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
     )
 

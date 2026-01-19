@@ -258,6 +258,8 @@ end
 Kernel that evaluates materials from a single-type queue.
 All items in the queue have the same material type - no branching needed.
 The mat_array parameter is the specific Vector for this material type.
+
+Uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
 """
 @kernel inbounds=true function vp_evaluate_single_type_kernel!(
     # Output
@@ -268,7 +270,9 @@ The mat_array parameter is the specific Vector for this material type.
     @Const(textures),
     @Const(rgb2spec_scale), @Const(rgb2spec_coeffs), @Const(rgb2spec_res::Int32),
     @Const(max_depth::Int32), @Const(max_queued::Int32),
-    @Const(do_regularize::Bool)
+    @Const(do_regularize::Bool),
+    # Pre-computed Sobol samples (SOA layout)
+    @Const(pixel_samples_indirect_uc), @Const(pixel_samples_indirect_u), @Const(pixel_samples_indirect_rr)
 )
     idx = @index(Global)
 
@@ -283,13 +287,16 @@ The mat_array parameter is the specific Vector for this material type.
         _evaluate_typed_material!(
             next_ray_items, next_ray_size,
             work, mat, textures, rgb2spec_table,
-            max_depth, max_queued, do_regularize
+            max_depth, max_queued, do_regularize,
+            pixel_samples_indirect_uc, pixel_samples_indirect_u, pixel_samples_indirect_rr
         )
     end
 end
 
 """
 Inner evaluation for a typed material (no dispatch needed).
+
+Uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
 """
 @propagate_inbounds function _evaluate_typed_material!(
     next_ray_items, next_ray_size,
@@ -299,14 +306,20 @@ Inner evaluation for a typed material (no dispatch needed).
     rgb2spec_table,
     max_depth::Int32,
     max_queued::Int32,
-    do_regularize::Bool
+    do_regularize::Bool,
+    # Pre-computed Sobol samples (SOA layout)
+    pixel_samples_indirect_uc,
+    pixel_samples_indirect_u,
+    pixel_samples_indirect_rr
 )
     new_depth = work.depth + Int32(1)
     new_depth >= max_depth && return
 
-    u = rand(Point2f)
-    rng = rand(Float32)
-    rr_sample = rand(Float32)
+    # Use pre-computed Sobol samples for this pixel (pbrt-v4 RaySamples style)
+    pixel_idx = work.pixel_index
+    u = pixel_samples_indirect_u[pixel_idx]
+    rng = pixel_samples_indirect_uc[pixel_idx]
+    rr_sample = pixel_samples_indirect_rr[pixel_idx]
 
     regularize = do_regularize && work.any_non_specular_bounces
 
@@ -485,6 +498,8 @@ material array element type, eliminating dispatch overhead.
 
 This is the 1:1 port of pbrt-v4's ForEachType(EvaluateMaterialCallback{...}, Material::Types())
 pattern from surfscatter.cpp.
+
+Uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
 """
 function vp_evaluate_materials_coherent!(
     backend,
@@ -496,6 +511,9 @@ function vp_evaluate_materials_coherent!(
     regularize::Bool = true
 ) where {N}
     output_queue = next_ray_queue(state)
+
+    # Extract pixel_samples SOA components for kernel
+    pixel_samples = state.pixel_samples
 
     # pbrt-v4 pattern: for each material type, launch specialized kernel
     # Julia specializes vp_evaluate_single_type_kernel! on mat_array's element type
@@ -515,7 +533,8 @@ function vp_evaluate_materials_coherent!(
             mat_array,
             textures,
             state.rgb2spec_table.scale, state.rgb2spec_table.coeffs, state.rgb2spec_table.res,
-            state.max_depth, output_queue.capacity, regularize;
+            state.max_depth, output_queue.capacity, regularize,
+            pixel_samples.indirect_uc, pixel_samples.indirect_u, pixel_samples.indirect_rr;
             ndrange=Int(type_queue.capacity)  # pbrt-v4 ForAllQueued pattern
         )
     end
@@ -579,7 +598,10 @@ function vp_sample_direct_lighting_coherent!(
     end
 end
 
-"""Sample direct lighting from a specific material queue (helper for coherent mode)."""
+"""Sample direct lighting from a specific material queue (helper for coherent mode).
+
+Uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
+"""
 function vp_sample_direct_lighting_from_queue!(
     backend,
     state::VolPathState,
@@ -591,6 +613,9 @@ function vp_sample_direct_lighting_from_queue!(
     n = queue_size(mat_queue)
     n == 0 && return nothing
 
+    # Extract pixel_samples SOA components for kernel
+    pixel_samples = state.pixel_samples
+
     kernel! = vp_sample_surface_direct_lighting_kernel!(backend)
     kernel!(
         state.shadow_queue.items, state.shadow_queue.size,
@@ -600,7 +625,8 @@ function vp_sample_direct_lighting_from_queue!(
         lights,
         state.rgb2spec_table.scale, state.rgb2spec_table.coeffs, state.rgb2spec_table.res,
         state.light_sampler_p, state.light_sampler_q, state.light_sampler_alias,
-        state.num_lights, state.shadow_queue.capacity;
+        state.num_lights, state.shadow_queue.capacity,
+        pixel_samples.direct_uc, pixel_samples.direct_u;
         ndrange=Int(mat_queue.capacity)
     )
     return nothing
@@ -653,6 +679,9 @@ function vp_evaluate_materials_sorted!(
     # Evaluate sorted buffer
     output_queue = next_ray_queue(state)
 
+    # Extract pixel_samples SOA components for kernel
+    pixel_samples = state.pixel_samples
+
     kernel! = vp_evaluate_materials_sorted_kernel!(backend)
     kernel!(
         output_queue.items, output_queue.size,
@@ -661,7 +690,8 @@ function vp_evaluate_materials_sorted!(
         textures,
         media,
         state.rgb2spec_table.scale, state.rgb2spec_table.coeffs, state.rgb2spec_table.res,
-        state.max_depth, output_queue.capacity, regularize;
+        state.max_depth, output_queue.capacity, regularize,
+        pixel_samples.indirect_uc, pixel_samples.indirect_u, pixel_samples.indirect_rr;
         ndrange=Int(n_total)
     )
     return nothing
@@ -752,7 +782,9 @@ end
     @Const(media),
     @Const(rgb2spec_scale), @Const(rgb2spec_coeffs), @Const(rgb2spec_res::Int32),
     @Const(max_depth::Int32), @Const(max_queued::Int32),
-    @Const(do_regularize::Bool)
+    @Const(do_regularize::Bool),
+    # Pre-computed Sobol samples (SOA layout)
+    @Const(pixel_samples_indirect_uc), @Const(pixel_samples_indirect_u), @Const(pixel_samples_indirect_rr)
 )
     idx = @index(Global)
 
@@ -763,7 +795,8 @@ end
         evaluate_material_inner!(
             next_ray_items, next_ray_size,
             work, materials, textures, rgb2spec_table, max_depth, max_queued,
-            do_regularize
+            do_regularize,
+            pixel_samples_indirect_uc, pixel_samples_indirect_u, pixel_samples_indirect_rr
         )
     end
 end

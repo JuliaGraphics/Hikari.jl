@@ -213,6 +213,119 @@ Following pbrt-v4's GetCameraSample: samples the filter, computes offset and wei
 end
 
 # ============================================================================
+# Ray Sample Generation (pbrt-v4 RaySamples / PixelSampleState)
+# ============================================================================
+
+"""
+    vp_generate_ray_samples_kernel!(...)
+
+Generate pre-computed Sobol samples for the current bounce.
+Following pbrt-v4's WavefrontPathIntegrator::GenerateRaySamples:
+- For each active ray in the queue, generate 7 samples for this bounce
+- Samples are stored in pixel_samples indexed by pixel_index
+- Dimension allocation: 6 (camera) + 7 * depth
+
+This replaces rand() calls with correlated low-discrepancy samples.
+"""
+@kernel inbounds=true function vp_generate_ray_samples_kernel!(
+    # Output: pixel samples (SOA layout)
+    pixel_samples_direct_uc,
+    pixel_samples_direct_u,
+    pixel_samples_indirect_uc,
+    pixel_samples_indirect_u,
+    pixel_samples_indirect_rr,
+    # Input: ray queue (AOS - read pixel_index from each work item)
+    @Const(ray_queue_items),
+    @Const(ray_queue_size),
+    # Sampler parameters
+    @Const(sample_idx::Int32),
+    @Const(depth::Int32),
+    @Const(width::Int32),
+    @Const(sobol_matrices),
+    @Const(sampler_seed::UInt32),
+    @Const(log2_spp::Int32),
+    @Const(n_base4_digits::Int32)
+)
+    i = @index(Global)
+    n_rays = ray_queue_size[1]
+
+    @inbounds if i <= n_rays
+        # Read pixel_index from work item (AOS layout)
+        work = ray_queue_items[i]
+        pixel_index = work.pixel_index
+
+        # Recover pixel coordinates from pixel_index
+        # pixel_index is 1-based, formula: pixel_index = (y-1) * width + x
+        pixel_idx_0 = pixel_index - Int32(1)
+        px = u_int32(mod(pixel_idx_0, width)) + Int32(1)
+        py = u_int32(div(pixel_idx_0, width)) + Int32(1)
+
+        # Base dimension: 6 (camera) + 7 * depth
+        # Camera uses dims 0-5: wavelength(1), film_x(1), film_y(1), lens_x(1), lens_y(1), filter(1)
+        base_dim = Int32(6) + Int32(7) * depth
+
+        # Generate 7 samples for this bounce using ZSobol sampler
+        # Direct lighting: light selection (1D) + light position (2D)
+        direct_uc = zsobol_sample_1d(px, py, sample_idx, base_dim, log2_spp, n_base4_digits, sampler_seed, sobol_matrices)
+        direct_u = zsobol_sample_2d(px, py, sample_idx, base_dim + Int32(1), log2_spp, n_base4_digits, sampler_seed, sobol_matrices)
+
+        # Indirect: BSDF component (1D) + direction (2D) + Russian roulette (1D)
+        indirect_uc = zsobol_sample_1d(px, py, sample_idx, base_dim + Int32(3), log2_spp, n_base4_digits, sampler_seed, sobol_matrices)
+        indirect_u = zsobol_sample_2d(px, py, sample_idx, base_dim + Int32(4), log2_spp, n_base4_digits, sampler_seed, sobol_matrices)
+        indirect_rr = zsobol_sample_1d(px, py, sample_idx, base_dim + Int32(6), log2_spp, n_base4_digits, sampler_seed, sobol_matrices)
+
+        # Store in pixel samples buffer (SOA layout)
+        pixel_samples_direct_uc[pixel_index] = direct_uc
+        pixel_samples_direct_u[pixel_index] = Point2f(direct_u[1], direct_u[2])
+        pixel_samples_indirect_uc[pixel_index] = indirect_uc
+        pixel_samples_indirect_u[pixel_index] = Point2f(indirect_u[1], indirect_u[2])
+        pixel_samples_indirect_rr[pixel_index] = indirect_rr
+    end
+end
+
+"""
+    vp_generate_ray_samples!(backend, state, sample_idx, depth, sobol_matrices, log2_spp, n_base4_digits, sampler_seed)
+
+Generate pre-computed Sobol samples for all active rays at the current depth.
+"""
+function vp_generate_ray_samples!(
+    backend,
+    state::VolPathState,
+    sample_idx::Int32,
+    depth::Int32,
+    sobol_matrices,
+    log2_spp::Int32,
+    n_base4_digits::Int32,
+    sampler_seed::UInt32
+)
+    ray_queue = current_ray_queue(state)
+    n_rays = queue_size(ray_queue)
+    n_rays == 0 && return
+
+    # Access SOA components of pixel_samples
+    pixel_samples = state.pixel_samples
+
+    kernel! = vp_generate_ray_samples_kernel!(backend)
+    kernel!(
+        pixel_samples.direct_uc,
+        pixel_samples.direct_u,
+        pixel_samples.indirect_uc,
+        pixel_samples.indirect_u,
+        pixel_samples.indirect_rr,
+        ray_queue.items,  # Pass full items array (AOS), kernel will read pixel_index
+        ray_queue.size,
+        sample_idx,
+        depth,
+        state.width,
+        sobol_matrices,
+        sampler_seed,
+        log2_spp,
+        n_base4_digits;
+        ndrange=n_rays
+    )
+end
+
+# ============================================================================
 # Film Accumulation
 # ============================================================================
 
@@ -475,6 +588,11 @@ function render!(
     for depth in 0:(vp.max_depth - 1)
         n_rays = queue_size(current_ray_queue(state))
         n_rays == 0 && break
+
+        # Generate pre-computed Sobol samples for this bounce (pbrt-v4 RaySamples pattern)
+        # Must be called BEFORE any kernel that uses pixel_samples
+        vp_generate_ray_samples!(backend, state, sample_idx, Int32(depth),
+                                 sobol_matrices_gpu, log2_spp, n_base4_digits, sampler_seed)
 
         reset_iteration_queues!(state)
         vp_trace_rays!(backend, state, accel)

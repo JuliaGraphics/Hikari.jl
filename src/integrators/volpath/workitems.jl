@@ -2,6 +2,30 @@
 # Extends PhysicalWavefront work items with medium support
 
 # ============================================================================
+# Ray Samples (pre-computed low-discrepancy samples per bounce)
+# ============================================================================
+
+"""
+    VPRaySamples
+
+Pre-computed Sobol samples for a single bounce, matching pbrt-v4's RaySamples.
+These are generated once per bounce and stored in PixelSampleState.
+"""
+struct VPRaySamples
+    # Direct lighting samples
+    direct_uc::Float32      # Light source selection [0,1)
+    direct_u::Point2f       # Light position sample
+
+    # Indirect ray samples
+    indirect_uc::Float32    # BSDF component selection [0,1)
+    indirect_u::Point2f     # BSDF direction sample
+    indirect_rr::Float32    # Russian roulette decision [0,1)
+end
+
+# Default constructor with zero samples
+VPRaySamples() = VPRaySamples(0f0, Point2f(0f0), 0f0, Point2f(0f0), 0f0)
+
+# ============================================================================
 # Ray Work Item with Medium
 # ============================================================================
 
