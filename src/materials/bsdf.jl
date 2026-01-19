@@ -122,9 +122,12 @@ function (b::BSDF)(
 end
 
 # GPU-safe integer conversion helpers (avoid InexactError)
-# Truncate toward zero
+# Truncate toward zero (signed)
 u_int32(x) = Base.unsafe_trunc(Int32, x)
 u_int(x) = Base.unsafe_trunc(Int, x)
+# Truncate toward zero (unsigned)
+u_uint32(x) = Base.unsafe_trunc(UInt32, x)
+u_uint64(x) = Base.unsafe_trunc(UInt64, x)
 # Floor then truncate (for array indexing with potential negative intermediates)
 floor_int32(x) = Base.unsafe_trunc(Int32, floor(x))
 floor_int(x) = Base.unsafe_trunc(Int, floor(x))

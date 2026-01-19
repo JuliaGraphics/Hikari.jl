@@ -183,6 +183,8 @@ end
 Compute all sample values for a pixel sample deterministically.
 Uses R2 sequence for pixel jitter (better 2D stratification) and
 hash-based sampling for other dimensions.
+
+NOTE: This is the old hash-based version. Use compute_pixel_sample_sobol for better convergence.
 """
 @inline function compute_pixel_sample(px::Int32, py::Int32, sample_idx::Int32)::PixelSample
     # Dimensions:
@@ -208,6 +210,8 @@ end
 
 Compute a 1D sample for path tracing at a given depth.
 Each depth gets a separate set of dimensions to avoid correlation.
+
+NOTE: This is the old hash-based version. Use compute_path_sample_1d_sobol for better convergence.
 """
 @inline function compute_path_sample_1d(px::Int32, py::Int32, sample_idx::Int32, depth::Int32, local_dim::Int32)::Float32
     # Base dimension for camera samples is 6
@@ -220,9 +224,70 @@ end
     compute_path_sample_2d(px::Int32, py::Int32, sample_idx::Int32, depth::Int32, local_dim::Int32) -> Tuple{Float32, Float32}
 
 Compute a 2D sample for path tracing at a given depth.
+
+NOTE: This is the old hash-based version. Use compute_path_sample_2d_sobol for better convergence.
 """
 @inline function compute_path_sample_2d(px::Int32, py::Int32, sample_idx::Int32, depth::Int32, local_dim::Int32)::Tuple{Float32, Float32}
     # Each depth uses 8 dimensions
     dim = Int32(6) + depth * Int32(8) + local_dim
     return stratified_sample_2d(px, py, sample_idx, dim)
+end
+
+# ============================================================================
+# ZSobol-based sampling (matching PBRT-v4)
+# ============================================================================
+# These functions use the Sobol low-discrepancy sequence with Owen scrambling
+# for better convergence than the hash-based samplers above.
+
+"""
+    compute_pixel_sample_sobol(px, py, sample_idx, log2_spp, n_base4_digits, seed, sobol_matrices) -> PixelSample
+
+Compute all sample values for a pixel sample using ZSobol sampler.
+This matches PBRT-v4's ZSobolSampler for better convergence.
+"""
+@inline function compute_pixel_sample_sobol(
+    px::Int32, py::Int32, sample_idx::Int32,
+    log2_spp::Int32, n_base4_digits::Int32, seed::UInt32, sobol_matrices
+)::PixelSample
+    # Dimensions (matching PBRT-v4):
+    # 0-1: pixel jitter
+    # 2: wavelength
+    # 3-4: lens
+    # 5: time
+
+    jitter_x, jitter_y = zsobol_sample_2d(px, py, sample_idx, Int32(0), log2_spp, n_base4_digits, seed, sobol_matrices)
+    wavelength_u = zsobol_sample_1d(px, py, sample_idx, Int32(2), log2_spp, n_base4_digits, seed, sobol_matrices)
+    lens_u, lens_v = zsobol_sample_2d(px, py, sample_idx, Int32(3), log2_spp, n_base4_digits, seed, sobol_matrices)
+    time = zsobol_sample_1d(px, py, sample_idx, Int32(5), log2_spp, n_base4_digits, seed, sobol_matrices)
+
+    return PixelSample(jitter_x, jitter_y, wavelength_u, lens_u, lens_v, time)
+end
+
+"""
+    compute_path_sample_1d_sobol(px, py, sample_idx, depth, local_dim, log2_spp, n_base4_digits, seed, sobol_matrices) -> Float32
+
+Compute a 1D sample for path tracing using ZSobol sampler.
+"""
+@inline function compute_path_sample_1d_sobol(
+    px::Int32, py::Int32, sample_idx::Int32, depth::Int32, local_dim::Int32,
+    log2_spp::Int32, n_base4_digits::Int32, seed::UInt32, sobol_matrices
+)::Float32
+    # Base dimension for camera samples is 6
+    # Each depth uses 8 dimensions (for BSDF, light, RR, etc.)
+    dim = Int32(6) + depth * Int32(8) + local_dim
+    return zsobol_sample_1d(px, py, sample_idx, dim, log2_spp, n_base4_digits, seed, sobol_matrices)
+end
+
+"""
+    compute_path_sample_2d_sobol(px, py, sample_idx, depth, local_dim, log2_spp, n_base4_digits, seed, sobol_matrices) -> Tuple{Float32, Float32}
+
+Compute a 2D sample for path tracing using ZSobol sampler.
+"""
+@inline function compute_path_sample_2d_sobol(
+    px::Int32, py::Int32, sample_idx::Int32, depth::Int32, local_dim::Int32,
+    log2_spp::Int32, n_base4_digits::Int32, seed::UInt32, sobol_matrices
+)::Tuple{Float32, Float32}
+    # Each depth uses 8 dimensions
+    dim = Int32(6) + depth * Int32(8) + local_dim
+    return zsobol_sample_2d(px, py, sample_idx, dim, log2_spp, n_base4_digits, seed, sobol_matrices)
 end

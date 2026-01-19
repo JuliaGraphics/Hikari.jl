@@ -136,7 +136,11 @@ Following pbrt-v4's GetCameraSample: samples the filter, computes offset and wei
     @Const(camera),
     @Const(sample_idx::Int32),
     @Const(initial_medium_idx),
-    @Const(filter_params::GPUFilterParams)
+    @Const(filter_params::GPUFilterParams),
+    @Const(log2_spp::Int32),
+    @Const(n_base4_digits::Int32),
+    @Const(sampler_seed::UInt32),
+    @Const(sobol_matrices)
 )
     idx = @index(Global)
     num_pixels = width * height
@@ -146,9 +150,9 @@ Following pbrt-v4's GetCameraSample: samples the filter, computes offset and wei
         x = u_int32(mod(pixel_idx, width)) + Int32(1)
         y = u_int32(div(pixel_idx, width)) + Int32(1)
 
-        # Stratified sampling: deterministic samples based on (pixel, sample_index)
-        # Uses R2 quasi-random sequence with per-pixel Cranley-Patterson rotation
-        pixel_sample = compute_pixel_sample(Int32(x), Int32(y), sample_idx)
+        # ZSobol sampling: deterministic low-discrepancy samples based on (pixel, sample_index)
+        # Matches PBRT-v4's ZSobolSampler for better convergence
+        pixel_sample = compute_pixel_sample_sobol(Int32(x), Int32(y), sample_idx, log2_spp, n_base4_digits, sampler_seed, sobol_matrices)
         wavelength_u = pixel_sample.wavelength_u
 
         # Sample the filter to get offset and weight (pbrt-v4 style)
@@ -421,6 +425,14 @@ function render!(
     sample_idx = film.iteration_index[] + Int32(1)
     film.iteration_index[] = sample_idx
 
+    # Compute ZSobol sampler parameters (matching PBRT-v4)
+    log2_spp, n_base4_digits = compute_zsobol_params(Int(vp.samples_per_pixel), width, height)
+    sampler_seed = UInt32(0)  # Can be varied for different render seeds
+
+    # Upload Sobol matrices to GPU (cached in state if available)
+    sobol_matrices_gpu = KernelAbstractions.allocate(backend, UInt32, length(SobolMatrices32))
+    KernelAbstractions.copyto!(backend, sobol_matrices_gpu, SobolMatrices32)
+
     # Get accumulators from state (allocation-free)
     pixel_rgb = state.pixel_rgb
     pixel_weight_sum = state.pixel_weight_sum
@@ -438,13 +450,14 @@ function render!(
     # Reset ray queue
     reset_queue!(backend, current_ray_queue(state))
 
-    # Generate camera rays with filter sampling (pbrt-v4 style)
+    # Generate camera rays with filter sampling (pbrt-v4 style) and ZSobol sampler
     kernel! = vp_generate_camera_rays_kernel!(backend)
     kernel!(
         current_ray_queue(state).items, current_ray_queue(state).size,
         wavelengths_per_pixel, pdf_per_pixel, filter_weight_per_pixel,
         Int32(width), Int32(height),
-        camera, sample_idx, initial_medium, vp.filter_params;
+        camera, sample_idx, initial_medium, vp.filter_params,
+        log2_spp, n_base4_digits, sampler_seed, sobol_matrices_gpu;
         ndrange=Int(n_pixels)
     )
 

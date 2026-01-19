@@ -932,7 +932,11 @@ include("spectral/color.jl")
 include("spectral/uplift.jl")
 include("materials/spectral-eval.jl")
 
-# Stratified sampler (needs murmur_hash_64a from spectral-eval.jl)
+# Sobol sampler (needs mix_bits from spectral-eval.jl)
+include("sampler/sobol_matrices.jl")
+include("sampler/sobol.jl")
+
+# Stratified sampler (needs murmur_hash_64a from spectral-eval.jl, sobol functions from sobol.jl)
 include("sampler/stratified.jl")
 
 include("primitive.jl")

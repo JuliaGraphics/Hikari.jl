@@ -692,17 +692,25 @@ function build_majorant_grid(density::AbstractArray{Float32,3}, res::Vec3i)
     grid = MajorantGrid(res, Vector{Float32})
 
     # For each majorant voxel, find max density in corresponding region
+    # Use floating point mapping to handle cases where majorant res > density res
     for iz in 0:res[3]-1
-        z_start = 1 + (iz * nz) ÷ res[3]
-        z_end = ((iz + 1) * nz) ÷ res[3]
+        # Map majorant voxel [iz, iz+1)/res to density range [0, nz)
+        z_start_f = iz * nz / res[3]
+        z_end_f = (iz + 1) * nz / res[3]
+        z_start = max(1, floor(Int, z_start_f) + 1)
+        z_end = min(nz, ceil(Int, z_end_f))
 
         for iy in 0:res[2]-1
-            y_start = 1 + (iy * ny) ÷ res[2]
-            y_end = ((iy + 1) * ny) ÷ res[2]
+            y_start_f = iy * ny / res[2]
+            y_end_f = (iy + 1) * ny / res[2]
+            y_start = max(1, floor(Int, y_start_f) + 1)
+            y_end = min(ny, ceil(Int, y_end_f))
 
             for ix in 0:res[1]-1
-                x_start = 1 + (ix * nx) ÷ res[1]
-                x_end = ((ix + 1) * nx) ÷ res[1]
+                x_start_f = ix * nx / res[1]
+                x_end_f = (ix + 1) * nx / res[1]
+                x_start = max(1, floor(Int, x_start_f) + 1)
+                x_end = min(nx, ceil(Int, x_end_f))
 
                 # Find max in this region
                 max_val = 0f0
@@ -824,13 +832,22 @@ to determine the valid segment for DDA traversal.
     ray_o = Point3f(ray_o_x, ray_o_y, ray_o_z)
 
     # Transform direction (vector, no translation) - M * [d, 0]
+    # NOTE: Do NOT normalize - t-parameterization must be preserved so that
+    # t values from DDA work with the original world-space ray
     ray_d_x = M[1,1] * ray.d[1] + M[1,2] * ray.d[2] + M[1,3] * ray.d[3]
     ray_d_y = M[2,1] * ray.d[1] + M[2,2] * ray.d[2] + M[2,3] * ray.d[3]
     ray_d_z = M[3,1] * ray.d[1] + M[3,2] * ray.d[2] + M[3,3] * ray.d[3]
     ray_d = Vec3f(ray_d_x, ray_d_y, ray_d_z)
 
+    # Check for degenerate direction
+    dir_len_sq = ray_d_x * ray_d_x + ray_d_y * ray_d_y + ray_d_z * ray_d_z
+    if dir_len_sq < 1f-20
+        return DDAMajorantIterator(medium.majorant_grid)
+    end
+
     # Compute ray-bounds intersection in medium space
-    # This gives us [t_enter, t_exit] where the ray is inside the medium
+    # The t values from this are valid for both world-space and medium-space rays
+    # because the transform preserves t-parameterization (linear transform)
     t_enter, t_exit = ray_bounds_intersect(ray_o, ray_d, medium.bounds)
 
     # Clamp to requested range and check validity
