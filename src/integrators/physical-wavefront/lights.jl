@@ -52,9 +52,10 @@ Sample a point light spectrally.
 
     # Point lights have delta distribution
     # Li = I / r^2
-    # Convert RGB intensity to spectral
+    # Convert RGB intensity to spectral using illuminant uplift (matches pbrt's RGBIlluminantSpectrum)
+    # This multiplies by D65 illuminant spectrum - critical for correct white reproduction
     Li_rgb = light.i / dist_sq
-    Li = uplift_rgb(table, Li_rgb, lambda)
+    Li = uplift_rgb_illuminant(table, Li_rgb, lambda)
 
     return PWLightSample(Li, wi, 1f0, light.position, true)
 end
@@ -99,8 +100,10 @@ Sample a spotlight spectrally.
     end
 
     # Li = I * falloff / r^2
+    # Use illuminant uplift (matches pbrt's RGBIlluminantSpectrum)
+    # This multiplies by D65 illuminant spectrum - critical for correct white reproduction
     Li_rgb = light.i * spot_falloff / dist_sq
-    Li = uplift_rgb(table, Li_rgb, lambda)
+    Li = uplift_rgb_illuminant(table, Li_rgb, lambda)
 
     return PWLightSample(Li, wi, 1f0, light.position, true)
 end
@@ -120,7 +123,9 @@ Sample a directional light spectrally.
     # p_light is at "infinity" - use large distance for shadow ray
     p_light = Point3f(p + 1f6 * wi)
 
-    Li = uplift_rgb(table, light.i, lambda)
+    # Use illuminant uplift (matches pbrt's RGBIlluminantSpectrum)
+    # This multiplies by D65 illuminant spectrum - critical for correct white reproduction
+    Li = uplift_rgb_illuminant(table, light.i, lambda)
 
     return PWLightSample(Li, wi, 1f0, p_light, true)
 end
@@ -139,7 +144,9 @@ Sample a sun light spectrally.
     # Distant lights have delta distribution
     p_light = Point3f(p + 1f6 * wi)
 
-    Li = uplift_rgb(table, light.l, lambda)
+    # Use illuminant uplift (matches pbrt's RGBIlluminantSpectrum)
+    # This multiplies by D65 illuminant spectrum - critical for correct white reproduction
+    Li = uplift_rgb_illuminant(table, light.l, lambda)
 
     return PWLightSample(Li, wi, 1f0, p_light, true)
 end
@@ -159,7 +166,9 @@ Sample sun direction from SunSkyLight spectrally.
     p_light = Point3f(p + 1f6 * wi)
 
     # Sun radiance (field is sun_intensity)
-    Li = uplift_rgb(table, light.sun_intensity, lambda)
+    # Use illuminant uplift (matches pbrt's RGBIlluminantSpectrum)
+    # This multiplies by D65 illuminant spectrum - critical for correct white reproduction
+    Li = uplift_rgb_illuminant(table, light.sun_intensity, lambda)
 
     return PWLightSample(Li, wi, 1f0, p_light, true)
 end
@@ -195,9 +204,9 @@ Sample environment light spectrally with importance sampling.
     # p_light at infinity
     p_light = Point3f(p + 1f6 * wi)
 
-    # Use unbounded uplift for emission (like pbrt's RGBIlluminantSpectrum)
-    # NOT uplift_rgb which is for albedo and incorrectly clamps/scales emission
-    Li = uplift_rgb_unbounded(table, Li_rgb, lambda)
+    # Use illuminant uplift (matches pbrt's RGBIlluminantSpectrum)
+    # This multiplies by D65 illuminant spectrum - critical for correct white reproduction
+    Li = uplift_rgb_illuminant(table, Li_rgb, lambda)
 
     return PWLightSample(Li, wi, pdf, p_light, false)
 end
@@ -227,7 +236,9 @@ give zero for directions below the surface, and cos_theta weighting handles the 
 
     p_light = Point3f(p + 1f6 * wi)
 
-    Li = uplift_rgb(table, light.i, lambda)
+    # Use illuminant uplift (matches pbrt's RGBIlluminantSpectrum)
+    # This multiplies by D65 illuminant spectrum - critical for correct white reproduction
+    Li = uplift_rgb_illuminant(table, light.i, lambda)
 
     return PWLightSample(Li, wi, pdf, p_light, false)
 end
@@ -348,9 +359,8 @@ Evaluate environment light for an escaped ray direction.
     # Following pbrt-v4 ImageInfiniteLight::Le which passes direction directly
     Le_rgb = light.env_map(ray_d) * light.scale
 
-    # Use illuminant uplift for environment lights (like pbrt's RGBIlluminantSpectrum)
-    # This multiplies by the D65 illuminant spectrum, which is necessary because
-    # sRGB environment maps assume D65 white point
+    # Use illuminant uplift for environment lights (matches pbrt's RGBIlluminantSpectrum)
+    # This multiplies by D65 illuminant spectrum - critical for correct white reproduction
     return uplift_rgb_illuminant(table, Le_rgb, lambda)
 end
 
@@ -365,7 +375,9 @@ Evaluate sun/sky light for an escaped ray direction.
     # Get sky + sun radiance for direction (same as le() function)
     Le_rgb = sky_radiance(light, ray_d) + sun_disk_radiance(light, ray_d)
 
-    return uplift_rgb(table, Le_rgb, lambda)
+    # Use illuminant uplift (matches pbrt's RGBIlluminantSpectrum)
+    # This multiplies by D65 illuminant spectrum - critical for correct white reproduction
+    return uplift_rgb_illuminant(table, Le_rgb, lambda)
 end
 
 """
@@ -376,7 +388,9 @@ Evaluate ambient light for an escaped ray - provides constant radiance regardles
 @propagate_inbounds function evaluate_environment_spectral(
     table::RGBToSpectrumTable, light::AmbientLight, ray_d::Vec3f, lambda::Wavelengths
 )::SpectralRadiance
-    return uplift_rgb(table, light.i, lambda)
+    # Use illuminant uplift (matches pbrt's RGBIlluminantSpectrum)
+    # This multiplies by D65 illuminant spectrum - critical for correct white reproduction
+    return uplift_rgb_illuminant(table, light.i, lambda)
 end
 
 # Fallback - non-environment lights contribute nothing for escaped rays

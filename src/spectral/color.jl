@@ -451,8 +451,12 @@ where CMF is the color matching function and pdf is the wavelength sampling PDF.
         end
     end
 
-    # Average over 4 samples and normalize by CIE_Y_integral
-    scale = 0.25f0 / CIE_Y_INTEGRAL
+    # Average over 4 samples
+    # NOTE: We do NOT divide by CIE_Y_INTEGRAL here to match pbrt-v4's RGBFilm behavior.
+    # pbrt's ToSensorRGB just averages (CMF * L / pdf), without the CIE_Y_integral normalization.
+    # The CIE_Y_integral factor would only be used for proper colorimetric XYZ, but for
+    # rendering we want unnormalized values that scale linearly with radiance.
+    scale = 0.25f0
     return (X_sum * scale, Y_sum * scale, Z_sum * scale)
 end
 
@@ -655,16 +659,18 @@ end
 
 Convert spectral radiance to sRGB:
 1. Convert to XYZ using color matching functions
-2. Apply chromatic adaptation from E illuminant to D65
-3. Transform XYZ to linear sRGB
-4. Apply sRGB gamma curve
+2. Transform XYZ to linear sRGB using standard matrix (D65 white point)
+3. Apply sRGB gamma curve
+
+This matches pbrt-v4's RGBFilm pipeline. Light sources use `uplift_rgb_illuminant`
+which multiplies by D65 illuminant spectrum, so no chromatic adaptation is needed.
 """
 @propagate_inbounds function spectral_to_srgb(table::CIEXYZTable, L::SpectralRadiance, lambda::Wavelengths)
     # Convert to XYZ
     X, Y, Z = spectral_to_xyz(table, L, lambda)
 
-    # Convert to linear sRGB with E→D65 chromatic adaptation
-    R, G, B = xyz_e_to_linear_srgb(X, Y, Z)
+    # Convert to linear sRGB using standard matrix (D65 white point)
+    R, G, B = xyz_to_linear_srgb(X, Y, Z)
 
     # Apply gamma (clamp negative values first)
     R = linear_to_srgb_gamma(max(0.0f0, R))
@@ -679,17 +685,18 @@ end
 
 Convert spectral radiance to linear RGB (no gamma):
 1. Convert to XYZ using color matching functions
-2. Apply chromatic adaptation from E illuminant to D65
-3. Transform XYZ to linear sRGB
+2. Transform XYZ to linear sRGB using standard matrix (D65 white point)
 
-Note: Uses xyz_e_to_linear_srgb which includes Bradford chromatic adaptation
-from Equal-Energy (E) illuminant to D65. This is necessary because the spectral
-wavelength sampling produces XYZ values relative to an equal-energy white,
-but sRGB is defined relative to D65.
+This matches pbrt-v4's RGBFilm::ToSensorRGB → outputRGBFromSensorRGB pipeline.
+
+The light sources use `uplift_rgb_illuminant` which multiplies by D65 illuminant
+spectrum (RGBIlluminantSpectrum), so no chromatic adaptation is needed here.
+D65-shaped spectra integrated under CIE XYZ naturally produce the correct
+white balance when transformed using the standard sRGB matrix.
 """
 @propagate_inbounds function spectral_to_linear_rgb(table::CIEXYZTable, L::SpectralRadiance, lambda::Wavelengths)
     X, Y, Z = spectral_to_xyz(table, L, lambda)
-    R, G, B = xyz_e_to_linear_srgb(X, Y, Z)
+    R, G, B = xyz_to_linear_srgb(X, Y, Z)
     return (max(0.0f0, R), max(0.0f0, G), max(0.0f0, B))
 end
 

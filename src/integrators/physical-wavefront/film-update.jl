@@ -1,33 +1,212 @@
 # Film update for PhysicalWavefront path tracing
 # Converts accumulated spectral radiance to RGB for Film output
+#
+# ARCHITECTURE NOTE:
+# All operations use @kernel functions that work identically on CPU (Array backend)
+# and GPU (ROCArray/CuArray/etc). Never use CPU-specific loops that copy data back
+# and forth. The CIE table arrays must be passed explicitly to kernels - there is
+# no global table.
 
 # ============================================================================
-# Spectral to RGB Conversion Kernel
+# Per-Sample Spectral-to-RGB Accumulation Kernel (pbrt-v4 style)
+# ============================================================================
+
+"""
+    pw_accumulate_sample_to_rgb_kernel!(pixel_rgb, pixel_L, wavelengths_per_pixel,
+                                         pdf_per_pixel, cie_x, cie_y, cie_z, num_pixels)
+
+Convert this sample's spectral radiance to RGB using PER-PIXEL wavelengths
+and accumulate into pixel_rgb buffer.
+
+This is the key operation that pbrt-v4 does: spectral-to-RGB conversion happens
+IMMEDIATELY after each sample, using THAT PIXEL's wavelengths. The RGB values
+are then accumulated across samples.
+
+Each pixel has independently sampled wavelengths, which decorrelates color noise
+and results in much faster convergence than using shared wavelengths.
+
+Arguments:
+- `pixel_rgb`: RGB accumulation buffer (3 × num_pixels, interleaved R,G,B)
+- `pixel_L`: Spectral radiance for this sample (4 × num_pixels, interleaved)
+- `wavelengths_per_pixel`: Wavelengths for each pixel (4 × num_pixels)
+- `pdf_per_pixel`: PDF for each wavelength sample (4 × num_pixels)
+- `cie_x`, `cie_y`, `cie_z`: CIE XYZ color matching function arrays
+- `num_pixels`: Total number of pixels
+"""
+@kernel inbounds=true function pw_accumulate_sample_to_rgb_kernel!(
+    pixel_rgb,
+    @Const(pixel_L),
+    @Const(wavelengths_per_pixel),
+    @Const(pdf_per_pixel),
+    @Const(cie_x),
+    @Const(cie_y),
+    @Const(cie_z),
+    @Const(num_pixels::Int32)
+)
+    idx = @index(Global)
+
+    if idx <= num_pixels
+        # Extract spectral radiance for this pixel
+        base = (idx - Int32(1)) * Int32(4)
+        L = SpectralRadiance((
+            pixel_L[base + Int32(1)],
+            pixel_L[base + Int32(2)],
+            pixel_L[base + Int32(3)],
+            pixel_L[base + Int32(4)]
+        ))
+
+        # Reconstruct THIS PIXEL's wavelengths
+        lambda = Wavelengths((
+            wavelengths_per_pixel[base + Int32(1)],
+            wavelengths_per_pixel[base + Int32(2)],
+            wavelengths_per_pixel[base + Int32(3)],
+            wavelengths_per_pixel[base + Int32(4)]
+        ), (
+            pdf_per_pixel[base + Int32(1)],
+            pdf_per_pixel[base + Int32(2)],
+            pdf_per_pixel[base + Int32(3)],
+            pdf_per_pixel[base + Int32(4)]
+        ))
+
+        # Reconstruct CIE table from array components
+        cie_table = CIEXYZTable(cie_x, cie_y, cie_z)
+
+        # Convert spectral to RGB using THIS PIXEL's wavelengths
+        R, G, B = spectral_to_linear_rgb(cie_table, L, lambda)
+
+        # Clamp negative values and NaN/Inf
+        R = ifelse(isfinite(R), max(0.0f0, R), 0.0f0)
+        G = ifelse(isfinite(G), max(0.0f0, G), 0.0f0)
+        B = ifelse(isfinite(B), max(0.0f0, B), 0.0f0)
+
+        # Accumulate into RGB buffer (atomic add for thread safety)
+        base_rgb = (idx - Int32(1)) * Int32(3)
+        pixel_rgb[base_rgb + Int32(1)] += R
+        pixel_rgb[base_rgb + Int32(2)] += G
+        pixel_rgb[base_rgb + Int32(3)] += B
+    end
+end
+
+"""
+    pw_accumulate_sample_to_rgb!(backend, pixel_rgb, pixel_L, wavelengths_per_pixel,
+                                  pdf_per_pixel, cie_table, num_pixels)
+
+High-level wrapper to accumulate spectral sample to RGB buffer.
+"""
+function pw_accumulate_sample_to_rgb!(
+    backend,
+    pixel_rgb::AbstractVector{Float32},
+    pixel_L::AbstractVector{Float32},
+    wavelengths_per_pixel::AbstractVector{Float32},
+    pdf_per_pixel::AbstractVector{Float32},
+    cie_table::CIEXYZTable,
+    num_pixels::Int32
+)
+    kernel! = pw_accumulate_sample_to_rgb_kernel!(backend)
+    kernel!(
+        pixel_rgb,
+        pixel_L,
+        wavelengths_per_pixel,
+        pdf_per_pixel,
+        cie_table.cie_x,
+        cie_table.cie_y,
+        cie_table.cie_z,
+        num_pixels;
+        ndrange=Int(num_pixels)
+    )
+    KernelAbstractions.synchronize(backend)
+    return nothing
+end
+
+# ============================================================================
+# Film Finalization Kernel
+# ============================================================================
+
+"""
+    pw_finalize_film_kernel!(framebuffer, pixel_rgb, inv_samples, width, height)
+
+Copy accumulated RGB values to film framebuffer, dividing by sample count.
+"""
+@kernel inbounds=true function pw_finalize_film_kernel!(
+    framebuffer,
+    @Const(pixel_rgb),
+    @Const(inv_samples::Float32),
+    @Const(width::Int32),
+    @Const(height::Int32)
+)
+    idx = @index(Global)
+    num_pixels = width * height
+
+    if idx <= num_pixels
+        base = (idx - Int32(1)) * Int32(3)
+        R = pixel_rgb[base + Int32(1)] * inv_samples
+        G = pixel_rgb[base + Int32(2)] * inv_samples
+        B = pixel_rgb[base + Int32(3)] * inv_samples
+
+        # Clamp
+        R = ifelse(isfinite(R), max(0.0f0, R), 0.0f0)
+        G = ifelse(isfinite(G), max(0.0f0, G), 0.0f0)
+        B = ifelse(isfinite(B), max(0.0f0, B), 0.0f0)
+
+        # Convert linear index to 2D coordinates
+        pixel_idx = idx - Int32(1)
+        x = u_int32(mod(pixel_idx, width)) + Int32(1)
+        y = u_int32(div(pixel_idx, width)) + Int32(1)
+
+        framebuffer[y, x] = RGB{Float32}(R, G, B)
+    end
+end
+
+"""
+    pw_finalize_film!(backend, film, pixel_rgb, samples_per_pixel)
+
+Copy accumulated RGB values to film framebuffer, dividing by sample count.
+"""
+function pw_finalize_film!(
+    backend,
+    film::Film,
+    pixel_rgb::AbstractVector{Float32},
+    samples_per_pixel::Int32
+)
+    width = Int32(size(film.framebuffer, 2))
+    height = Int32(size(film.framebuffer, 1))
+    num_pixels = width * height
+    inv_samples = 1.0f0 / Float32(samples_per_pixel)
+
+    kernel! = pw_finalize_film_kernel!(backend)
+    kernel!(
+        film.framebuffer,
+        pixel_rgb,
+        inv_samples,
+        width, height;
+        ndrange=Int(num_pixels)
+    )
+    KernelAbstractions.synchronize(backend)
+    return nothing
+end
+
+# ============================================================================
+# Spectral to RGB Conversion Kernel (per-pixel wavelengths, final update)
 # ============================================================================
 
 """
     pw_update_film_spectral_kernel!(framebuffer, pixel_L, wavelengths_per_pixel,
+                                     pdf_per_pixel, cie_x, cie_y, cie_z,
                                      samples_accumulated, width, height)
 
 Convert accumulated spectral radiance to RGB and update film framebuffer.
 
 Each pixel stores 4 spectral values in pixel_L (interleaved), and wavelengths_per_pixel
 stores the sampled wavelengths. Uses CIE XYZ color matching for accurate conversion.
-
-Arguments:
-- `framebuffer`: Output RGB image (height × width)
-- `pixel_L`: Accumulated spectral radiance (4 × num_pixels, interleaved)
-- `wavelengths_per_pixel`: Wavelengths for each pixel's samples (4 × num_pixels)
-- `pdf_per_pixel`: PDF for each wavelength sample (4 × num_pixels)
-- `samples_accumulated`: Number of samples per pixel for averaging
-- `width`: Image width
-- `height`: Image height
 """
 @kernel inbounds=true function pw_update_film_spectral_kernel!(
     framebuffer,
     @Const(pixel_L),
     @Const(wavelengths_per_pixel),
     @Const(pdf_per_pixel),
+    @Const(cie_x),
+    @Const(cie_y),
+    @Const(cie_z),
     @Const(samples_accumulated::Int32),
     @Const(width::Int32),
     @Const(height::Int32)
@@ -35,7 +214,7 @@ Arguments:
     idx = @index(Global)
     num_pixels = width * height
 
-     if idx <= num_pixels
+    if idx <= num_pixels
         # Extract spectral radiance for this pixel
         base = (idx - Int32(1)) * Int32(4)
         L = SpectralRadiance((
@@ -58,8 +237,11 @@ Arguments:
             pdf_per_pixel[base + Int32(4)]
         ))
 
+        # Reconstruct CIE table from array components
+        cie_table = CIEXYZTable(cie_x, cie_y, cie_z)
+
         # Convert to linear RGB via XYZ
-        R, G, B = spectral_to_linear_rgb(L, lambda)
+        R, G, B = spectral_to_linear_rgb(cie_table, L, lambda)
 
         # Average by number of samples
         if samples_accumulated > Int32(0)
@@ -75,12 +257,9 @@ Arguments:
         B = ifelse(isfinite(B), max(0.0f0, B), 0.0f0)
 
         # Convert linear index to 2D coordinates
-        # pixel_index uses row-major: idx = (y-1)*width + x, so x varies fastest
-        # framebuffer is (height, width) = (rows, cols)
-        # So framebuffer[row, col] = framebuffer[y, x]
         pixel_idx = idx - Int32(1)
-        x = u_int32(mod(pixel_idx, width)) + Int32(1)   # column (1 to width)
-        y = u_int32(div(pixel_idx, width)) + Int32(1)   # row (1 to height)
+        x = u_int32(mod(pixel_idx, width)) + Int32(1)
+        y = u_int32(div(pixel_idx, width)) + Int32(1)
 
         framebuffer[y, x] = RGB{Float32}(R, G, B)
     end
@@ -91,8 +270,8 @@ end
 # ============================================================================
 
 """
-    pw_update_film_uniform_kernel!(framebuffer, pixel_L, lambda,
-                                    samples_accumulated, width, height)
+    pw_update_film_uniform_kernel!(framebuffer, pixel_L, cie_x, cie_y, cie_z,
+                                    lambda, samples_accumulated, width, height)
 
 Convert accumulated spectral radiance to RGB using uniform wavelength sampling.
 
@@ -102,6 +281,9 @@ within a sample iteration. This kernel uses a single Wavelengths value for all p
 @kernel inbounds=true function pw_update_film_uniform_kernel!(
     framebuffer,
     @Const(pixel_L),
+    @Const(cie_x),
+    @Const(cie_y),
+    @Const(cie_z),
     @Const(lambda::Wavelengths),
     @Const(samples_accumulated::Int32),
     @Const(width::Int32),
@@ -110,7 +292,7 @@ within a sample iteration. This kernel uses a single Wavelengths value for all p
     idx = @index(Global)
     num_pixels = width * height
 
-     if idx <= num_pixels
+    if idx <= num_pixels
         # Extract spectral radiance for this pixel
         base = (idx - Int32(1)) * Int32(4)
         L = SpectralRadiance((
@@ -120,8 +302,11 @@ within a sample iteration. This kernel uses a single Wavelengths value for all p
             pixel_L[base + Int32(4)]
         ))
 
+        # Reconstruct CIE table from array components
+        cie_table = CIEXYZTable(cie_x, cie_y, cie_z)
+
         # Convert to linear RGB via XYZ
-        R, G, B = spectral_to_linear_rgb(L, lambda)
+        R, G, B = spectral_to_linear_rgb(cie_table, L, lambda)
 
         # Average by number of samples
         if samples_accumulated > Int32(0)
@@ -137,12 +322,9 @@ within a sample iteration. This kernel uses a single Wavelengths value for all p
         B = ifelse(isfinite(B), max(0.0f0, B), 0.0f0)
 
         # Convert linear index to 2D coordinates
-        # pixel_index uses row-major: idx = (y-1)*width + x, so x varies fastest
-        # framebuffer is (height, width) = (rows, cols)
-        # So framebuffer[row, col] = framebuffer[y, x]
         pixel_idx = idx - Int32(1)
-        x = u_int32(mod(pixel_idx, width)) + Int32(1)   # column (1 to width)
-        y = u_int32(div(pixel_idx, width)) + Int32(1)   # row (1 to height)
+        x = u_int32(mod(pixel_idx, width)) + Int32(1)
+        y = u_int32(div(pixel_idx, width)) + Int32(1)
 
         framebuffer[y, x] = RGB{Float32}(R, G, B)
     end
@@ -191,192 +373,15 @@ Clear accumulated spectral radiance to zero for new render.
 end
 
 # ============================================================================
-# Per-Sample Spectral-to-RGB Accumulation (pbrt-v4 style with per-pixel wavelengths)
+# High-Level Wrapper Functions
 # ============================================================================
 
 """
-    pw_accumulate_sample_to_rgb!(backend, pixel_rgb, pixel_L,
-                                  wavelengths_per_pixel, pdf_per_pixel, num_pixels)
-
-Convert this sample's spectral radiance to RGB using PER-PIXEL wavelengths
-and accumulate into pixel_rgb.
-
-This is the key operation that pbrt-v4 does: spectral-to-RGB conversion happens
-IMMEDIATELY after each sample, using THAT PIXEL's wavelengths. The RGB values
-are then accumulated across samples.
-
-Each pixel has independently sampled wavelengths, which decorrelates color noise
-and results in much faster convergence than using shared wavelengths.
-"""
-function pw_accumulate_sample_to_rgb!(
-    backend,
-    pixel_rgb::AbstractVector{Float32},
-    pixel_L::AbstractVector{Float32},
-    wavelengths_per_pixel::AbstractVector{Float32},
-    pdf_per_pixel::AbstractVector{Float32},
-    cie_table::CIEXYZTable,
-    num_pixels::Int32
-)
-    # CPU implementation (GPU kernel would be similar)
-    pixel_L_cpu = Array(pixel_L)
-    pixel_rgb_cpu = Array(pixel_rgb)
-    wavelengths_cpu = Array(wavelengths_per_pixel)
-    pdf_cpu = Array(pdf_per_pixel)
-
-     for idx in 1:Int(num_pixels)
-        # Extract spectral radiance for this pixel
-        base = (idx - 1) * 4
-        L = SpectralRadiance((
-            pixel_L_cpu[base + 1],
-            pixel_L_cpu[base + 2],
-            pixel_L_cpu[base + 3],
-            pixel_L_cpu[base + 4]
-        ))
-
-        # Reconstruct THIS PIXEL's wavelengths from stored values
-        lambda = Wavelengths(
-            (wavelengths_cpu[base + 1], wavelengths_cpu[base + 2],
-             wavelengths_cpu[base + 3], wavelengths_cpu[base + 4]),
-            (pdf_cpu[base + 1], pdf_cpu[base + 2],
-             pdf_cpu[base + 3], pdf_cpu[base + 4])
-        )
-
-        # Convert spectral to RGB using THIS PIXEL's wavelengths
-        R, G, B = spectral_to_linear_rgb(cie_table, L, lambda)
-
-        # Clamp negative values and NaN/Inf
-        R = ifelse(isfinite(R), max(0.0f0, R), 0.0f0)
-        G = ifelse(isfinite(G), max(0.0f0, G), 0.0f0)
-        B = ifelse(isfinite(B), max(0.0f0, B), 0.0f0)
-
-        # Accumulate into RGB buffer
-        base_rgb = (idx - 1) * 3
-        pixel_rgb_cpu[base_rgb + 1] += R
-        pixel_rgb_cpu[base_rgb + 2] += G
-        pixel_rgb_cpu[base_rgb + 3] += B
-    end
-
-    # Copy back (for GPU, this would be done in the kernel)
-    copyto!(pixel_rgb, pixel_rgb_cpu)
-    return nothing
-end
-
-"""
-    pw_finalize_film!(backend, film, pixel_rgb, samples_per_pixel)
-
-Copy accumulated RGB values to film framebuffer, dividing by sample count.
-"""
-function pw_finalize_film!(
-    backend,
-    film::Film,
-    pixel_rgb::AbstractVector{Float32},
-    samples_per_pixel::Int32
-)
-    width = Int32(size(film.framebuffer, 2))
-    height = Int32(size(film.framebuffer, 1))
-    num_pixels = width * height
-
-    pixel_rgb_cpu = Array(pixel_rgb)
-    inv_samples = 1.0f0 / Float32(samples_per_pixel)
-
-    # Build flat RGB output for reshape
-    rgb_output = Vector{Float32}(undef, Int(num_pixels) * 3)
-
-     for idx in 1:Int(num_pixels)
-        base = (idx - 1) * 3
-        R = pixel_rgb_cpu[base + 1] * inv_samples
-        G = pixel_rgb_cpu[base + 2] * inv_samples
-        B = pixel_rgb_cpu[base + 3] * inv_samples
-
-        # Clamp
-        R = ifelse(isfinite(R), max(0.0f0, R), 0.0f0)
-        G = ifelse(isfinite(G), max(0.0f0, G), 0.0f0)
-        B = ifelse(isfinite(B), max(0.0f0, B), 0.0f0)
-
-        rgb_output[base + 1] = R
-        rgb_output[base + 2] = G
-        rgb_output[base + 3] = B
-    end
-
-    # Reshape like PbrtWavefront does
-    rgb_pixels = reinterpret(RGB{Float32}, rgb_output)
-    reshaped = reshape(rgb_pixels, Int(width), Int(height))
-    final_img = permutedims(reshaped, (2, 1))
-
-    copyto!(film.framebuffer, final_img)
-    return nothing
-end
-
-# ============================================================================
-# High-Level Functions (legacy, kept for compatibility)
-# ============================================================================
-
-"""
-    pw_update_film!(backend, film::Film, pixel_L, lambda, samples_accumulated)
-
-Update film framebuffer from accumulated spectral radiance.
-
-NOTE: This function assumes all samples used the SAME wavelengths, which is
-only correct for single-sample rendering. For multi-sample rendering, use
-pw_accumulate_sample_to_rgb! after each sample instead.
-"""
-function pw_update_film!(
-    backend,
-    film::Film,
-    pixel_L::AbstractVector{Float32},
-    lambda::Wavelengths,
-    samples_accumulated::Int32
-)
-    width = Int32(size(film.framebuffer, 2))
-    height = Int32(size(film.framebuffer, 1))
-    num_pixels = width * height
-
-    # Use flat RGB array approach (like PbrtWavefront) to avoid kernel caching issues
-    pixel_L_cpu = Array(pixel_L)
-    rgb_output = Vector{Float32}(undef, Int(num_pixels) * 3)
-
-    inv_samples = samples_accumulated > Int32(0) ? 1.0f0 / Float32(samples_accumulated) : 0.0f0
-
-     for idx in 1:Int(num_pixels)
-        base = (idx - 1) * 4
-        L = SpectralRadiance((
-            pixel_L_cpu[base + 1],
-            pixel_L_cpu[base + 2],
-            pixel_L_cpu[base + 3],
-            pixel_L_cpu[base + 4]
-        ))
-
-        R, G, B = spectral_to_linear_rgb(L, lambda)
-        R *= inv_samples
-        G *= inv_samples
-        B *= inv_samples
-
-        R = ifelse(isfinite(R), max(0.0f0, R), 0.0f0)
-        G = ifelse(isfinite(G), max(0.0f0, G), 0.0f0)
-        B = ifelse(isfinite(B), max(0.0f0, B), 0.0f0)
-
-        out_idx = (idx - 1) * 3
-        rgb_output[out_idx + 1] = R
-        rgb_output[out_idx + 2] = G
-        rgb_output[out_idx + 3] = B
-    end
-
-    # Reshape like PbrtWavefront does
-    rgb_pixels = reinterpret(RGB{Float32}, rgb_output)
-    reshaped = reshape(rgb_pixels, Int(width), Int(height))
-    final_img = permutedims(reshaped, (2, 1))
-
-    copyto!(film.framebuffer, final_img)
-    return nothing
-end
-
-"""
-    pw_update_film_perPixel!(backend, film::Film, pixel_L, wavelengths_per_pixel,
-                              pdf_per_pixel, samples_accumulated)
+    pw_update_film_perPixel!(backend, film, pixel_L, wavelengths_per_pixel,
+                              pdf_per_pixel, cie_table, samples_accumulated)
 
 Update film framebuffer with per-pixel wavelength data.
-
-Used when each pixel has independently sampled wavelengths.
+Uses proper kernel with CIE table arrays passed explicitly.
 """
 function pw_update_film_perPixel!(
     backend,
@@ -384,6 +389,7 @@ function pw_update_film_perPixel!(
     pixel_L::AbstractVector{Float32},
     wavelengths_per_pixel::AbstractVector{Float32},
     pdf_per_pixel::AbstractVector{Float32},
+    cie_table::CIEXYZTable,
     samples_accumulated::Int32
 )
     width = Int32(size(film.framebuffer, 2))
@@ -396,6 +402,43 @@ function pw_update_film_perPixel!(
         pixel_L,
         wavelengths_per_pixel,
         pdf_per_pixel,
+        cie_table.cie_x,
+        cie_table.cie_y,
+        cie_table.cie_z,
+        samples_accumulated,
+        width, height;
+        ndrange=Int(num_pixels)
+    )
+
+    KernelAbstractions.synchronize(backend)
+    return nothing
+end
+
+"""
+    pw_update_film_uniform!(backend, film, pixel_L, cie_table, lambda, samples_accumulated)
+
+Update film framebuffer using uniform wavelength sampling (all pixels share wavelengths).
+"""
+function pw_update_film_uniform!(
+    backend,
+    film::Film,
+    pixel_L::AbstractVector{Float32},
+    cie_table::CIEXYZTable,
+    lambda::Wavelengths,
+    samples_accumulated::Int32
+)
+    width = Int32(size(film.framebuffer, 2))
+    height = Int32(size(film.framebuffer, 1))
+    num_pixels = width * height
+
+    kernel! = pw_update_film_uniform_kernel!(backend)
+    kernel!(
+        film.framebuffer,
+        pixel_L,
+        cie_table.cie_x,
+        cie_table.cie_y,
+        cie_table.cie_z,
+        lambda,
         samples_accumulated,
         width, height;
         ndrange=Int(num_pixels)

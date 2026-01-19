@@ -398,7 +398,9 @@ Following pbrt-v4's RGBFilm::AddSample and PixelSensor::ToSensorRGB:
         Y_wb = wb_m21 * X + wb_m22 * Y + wb_m23 * Z
         Z_wb = wb_m31 * X + wb_m32 * Y + wb_m33 * Z
 
-        # Convert XYZ (now in D65 space) to linear sRGB
+        # Convert XYZ to linear sRGB
+        # Note: We use the standard XYZ->sRGB matrix (no chromatic adaptation) to match
+        # pbrt-v4's cie1931 sensor behavior which outputs raw XYZ->sRGB without adaptation.
         R, G, B = xyz_to_linear_srgb(X_wb, Y_wb, Z_wb)
 
         # Clamp negative values
