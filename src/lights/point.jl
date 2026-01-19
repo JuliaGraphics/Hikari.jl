@@ -12,20 +12,25 @@ struct PointLight{S<:Spectrum} <: Light
 
     i::S
     """
+    Scale factor for light intensity (used for photometric normalization).
+    In pbrt-v4, this is set to `1 / SpectrumToPhotometric(illuminant)`.
+    """
+    scale::Float32
+    """
     Position in world space.
     """
     position::Point3f
 
-    function PointLight(light_to_world::Transformation, i::S) where S<:Spectrum
+    function PointLight(light_to_world::Transformation, i::S, scale::Float32=1f0) where S<:Spectrum
         new{S}(
             LightδPosition, light_to_world, inv(light_to_world),
-            i, light_to_world(Point3f(0f0)),
+            i, scale, light_to_world(Point3f(0f0)),
         )
     end
 end
 
-function PointLight(position, i::S) where S<:Spectrum
-    PointLight(translate(Vec3f(position)), i)
+function PointLight(position, i::S, scale::Float32=1f0) where S<:Spectrum
+    PointLight(translate(Vec3f(position)), i, scale)
 end
 
 """
@@ -57,7 +62,7 @@ function sample_li(p::PointLight, i::Interaction, ::Point2f, ::AbstractScene)
     visibility = VisibilityTester(
         i, Interaction(p.position, i.time, Vec3f(0.0f0), Normal3f(0.0f0)),
     )
-    radiance = p.i / distance_squared(p.position, i.p)
+    radiance = p.scale * p.i / distance_squared(p.position, i.p)
     radiance, wi, pdf, visibility
 end
 
@@ -69,12 +74,12 @@ function sample_le(
     light_normal = Normal3f(ray.d)
     pdf_pos = 1f0
     pdf_dir = uniform_sphere_pdf()
-    return p.i, ray, light_normal, pdf_pos, pdf_dir
+    return p.scale * p.i, ray, light_normal, pdf_pos, pdf_dir
 end
 
 """
 Total power emitted by the light source over the entire sphere of directions.
 """
 @propagate_inbounds function power(p::PointLight)
-    4f0 * π * p.i
+    4f0 * π * p.scale * p.i
 end

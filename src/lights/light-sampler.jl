@@ -291,16 +291,16 @@ The scene_radius is required for infinite lights to compute meaningful power.
 
 @propagate_inbounds function estimate_light_power(light::PointLight, ::Float32)
     # pbrt-v4: 4 * Pi * scale * I->Sample(lambda)
-    # Total power = 4π * intensity
-    4f0 * Float32(π) * luminance(light.i)
+    # Total power = 4π * scale * intensity
+    4f0 * Float32(π) * light.scale * luminance(light.i)
 end
 
 @propagate_inbounds function estimate_light_power(light::SpotLight, ::Float32)
     # pbrt-v4: scale * Iemit * 2 * Pi * ((1 - cosFalloffStart) + (cosFalloffStart - cosFalloffEnd) / 2)
     # Hikari stores: cos_falloff_start and cos_total_width (= cosFalloffEnd)
-    # Formula simplifies to: 2π * I * (1 - 0.5*(cosFalloffStart + cosFalloffEnd))
+    # Formula simplifies to: scale * 2π * I * (1 - 0.5*(cosFalloffStart + cosFalloffEnd))
     cone_factor = 1f0 - 0.5f0 * (light.cos_falloff_start + light.cos_total_width)
-    2f0 * Float32(π) * luminance(light.i) * cone_factor
+    2f0 * Float32(π) * light.scale * luminance(light.i) * cone_factor
 end
 
 @propagate_inbounds function estimate_light_power(light::DirectionalLight, scene_radius::Float32)
@@ -348,6 +348,12 @@ end
 
 @propagate_inbounds function luminance(s::RGBSpectrum)
     0.212671f0 * s.c[1] + 0.715160f0 * s.c[2] + 0.072169f0 * s.c[3]
+end
+
+@propagate_inbounds function luminance(s::RGBIlluminantSpectrum)
+    # Use MaxValue() matching pbrt-v4's approach for light bounds/power estimation:
+    # scale * rsp.MaxValue() * illuminant->MaxValue()
+    max_value(s)
 end
 
 # ============================================================================

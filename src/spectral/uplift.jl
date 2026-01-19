@@ -460,6 +460,8 @@ end
     sample_d65_spectral(lambda::Wavelengths) -> SpectralRadiance
 
 Sample D65 illuminant at multiple wavelengths.
+Returns raw D65 values (around 80-120 across visible spectrum, normalized to 100 at 560nm).
+Matches pbrt-v4's illuminant->Sample(lambda) behavior.
 """
 @propagate_inbounds function sample_d65_spectral(lambda::Wavelengths)::SpectralRadiance
     @inbounds begin
@@ -468,9 +470,31 @@ Sample D65 illuminant at multiple wavelengths.
         v3 = sample_d65(lambda.lambda[3])
         v4 = sample_d65(lambda.lambda[4])
     end
-    # Normalize by D65 value at 560nm (=100) to get relative SPD
-    # This makes the illuminant multiply correctly with sigmoid polynomial
-    return SpectralRadiance((v1 / 100f0, v2 / 100f0, v3 / 100f0, v4 / 100f0))
+    # Return raw D65 values matching pbrt-v4's DenselySampledSpectrum::Sample()
+    return SpectralRadiance((v1, v2, v3, v4))
+end
+
+# =============================================================================
+# RGBIlluminantSpectrum Sampling (defined here after sample_d65 is available)
+# =============================================================================
+
+"""
+    Sample(s::RGBIlluminantSpectrum, lambda::Wavelengths) -> SpectralRadiance
+
+Sample the illuminant spectrum at multiple wavelengths.
+Matches pbrt-v4's RGBIlluminantSpectrum::Sample(const SampledWavelengths &lambda).
+
+Returns: scale * rsp(λ) * D65(λ) for each wavelength.
+"""
+@propagate_inbounds function Sample(s::RGBIlluminantSpectrum, lambda::Wavelengths)::SpectralRadiance
+    @inbounds begin
+        d65 = sample_d65_spectral(lambda)
+        v1 = s.scale * s.poly(lambda.lambda[1]) * d65.data[1]
+        v2 = s.scale * s.poly(lambda.lambda[2]) * d65.data[2]
+        v3 = s.scale * s.poly(lambda.lambda[3]) * d65.data[3]
+        v4 = s.scale * s.poly(lambda.lambda[4]) * d65.data[4]
+    end
+    return SpectralRadiance((v1, v2, v3, v4))
 end
 
 # =============================================================================
@@ -531,4 +555,29 @@ Do NOT use for:
     table::RGBToSpectrumTable, rgb::RGBSpectrum, lambda::Wavelengths
 )::SpectralRadiance
     @inbounds return rgb_to_spectral_sigmoid_illuminant(table, rgb.c[1], rgb.c[2], rgb.c[3], lambda)
+end
+
+"""
+    Sample(table::RGBToSpectrumTable, rgb::RGBSpectrum, lambda::Wavelengths) -> SpectralRadiance
+
+Sample an RGBSpectrum as an illuminant at multiple wavelengths.
+This provides a unified interface for light sampling - RGBSpectrum uses uplift_rgb_illuminant
+while RGBIlluminantSpectrum uses its baked-in polynomial.
+"""
+@propagate_inbounds function Sample(
+    table::RGBToSpectrumTable, rgb::RGBSpectrum, lambda::Wavelengths
+)::SpectralRadiance
+    return uplift_rgb_illuminant(table, rgb, lambda)
+end
+
+"""
+    Sample(::RGBToSpectrumTable, s::RGBIlluminantSpectrum, lambda::Wavelengths) -> SpectralRadiance
+
+Sample an RGBIlluminantSpectrum at multiple wavelengths.
+The table argument is ignored since the polynomial is already baked in.
+"""
+@propagate_inbounds function Sample(
+    ::RGBToSpectrumTable, s::RGBIlluminantSpectrum, lambda::Wavelengths
+)::SpectralRadiance
+    return Sample(s, lambda)
 end

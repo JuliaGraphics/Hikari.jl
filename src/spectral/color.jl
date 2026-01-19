@@ -10,6 +10,11 @@ const CIE_LAMBDA_MAX = Int32(830)
 const N_CIE_SAMPLES = Int32(471)
 const CIE_Y_INTEGRAL = 106.856895f0
 
+# Photometric value of D65 illuminant: InnerProduct(CIE_Y, D65)
+# Used to normalize light intensities to pbrt-v4's photometric units.
+# This is the value returned by SpectrumToPhotometric(D65_illuminant).
+const D65_PHOTOMETRIC = 10567.0f0
+
 # =============================================================================
 # CIE XYZ Table (GPU-compatible)
 # =============================================================================

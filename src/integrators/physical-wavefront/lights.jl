@@ -51,11 +51,9 @@ Sample a point light spectrally.
     wi = to_light / dist
 
     # Point lights have delta distribution
-    # Li = I / r^2
-    # Convert RGB intensity to spectral using illuminant uplift (matches pbrt's RGBIlluminantSpectrum)
-    # This multiplies by D65 illuminant spectrum - critical for correct white reproduction
-    Li_rgb = light.i / dist_sq
-    Li = uplift_rgb_illuminant(table, Li_rgb, lambda)
+    # Li = scale * I->Sample(lambda) / r^2  (matching pbrt-v4's PointLight::SampleLi)
+    # Sample() handles the D65 illuminant multiplication for RGBIlluminantSpectrum
+    Li = light.scale * Sample(table, light.i, lambda) / dist_sq
 
     return PWLightSample(Li, wi, 1f0, light.position, true)
 end
@@ -99,11 +97,9 @@ Sample a spotlight spectrally.
         delta * delta * delta * delta
     end
 
-    # Li = I * falloff / r^2
-    # Use illuminant uplift (matches pbrt's RGBIlluminantSpectrum)
-    # This multiplies by D65 illuminant spectrum - critical for correct white reproduction
-    Li_rgb = light.i * spot_falloff / dist_sq
-    Li = uplift_rgb_illuminant(table, Li_rgb, lambda)
+    # Li = scale * I->Sample(lambda) * falloff / r^2  (matching pbrt-v4's SpotLight::I)
+    # Sample() handles the D65 illuminant multiplication for RGBIlluminantSpectrum
+    Li = light.scale * Sample(table, light.i, lambda) * spot_falloff / dist_sq
 
     return PWLightSample(Li, wi, 1f0, light.position, true)
 end

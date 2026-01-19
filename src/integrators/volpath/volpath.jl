@@ -35,19 +35,13 @@ mutable struct VolPath <: Integrator
     max_component_value::Float32  # Firefly suppression: clamp RGB components (pbrt-v4 style)
     filter_params::GPUFilterParams  # Filter for pixel reconstruction (pbrt-v4 style)
 
-    # Film sensor parameters (pbrt-v4 style PixelSensor)
-    iso::Float32  # ISO sensitivity (100 = baseline)
-    exposure_time::Float32  # Exposure time in seconds (default 1.0)
-    white_balance::Float32  # Color temperature in Kelvin (0 = use E illuminant, else adapt to D65)
-
     # Cached render state
     state::Union{Nothing, VolPathState}
 end
 
 """
     VolPath(; max_depth=8, samples=64, russian_roulette_depth=3, regularize=true,
-            material_coherence=:none, max_component_value=Inf32, filter=BoxFilter(),
-            iso=100, exposure_time=1.0, white_balance=0)
+            material_coherence=:none, max_component_value=Inf32, filter=BoxFilter())
 
 Create a VolPath integrator for volumetric path tracing.
 
@@ -68,14 +62,10 @@ Create a VolPath integrator for volumetric path tracing.
 - `filter`: Pixel reconstruction filter (default: BoxFilter()).
   Supports BoxFilter, TriangleFilter, GaussianFilter, MitchellFilter, LanczosSincFilter.
   Filter determines how samples contribute to pixel values based on their position.
-- `iso`: ISO sensitivity (default: 100). Higher values = brighter image.
-  Combined with exposure_time to compute imagingRatio = exposure_time * iso / 100
-  following pbrt-v4's PixelSensor.
-- `exposure_time`: Exposure time in seconds (default: 1.0).
-- `white_balance`: Color temperature in Kelvin for white balance (default: 0).
-  When 0, uses Equal-Energy (E) illuminant → D65 adaptation.
-  When > 0, adapts from specified color temperature → D65 using Bradford chromatic adaptation.
-  Common values: 5000 (daylight), 6500 (D65), 3200 (tungsten).
+
+Note: Sensor simulation (ISO, exposure_time, white_balance) is handled in postprocessing
+via `FilmSensor`, not in the integrator. This matches pbrt-v4's architecture where the
+film stores raw linear HDR values and sensor conversion happens at output time.
 """
 function VolPath(;
     max_depth::Int = 8,
@@ -84,12 +74,9 @@ function VolPath(;
     regularize::Bool = true,
     material_coherence::Symbol = :none,
     max_component_value::Real = Inf32,
-    filter::AbstractFilter = BoxFilter(),
-    iso::Real = 100,
-    exposure_time::Real = 1.0,
-    white_balance::Real = 0
+    filter::AbstractFilter = BoxFilter()
 )
-    @assert material_coherence in (:none, :sorted, :per_type) "material_coherence must be :none, :sorted, or :per_type"
+    @assert material_coherence in (:none, :sorted, :per_type) "material_coherence must be :none, :sorted, :per_type"
     return VolPath(
         Int32(max_depth),
         Int32(samples),
@@ -98,9 +85,6 @@ function VolPath(;
         material_coherence,
         Float32(max_component_value),
         GPUFilterParams(filter),
-        Float32(iso),
-        Float32(exposure_time),
-        Float32(white_balance),
         nothing
     )
 end
@@ -333,14 +317,16 @@ end
     vp_accumulate_to_rgb_kernel!(...)
 
 Accumulate spectral radiance to RGB with filter weight support.
-Following pbrt-v4's RGBFilm::AddSample and PixelSensor::ToSensorRGB:
+Following pbrt-v4's film accumulation pattern:
 - Convert spectral L to XYZ using CIE matching functions
-- Apply white balance (Bradford chromatic adaptation from source → D65)
 - Convert XYZ to linear sRGB
-- Apply imagingRatio = exposure_time * iso / 100 (pbrt-v4 style)
 - Apply maxComponentValue clamping for firefly suppression
 - Accumulate weighted RGB: rgbSum += weight * rgb
 - Accumulate weight: weightSum += weight
+
+Note: Sensor simulation (imaging_ratio, white balance) is applied in postprocessing,
+not here. This matches pbrt-v4's architecture where the film stores raw linear HDR
+values and the sensor conversion happens at output time.
 """
 @kernel inbounds=true function vp_accumulate_to_rgb_kernel!(
     pixel_rgb,
@@ -351,12 +337,7 @@ Following pbrt-v4's RGBFilm::AddSample and PixelSensor::ToSensorRGB:
     @Const(filter_weight_per_pixel),
     @Const(cie_x), @Const(cie_y), @Const(cie_z),
     @Const(n_pixels::Int32),
-    @Const(max_component_value::Float32),
-    @Const(imaging_ratio::Float32),
-    # White balance matrix (3x3, row-major: m11,m12,m13,m21,m22,m23,m31,m32,m33)
-    @Const(wb_m11::Float32), @Const(wb_m12::Float32), @Const(wb_m13::Float32),
-    @Const(wb_m21::Float32), @Const(wb_m22::Float32), @Const(wb_m23::Float32),
-    @Const(wb_m31::Float32), @Const(wb_m32::Float32), @Const(wb_m33::Float32)
+    @Const(max_component_value::Float32)
 )
     pixel_idx = @index(Global)
 
@@ -392,27 +373,13 @@ Following pbrt-v4's RGBFilm::AddSample and PixelSensor::ToSensorRGB:
         # Convert spectral to XYZ
         X, Y, Z = spectral_to_xyz(cie_table, L, lambda)
 
-        # Apply white balance (Bradford chromatic adaptation matrix: XYZ → XYZ')
-        # This transforms from source illuminant to D65
-        X_wb = wb_m11 * X + wb_m12 * Y + wb_m13 * Z
-        Y_wb = wb_m21 * X + wb_m22 * Y + wb_m23 * Z
-        Z_wb = wb_m31 * X + wb_m32 * Y + wb_m33 * Z
-
-        # Convert XYZ to linear sRGB
-        # Note: We use the standard XYZ->sRGB matrix (no chromatic adaptation) to match
-        # pbrt-v4's cie1931 sensor behavior which outputs raw XYZ->sRGB without adaptation.
-        R, G, B = xyz_to_linear_srgb(X_wb, Y_wb, Z_wb)
+        # Convert XYZ to linear sRGB (no sensor white balance - that's in postprocessing)
+        R, G, B = xyz_to_linear_srgb(X, Y, Z)
 
         # Clamp negative values
         R = max(0f0, R)
         G = max(0f0, G)
         B = max(0f0, B)
-
-        # Apply imagingRatio (pbrt-v4: exposure_time * iso / 100)
-        # This is the key brightness/ISO scaling
-        R *= imaging_ratio
-        G *= imaging_ratio
-        B *= imaging_ratio
 
         # Apply maxComponentValue clamping (pbrt-v4 firefly suppression)
         # This preserves color hue while preventing extremely bright values
@@ -544,7 +511,6 @@ function render!(
     log2_spp, n_base4_digits = compute_zsobol_params(Int(vp.samples_per_pixel), width, height)
     sampler_seed = UInt32(0)  # Can be varied for different render seeds
 
-    # Upload Sobol matrices to GPU (cached in state if available)
     sobol_matrices_gpu = KernelAbstractions.allocate(backend, UInt32, length(SobolMatrices32))
     KernelAbstractions.copyto!(backend, sobol_matrices_gpu, SobolMatrices32)
 
@@ -664,33 +630,16 @@ function render!(
         swap_ray_queues!(state)
     end
 
-    # Compute sensor parameters for spectral-to-RGB conversion (pbrt-v4 style PixelSensor)
-    # imagingRatio = exposure_time * iso / 100 (pbrt-v4 convention)
-    imaging_ratio = vp.exposure_time * vp.iso / 100f0
-
-    # White balance matrix (Bradford chromatic adaptation from source illuminant to D65)
-    # If white_balance == 0, use identity (E illuminant, no adaptation needed for E→D65 since
-    # our spectral→XYZ already uses CIE standard observer which assumes E illuminant)
-    wb_matrix = if vp.white_balance > 0f0
-        compute_white_balance_matrix(vp.white_balance)
-    else
-        # Identity matrix for E illuminant (already D65-referenced via CIE observer)
-        @SMatrix Float32[1 0 0; 0 1 0; 0 0 1]
-    end
-
     # Accumulate this sample's spectral radiance to RGB with filter weights (pbrt-v4 style)
+    # Note: Sensor simulation (imaging_ratio, white balance) is applied in postprocessing,
+    # not here. The integrator outputs raw linear HDR values.
     kernel! = vp_accumulate_to_rgb_kernel!(backend)
     kernel!(
         pixel_rgb, pixel_weight_sum, state.pixel_L,
         wavelengths_per_pixel, pdf_per_pixel, filter_weight_per_pixel,
         state.cie_table.cie_x, state.cie_table.cie_y, state.cie_table.cie_z,
         Int32(n_pixels),
-        vp.max_component_value,
-        imaging_ratio,
-        # White balance matrix (3x3, row-major)
-        wb_matrix[1,1], wb_matrix[1,2], wb_matrix[1,3],
-        wb_matrix[2,1], wb_matrix[2,2], wb_matrix[2,3],
-        wb_matrix[3,1], wb_matrix[3,2], wb_matrix[3,3];
+        vp.max_component_value;
         ndrange=Int(n_pixels)
     )
 

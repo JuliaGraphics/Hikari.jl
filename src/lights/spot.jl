@@ -4,23 +4,29 @@ struct SpotLight{S<:Spectrum} <: Light
     world_to_light::Transformation
     position::Point3f
     i::S
+    """
+    Scale factor for light intensity (used for photometric normalization).
+    In pbrt-v4, this is set to `1 / SpectrumToPhotometric(illuminant)`.
+    """
+    scale::Float32
     cos_total_width::Float32
     cos_falloff_start::Float32
 
     function SpotLight(
         light_to_world::Transformation, i::S,
         total_width::Float32, falloff_start::Float32,
+        scale::Float32=1f0,
     ) where S<:Spectrum
         new{S}(
             LightδPosition, light_to_world, inv(light_to_world),
-            light_to_world(Point3f(0f0)), i,
+            light_to_world(Point3f(0f0)), i, scale,
             cos(deg2rad(total_width)), cos(deg2rad(falloff_start)),
         )
     end
 end
 
 """
-    SpotLight(position, target, intensity, cone_angle, falloff_angle)
+    SpotLight(position, target, intensity, cone_angle, falloff_angle; scale=1f0)
 
 Convenience constructor for SpotLight that takes position and target points.
 
@@ -30,6 +36,7 @@ Convenience constructor for SpotLight that takes position and target points.
 - `i::Spectrum`: Light intensity/color
 - `total_width::Float32`: Total cone angle in degrees
 - `falloff_start::Float32`: Angle where intensity falloff begins (degrees)
+- `scale::Float32`: Photometric scale factor (default 1.0)
 
 # Example
 ```julia
@@ -40,9 +47,10 @@ light = SpotLight(Point3f(0, 5, 0), Point3f(0, 0, 0), RGBSpectrum(100f0), 30f0, 
 function SpotLight(
     position::Point3f, target::Point3f, i::S,
     total_width::Float32, falloff_start::Float32,
+    scale::Float32=1f0,
 ) where S<:Spectrum
     light_to_world = _spotlight_transform(position, target)
-    SpotLight(light_to_world, i, total_width, falloff_start)
+    SpotLight(light_to_world, i, total_width, falloff_start, scale)
 end
 
 """
@@ -74,7 +82,8 @@ function sample_li(s::SpotLight, ref::Interaction, ::Point2f, ::AbstractScene)
     visibility = VisibilityTester(
         ref, Interaction(s.position, ref.time, Vec3f(0f0), Normal3f(0f0)),
     )
-    radiance = s.i * falloff(s, -wi) / distance_squared(s.position, ref.p)
+    # Use scale * i (matching pbrt-v4's SpotLight::SampleLi)
+    radiance = s.scale * s.i * falloff(s, -wi) / distance_squared(s.position, ref.p)
     radiance, wi, pdf, visibility
 end
 
@@ -88,8 +97,12 @@ function falloff(s::SpotLight, w::Vec3f)::Float32
     δ^4
 end
 
+"""
+Total power emitted by the spotlight.
+"""
 @propagate_inbounds function power(s::SpotLight)
-    s.i * 2f0 * π * (1f0 - 0.5f0 * (s.cos_falloff_start + s.cos_total_width))
+    # pbrt-v4: scale * Iemit * 2π * ((1 - cosFalloffStart) + (cosFalloffStart - cosFalloffEnd) / 2)
+    s.scale * s.i * 2f0 * π * (1f0 - 0.5f0 * (s.cos_falloff_start + s.cos_total_width))
 end
 
 function sample_le(
@@ -101,5 +114,6 @@ function sample_le(
     light_normal = Normal3f(ray.d)
     pdf_pos = 1f0
     pdf_dir = uniform_cone_pdf(s.cos_total_width)
-    s.i * falloff(s, ray.d), ray, light_normal, pdf_pos, pdf_dir
+    # Use scale * i (matching pbrt-v4)
+    s.scale * s.i * falloff(s, ray.d), ray, light_normal, pdf_pos, pdf_dir
 end

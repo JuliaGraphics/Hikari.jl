@@ -316,6 +316,63 @@ function rgb_unbounded_spectrum(table::RGBToSpectrumTable, r::Float32, g::Float3
     return RGBUnboundedSpectrum(poly, scale / max_value(poly))
 end
 
+"""
+    RGBIlluminantSpectrum
+
+Illuminant spectrum for light sources, matching pbrt-v4's RGBIlluminantSpectrum.
+Stores RGB coefficients and multiplies by D65 illuminant when sampled.
+
+Fields:
+- `poly::RGBSigmoidPolynomial` - Sigmoid polynomial for spectral shape
+- `scale::Float32` - Scale factor (2 * max(r,g,b) from construction)
+
+When sampled at wavelength λ: returns `scale * poly(λ) * D65(λ)`
+"""
+struct RGBIlluminantSpectrum <: Spectrum
+    poly::RGBSigmoidPolynomial
+    scale::Float32
+end
+
+# Single wavelength evaluation (matches pbrt-v4's operator())
+@propagate_inbounds function (s::RGBIlluminantSpectrum)(lambda::Float32)::Float32
+    # Note: sample_d65 is defined in uplift.jl, must be available at runtime
+    return s.scale * s.poly(lambda) * sample_d65(lambda)
+end
+
+# Maximum value of D65 illuminant (peak at ~560nm where D65 ≈ 100)
+# This is used for MaxValue computation matching pbrt-v4's illuminant->MaxValue()
+const D65_MAX_VALUE = 100.0f0
+
+"""
+    max_value(s::RGBIlluminantSpectrum) -> Float32
+
+Maximum value of the spectrum, matching pbrt-v4's RGBIlluminantSpectrum::MaxValue():
+    scale * rsp.MaxValue() * illuminant->MaxValue()
+"""
+@propagate_inbounds function max_value(s::RGBIlluminantSpectrum)::Float32
+    return s.scale * max_value(s.poly) * D65_MAX_VALUE
+end
+
+"""
+    rgb_illuminant_spectrum(table::RGBToSpectrumTable, r, g, b) -> RGBIlluminantSpectrum
+
+Create an illuminant spectrum from RGB values, matching pbrt-v4's RGBIlluminantSpectrum constructor.
+"""
+function rgb_illuminant_spectrum(table::RGBToSpectrumTable, r::Float32, g::Float32, b::Float32)::RGBIlluminantSpectrum
+    # Find scale factor (matches pbrt-v4: scale = 2 * max(r,g,b))
+    m = max(r, g, b)
+    if m <= 0
+        return RGBIlluminantSpectrum(RGBSigmoidPolynomial(0.0f0, 0.0f0, -1.0f10), 0.0f0)
+    end
+
+    # Normalize RGB by scale and get polynomial
+    # pbrt-v4: rsp = cs.ToRGBCoeffs(scale ? rgb / scale : RGB(0, 0, 0))
+    scale = 2.0f0 * m
+    poly = rgb_to_spectrum(table, r / scale, g / scale, b / scale)
+
+    return RGBIlluminantSpectrum(poly, scale)
+end
+
 # ============================================================================
 # Table Loading
 # ============================================================================
