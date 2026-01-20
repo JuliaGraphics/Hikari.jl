@@ -99,7 +99,7 @@ Each pixel samples its own wavelengths, which are stored for later film accumula
 """
 function pw_generate_camera_rays!(
     backend,
-    ray_queue::PWWorkQueue{PWRayWorkItem},
+    ray_queue::WorkQueue{PWRayWorkItem},
     wavelengths_per_pixel::AbstractVector{Float32},
     pdf_per_pixel::AbstractVector{Float32},
     width::Int32,
@@ -109,7 +109,7 @@ function pw_generate_camera_rays!(
     rng_base::UInt32
 )
     # Reset queue
-    reset_queue!(backend, ray_queue)
+    empty!(ray_queue)
 
     num_pixels = Int(width * height)
     kernel! = pw_generate_camera_rays_kernel!(backend)

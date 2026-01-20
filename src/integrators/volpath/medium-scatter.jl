@@ -278,7 +278,7 @@ function vp_sample_medium_direct_lighting!(
     lights,
     media
 )
-    n = queue_size(state.medium_scatter_queue)
+    n = length(state.medium_scatter_queue)
     n == 0 && return nothing
 
     # Access SOA components of pixel_samples
@@ -311,7 +311,7 @@ function vp_sample_medium_scatter!(
     backend,
     state::VolPathState
 )
-    n = queue_size(state.medium_scatter_queue)
+    n = length(state.medium_scatter_queue)
     n == 0 && return nothing
 
     output_queue = next_ray_queue(state)

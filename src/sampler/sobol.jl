@@ -295,3 +295,146 @@ function compute_zsobol_params(samples_per_pixel::Int, width::Int, height::Int)
     n_base4_digits = resolution_log2 + log4_spp
     return (log2_spp, n_base4_digits)
 end
+
+# =============================================================================
+# SobolRNG - GPU-compatible Sobol sampler struct
+# =============================================================================
+
+using Adapt
+import KernelAbstractions as KA
+
+"""
+    SobolRNG{M}
+
+GPU-compatible Sobol random number generator.
+Holds the Sobol matrices and precomputed parameters for ZSobol sampling.
+
+This struct can be passed directly to GPU kernels via Adapt.jl integration.
+All sampling state is computed on-the-fly from pixel coordinates and sample index,
+making it stateless and thread-safe.
+
+# Fields
+- `matrices::M`: GPU array of Sobol generator matrices (UInt32)
+- `log2_spp::Int32`: log2 of samples per pixel
+- `n_base4_digits::Int32`: number of base-4 digits for Morton encoding
+- `seed::UInt32`: scrambling seed
+- `width::Int32`: image width (for pixel coordinate recovery)
+"""
+struct SobolRNG{M <: AbstractVector{UInt32}}
+    matrices::M
+    log2_spp::Int32
+    n_base4_digits::Int32
+    seed::UInt32
+    width::Int32
+end
+
+"""
+    SobolRNG(backend, seed::UInt32, width::Integer, height::Integer, samples_per_pixel::Integer)
+
+Create a SobolRNG for the given render settings.
+Allocates Sobol matrices on the specified backend (CPU/GPU).
+
+# Arguments
+- `backend`: KernelAbstractions backend (e.g., `CPU()`, `CUDABackend()`, `OpenCLBackend()`)
+- `seed`: Scrambling seed for decorrelation
+- `width`: Image width in pixels
+- `height`: Image height in pixels
+- `samples_per_pixel`: Number of samples per pixel
+"""
+function SobolRNG(backend, seed::UInt32, width::Integer, height::Integer, samples_per_pixel::Integer)
+    # Allocate and copy Sobol matrices to GPU
+    matrices = KA.allocate(backend, UInt32, length(SobolMatrices32))
+    KA.copyto!(backend, matrices, SobolMatrices32)
+
+    # Compute ZSobol parameters
+    log2_spp, n_base4_digits = compute_zsobol_params(Int(samples_per_pixel), Int(width), Int(height))
+
+    return SobolRNG(matrices, log2_spp, n_base4_digits, seed, Int32(width))
+end
+
+# Adapt.jl integration for GPU kernels
+function Adapt.adapt_structure(to, rng::SobolRNG)
+    SobolRNG(
+        Adapt.adapt(to, rng.matrices),
+        rng.log2_spp,
+        rng.n_base4_digits,
+        rng.seed,
+        rng.width
+    )
+end
+
+"""
+    cleanup!(rng::SobolRNG)
+
+Release GPU memory held by the SobolRNG.
+"""
+function cleanup!(rng::SobolRNG)
+    finalize(rng.matrices)
+    return nothing
+end
+
+# =============================================================================
+# SobolRNG Sampling Interface
+# =============================================================================
+
+"""
+    sample_1d(rng::SobolRNG, px::Int32, py::Int32, sample_idx::Int32, dim::Int32) -> Float32
+
+Generate a 1D Sobol sample for the given pixel and dimension.
+"""
+@inline function sample_1d(rng::SobolRNG, px::Int32, py::Int32, sample_idx::Int32, dim::Int32)::Float32
+    zsobol_sample_1d(px, py, sample_idx, dim, rng.log2_spp, rng.n_base4_digits, rng.seed, rng.matrices)
+end
+
+"""
+    sample_2d(rng::SobolRNG, px::Int32, py::Int32, sample_idx::Int32, dim::Int32) -> Tuple{Float32, Float32}
+
+Generate a 2D Sobol sample for the given pixel and dimension.
+"""
+@inline function sample_2d(rng::SobolRNG, px::Int32, py::Int32, sample_idx::Int32, dim::Int32)::Tuple{Float32, Float32}
+    zsobol_sample_2d(px, py, sample_idx, dim, rng.log2_spp, rng.n_base4_digits, rng.seed, rng.matrices)
+end
+
+"""
+    compute_pixel_sample(rng::SobolRNG, px::Int32, py::Int32, sample_idx::Int32)
+
+Compute all camera sample values for a pixel using SobolRNG.
+Returns a PixelSample struct with jitter, wavelength, lens, and time samples.
+
+# Dimension allocation (matching PBRT-v4):
+- 0-1: pixel jitter (2D)
+- 2: wavelength selection (1D)
+- 3-4: lens sampling for DoF (2D)
+- 5: time for motion blur (1D)
+"""
+@inline function compute_pixel_sample(rng::SobolRNG, px::Int32, py::Int32, sample_idx::Int32)
+    jitter_x, jitter_y = sample_2d(rng, px, py, sample_idx, Int32(0))
+    wavelength_u = sample_1d(rng, px, py, sample_idx, Int32(2))
+    lens_u, lens_v = sample_2d(rng, px, py, sample_idx, Int32(3))
+    time = sample_1d(rng, px, py, sample_idx, Int32(5))
+    return PixelSample(jitter_x, jitter_y, wavelength_u, lens_u, lens_v, time)
+end
+
+"""
+    compute_path_sample_1d(rng::SobolRNG, px::Int32, py::Int32, sample_idx::Int32, depth::Int32, local_dim::Int32) -> Float32
+
+Compute a 1D sample for path tracing at a given depth using SobolRNG.
+
+# Dimension allocation:
+- Base dimension = 6 (camera uses 0-5)
+- Each depth uses 8 dimensions for BSDF, light, RR, etc.
+"""
+@inline function compute_path_sample_1d(rng::SobolRNG, px::Int32, py::Int32, sample_idx::Int32, depth::Int32, local_dim::Int32)::Float32
+    dim = Int32(6) + depth * Int32(8) + local_dim
+    sample_1d(rng, px, py, sample_idx, dim)
+end
+
+"""
+    compute_path_sample_2d(rng::SobolRNG, px::Int32, py::Int32, sample_idx::Int32, depth::Int32, local_dim::Int32) -> Tuple{Float32, Float32}
+
+Compute a 2D sample for path tracing at a given depth using SobolRNG.
+"""
+@inline function compute_path_sample_2d(rng::SobolRNG, px::Int32, py::Int32, sample_idx::Int32, depth::Int32, local_dim::Int32)::Tuple{Float32, Float32}
+    dim = Int32(6) + depth * Int32(8) + local_dim
+    sample_2d(rng, px, py, sample_idx, dim)
+end

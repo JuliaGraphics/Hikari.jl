@@ -539,7 +539,7 @@ function vp_sample_medium_interaction!(
     state::VolPathState,
     media
 )
-    n = queue_size(state.medium_sample_queue)
+    n = length(state.medium_sample_queue)
     n == 0 && return nothing
 
     kernel! = vp_sample_medium_kernel!(backend)

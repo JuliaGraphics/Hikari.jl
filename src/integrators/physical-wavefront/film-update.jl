@@ -507,11 +507,11 @@ unlike the separate fill_aux_buffers! which traces primary rays again.
 function pw_update_aux_from_material_queue!(
     backend,
     film::Film,
-    material_queue::PWWorkQueue{PWMaterialEvalWorkItem},
+    material_queue::WorkQueue{PWMaterialEvalWorkItem},
     materials,
     rgb2spec_table::RGBToSpectrumTable
 )
-    n = queue_size(material_queue)
+    n = length(material_queue)
     n == 0 && return nothing
 
     width = Int32(size(film.framebuffer, 2))

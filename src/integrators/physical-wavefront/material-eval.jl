@@ -193,17 +193,17 @@ Sample direct lighting for all material work items.
 """
 function pw_sample_direct_lighting!(
     backend,
-    shadow_queue::PWWorkQueue{PWShadowRayWorkItem},
-    material_queue::PWWorkQueue{PWMaterialEvalWorkItem},
+    shadow_queue::WorkQueue{PWShadowRayWorkItem},
+    material_queue::WorkQueue{PWMaterialEvalWorkItem},
     materials,
     lights,
     rgb2spec_table::RGBToSpectrumTable
 )
-    n = queue_size(material_queue)
+    n = length(material_queue)
     n == 0 && return nothing
 
     # Reset shadow queue
-    reset_queue!(backend, shadow_queue)
+    empty!(shadow_queue)
 
     # Count lights in tuple
     num_lights = count_lights(lights)
@@ -233,15 +233,15 @@ bounce to reduce fireflies (matches pbrt-v4's BSDF::Regularize).
 """
 function pw_evaluate_materials!(
     backend,
-    next_ray_queue::PWWorkQueue{PWRayWorkItem},
+    next_ray_queue::WorkQueue{PWRayWorkItem},
     pixel_L::AbstractVector{Float32},
-    material_queue::PWWorkQueue{PWMaterialEvalWorkItem},
+    material_queue::WorkQueue{PWMaterialEvalWorkItem},
     materials,
     rgb2spec_table::RGBToSpectrumTable,
     max_depth::Int32,
     regularize::Bool = true
 )
-    n = queue_size(material_queue)
+    n = length(material_queue)
     n == 0 && return nothing
 
     kernel! = pw_evaluate_materials_kernel!(backend)
@@ -335,11 +335,11 @@ function pw_populate_aux_buffers!(
     aux_albedo::AbstractVector{Float32},
     aux_normal::AbstractVector{Float32},
     aux_depth::AbstractVector{Float32},
-    material_queue::PWWorkQueue{PWMaterialEvalWorkItem},
+    material_queue::WorkQueue{PWMaterialEvalWorkItem},
     materials,
     rgb2spec_table::RGBToSpectrumTable
 )
-    n = queue_size(material_queue)
+    n = length(material_queue)
     n == 0 && return nothing
 
     kernel! = pw_populate_aux_buffers_kernel!(backend)

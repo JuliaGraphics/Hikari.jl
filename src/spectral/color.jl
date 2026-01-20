@@ -32,15 +32,16 @@ struct CIEXYZTable{V <: AbstractVector{Float32}}
 end
 
 """
-    to_gpu(ArrayType, table::CIEXYZTable) -> CIEXYZTable
+    to_gpu(backend, table::CIEXYZTable) -> CIEXYZTable
 
 Convert CIEXYZTable to use GPU-compatible arrays.
+Uses KernelAbstractions backend for allocation.
 """
-function to_gpu(ArrayType, table::CIEXYZTable)
+function to_gpu(backend, table::CIEXYZTable)
     CIEXYZTable(
-        ArrayType(table.cie_x),
-        ArrayType(table.cie_y),
-        ArrayType(table.cie_z)
+        transfer(backend, table.cie_x),
+        transfer(backend, table.cie_y),
+        transfer(backend, table.cie_z)
     )
 end
 

@@ -38,14 +38,14 @@ mutable struct PWRenderState{Arr, Table <: RGBToSpectrumTable, CIETable <: CIEXY
     pdf_per_pixel::Arr          # 4 floats per pixel (PDF values)
 
     # Work queues (double-buffered for ping-pong between bounces)
-    ray_queue::PWWorkQueue{PWRayWorkItem}
-    ray_queue_next::PWWorkQueue{PWRayWorkItem}
+    ray_queue::WorkQueue{PWRayWorkItem}
+    ray_queue_next::WorkQueue{PWRayWorkItem}
 
     # Processing queues
-    escaped_queue::PWWorkQueue{PWEscapedRayWorkItem}
-    hit_light_queue::PWWorkQueue{PWHitAreaLightWorkItem}
-    material_queue::PWWorkQueue{PWMaterialEvalWorkItem}
-    shadow_queue::PWWorkQueue{PWShadowRayWorkItem}
+    escaped_queue::WorkQueue{PWEscapedRayWorkItem}
+    hit_light_queue::WorkQueue{PWHitAreaLightWorkItem}
+    material_queue::WorkQueue{PWMaterialEvalWorkItem}
+    shadow_queue::WorkQueue{PWShadowRayWorkItem}
 
     # Current wavelengths (kept for compatibility, but per-pixel is preferred)
     current_lambda::Wavelengths
@@ -60,41 +60,38 @@ end
 """
 Create render state for PhysicalWavefront.
 """
-function create_render_state(
-    ArrayType, width::Int32, height::Int32, max_depth::Int32
-)
+function create_render_state(backend, width::Int32, height::Int32)
     num_pixels = width * height
     # Allow for path expansion (conservative estimate)
     max_rays = num_pixels * Int32(2)
 
     # Spectral accumulation for current sample: 4 floats per pixel
-    pixel_L = ArrayType(zeros(Float32, num_pixels * Int32(4)))
+    pixel_L = KA.zeros(backend, Float32, num_pixels * Int32(4))
 
     # RGB accumulation across all samples: 3 floats per pixel
-    pixel_rgb = ArrayType(zeros(Float32, num_pixels * Int32(3)))
+    pixel_rgb = KA.zeros(backend, Float32, num_pixels * Int32(3))
 
     # Per-pixel wavelength storage (pbrt-v4 style): 4 floats per pixel each
-    wavelengths_per_pixel = ArrayType(zeros(Float32, num_pixels * Int32(4)))
-    pdf_per_pixel = ArrayType(zeros(Float32, num_pixels * Int32(4)))
+    wavelengths_per_pixel = KA.zeros(backend, Float32, num_pixels * Int32(4))
+    pdf_per_pixel = KA.zeros(backend, Float32, num_pixels * Int32(4))
 
     # Work queues
-    ray_queue = PWWorkQueue{PWRayWorkItem}(max_rays, ArrayType)
-    ray_queue_next = PWWorkQueue{PWRayWorkItem}(max_rays, ArrayType)
-    escaped_queue = PWWorkQueue{PWEscapedRayWorkItem}(max_rays, ArrayType)
-    hit_light_queue = PWWorkQueue{PWHitAreaLightWorkItem}(max_rays, ArrayType)
-    material_queue = PWWorkQueue{PWMaterialEvalWorkItem}(max_rays, ArrayType)
-    shadow_queue = PWWorkQueue{PWShadowRayWorkItem}(max_rays, ArrayType)
+    ray_queue = WorkQueue{PWRayWorkItem}(backend, max_rays)
+    ray_queue_next = WorkQueue{PWRayWorkItem}(backend, max_rays)
+    escaped_queue = WorkQueue{PWEscapedRayWorkItem}(backend, max_rays)
+    hit_light_queue = WorkQueue{PWHitAreaLightWorkItem}(backend, max_rays)
+    material_queue = WorkQueue{PWMaterialEvalWorkItem}(backend, max_rays)
+    shadow_queue = WorkQueue{PWShadowRayWorkItem}(backend, max_rays)
 
     # Default wavelengths (kept for compatibility)
     lambda = sample_wavelengths_uniform(0.5f0)
 
-    # Load RGB to spectrum table and convert to GPU if needed
-    rgb2spec_table_cpu = get_srgb_table()
-    rgb2spec_table = to_gpu(ArrayType, rgb2spec_table_cpu)
+    # Get ArrayType from backend for to_gpu calls
+    # Load RGB to spectrum table and convert to GPU
+    rgb2spec_table = to_gpu(backend, get_srgb_table())
 
     # Load CIE XYZ color matching functions
-    cie_table_cpu = CIEXYZTable()
-    cie_table = to_gpu(ArrayType, cie_table_cpu)
+    cie_table = to_gpu(backend, CIEXYZTable())
 
     return PWRenderState(
         width, height, num_pixels, max_rays,
@@ -164,6 +161,57 @@ function PhysicalWavefront(;
 end
 
 # ============================================================================
+# Resource Cleanup
+# ============================================================================
+
+"""
+    cleanup!(state::PWRenderState)
+
+Release GPU memory held by the render state by calling finalize on all arrays.
+"""
+function cleanup!(state::PWRenderState)
+    # Finalize pixel buffers
+    finalize(state.pixel_L)
+    finalize(state.pixel_rgb)
+    finalize(state.wavelengths_per_pixel)
+    finalize(state.pdf_per_pixel)
+
+    # Finalize work queues
+    cleanup!(state.ray_queue)
+    cleanup!(state.ray_queue_next)
+    cleanup!(state.escaped_queue)
+    cleanup!(state.hit_light_queue)
+    cleanup!(state.material_queue)
+    cleanup!(state.shadow_queue)
+
+    # Finalize lookup tables
+    finalize(state.rgb2spec_table)
+    finalize(state.cie_table)
+
+    return nothing
+end
+
+"""
+    cleanup!(integrator::PhysicalWavefront)
+
+Release GPU memory held by the integrator's cached render state.
+"""
+function cleanup!(integrator::PhysicalWavefront)
+    if integrator.state !== nothing
+        cleanup!(integrator.state)
+        integrator.state = nothing
+    end
+    return nothing
+end
+
+"""
+    Base.close(integrator::PhysicalWavefront)
+
+Release GPU resources. Alias for cleanup!().
+"""
+Base.close(integrator::PhysicalWavefront) = cleanup!(integrator)
+
+# ============================================================================
 # Main Rendering Loop
 # ============================================================================
 
@@ -182,14 +230,11 @@ function (pw::PhysicalWavefront)(scene::AbstractScene, film::Film, camera::Camer
     height, width = size(img)
     backend = KA.get_backend(img)
 
-    # Get array type for allocations (use base type, not fully parameterized)
-    ArrayType = typeof(similar(img, Float32, 1)).name.wrapper
-
     # Allocate or validate render state
     if pw.state === nothing ||
        pw.state.width != width ||
        pw.state.height != height
-        pw.state = create_render_state(ArrayType, Int32(width), Int32(height), pw.max_depth)
+        pw.state = create_render_state(backend, Int32(width), Int32(height))
     end
 
     state = pw.state
@@ -206,8 +251,8 @@ function (pw::PhysicalWavefront)(scene::AbstractScene, film::Film, camera::Camer
         rng_seed = UInt32(sample_idx) ⊻ UInt32(0x12345678)
 
         # Reset work queues
-        reset_queue!(backend, state.ray_queue)
-        reset_queue!(backend, state.ray_queue_next)
+        empty!(state.ray_queue)
+        empty!(state.ray_queue_next)
         KA.synchronize(backend)
 
         # Generate camera rays with PER-PIXEL wavelength sampling (pbrt-v4 style)
@@ -222,15 +267,15 @@ function (pw::PhysicalWavefront)(scene::AbstractScene, film::Film, camera::Camer
 
         # Path tracing loop
         for depth in 0:(pw.max_depth - 1)
-            n_rays = queue_size(state.ray_queue)
+            n_rays = length(state.ray_queue)
             n_rays == 0 && break
 
             # Reset processing queues
-            reset_queue!(backend, state.escaped_queue)
-            reset_queue!(backend, state.hit_light_queue)
-            reset_queue!(backend, state.material_queue)
-            reset_queue!(backend, state.shadow_queue)
-            reset_queue!(backend, state.ray_queue_next)
+            empty!(state.escaped_queue)
+            empty!(state.hit_light_queue)
+            empty!(state.material_queue)
+            empty!(state.shadow_queue)
+            empty!(state.ray_queue_next)
             KA.synchronize(backend)
 
             # Trace rays and sort into queues
@@ -352,8 +397,7 @@ function render_single_sample!(
 
     # Ensure state exists
     if pw.state === nothing
-        ArrayType = typeof(similar(img, Float32, 1))
-        pw.state = create_render_state(ArrayType, Int32(width), Int32(height), pw.max_depth)
+        pw.state = create_render_state(backend, Int32(width), Int32(height))
     end
 
     state = pw.state
@@ -365,7 +409,7 @@ function render_single_sample!(
     rng_seed = UInt32(sample_idx) ⊻ UInt32(0x12345678)
 
     # Reset queues
-    reset_queue!(backend, state.ray_queue)
+    empty!(state.ray_queue)
     KA.synchronize(backend)
 
     # Generate camera rays
@@ -377,14 +421,14 @@ function render_single_sample!(
 
     # Path tracing loop
     for depth in 0:(pw.max_depth - 1)
-        n_rays = queue_size(state.ray_queue)
+        n_rays = length(state.ray_queue)
         n_rays == 0 && break
 
-        reset_queue!(backend, state.escaped_queue)
-        reset_queue!(backend, state.hit_light_queue)
-        reset_queue!(backend, state.material_queue)
-        reset_queue!(backend, state.shadow_queue)
-        reset_queue!(backend, state.ray_queue_next)
+        empty!(state.escaped_queue)
+        empty!(state.hit_light_queue)
+        empty!(state.material_queue)
+        empty!(state.shadow_queue)
+        empty!(state.ray_queue_next)
         KA.synchronize(backend)
 
         pw_trace_rays!(

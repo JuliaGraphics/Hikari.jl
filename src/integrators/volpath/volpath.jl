@@ -73,7 +73,7 @@ function VolPath(;
     russian_roulette_depth::Int = 3,
     regularize::Bool = true,
     material_coherence::Symbol = :none,
-    max_component_value::Real = Inf32,
+    max_component_value::Real = 10f0,
     filter::AbstractFilter = BoxFilter()
 )
     @assert material_coherence in (:none, :sorted, :per_type) "material_coherence must be :none, :sorted, :per_type"
@@ -112,31 +112,28 @@ Generate camera rays with per-pixel wavelength sampling and filter weight comput
 Following pbrt-v4's GetCameraSample: samples the filter, computes offset and weight.
 """
 @kernel inbounds=true function vp_generate_camera_rays_kernel!(
-    ray_items, ray_size,
+    ray_queue,  # WorkQueue passed via Adapt
     wavelengths_per_pixel,
     pdf_per_pixel,
     filter_weight_per_pixel,
-    @Const(width::Int32), @Const(height::Int32),
+    @Const(height::Int32),
     @Const(camera),
     @Const(sample_idx::Int32),
     @Const(initial_medium_idx),
     @Const(filter_params::GPUFilterParams),
-    @Const(log2_spp::Int32),
-    @Const(n_base4_digits::Int32),
-    @Const(sampler_seed::UInt32),
-    @Const(sobol_matrices)
+    rng  # SobolRNG passed via Adapt
 )
     idx = @index(Global)
-    num_pixels = width * height
+    num_pixels = rng.width * height
 
     @inbounds if idx <= num_pixels
         pixel_idx = idx - Int32(1)
-        x = u_int32(mod(pixel_idx, width)) + Int32(1)
-        y = u_int32(div(pixel_idx, width)) + Int32(1)
+        x = u_int32(mod(pixel_idx, rng.width)) + Int32(1)
+        y = u_int32(div(pixel_idx, rng.width)) + Int32(1)
 
         # ZSobol sampling: deterministic low-discrepancy samples based on (pixel, sample_index)
         # Matches PBRT-v4's ZSobolSampler for better convergence
-        pixel_sample = compute_pixel_sample_sobol(Int32(x), Int32(y), sample_idx, log2_spp, n_base4_digits, sampler_seed, sobol_matrices)
+        pixel_sample = compute_pixel_sample(rng, Int32(x), Int32(y), sample_idx)
         wavelength_u = pixel_sample.wavelength_u
 
         # Sample the filter to get offset and weight (pbrt-v4 style)
@@ -190,8 +187,7 @@ Following pbrt-v4's GetCameraSample: samples the filter, computes offset and wei
                 initial_medium_idx
             )
 
-            new_idx = @atomic ray_size[1] += Int32(1)
-            ray_items[new_idx] = work_item
+            push!(ray_queue, work_item)
         end
     end
 end
@@ -224,11 +220,8 @@ This replaces rand() calls with correlated low-discrepancy samples.
     # Sampler parameters
     @Const(sample_idx::Int32),
     @Const(depth::Int32),
-    @Const(width::Int32),
-    @Const(sobol_matrices),
-    @Const(sampler_seed::UInt32),
-    @Const(log2_spp::Int32),
-    @Const(n_base4_digits::Int32)
+    # SobolRNG (passed via Adapt)
+    rng
 )
     i = @index(Global)
     n_rays = ray_queue_size[1]
@@ -241,22 +234,21 @@ This replaces rand() calls with correlated low-discrepancy samples.
         # Recover pixel coordinates from pixel_index
         # pixel_index is 1-based, formula: pixel_index = (y-1) * width + x
         pixel_idx_0 = pixel_index - Int32(1)
-        px = u_int32(mod(pixel_idx_0, width)) + Int32(1)
-        py = u_int32(div(pixel_idx_0, width)) + Int32(1)
+        px = u_int32(mod(pixel_idx_0, rng.width)) + Int32(1)
+        py = u_int32(div(pixel_idx_0, rng.width)) + Int32(1)
 
         # Base dimension: 6 (camera) + 7 * depth
         # Camera uses dims 0-5: wavelength(1), film_x(1), film_y(1), lens_x(1), lens_y(1), filter(1)
         base_dim = Int32(6) + Int32(7) * depth
-
-        # Generate 7 samples for this bounce using ZSobol sampler
+        # Generate 7 samples for this bounce using SobolRNG
         # Direct lighting: light selection (1D) + light position (2D)
-        direct_uc = zsobol_sample_1d(px, py, sample_idx, base_dim, log2_spp, n_base4_digits, sampler_seed, sobol_matrices)
-        direct_u = zsobol_sample_2d(px, py, sample_idx, base_dim + Int32(1), log2_spp, n_base4_digits, sampler_seed, sobol_matrices)
+        direct_uc = sample_1d(rng, px, py, sample_idx, base_dim)
+        direct_u = sample_2d(rng, px, py, sample_idx, base_dim + Int32(1))
 
         # Indirect: BSDF component (1D) + direction (2D) + Russian roulette (1D)
-        indirect_uc = zsobol_sample_1d(px, py, sample_idx, base_dim + Int32(3), log2_spp, n_base4_digits, sampler_seed, sobol_matrices)
-        indirect_u = zsobol_sample_2d(px, py, sample_idx, base_dim + Int32(4), log2_spp, n_base4_digits, sampler_seed, sobol_matrices)
-        indirect_rr = zsobol_sample_1d(px, py, sample_idx, base_dim + Int32(6), log2_spp, n_base4_digits, sampler_seed, sobol_matrices)
+        indirect_uc = sample_1d(rng, px, py, sample_idx, base_dim + Int32(3))
+        indirect_u = sample_2d(rng, px, py, sample_idx, base_dim + Int32(4))
+        indirect_rr = sample_1d(rng, px, py, sample_idx, base_dim + Int32(6))
 
         # Store in pixel samples buffer (SOA layout)
         pixel_samples_direct_uc[pixel_index] = direct_uc
@@ -268,7 +260,7 @@ This replaces rand() calls with correlated low-discrepancy samples.
 end
 
 """
-    vp_generate_ray_samples!(backend, state, sample_idx, depth, sobol_matrices, log2_spp, n_base4_digits, sampler_seed)
+    vp_generate_ray_samples!(backend, state, sample_idx, depth, sobol_rng)
 
 Generate pre-computed Sobol samples for all active rays at the current depth.
 """
@@ -277,13 +269,10 @@ function vp_generate_ray_samples!(
     state::VolPathState,
     sample_idx::Int32,
     depth::Int32,
-    sobol_matrices,
-    log2_spp::Int32,
-    n_base4_digits::Int32,
-    sampler_seed::UInt32
+    sobol_rng::SobolRNG
 )
     ray_queue = current_ray_queue(state)
-    n_rays = queue_size(ray_queue)
+    n_rays = length(ray_queue)
     n_rays == 0 && return
 
     # Access SOA components of pixel_samples
@@ -296,15 +285,11 @@ function vp_generate_ray_samples!(
         pixel_samples.indirect_uc,
         pixel_samples.indirect_u,
         pixel_samples.indirect_rr,
-        ray_queue.items,  # Pass full items array (AOS), kernel will read pixel_index
+        ray_queue.items,
         ray_queue.size,
         sample_idx,
         depth,
-        state.width,
-        sobol_matrices,
-        sampler_seed,
-        log2_spp,
-        n_base4_digits;
+        sobol_rng;  # Pass whole SobolRNG, Adapt handles conversion
         ndrange=n_rays
     )
 end
@@ -497,7 +482,9 @@ function render!(
         # Pass scene_radius for proper light power estimation (pbrt-v4 style)
         vp.state = VolPathState(backend, width, height, lights;
                                 max_depth=vp.max_depth,
-                                scene_radius=scene.world_radius)
+                                scene_radius=scene.world_radius,
+                                samples_per_pixel=Int(vp.samples_per_pixel),
+                                sampler_seed=UInt32(0))
     end
     state = vp.state
 
@@ -507,12 +494,8 @@ function render!(
     sample_idx = film.iteration_index[] + Int32(1)
     film.iteration_index[] = sample_idx
 
-    # Compute ZSobol sampler parameters (matching PBRT-v4)
-    log2_spp, n_base4_digits = compute_zsobol_params(Int(vp.samples_per_pixel), width, height)
-    sampler_seed = UInt32(0)  # Can be varied for different render seeds
-
-    sobol_matrices_gpu = KernelAbstractions.allocate(backend, UInt32, length(SobolMatrices32))
-    KernelAbstractions.copyto!(backend, sobol_matrices_gpu, SobolMatrices32)
+    # Get SobolRNG from state (allocated once)
+    sobol_rng = state.sobol_rng
 
     # Get accumulators from state (allocation-free)
     pixel_rgb = state.pixel_rgb
@@ -529,16 +512,16 @@ function render!(
     reset_film!(state)
 
     # Reset ray queue
-    reset_queue!(backend, current_ray_queue(state))
+    empty!(current_ray_queue(state))
 
     # Generate camera rays with filter sampling (pbrt-v4 style) and ZSobol sampler
     kernel! = vp_generate_camera_rays_kernel!(backend)
     kernel!(
-        current_ray_queue(state).items, current_ray_queue(state).size,
+        current_ray_queue(state),  # WorkQueue passed via Adapt
         wavelengths_per_pixel, pdf_per_pixel, filter_weight_per_pixel,
-        Int32(width), Int32(height),
+        Int32(height),
         camera, sample_idx, initial_medium, vp.filter_params,
-        log2_spp, n_base4_digits, sampler_seed, sobol_matrices_gpu;
+        sobol_rng;
         ndrange=Int(n_pixels)
     )
 
@@ -554,26 +537,25 @@ function render!(
 
     # Path tracing loop - following pbrt-v4 wavefront architecture
     for depth in 0:(vp.max_depth - 1)
-        n_rays = queue_size(current_ray_queue(state))
+        n_rays = length(current_ray_queue(state))
         n_rays == 0 && break
 
         # Generate pre-computed Sobol samples for this bounce (pbrt-v4 RaySamples pattern)
         # Must be called BEFORE any kernel that uses pixel_samples
-        vp_generate_ray_samples!(backend, state, sample_idx, Int32(depth),
-                                 sobol_matrices_gpu, log2_spp, n_base4_digits, sampler_seed)
+        vp_generate_ray_samples!(backend, state, sample_idx, Int32(depth), sobol_rng)
 
         reset_iteration_queues!(state)
         vp_trace_rays!(backend, state, accel)
 
         if !isempty(media)
-            n_medium = queue_size(state.medium_sample_queue)
+            n_medium = length(state.medium_sample_queue)
             if n_medium > 0
                 vp_sample_medium_interaction!(backend, state, media)
             end
         end
 
         if !isempty(media)
-            n_scatter = queue_size(state.medium_scatter_queue)
+            n_scatter = length(state.medium_scatter_queue)
             if n_scatter > 0
                 if count_lights(lights) > 0
                     vp_sample_medium_direct_lighting!(backend, state, lights, media)
@@ -582,19 +564,19 @@ function render!(
             end
         end
 
-        n_escaped = queue_size(state.escaped_queue)
+        n_escaped = length(state.escaped_queue)
         if n_escaped > 0 && count_lights(lights) > 0
             vp_handle_escaped_rays!(backend, state, lights)
         end
 
-        n_hits = queue_size(state.hit_surface_queue)
+        n_hits = length(state.hit_surface_queue)
         if n_hits > 0
             if vp.material_coherence == :per_type && multi_queue !== nothing
                 reset_queues!(backend, multi_queue)
                 vp_process_surface_hits_coherent!(backend, state, multi_queue, materials, textures)
 
                 # Following pbrt-v4: launch kernels unconditionally, let them check size internally
-                # This avoids expensive GPU→CPU sync from queue_size() / total_size() calls
+                # This avoids expensive GPU→CPU sync from length() / total_size() calls
                 if count_lights(lights) > 0
                     vp_sample_direct_lighting_coherent!(backend, state, multi_queue, materials, textures, lights)
                 end
@@ -607,12 +589,12 @@ function render!(
             else
                 vp_process_surface_hits!(backend, state, materials, textures)
 
-                n_material = queue_size(state.material_queue)
+                n_material = length(state.material_queue)
                 if n_material > 0 && count_lights(lights) > 0
                     vp_sample_surface_direct_lighting!(backend, state, materials, textures, lights)
                 end
 
-                n_shadow = queue_size(state.shadow_queue)
+                n_shadow = length(state.shadow_queue)
                 if n_shadow > 0
                     vp_trace_shadow_rays!(backend, state, accel, materials, media)
                 end
@@ -678,14 +660,8 @@ function (vp::VolPath)(
 )
     # Reset iteration counter for fresh render
     film.iteration_index[] = Int32(0)
-
     # Clear RGB and weight accumulators for fresh render
-    if vp.state !== nothing
-        backend = KA.get_backend(film.framebuffer)
-        KA.fill!(vp.state.pixel_rgb, 0f0)
-        KA.fill!(vp.state.pixel_weight_sum, 0f0)
-    end
-
+    clear!(vp)
     # Render all samples by calling render! repeatedly
     for _ in 1:vp.samples_per_pixel
         render!(vp, scene, film, camera)

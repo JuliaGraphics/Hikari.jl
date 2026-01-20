@@ -429,18 +429,13 @@ end
 # ============================================================================
 
 """
-    to_gpu(ArrayType, table::RGBToSpectrumTable) -> RGBToSpectrumTable
+    to_gpu(backend, table::RGBToSpectrumTable) -> RGBToSpectrumTable
 
 Convert RGBToSpectrumTable to use GPU-compatible arrays.
-The ArrayType should be a 1D GPU array type (e.g., CuVector or ROCArray).
+Uses KernelAbstractions backend for allocation.
 """
-function to_gpu(ArrayType, table::RGBToSpectrumTable)
-    # Convert scale (1D) - use reshape to handle the conversion properly
-    scale_gpu = ArrayType(table.scale)
-
-    # Convert coeffs (5D) - need to handle multi-dimensional arrays
-    # Most GPU array types support direct construction from CPU arrays
-    coeffs_gpu = ArrayType(table.coeffs)
-
+function to_gpu(backend, table::RGBToSpectrumTable)
+    scale_gpu = transfer(backend, table.scale)
+    coeffs_gpu = transfer(backend, table.coeffs)
     return RGBToSpectrumTable(table.res, scale_gpu, coeffs_gpu)
 end

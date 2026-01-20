@@ -180,15 +180,13 @@ Sample environment light spectrally with importance sampling.
     # Importance sample the environment map based on luminance
     uv, map_pdf = sample_continuous(light.env_map.distribution, u)
 
-    # Convert UV to direction
+    # Convert UV to direction using equal-area mapping
     wi = uv_to_direction(uv, light.env_map.rotation)
 
-    # PDF in solid angle
-    sin_theta = sin(Float32(π) * uv[2])
-    if sin_theta < 1f-6
-        return PWLightSample()
-    end
-    pdf = map_pdf / (2f0 * Float32(π) * Float32(π) * sin_theta)
+    # Convert PDF from image space to solid angle
+    # For equal-area mapping: pdf_solidangle = pdf_image / (4π)
+    # This matches pbrt-v4's ImageInfiniteLight::PDF_Li: return pdf / (4 * Pi);
+    pdf = map_pdf / (4f0 * Float32(π))
 
     if pdf <= 0f0
         return PWLightSample()
@@ -284,19 +282,16 @@ PDF for sampling direction wi from spotlight (always delta).
 PDF for sampling direction wi from environment light.
 """
 @propagate_inbounds function pdf_li_spectral(light::EnvironmentLight, ::Point3f, wi::Vec3f)
-    # Convert direction to UV
+    # Convert direction to UV using equal-area mapping
     uv = direction_to_uv(wi, light.env_map.rotation)
 
     # Get PDF from distribution
     map_pdf = pdf(light.env_map.distribution, uv)
 
-    # Convert to solid angle measure
-    sin_theta = sin(Float32(π) * uv[2])
-    if sin_theta < 1f-6
-        return 0f0
-    end
-
-    return map_pdf / (2f0 * Float32(π) * Float32(π) * sin_theta)
+    # Convert from image space to solid angle
+    # For equal-area mapping: pdf_solidangle = pdf_image / (4π)
+    # This matches pbrt-v4's ImageInfiniteLight::PDF_Li: return pdf / (4 * Pi);
+    return map_pdf / (4f0 * Float32(π))
 end
 
 # Fallback

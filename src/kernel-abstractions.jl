@@ -48,13 +48,6 @@ function to_gpu(ArrayType, m::Hikari.GlassMaterial)
     return Hikari.GlassMaterial(Kr, Kt, u_roughness, v_roughness, index, m.remap_roughness)
 end
 
-function to_gpu(ArrayType, m::Hikari.PlasticMaterial)
-    Kd = to_gpu(ArrayType, m.Kd)
-    Ks = to_gpu(ArrayType, m.Ks)
-    roughness = to_gpu(ArrayType, m.roughness)
-    return Hikari.PlasticMaterial(Kd, Ks, roughness, m.remap_roughness)
-end
-
 function to_gpu(ArrayType, m::Hikari.MetalMaterial)
     eta = to_gpu(ArrayType, m.eta)
     k = to_gpu(ArrayType, m.k)
@@ -106,13 +99,6 @@ function to_gpu_ref(collector::Hikari.TextureCollector, m::Hikari.GlassMaterial)
     v_roughness = Hikari.texture_to_ref(m.v_roughness, collector)
     index = Hikari.texture_to_ref(m.index, collector)
     return Hikari.GlassMaterial(Kr, Kt, u_roughness, v_roughness, index, m.remap_roughness)
-end
-
-function to_gpu_ref(collector::Hikari.TextureCollector, m::Hikari.PlasticMaterial)
-    Kd = Hikari.texture_to_ref(m.Kd, collector)
-    Ks = Hikari.texture_to_ref(m.Ks, collector)
-    roughness = Hikari.texture_to_ref(m.roughness, collector)
-    return Hikari.PlasticMaterial(Kd, Ks, roughness, m.remap_roughness)
 end
 
 function to_gpu_ref(collector::Hikari.TextureCollector, m::Hikari.MetalMaterial)

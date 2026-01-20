@@ -253,37 +253,12 @@ function GlassMaterial(
     )
 end
 
-"""
-    PlasticMaterial(Kd, Ks, roughness, remap_roughness)
-
-Plastic material with diffuse and glossy specular components.
-
-* `Kd`: Diffuse reflectance (Texture or TextureRef)
-* `Ks`: Specular reflectance (Texture or TextureRef)
-* `roughness`: Surface roughness
-* `remap_roughness`: Whether to remap roughness to alpha
-"""
-struct PlasticMaterial{KdTex, KsTex, RoughTex} <: Material
-    Kd::KdTex           # Texture{RGBSpectrum} or TextureRef{RGBSpectrum}
-    Ks::KsTex           # Texture{RGBSpectrum} or TextureRef{RGBSpectrum}
-    roughness::RoughTex # Texture{Float32} or TextureRef{Float32}
-    remap_roughness::Bool
-end
-
-function PlasticMaterial(
-    Kd::Texture, Ks::Texture,
-    roughness::Texture, remap_roughness::Bool
-)
-    PlasticMaterial{typeof(Kd), typeof(Ks), typeof(roughness)}(Kd, Ks, roughness, remap_roughness)
-end
-
-# Constructor for TextureRef (GPU path)
-function PlasticMaterial(
-    Kd::TextureRef{RGBSpectrum}, Ks::TextureRef{RGBSpectrum},
-    roughness::TextureRef{Float32}, remap_roughness::Bool
-)
-    PlasticMaterial{typeof(Kd), typeof(Ks), typeof(roughness)}(Kd, Ks, roughness, remap_roughness)
-end
+# ============================================================================
+# PlasticMaterial - Now an alias for CoatedDiffuseMaterial
+# ============================================================================
+# The old PlasticMaterial struct has been removed.
+# PlasticMaterial(; Kd=..., roughness=...) now returns a CoatedDiffuseMaterial,
+# matching pbrt-v4's behavior where plastic is implemented as coated diffuse.
 
 # ============================================================================
 # User-friendly keyword constructors with auto texture wrapping
@@ -380,15 +355,19 @@ function GlassMaterial(;
 end
 
 """
-    PlasticMaterial(; Kd=RGBSpectrum(0.5), Ks=RGBSpectrum(0.5), roughness=0.1, remap_roughness=true)
+    PlasticMaterial(; Kd=RGBSpectrum(0.5), Ks=RGBSpectrum(0.5), roughness=0.1, remap_roughness=true, eta=1.5)
 
-Create a plastic material with diffuse and glossy specular components.
+Create a plastic material with diffuse base and dielectric coating.
+
+This is an alias for `CoatedDiffuseMaterial` matching pbrt-v4's behavior where
+"plastic" materials are implemented as coated diffuse with a dielectric coating.
 
 # Arguments
-- `Kd`: Diffuse color
-- `Ks`: Specular color (controls highlight intensity)
-- `roughness`: Surface roughness (lower = sharper highlights)
+- `Kd`: Diffuse color (reflectance of the base layer)
+- `Ks`: Specular color (ignored - kept for API compatibility, Fresnel controls specular)
+- `roughness`: Surface roughness of the coating (lower = sharper highlights)
 - `remap_roughness`: Whether to remap roughness to microfacet alpha
+- `eta`: Index of refraction of the coating (default 1.5 for typical plastic)
 
 # Examples
 ```julia
@@ -399,11 +378,18 @@ PlasticMaterial(Kd=wood_texture, roughness=0.3)      # Textured
 """
 function PlasticMaterial(;
     Kd=RGBSpectrum(0.5f0),
-    Ks=RGBSpectrum(0.5f0),
+    Ks=RGBSpectrum(0.5f0),  # Kept for API compatibility, ignored
     roughness=0.1f0,
-    remap_roughness=true
+    remap_roughness=true,
+    eta=1.5f0
 )
-    PlasticMaterial(_to_texture(Kd), _to_texture(Ks), _to_texture(roughness), remap_roughness)
+    # Convert to CoatedDiffuseMaterial (pbrt-v4's actual plastic implementation)
+    CoatedDiffuseMaterial(
+        reflectance=Kd,
+        roughness=roughness,
+        eta=Float32(eta),
+        remap_roughness=remap_roughness
+    )
 end
 
 # ============================================================================

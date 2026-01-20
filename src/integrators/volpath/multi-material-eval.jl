@@ -29,7 +29,7 @@ function MultiMaterialQueue{N}(backend, capacity::Integer) where {N}
     # of material types in advance. A scene might have 90% of rays hitting one material.
     # This uses more memory but ensures correctness.
     queues = ntuple(N) do _
-        VPWorkQueue{VPMaterialEvalWorkItem}(backend, capacity)
+        WorkQueue{VPMaterialEvalWorkItem}(backend, capacity)
     end
     MultiMaterialQueue{N, typeof(queues[1])}(queues)
 end
@@ -42,13 +42,13 @@ end
 """Reset all queues"""
 function reset_queues!(backend, mmq::MultiMaterialQueue{N}) where {N}
     for q in mmq.queues
-        reset_queue!(backend, q)
+        empty!(q)
     end
 end
 
 """Get total size across all queues"""
 function total_size(mmq::MultiMaterialQueue{N}) where {N}
-    sum(queue_size(q) for q in mmq.queues)
+    sum(length(q) for q in mmq.queues)
 end
 
 # ============================================================================
@@ -397,13 +397,13 @@ DEBUG helper: Copy items from multi_queue to standard material_queue for testing
 """
 function _copy_multi_to_standard!(backend, state::VolPathState, multi_queue::MultiMaterialQueue{N}) where {N}
     # Reset the standard material queue
-    reset_queue!(backend, state.material_queue)
+    empty!(state.material_queue)
 
     # Copy items from all per-type queues to standard queue
     total = 0
     for type_idx in 1:N
         type_queue = multi_queue.queues[type_idx]
-        n_type = queue_size(type_queue)
+        n_type = length(type_queue)
         if n_type > 0
             # Copy items
             src_items = Array(type_queue.items)
@@ -440,7 +440,7 @@ function vp_process_surface_hits_coherent!(
     materials::NTuple{N, Any},
     textures
 ) where {N}
-    n = queue_size(state.hit_surface_queue)
+    n = length(state.hit_surface_queue)
     n == 0 && return nothing
 
     # Reset per-type queues
@@ -542,7 +542,7 @@ end
 
 """Copy items from multi_queue to standard material_queue."""
 function _copy_multi_to_material_queue!(backend, state::VolPathState, multi_queue::MultiMaterialQueue{N}) where {N}
-    reset_queue!(backend, state.material_queue)
+    empty!(state.material_queue)
 
     # Copy each type queue sequentially (simpler than fused kernel)
     for type_idx in 1:N
@@ -590,7 +590,7 @@ function vp_sample_direct_lighting_coherent!(
     # This avoids the need to copy items before direct lighting
     for type_idx in 1:N
         type_queue = multi_queue.queues[type_idx]
-        n_type = queue_size(type_queue)
+        n_type = length(type_queue)
         if n_type > 0
             # Use the per-type queue's items directly for direct lighting sampling
             vp_sample_direct_lighting_from_queue!(backend, state, type_queue, materials, textures, lights)
@@ -605,12 +605,12 @@ Uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
 function vp_sample_direct_lighting_from_queue!(
     backend,
     state::VolPathState,
-    mat_queue::VPWorkQueue{VPMaterialEvalWorkItem},
+    mat_queue::WorkQueue{VPMaterialEvalWorkItem},
     materials,
     textures,
     lights
 )
-    n = queue_size(mat_queue)
+    n = length(mat_queue)
     n == 0 && return nothing
 
     # Extract pixel_samples SOA components for kernel
@@ -650,7 +650,7 @@ function vp_evaluate_materials_sorted!(
     media,
     regularize::Bool = true
 ) where {N}
-    n_total = queue_size(state.material_queue)
+    n_total = length(state.material_queue)
     n_total == 0 && return nothing
 
     # For small queues, sorting overhead isn't worth it
@@ -698,11 +698,11 @@ function vp_evaluate_materials_sorted!(
 end
 
 # Helper functions for sorted mode
-function _count_material_types(backend, queue::VPWorkQueue{VPMaterialEvalWorkItem}, N::Int)
+function _count_material_types(backend, queue::WorkQueue{VPMaterialEvalWorkItem}, N::Int)
     counts_gpu = KernelAbstractions.allocate(backend, Int32, N)
     KernelAbstractions.fill!(counts_gpu, Int32(0))
 
-    n = queue_size(queue)
+    n = length(queue)
     if n > 0
         kernel! = _count_types_kernel!(backend)
         kernel!(counts_gpu, queue.items, queue.size, Int32(N); ndrange=Int(queue.capacity))
@@ -729,7 +729,7 @@ end
 
 function _scatter_by_material_type!(
     backend,
-    src_queue::VPWorkQueue{VPMaterialEvalWorkItem},
+    src_queue::WorkQueue{VPMaterialEvalWorkItem},
     dst_items::AbstractVector{VPMaterialEvalWorkItem},
     type_offsets::Vector{Int},
     N::Int
@@ -740,7 +740,7 @@ function _scatter_by_material_type!(
     counters_gpu = KernelAbstractions.allocate(backend, Int32, N)
     KernelAbstractions.fill!(counters_gpu, Int32(0))
 
-    n = queue_size(src_queue)
+    n = length(src_queue)
     if n > 0
         kernel! = _scatter_kernel!(backend)
         kernel!(

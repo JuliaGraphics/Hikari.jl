@@ -222,12 +222,17 @@ end
 
 # Trace-specific spawn_ray functions for SurfaceInteraction
 # Raycore has spawn_ray for its Interaction type, but we need these for our SurfaceInteraction
+#
+# Following pbrt-v4's SpawnRayTo: direction is (p1 - p0) unnormalized, so t=1 reaches p1.
+# We use t_max = 1 - δ to stop just before p1, matching pbrt-v4's ShadowEpsilon behavior.
+# This is critical for shadow rays where we only want to detect occluders BETWEEN p0 and p1.
 @propagate_inbounds function spawn_ray(
         p0::Interaction, p1::Interaction, δ::Float32 = 1f-6,
     )::Ray
     direction = p1.p - p0.p
     origin = p0.p .+ δ .* direction
-    return Ray(origin, direction, Inf32, p0.time)
+    # t_max = 1 - δ ensures we test for intersections between p0 and p1, not beyond
+    return Ray(origin, direction, 1f0 - δ, p0.time)
 end
 
 @propagate_inbounds function spawn_ray(p0::SurfaceInteraction, p1::Interaction)::Ray

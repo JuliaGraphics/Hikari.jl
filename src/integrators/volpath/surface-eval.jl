@@ -121,7 +121,7 @@ function vp_process_surface_hits!(
     materials,
     textures
 )
-    n = queue_size(state.hit_surface_queue)
+    n = length(state.hit_surface_queue)
     n == 0 && return nothing
 
     kernel! = vp_process_surface_hits_kernel!(backend)
@@ -300,7 +300,7 @@ function vp_sample_surface_direct_lighting!(
     textures,
     lights
 )
-    n = queue_size(state.material_queue)
+    n = length(state.material_queue)
     n == 0 && return nothing
 
     # Access SOA components of pixel_samples
@@ -513,7 +513,7 @@ function vp_evaluate_materials!(
     media,
     regularize::Bool = true
 )
-    n = queue_size(state.material_queue)
+    n = length(state.material_queue)
     n == 0 && return nothing
 
     output_queue = next_ray_queue(state)

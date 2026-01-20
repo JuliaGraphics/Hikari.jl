@@ -230,7 +230,7 @@ function vp_trace_rays!(
     accel
 )
     input_queue = current_ray_queue(state)
-    n = queue_size(input_queue)
+    n = length(input_queue)
     n == 0 && return nothing
 
     kernel! = vp_trace_rays_kernel!(backend)
@@ -544,7 +544,7 @@ function vp_trace_shadow_rays!(
     materials,
     media
 )
-    n = queue_size(state.shadow_queue)
+    n = length(state.shadow_queue)
     n == 0 && return nothing
 
     kernel! = vp_trace_shadow_rays_kernel!(backend)
@@ -642,7 +642,7 @@ function vp_handle_escaped_rays!(
     state::VolPathState,
     lights
 )
-    n = queue_size(state.escaped_queue)
+    n = length(state.escaped_queue)
     n == 0 && return nothing
 
     kernel! = vp_handle_escaped_rays_kernel!(backend)

@@ -77,13 +77,13 @@ end
     FastMaterialProps(Vec3f(kr.c[1], kr.c[2], kr.c[3]), 1f0, 0f0)
 end
 
-@propagate_inbounds function extract_fast_props(mat::PlasticMaterial, uv::Point2f)
-    # Plastic is a dielectric - no mirror reflections in FastWavefront
-    # (true plastic specular requires BRDF evaluation which FastWavefront doesn't do)
-    kd = eval_tex((), mat.Kd, uv)
-    roughness = eval_tex((), mat.roughness, uv)
-    FastMaterialProps(Vec3f(kd.c[1], kd.c[2], kd.c[3]), 0f0, roughness)
-end
+# @propagate_inbounds function extract_fast_props(mat::PlasticMaterial, uv::Point2f)
+#     # Plastic is a dielectric - no mirror reflections in FastWavefront
+#     # (true plastic specular requires BRDF evaluation which FastWavefront doesn't do)
+#     kd = eval_tex((), mat.Kd, uv)
+#     roughness = eval_tex((), mat.roughness, uv)
+#     FastMaterialProps(Vec3f(kd.c[1], kd.c[2], kd.c[3]), 0f0, roughness)
+# end
 
 @propagate_inbounds function extract_fast_props(mat::GlassMaterial, uv::Point2f)
     kr = eval_tex((), mat.Kr, uv)
@@ -706,6 +706,67 @@ function FastWavefront(;
     )
     return FastWavefront(Int32(samples), Float32(ambient), nothing)
 end
+
+# ============================================================================
+# Resource Cleanup
+# ============================================================================
+
+"""
+    finalize_soa(soa::NamedTuple)
+
+Finalize all arrays in a SoA (Structure of Arrays) NamedTuple.
+"""
+function finalize_soa(soa::NamedTuple)
+    for arr in values(soa)
+        finalize(arr)
+    end
+    return nothing
+end
+
+"""
+    cleanup!(buffers::FastWavefrontBuffers)
+
+Release GPU memory held by FastWavefront buffers.
+"""
+function cleanup!(buffers::FastWavefrontBuffers)
+    # Finalize framebuffer (accel and materials are borrowed, not owned)
+    finalize(buffers.framebuffer)
+
+    # Finalize all SoA work queues
+    finalize_soa(buffers.primary_ray_queue)
+    finalize_soa(buffers.primary_hit_queue)
+    finalize_soa(buffers.shadow_ray_queue)
+    finalize_soa(buffers.shadow_result_queue)
+    finalize_soa(buffers.reflection_ray_soa)
+    finalize_soa(buffers.reflection_hit_soa)
+    finalize_soa(buffers.shading_queue)
+
+    # Finalize remaining arrays
+    finalize(buffers.sample_accumulator)
+    finalize(buffers.active_count)
+
+    return nothing
+end
+
+"""
+    cleanup!(integrator::FastWavefront)
+
+Release GPU memory held by the integrator's cached buffers.
+"""
+function cleanup!(integrator::FastWavefront)
+    if integrator.buffers !== nothing
+        cleanup!(integrator.buffers)
+        integrator.buffers = nothing
+    end
+    return nothing
+end
+
+"""
+    Base.close(integrator::FastWavefront)
+
+Release GPU resources. Alias for cleanup!().
+"""
+Base.close(integrator::FastWavefront) = cleanup!(integrator)
 
 # GPU-safe helper for extracting sky color from a light
 @propagate_inbounds function _extract_sky_from_light(acc::RGB{Float32}, light)

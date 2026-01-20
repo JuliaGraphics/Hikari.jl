@@ -456,20 +456,20 @@ Trace all rays in ray_queue and populate output queues.
 """
 function pw_trace_rays!(
     backend,
-    escaped_queue::PWWorkQueue{PWEscapedRayWorkItem},
-    hit_light_queue::PWWorkQueue{PWHitAreaLightWorkItem},
-    material_queue::PWWorkQueue{PWMaterialEvalWorkItem},
-    ray_queue::PWWorkQueue{PWRayWorkItem},
+    escaped_queue::WorkQueue{PWEscapedRayWorkItem},
+    hit_light_queue::WorkQueue{PWHitAreaLightWorkItem},
+    material_queue::WorkQueue{PWMaterialEvalWorkItem},
+    ray_queue::WorkQueue{PWRayWorkItem},
     accel,
     materials
 )
-    n = queue_size(ray_queue)
+    n = length(ray_queue)
     n == 0 && return nothing
 
     # Reset output queues
-    reset_queue!(backend, escaped_queue)
-    reset_queue!(backend, hit_light_queue)
-    reset_queue!(backend, material_queue)
+    empty!(escaped_queue)
+    empty!(hit_light_queue)
+    empty!(material_queue)
 
     kernel! = pw_trace_rays_kernel!(backend)
     kernel!(
@@ -493,10 +493,10 @@ Trace shadow rays and accumulate unoccluded contributions.
 function pw_trace_shadow_rays!(
     backend,
     pixel_L::AbstractVector{Float32},
-    shadow_queue::PWWorkQueue{PWShadowRayWorkItem},
+    shadow_queue::WorkQueue{PWShadowRayWorkItem},
     accel
 )
-    n = queue_size(shadow_queue)
+    n = length(shadow_queue)
     n == 0 && return nothing
 
     kernel! = pw_trace_shadow_rays_kernel!(backend)
@@ -514,11 +514,11 @@ Evaluate environment lights for escaped rays.
 function pw_handle_escaped_rays!(
     backend,
     pixel_L::AbstractVector{Float32},
-    escaped_queue::PWWorkQueue{PWEscapedRayWorkItem},
+    escaped_queue::WorkQueue{PWEscapedRayWorkItem},
     lights,
     rgb2spec_table::RGBToSpectrumTable
 )
-    n = queue_size(escaped_queue)
+    n = length(escaped_queue)
     n == 0 && return nothing
 
     kernel! = pw_handle_escaped_rays_kernel!(backend)
@@ -541,10 +541,10 @@ Evaluate emission for rays that hit area lights.
 function pw_handle_hit_area_lights!(
     backend,
     pixel_L::AbstractVector{Float32},
-    hit_light_queue::PWWorkQueue{PWHitAreaLightWorkItem},
+    hit_light_queue::WorkQueue{PWHitAreaLightWorkItem},
     materials
 )
-    n = queue_size(hit_light_queue)
+    n = length(hit_light_queue)
     n == 0 && return nothing
 
     kernel! = pw_handle_hit_area_lights_kernel!(backend)

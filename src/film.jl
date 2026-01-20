@@ -446,3 +446,24 @@ function save(film::Film, splat_scale::Float32 = 1f0)
     FileIO.save(film.filename, @view film.framebuffer[end:-1:begin, :])
     film.framebuffer
 end
+
+# ============================================================================
+# Resource Cleanup
+# ============================================================================
+
+"""
+    cleanup!(film::Film)
+
+Release GPU memory held by the film by calling finalize on all arrays.
+"""
+function cleanup!(film::Film)
+    finalize(film.pixels)
+    finalize(film.tiles)
+    finalize(film.filter_table)
+    finalize(film.framebuffer)
+    finalize(film.albedo)
+    finalize(film.normal)
+    finalize(film.depth)
+    finalize(film.postprocess)
+    return nothing
+end

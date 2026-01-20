@@ -1,9 +1,10 @@
 name = "Hikari"
 uuid = "afc56b53-c9a9-482a-a956-d1d800e05558"
-authors = ["Anton Smirnov <tonysmn97@gmail.com>", "Simon Danisch <sdanisch@proton.me>"]
 version = "0.1.0"
+authors = ["Anton Smirnov <tonysmn97@gmail.com>", "Simon Danisch <sdanisch@proton.me>"]
 
 [deps]
+Adapt = "79e6a3ab-5dfb-504d-930d-738a2a938a0e"
 Atomix = "a9b6321e-bd34-4604-b9c9-b65b8de01458"
 FileIO = "5789e2e9-d7fb-5bc7-8068-2c6fae9b9549"
 GeometryBasics = "5c1252a2-5f33-56bf-86c9-59e7332b4326"
@@ -19,12 +20,11 @@ StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 StructArrays = "09ab397b-f2b6-538f-b94a-2f83cf4a842a"
 
 [compat]
-#Atomix = "0.1.0"
+Adapt = "4.4.0"
 FileIO = "1.16"
 GeometryBasics = "0.4, 0.5"
 ImageCore = "0.10"
 ImageIO = "0.6"
-#KernelAbstractions = "0.9.24"
 ProgressMeter = "1.10"
 RandomNumbers = "1.6.0"
 StaticArrays = "1.9.7"

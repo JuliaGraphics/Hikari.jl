@@ -73,24 +73,8 @@ Compute BSDF for GlassMaterial.
     )
 end
 
-"""
-Compute BSDF for PlasticMaterial.
-"""
-@propagate_inbounds function compute_bsdf(p::PlasticMaterial, textures, si::SurfaceInteraction, ::Bool, transport)
-    # Initialize diffuse component
-    kd = clamp(eval_tex(textures, p.Kd, si.uv))
-    bsdf_1 = LambertianReflection(!is_black(kd), kd)
-    # Initialize specular component
-    ks = clamp(eval_tex(textures, p.Ks, si.uv))
-    is_black(ks) && return BSDF(si, bsdf_1)
-    # Create microfacet distribution for plastic material
-    fresnel = FresnelDielectric(1.5f0, 1f0)
-    rough = eval_tex(textures, p.roughness, si.uv)
-    p.remap_roughness && (rough = roughness_to_α(rough))
-    distribution = TrowbridgeReitzDistribution(rough, rough)
-    bsdf_2 = MicrofacetReflection(true, ks, distribution, fresnel, transport)
-    return BSDF(si, bsdf_1, bsdf_2)
-end
+# PlasticMaterial compute_bsdf removed - PlasticMaterial is now an alias for CoatedDiffuseMaterial
+# which uses the LayeredBxDF implementation in spectral-eval.jl
 
 """
 Compute BSDF for MetalMaterial - conductor with Fresnel reflectance.

@@ -33,6 +33,9 @@ abstract type Material end
 abstract type BxDF end
 abstract type Integrator end
 
+# Default no-op close for integrators without cached state
+Base.close(::Integrator) = nothing
+
 const Radiance = UInt8(1)
 const Importance = UInt8(2)
 
@@ -976,9 +979,11 @@ include("integrators/sampler.jl")
 include("integrators/sppm.jl")
 include("integrators/fast-wavefront.jl")
 
+# Unified work queue for wavefront integrators
+include("integrators/workqueue.jl")
+
 # PhysicalWavefront spectral path tracer
 include("integrators/physical-wavefront/workitems.jl")
-include("integrators/physical-wavefront/workqueue.jl")
 include("integrators/physical-wavefront/material-dispatch.jl")
 include("integrators/physical-wavefront/lights.jl")
 include("integrators/physical-wavefront/camera.jl")
@@ -991,7 +996,7 @@ include("integrators/physical-wavefront/physical-wavefront.jl")
 include("integrators/volpath/media.jl")
 include("integrators/volpath/medium-dispatch.jl")
 include("integrators/volpath/workitems.jl")
-include("integrators/volpath/workqueue.jl")
+include("integrators/volpath/volpath-state.jl")
 include("integrators/volpath/delta-tracking.jl")
 include("integrators/volpath/medium-scatter.jl")
 include("integrators/volpath/intersection.jl")
