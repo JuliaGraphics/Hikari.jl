@@ -2,6 +2,7 @@
 # Include all components in dependency order
 
 include("media.jl")
+include("nanovdb.jl")
 include("medium-dispatch.jl")
 include("workitems.jl")
 include("workqueue.jl")

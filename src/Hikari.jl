@@ -12,6 +12,7 @@ using StructArrays
 using Atomix
 using KernelAbstractions
 using Raycore
+using Zlib_jll
 
 # Re-export Raycore types and functions that Trace uses
 import Raycore: AbstractRay, Ray, RayDifferentials, apply, check_direction, scale_differentials
@@ -994,6 +995,7 @@ include("integrators/physical-wavefront/physical-wavefront.jl")
 
 # VolPath volumetric path tracer
 include("integrators/volpath/media.jl")
+include("integrators/volpath/nanovdb.jl")
 include("integrators/volpath/medium-dispatch.jl")
 include("integrators/volpath/workitems.jl")
 include("integrators/volpath/volpath-state.jl")

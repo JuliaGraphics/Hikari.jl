@@ -206,6 +206,34 @@ function to_gpu(ArrayType, m::Hikari.GridMedium)
     )
 end
 
+# GPU conversion for NanoVDBMedium - convert buffer and majorant grid to GPU
+function to_gpu(ArrayType, m::Hikari.NanoVDBMedium)
+    buffer_gpu = Raycore.to_gpu(ArrayType, m.buffer)
+    majorant_voxels_gpu = Raycore.to_gpu(ArrayType, m.majorant_grid.voxels)
+    majorant_grid_gpu = Hikari.MajorantGrid(majorant_voxels_gpu, m.majorant_grid.res)
+    return Hikari.NanoVDBMedium(
+        buffer_gpu,
+        m.root_offset,
+        m.upper_offset,
+        m.lower_offset,
+        m.leaf_offset,
+        m.leaf_count,
+        m.lower_count,
+        m.upper_count,
+        m.root_table_size,
+        m.inv_mat,
+        m.vec,
+        m.bounds,
+        m.index_bbox_min,
+        m.index_bbox_max,
+        m.σ_a,
+        m.σ_s,
+        m.g,
+        majorant_grid_gpu,
+        m.max_density
+    )
+end
+
 function to_gpu(ArrayType, ms::Hikari.MaterialScene)
     accel = to_gpu(ArrayType, ms.accel)
 
