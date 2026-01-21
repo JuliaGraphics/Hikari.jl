@@ -15,8 +15,7 @@ end
 
 @propagate_inbounds function sample_kernel_inner!(
         tiles, tile, tile_column::Int32, resolution::Point2f, max_depth::Int32,
-        scene, sampler, camera, pixel, spp_sqr, filter_table,
-        filter_radius::Point2f
+        scene, sampler, camera, pixel, spp_sqr, filter_params::GPUFilterParams
     )
     # resolution is (height, width) from size(pixels) in Julia convention
     # pixel is (px, py) where px=x (column), py=y (row)
@@ -27,7 +26,8 @@ end
     # Use while loop to avoid iterate() protocol (causes PHI node errors in SPIR-V)
     sample_idx = Int32(1)
     while sample_idx <= sampler.samples_per_pixel
-        camera_sample = get_camera_sample(sampler, campix)
+        # Get camera sample with filter importance sampling (pbrt-v4 compatible)
+        camera_sample = get_camera_sample(sampler, campix, filter_params)
         ray, ω = generate_ray_differential(camera, camera_sample)
         ray = scale_differentials(ray, spp_sqr)
         l = RGBSpectrum(0.0f0)
@@ -38,9 +38,10 @@ end
         if isnan(l)
             l = RGBSpectrum(0.0f0)
         end
+        # Use camera_sample.film (the actual jittered position) and filter_weight
         add_sample!(
-            tiles, tile, tile_column, pixel, l,
-            filter_table, filter_radius, ω,
+            tiles, tile, tile_column, camera_sample.film, l,
+            camera_sample.filter_weight, ω,
         )
         sample_idx += Int32(1)
     end

@@ -256,7 +256,38 @@ end
     return (i - Int32(1)) * ncols + j
 end
 
+# pbrt-v4 compatible single-pixel add_sample
+# The filter weight is pre-computed during camera sample generation via importance sampling.
+# This adds the sample to exactly one pixel (the pixel containing the sample point).
 @propagate_inbounds function add_sample!(
+    tiles::AbstractMatrix{FilmTilePixel}, tile::Bounds2, tile_column::Int32,
+    point::Point2f, spectrum::RGBSpectrum, filter_weight::Float32, sample_weight::Float32=1.0f0,
+)
+    # Get the pixel containing this sample point
+    pixel_x = u_int32(floor(point[1]))
+    pixel_y = u_int32(floor(point[2]))
+
+    # Check if pixel is within tile bounds
+    pmin = u_int32.(tile.p_min)
+    pmax = u_int32.(tile.p_max)
+    if pixel_x < pmin[1] || pixel_x > pmax[1] || pixel_y < pmin[2] || pixel_y > pmax[2]
+        return  # Sample falls outside tile bounds
+    end
+
+    # Combined weight = filter_weight * sample_weight (camera ray contribution)
+    w = filter_weight * sample_weight
+
+    # Add to pixel
+    idx = get_tile_index(tile, Point2(pixel_x, pixel_y))
+    contrib_sum = tiles.contrib_sum
+    filter_weight_sum = tiles.filter_weight_sum
+    contrib_sum[idx, tile_column] += spectrum * w
+    filter_weight_sum[idx, tile_column] += w
+end
+
+# Legacy multi-pixel splatting version (kept for backwards compatibility)
+# This distributes a sample to multiple pixels based on filter radius.
+@propagate_inbounds function add_sample_splat!(
     tiles::AbstractMatrix{FilmTilePixel}, tile::Bounds2, tile_column::Int32, point::Point2f, spectrum::RGBSpectrum,
     filter_table, filter_radius::Point2f, sample_weight::Float32=1.0f0,
 )

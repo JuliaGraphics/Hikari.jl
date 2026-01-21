@@ -29,7 +29,19 @@ end
     p_film = p_raster .+ get_2d(sampler)
     time = get_1d(sampler)
     p_lens = get_2d(sampler)
-    CameraSample(p_film, p_lens, time)
+    CameraSample(p_film, p_lens, time, 1.0f0)
+end
+
+# Filter-aware camera sample generation (pbrt-v4 compatible)
+# Uses filter importance sampling to compute both position and weight
+@propagate_inbounds function get_camera_sample(sampler::AbstractSampler, p_raster::Point2f, filter_params::GPUFilterParams)
+    u = get_2d(sampler)
+    fs = filter_sample(filter_params, u)
+    # fs.p is offset from pixel center, fs.weight is the filter weight
+    p_film = p_raster .+ Point2f(0.5f0) .+ fs.p
+    time = get_1d(sampler)
+    p_lens = get_2d(sampler)
+    CameraSample(p_film, p_lens, time, fs.weight)
 end
 
 @propagate_inbounds round_count(sampler::AbstractSampler, n::Integer) = n
@@ -153,7 +165,17 @@ end
     p_film = p_raster .+ rand(Point2f)
     p_lens = rand(Point2f)
     time = rand(Float32)
-    CameraSample(p_film, p_lens, time)
+    CameraSample(p_film, p_lens, time, 1.0f0)
+end
+
+# Filter-aware camera sample generation for UniformSampler
+@propagate_inbounds function get_camera_sample(::UniformSampler, p_raster::Point2f, filter_params::GPUFilterParams)
+    u = rand(Point2f)
+    fs = filter_sample(filter_params, u)
+    p_film = p_raster .+ Point2f(0.5f0) .+ fs.p
+    p_lens = rand(Point2f)
+    time = rand(Float32)
+    CameraSample(p_film, p_lens, time, fs.weight)
 end
 
 @propagate_inbounds function has_next_sample(u::UniformSampler)::Bool

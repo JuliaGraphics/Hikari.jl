@@ -21,7 +21,17 @@ struct CameraSample
     shutter_open & shutter_close time range.
     """
     time::Float32
+    """
+    Filter weight for this sample. Used when accumulating samples into pixels.
+    Computed from filter importance sampling - samples at the center of the
+    filter have higher weight than those at the edges.
+    """
+    filter_weight::Float32
 end
+
+# Convenience constructor for backwards compatibility (weight defaults to 1.0)
+CameraSample(film::Point2f, lens::Point2f, time::Float32) =
+    CameraSample(film, lens, time, 1.0f0)
 
 """
 Compute the ray corresponding to a given sample.

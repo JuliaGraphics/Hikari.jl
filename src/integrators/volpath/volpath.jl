@@ -34,6 +34,7 @@ mutable struct VolPath <: Integrator
     material_coherence::Symbol  # Material evaluation mode: :none, :sorted, :per_type
     max_component_value::Float32  # Firefly suppression: clamp RGB components (pbrt-v4 style)
     filter_params::GPUFilterParams  # Filter for pixel reconstruction (pbrt-v4 style)
+    filter_sampler_data::Union{Nothing, GPUFilterSamplerData}  # Tabulated data for importance sampling
 
     # Cached render state
     state::Union{Nothing, VolPathState}
@@ -41,7 +42,7 @@ end
 
 """
     VolPath(; max_depth=8, samples=64, russian_roulette_depth=3, regularize=true,
-            material_coherence=:none, max_component_value=Inf32, filter=BoxFilter())
+            material_coherence=:none, max_component_value=10, filter=GaussianFilter())
 
 Create a VolPath integrator for volumetric path tracing.
 
@@ -56,12 +57,12 @@ Create a VolPath integrator for volumetric path tracing.
   - `:none`: Standard evaluation (baseline)
   - `:sorted`: Sort work items by material type before evaluation
   - `:per_type`: Launch separate kernels per material type (pbrt-v4 style)
-- `max_component_value`: Maximum RGB component value before clamping (default: Inf32).
+- `max_component_value`: Maximum RGB component value before clamping (default: 10).
   When set to a finite value, RGB values are scaled down if any component exceeds this.
   This is pbrt-v4's firefly suppression mechanism. Try values like 10.0 or 100.0.
-- `filter`: Pixel reconstruction filter (default: BoxFilter()).
+- `filter`: Pixel reconstruction filter (default: GaussianFilter with radius 1.5, sigma 0.5).
   Supports BoxFilter, TriangleFilter, GaussianFilter, MitchellFilter, LanczosSincFilter.
-  Filter determines how samples contribute to pixel values based on their position.
+  All filters use importance sampling with weight≈1 (pbrt-v4 compatible).
 
 Note: Sensor simulation (ISO, exposure_time, white_balance) is handled in postprocessing
 via `FilmSensor`, not in the integrator. This matches pbrt-v4's architecture where the
@@ -74,9 +75,11 @@ function VolPath(;
     regularize::Bool = true,
     material_coherence::Symbol = :none,
     max_component_value::Real = 10f0,
-    filter::AbstractFilter = BoxFilter()
+    filter::AbstractFilter = GaussianFilter()  # pbrt-v4 default: Gaussian(1.5, 0.5)
 )
     @assert material_coherence in (:none, :sorted, :per_type) "material_coherence must be :none, :sorted, :per_type"
+    # Build filter sampler data for importance sampling (nothing for Box/Triangle)
+    sampler_data = GPUFilterSamplerData(filter)
     return VolPath(
         Int32(max_depth),
         Int32(samples),
@@ -85,6 +88,7 @@ function VolPath(;
         material_coherence,
         Float32(max_component_value),
         GPUFilterParams(filter),
+        sampler_data,
         nothing
     )
 end
@@ -121,6 +125,7 @@ Following pbrt-v4's GetCameraSample: samples the filter, computes offset and wei
     @Const(sample_idx::Int32),
     @Const(initial_medium_idx),
     @Const(filter_params::GPUFilterParams),
+    filter_sampler_data,  # GPUFilterSamplerData or nothing for Box/Triangle
     rng  # SobolRNG passed via Adapt
 )
     idx = @index(Global)
@@ -139,10 +144,10 @@ Following pbrt-v4's GetCameraSample: samples the filter, computes offset and wei
         # Sample the filter to get offset and weight (pbrt-v4 style)
         # The filter sample uses the pixel jitter values as the 2D random input
         filter_u = Point2f(pixel_sample.jitter_x, pixel_sample.jitter_y)
-        filter_sample = gpu_filter_sample(filter_params, filter_u)
+        fs = filter_sample(filter_params, filter_sampler_data, filter_u)
 
         # Store filter weight for this sample (used in accumulation)
-        filter_weight_per_pixel[idx] = filter_sample.weight
+        filter_weight_per_pixel[idx] = fs.weight
 
         # Sample wavelengths for this pixel
         lambda = sample_wavelengths_visible(wavelength_u)
@@ -161,8 +166,8 @@ Following pbrt-v4's GetCameraSample: samples the filter, computes offset and wei
         # Film position with filter offset (flip Y for camera convention)
         # pbrt-v4: cs.pFilm = pPixel + fs.p + Vector2f(0.5f, 0.5f)
         p_film = Point2f(
-            Float32(x) + filter_sample.p[1],
-            Float32(height) - Float32(y) + 1f0 + filter_sample.p[2]
+            Float32(x) + 0.5f0 + fs.p[1],
+            Float32(height) - Float32(y) + 1f0 + 0.5f0 + fs.p[2]
         )
 
         camera_sample = CameraSample(p_film, Point2f(0.5f0, 0.5f0), 0f0)
@@ -515,12 +520,20 @@ function render!(
     empty!(current_ray_queue(state))
 
     # Generate camera rays with filter sampling (pbrt-v4 style) and ZSobol sampler
+    # Adapt filter sampler data to GPU if needed
+    filter_sampler_data_gpu = if vp.filter_sampler_data !== nothing
+        adapt_filter_sampler_data(backend, vp.filter_sampler_data)
+    else
+        nothing
+    end
+
     kernel! = vp_generate_camera_rays_kernel!(backend)
     kernel!(
         current_ray_queue(state),  # WorkQueue passed via Adapt
         wavelengths_per_pixel, pdf_per_pixel, filter_weight_per_pixel,
         Int32(height),
         camera, sample_idx, initial_medium, vp.filter_params,
+        filter_sampler_data_gpu,
         sobol_rng;
         ndrange=Int(n_pixels)
     )

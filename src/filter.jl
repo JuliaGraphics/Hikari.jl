@@ -556,18 +556,19 @@ end
 end
 
 # ============================================================================
-# GPU-Compatible Filter Sampling
+# GPU-Compatible Filter Sampling with Importance Sampling (pbrt-v4 style)
 # ============================================================================
 
-# For GPU kernels, we need a simpler approach that doesn't require
-# the full PiecewiseConstant2D machinery. We'll use the direct filter
-# evaluation with uniform sampling and weight = filter(p).
+# For GPU kernels, we use tabulated importance sampling for Gaussian/Mitchell/Lanczos
+# filters, matching pbrt-v4's FilterSampler approach. Box and Triangle use analytical
+# sampling with weight=1.
 
 """
     GPUFilterParams
 
 GPU-compatible filter parameters for kernel use.
-Stores just the essential data needed for filter sampling in kernels.
+For filters requiring tabulated importance sampling (Gaussian, Mitchell, Lanczos),
+the table data must be passed separately to the kernel.
 """
 struct GPUFilterParams
     filter_type::Int32  # 1=Box, 2=Triangle, 3=Gaussian, 4=Mitchell, 5=Lanczos
@@ -599,10 +600,277 @@ function GPUFilterParams(f::LanczosSincFilter)
 end
 
 """
-Sample filter in GPU kernel - uses analytical sampling where possible,
-otherwise falls back to uniform sampling with weight = filter(p).
+    GPUFilterSamplerData
+
+GPU-compatible tabulated data for importance sampling filters.
+Stores the distribution data needed for sampling Gaussian/Mitchell/Lanczos filters.
+
+This matches pbrt-v4's FilterSampler which uses PiecewiseConstant2D.
 """
-@inline function gpu_filter_sample(params::GPUFilterParams, u::Point2f)::FilterSample
+struct GPUFilterSamplerData{V<:AbstractVector{Float32}, M<:AbstractMatrix{Float32}}
+    # Tabulated filter values (ny × nx) - for computing weight = f[pi] / pdf
+    func::M
+
+    # Marginal distribution (for y sampling)
+    # marginal_cdf[i] = CDF value at cell boundary i (size ny+1, starts with 0)
+    marginal_cdf::V
+    marginal_func::V  # Row integrals (size ny)
+
+    # Conditional distributions (for x|y sampling)
+    # conditional_cdf[y, x] = CDF value at cell boundary x for row y (size ny × (nx+1))
+    conditional_cdf::M
+
+    # Domain and grid info
+    domain_min::Point2f
+    domain_max::Point2f
+    nx::Int32
+    ny::Int32
+
+    # Total integral (for PDF computation)
+    func_integral::Float32
+end
+
+"""
+Build GPU-compatible filter sampler data from a filter.
+Returns nothing for Box/Triangle filters (they use analytical sampling).
+"""
+function GPUFilterSamplerData(filter::AbstractFilter)
+    # Box and Triangle use analytical sampling
+    if filter isa BoxFilter || filter isa TriangleFilter
+        return nothing
+    end
+
+    r = filter_radius(filter)
+    # Use 32 samples per unit radius (matching pbrt-v4)
+    nx = max(Int32(ceil(32 * r[1])), Int32(8))
+    ny = max(Int32(ceil(32 * r[2])), Int32(8))
+
+    domain_min = Point2f(-r[1], -r[2])
+    domain_max = Point2f(r[1], r[2])
+    dx = (domain_max[1] - domain_min[1]) / Float32(nx)
+    dy = (domain_max[2] - domain_min[2]) / Float32(ny)
+
+    # Tabulate filter function
+    func = Matrix{Float32}(undef, ny, nx)
+    for iy in 1:ny
+        for ix in 1:nx
+            # Center of cell (ix, iy)
+            px = domain_min[1] + (Float32(ix) - 0.5f0) * dx
+            py = domain_min[2] + (Float32(iy) - 0.5f0) * dy
+            func[iy, ix] = max(0f0, filter_evaluate(filter, Point2f(px, py)))
+        end
+    end
+
+    # Build marginal distribution (row integrals)
+    marginal_func = zeros(Float32, ny)
+    for iy in 1:ny
+        for ix in 1:nx
+            marginal_func[iy] += func[iy, ix]
+        end
+    end
+
+    # Build marginal CDF (size ny+1, starts with 0, ends with 1)
+    marginal_cdf = zeros(Float32, ny + 1)
+    marginal_cdf[1] = 0f0
+    for iy in 1:ny
+        marginal_cdf[iy + 1] = marginal_cdf[iy] + marginal_func[iy]
+    end
+    func_integral = marginal_cdf[end]
+    if func_integral > 0f0
+        marginal_cdf ./= func_integral
+    else
+        # Uniform fallback
+        for iy in 1:ny+1
+            marginal_cdf[iy] = Float32(iy - 1) / Float32(ny)
+        end
+    end
+
+    # Build conditional CDFs (size ny × (nx+1))
+    conditional_cdf = zeros(Float32, ny, nx + 1)
+    for iy in 1:ny
+        conditional_cdf[iy, 1] = 0f0
+        for ix in 1:nx
+            conditional_cdf[iy, ix + 1] = conditional_cdf[iy, ix] + func[iy, ix]
+        end
+        # Normalize
+        row_sum = conditional_cdf[iy, nx + 1]
+        if row_sum > 0f0
+            for ix in 1:nx+1
+                conditional_cdf[iy, ix] /= row_sum
+            end
+        else
+            # Uniform fallback
+            for ix in 1:nx+1
+                conditional_cdf[iy, ix] = Float32(ix - 1) / Float32(nx)
+            end
+        end
+    end
+
+    GPUFilterSamplerData(
+        func,
+        marginal_cdf,
+        marginal_func,
+        conditional_cdf,
+        domain_min,
+        domain_max,
+        nx,
+        ny,
+        func_integral
+    )
+end
+
+"""
+Binary search in CDF to find interval containing u.
+Returns index o such that cdf[o] <= u < cdf[o+1] (1-based indexing).
+CDF has size n+1 with cdf[1]=0 and cdf[n+1]=1.
+"""
+@inline function find_interval(cdf::AbstractVector{Float32}, u::Float32, n::Int32)::Int32
+    # Binary search for interval containing u
+    lo = Int32(1)
+    hi = n + Int32(1)
+
+    while lo < hi - Int32(1)
+        mid = (lo + hi) >> Int32(1)
+        if cdf[mid] <= u
+            lo = mid
+        else
+            hi = mid
+        end
+    end
+    lo
+end
+
+"""
+Sample 1D piecewise constant distribution (pbrt-v4 compatible).
+Returns (continuous_position, pdf, cell_index).
+"""
+@inline function sample_piecewise_1d(
+    cdf::AbstractVector{Float32},
+    func::AbstractVector{Float32},
+    func_integral::Float32,
+    u::Float32,
+    n::Int32,
+    domain_min::Float32,
+    domain_max::Float32
+)
+    # Find interval containing u
+    o = find_interval(cdf, u, n)
+    o = clamp(o, Int32(1), n)
+
+    # Compute offset within interval
+    du = u - cdf[o]
+    diff = cdf[o + 1] - cdf[o]
+    if diff > 0f0
+        du /= diff
+    else
+        du = 0f0
+    end
+
+    # Compute PDF: pdf = func[o] / func_integral
+    pdf = func_integral > 0f0 ? func[o] / func_integral : 0f0
+
+    # Compute continuous position: lerp((o-1 + du) / n, min, max)
+    # Note: o is 1-based, so use (o-1 + du) / n to get [0, 1] range
+    t = (Float32(o - 1) + du) / Float32(n)
+    pos = lerp(domain_min, domain_max, t)
+
+    pos, pdf, o
+end
+
+"""
+Sample 1D from conditional distribution (row of 2D distribution).
+"""
+@inline function sample_conditional_1d(
+    conditional_cdf::AbstractMatrix{Float32},
+    func::AbstractMatrix{Float32},
+    row_integral::Float32,
+    row::Int32,
+    u::Float32,
+    nx::Int32,
+    domain_min::Float32,
+    domain_max::Float32
+)
+    # Find interval in this row's CDF
+    lo = Int32(1)
+    hi = nx + Int32(1)
+
+    while lo < hi - Int32(1)
+        mid = (lo + hi) >> Int32(1)
+        if conditional_cdf[row, mid] <= u
+            lo = mid
+        else
+            hi = mid
+        end
+    end
+    o = clamp(lo, Int32(1), nx)
+
+    # Compute offset within interval
+    du = u - conditional_cdf[row, o]
+    diff = conditional_cdf[row, o + 1] - conditional_cdf[row, o]
+    if diff > 0f0
+        du /= diff
+    else
+        du = 0f0
+    end
+
+    # Compute PDF: pdf = func[row, o] / row_integral
+    pdf = row_integral > 0f0 ? func[row, o] / row_integral : 0f0
+
+    # Compute continuous position
+    t = (Float32(o - 1) + du) / Float32(nx)
+    pos = lerp(domain_min, domain_max, t)
+
+    pos, pdf, o
+end
+
+"""
+Sample filter using tabulated importance sampling (pbrt-v4 compatible).
+This is used for Gaussian, Mitchell, and Lanczos filters.
+Returns FilterSample with position and weight = f[sampled_point] / pdf.
+"""
+@inline function filter_sample_tabulated(
+    data::GPUFilterSamplerData,
+    u::Point2f
+)::FilterSample
+    # Sample y from marginal distribution
+    py, pdf_y, iy = sample_piecewise_1d(
+        data.marginal_cdf,
+        data.marginal_func,
+        data.func_integral,
+        u[2],
+        data.ny,
+        data.domain_min[2],
+        data.domain_max[2]
+    )
+
+    # Sample x from conditional distribution given y
+    row_integral = data.marginal_func[iy]
+    px, pdf_x, ix = sample_conditional_1d(
+        data.conditional_cdf,
+        data.func,
+        row_integral,
+        iy,
+        u[1],
+        data.nx,
+        data.domain_min[1],
+        data.domain_max[1]
+    )
+
+    # Combined PDF
+    pdf = pdf_x * pdf_y
+
+    # Weight = f[ix, iy] / pdf (pbrt-v4 style)
+    f_val = data.func[iy, ix]
+    weight = pdf > 0f0 ? f_val / pdf : 0f0
+
+    FilterSample(Point2f(px, py), weight)
+end
+
+"""
+Sample filter - uses analytical sampling where possible,
+tabulated importance sampling for Gaussian/Mitchell/Lanczos.
+"""
+@inline function filter_sample(params::GPUFilterParams, u::Point2f)::FilterSample
     filter_type = params.filter_type
 
     if filter_type == Int32(1)
@@ -622,29 +890,69 @@ otherwise falls back to uniform sampling with weight = filter(p).
         return FilterSample(p, 1f0)
 
     else
-        # Gaussian, Mitchell, Lanczos - uniform sampling with filter weight
-        # For these filters, we sample uniformly and return weight = filter(p) * area
-        # This is less efficient than importance sampling but simpler for GPU
+        # Gaussian, Mitchell, Lanczos - need tabulated sampling
+        # This path should not be called directly; use filter_sample_tabulated instead
+        # Fallback to uniform sampling (high variance) if no sampler data available
         p = Point2f(
             lerp(-params.radius[1], params.radius[1], u[1]),
             lerp(-params.radius[2], params.radius[2], u[2])
         )
-
-        # Evaluate filter at this point
-        weight = gpu_filter_evaluate(params, p)
-
-        # Scale by area to get proper weight (uniform PDF = 1/area)
+        weight = filter_evaluate(params, p)
         area = 4f0 * params.radius[1] * params.radius[2]
-        weight *= area
-
-        return FilterSample(p, weight)
+        return FilterSample(p, weight * area)
     end
 end
 
 """
-Evaluate filter at point p in GPU kernel.
+Sample filter with tabulated data for importance sampling.
+Overload for when sampler_data is nothing (Box/Triangle filters).
 """
-@inline function gpu_filter_evaluate(params::GPUFilterParams, p::Point2f)::Float32
+@inline function filter_sample(
+    params::GPUFilterParams,
+    sampler_data::Nothing,
+    u::Point2f
+)::FilterSample
+    # Box and Triangle filters use analytical sampling
+    filter_sample(params, u)
+end
+
+"""
+Sample filter with tabulated data for importance sampling.
+Overload for when sampler_data is GPUFilterSamplerData (Gaussian/Mitchell/Lanczos).
+"""
+@inline function filter_sample(
+    params::GPUFilterParams,
+    sampler_data::GPUFilterSamplerData,
+    u::Point2f
+)::FilterSample
+    filter_type = params.filter_type
+
+    if filter_type == Int32(1)
+        # Box filter - uniform sampling, weight = 1
+        p = Point2f(
+            lerp(-params.radius[1], params.radius[1], u[1]),
+            lerp(-params.radius[2], params.radius[2], u[2])
+        )
+        return FilterSample(p, 1f0)
+
+    elseif filter_type == Int32(2)
+        # Triangle filter - analytical sampling, weight = 1
+        p = Point2f(
+            sample_tent(u[1], params.radius[1]),
+            sample_tent(u[2], params.radius[2])
+        )
+        return FilterSample(p, 1f0)
+
+    else
+        # Gaussian, Mitchell, Lanczos - use tabulated importance sampling
+        return filter_sample_tabulated(sampler_data, u)
+    end
+end
+
+"""
+Evaluate filter at point p.
+"""
+@inline function filter_evaluate(params::GPUFilterParams, p::Point2f)::Float32
     filter_type = params.filter_type
 
     if filter_type == Int32(1)
@@ -723,4 +1031,62 @@ function Filter(type::Symbol; kwargs...)
     else
         error("Unknown filter type: $type. Use :box, :triangle, :gaussian, :mitchell, or :lanczos")
     end
+end
+
+# ============================================================================
+# GPU Adaptation for Filter Sampler Data
+# ============================================================================
+
+"""
+    adapt_filter_sampler_data(backend, data::GPUFilterSamplerData)
+
+Adapt filter sampler data arrays to the target GPU backend.
+This converts CPU arrays to GPU arrays for use in kernels.
+"""
+function adapt_filter_sampler_data(backend, data::GPUFilterSamplerData)
+    # Check if already on the correct backend
+    if KernelAbstractions.get_backend(data.func) == backend
+        return data
+    end
+
+    # Adapt arrays to GPU
+    GPUFilterSamplerData(
+        KernelAbstractions.adapt(backend, data.func),
+        KernelAbstractions.adapt(backend, data.marginal_cdf),
+        KernelAbstractions.adapt(backend, data.marginal_func),
+        KernelAbstractions.adapt(backend, data.conditional_cdf),
+        data.domain_min,
+        data.domain_max,
+        data.nx,
+        data.ny,
+        data.func_integral
+    )
+end
+
+# No-op for nothing (Box/Triangle filters)
+adapt_filter_sampler_data(_, ::Nothing) = nothing
+
+# ============================================================================
+# Adapt.jl Integration for GPU Kernels
+# ============================================================================
+
+"""
+    Adapt.adapt_structure(to, data::GPUFilterSamplerData)
+
+Adapt GPUFilterSamplerData for use inside GPU kernels. This converts the
+GPU arrays (e.g., ROCArray) to device-compatible representations
+(e.g., ROCDeviceArray) that can be used inside kernels.
+"""
+function Adapt.adapt_structure(to, data::GPUFilterSamplerData)
+    GPUFilterSamplerData(
+        Adapt.adapt(to, data.func),
+        Adapt.adapt(to, data.marginal_cdf),
+        Adapt.adapt(to, data.marginal_func),
+        Adapt.adapt(to, data.conditional_cdf),
+        data.domain_min,
+        data.domain_max,
+        data.nx,
+        data.ny,
+        data.func_integral
+    )
 end

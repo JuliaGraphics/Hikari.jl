@@ -13,6 +13,7 @@ using Atomix
 using KernelAbstractions
 using Raycore
 using Zlib_jll
+using Adapt
 
 # Re-export Raycore types and functions that Trace uses
 import Raycore: AbstractRay, Ray, RayDifferentials, apply, check_direction, scale_differentials
