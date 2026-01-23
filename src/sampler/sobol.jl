@@ -5,6 +5,32 @@ const ONE_MINUS_EPSILON = Float32(1.0) - eps(Float32)
 const FLOAT32_SCALE = Float32(2.3283064365386963e-10)  # 1/2^32 = 0x1p-32
 
 # =============================================================================
+# Hash functions for ZSobol scrambling (matching pbrt-v4/src/pbrt/util/hash.h)
+# =============================================================================
+
+"""
+    zsobol_hash(dimension::Int32, seed::UInt32) -> UInt64
+
+Hash function for ZSobol scrambling, matching pbrt-v4's Hash(dimension, seed).
+Uses MurmurHash64A on the byte representation of (dimension, seed).
+"""
+@inline function zsobol_hash(dimension::Int32, seed::UInt32)::UInt64
+    # Convert to bytes (little-endian)
+    dim_bits = Core.bitcast(UInt32, dimension)
+    bytes = (
+        UInt8(dim_bits & 0xff),
+        UInt8((dim_bits >> 8) & 0xff),
+        UInt8((dim_bits >> 16) & 0xff),
+        UInt8((dim_bits >> 24) & 0xff),
+        UInt8(seed & 0xff),
+        UInt8((seed >> 8) & 0xff),
+        UInt8((seed >> 16) & 0xff),
+        UInt8((seed >> 24) & 0xff)
+    )
+    murmur_hash_64a(bytes, UInt64(0))
+end
+
+# =============================================================================
 # Bit manipulation functions (matching pbrt-v4/src/pbrt/util/math.h)
 # =============================================================================
 
@@ -253,8 +279,11 @@ Generate a 1D Sobol sample for the given pixel and sample index.
     # Convert pixel coords to UInt32 (px, py are always non-negative)
     morton_index = (encode_morton2(u_uint32(px), u_uint32(py)) << log2_spp) | u_uint64(sample_idx)
     sobol_index = zsobol_get_sample_index(morton_index, dim, log2_spp, n_base4_digits)
-    # Truncate 64-bit hash to 32-bit for scrambling
-    sample_hash = u_uint32(mix_bits(u_uint64(dim) ⊻ u_uint64(seed)))
+    # pbrt-v4 compatibility: Hash uses dimension AFTER increment (dim + 1 for 1D samples)
+    # See pbrt-v4/src/pbrt/samplers.h ZSobolSampler::Get1D() lines 258-262
+    # Uses MurmurHash64A on (dimension, seed) bytes, then truncates to 32-bit
+    hash_dim = dim + Int32(1)
+    sample_hash = u_uint32(zsobol_hash(hash_dim, seed))
     return sobol_sample(Int64(sobol_index), Int32(0), sample_hash, sobol_matrices)
 end
 
@@ -272,8 +301,11 @@ Uses two consecutive Sobol dimensions with independent scrambling seeds.
     morton_index = (encode_morton2(u_uint32(px), u_uint32(py)) << log2_spp) | u_uint64(sample_idx)
     sobol_index = zsobol_get_sample_index(morton_index, dim, log2_spp, n_base4_digits)
 
-    # Generate two independent scrambling seeds from dimension and seed
-    bits = mix_bits(u_uint64(dim) ⊻ u_uint64(seed))
+    # pbrt-v4 compatibility: Hash uses dimension AFTER increment (dim + 2 for 2D samples)
+    # See pbrt-v4/src/pbrt/samplers.h ZSobolSampler::Get2D() lines 274-279
+    # Uses MurmurHash64A on (dimension, seed) bytes, then splits into two 32-bit hashes
+    hash_dim = dim + Int32(2)
+    bits = zsobol_hash(hash_dim, seed)
     hash1 = u_uint32(bits)
     hash2 = u_uint32(bits >> 32)
 
@@ -401,17 +433,22 @@ end
 Compute all camera sample values for a pixel using SobolRNG.
 Returns a PixelSample struct with jitter, wavelength, lens, and time samples.
 
-# Dimension allocation (matching PBRT-v4):
-- 0-1: pixel jitter (2D)
-- 2: wavelength selection (1D)
-- 3-4: lens sampling for DoF (2D)
-- 5: time for motion blur (1D)
+# Dimension allocation (matching PBRT-v4 exactly):
+# See pbrt-v4/src/pbrt/wavefront/camera.cpp:51-60 and samplers.h:797-814
+# pbrt-v4's Get1D/Get2D increment dimension BEFORE computing hash:
+# - StartPixelSample(pPixel, sampleIndex, 0): dimension = 0
+# - Get1D() for wavelength: dimension++ → 1, hash uses 1
+# - GetPixel2D() which is Get2D(): dimension += 2 → 3, hash uses 3 (for jitter)
+# - Get1D() for time: dimension++ → 4, hash uses 4
+# - Get2D() for lens: dimension += 2 → 6, hash uses 6
+# So dimensions used are: 1 (wavelength), 3 (jitter), 4 (time), 6 (lens)
 """
 @inline function compute_pixel_sample(rng::SobolRNG, px::Int32, py::Int32, sample_idx::Int32)
-    jitter_x, jitter_y = sample_2d(rng, px, py, sample_idx, Int32(0))
-    wavelength_u = sample_1d(rng, px, py, sample_idx, Int32(2))
-    lens_u, lens_v = sample_2d(rng, px, py, sample_idx, Int32(3))
-    time = sample_1d(rng, px, py, sample_idx, Int32(5))
+    # Match pbrt-v4 dimension usage after Get1D/Get2D increments
+    wavelength_u = sample_1d(rng, px, py, sample_idx, Int32(1))       # dim 1
+    jitter_x, jitter_y = sample_2d(rng, px, py, sample_idx, Int32(3)) # dim 3
+    time = sample_1d(rng, px, py, sample_idx, Int32(4))               # dim 4
+    lens_u, lens_v = sample_2d(rng, px, py, sample_idx, Int32(6))     # dim 6
     return PixelSample(jitter_x, jitter_y, wavelength_u, lens_u, lens_v, time)
 end
 

@@ -444,11 +444,11 @@ Uses linear interpolation between tabulated values.
 
     # Find interval (5nm spacing starting at 300nm)
     t = (lambda - 300f0) / 5f0
-    idx = floor(Int32, t) + Int32(1)
+    idx = floor_int32(t) + Int32(1)
     idx = clamp(idx, Int32(1), Int32(106))
 
-    # Linear interpolation
-    frac = t - floor(t)
+    # Linear interpolation (use floor_int32 trick to avoid exception-throwing floor)
+    frac = t - Float32(floor_int32(t))
     @inbounds begin
         v0 = D65_ILLUMINANT_VALUES[idx]
         v1 = D65_ILLUMINANT_VALUES[idx + 1]

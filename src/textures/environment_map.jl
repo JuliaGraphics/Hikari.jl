@@ -313,9 +313,9 @@ Sample the environment map by direction vector.
     # Wrap x coordinates for seamless horizontal tiling
     x1 = x1 > w32 ? Int32(1) : x1
 
-    # Interpolation weights
-    fx = x - floor(x)
-    fy = y - floor(y)
+    # Interpolation weights (use floor_int32 for GPU compatibility)
+    fx = x - Float32(floor_int32(x))
+    fy = y - Float32(floor_int32(y))
 
     # Bilinear interpolation
     c00 = env.data[y0, x0]

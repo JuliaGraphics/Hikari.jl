@@ -191,6 +191,7 @@ Flip normal `n` so that it lies in the same hemisphere as `v`.
 @propagate_inbounds face_forward(n, v) = (n ⋅ v) < 0 ? -n : n
 
 include("spectrum.jl")
+include("random.jl")
 include("surface_interaction.jl")
 
 # Abstract scene type for dispatch - allows both mutable and immutable implementations

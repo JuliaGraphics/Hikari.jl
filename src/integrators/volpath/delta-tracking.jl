@@ -69,9 +69,10 @@ end
     lambda::Wavelengths
 )
     base = (pixel_index - Int32(1)) * Int32(4)
-    @inbounds for i in Int32(1):Int32(4)
+    ntuple(Val(4)) do i
         # Atomic add for thread safety
         Atomix.@atomic pixel_L[base + i] += L[i]
+        return
     end
 end
 
@@ -141,10 +142,11 @@ significantly reducing null scattering events in sparse heterogeneous media.
     media,
     medium_type_idx::Int32,
     max_depth::Int32,
-    max_queued::Int32
+    max_queued::Int32,
+    template_grid::MajorantGrid
 )
-    # Create iterator specific to this medium type
-    iter = create_majorant_iterator(table, medium, ray, t_max, λ)
+    # Create iterator using template grid for type consistency across all media
+    iter = create_majorant_iterator(table, medium, ray, t_max, λ, template_grid)
 
     # Call type-stable iteration (dispatches on iter type)
     return sample_T_maj_loop!(
@@ -183,6 +185,10 @@ end
     # Accumulated transmittance across segments (reset after each interaction)
     T_maj_accum = SpectralRadiance(1f0)
 
+    # Extract template grid from media tuple for type consistency
+    # This ensures all RayMajorantIterator instances have the same type parameter
+    template_grid = get_template_grid_from_tuple(media)
+
     # Use with_medium pattern to avoid Union types (GPU-safe)
     result = with_medium(
         _sample_with_iterator_helper,
@@ -191,7 +197,8 @@ end
         T_maj_accum, beta, r_u, r_l, rng_state,
         scatter_items, scatter_size,
         pixel_L,
-        work, media, medium_type_idx, max_depth, max_queued
+        work, media, medium_type_idx, max_depth, max_queued,
+        template_grid
     )
 
     # Unpack result
@@ -273,13 +280,14 @@ struct SampleTMajResult
 end
 
 """
-    sample_T_maj_loop!(iter::HomogeneousMajorantIterator, ...) -> SampleTMajResult
+    sample_T_maj_loop!(iter::RayMajorantIterator, ...) -> SampleTMajResult
 
-Delta tracking loop for homogeneous medium (single segment).
+Delta tracking loop using the unified RayMajorantIterator.
+Handles both homogeneous media (single segment) and heterogeneous media (DDA traversal).
 Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
 """
 @propagate_inbounds function sample_T_maj_loop!(
-    iter::HomogeneousMajorantIterator,
+    iter::RayMajorantIterator,
     T_maj_accum::SpectralRadiance,
     beta::SpectralRadiance,
     r_u::SpectralRadiance,
@@ -294,51 +302,14 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
     max_depth::Int32,
     max_queued::Int32
 )
-    # Get the single segment
-    seg, _, valid = homogeneous_next(iter)
-    if !valid
-        return SampleTMajResult(beta, r_u, r_l, rng_state, false)
-    end
-
-    # Sample within segment
-    return sample_segment!(
-        seg, T_maj_accum, beta, r_u, r_l, rng_state,
-        scatter_items, scatter_size,
-        pixel_L,
-        work, media, medium_type_idx, rgb2spec_table, max_depth, max_queued
-    )
-end
-
-"""
-    sample_T_maj_loop!(iter::DDAMajorantIterator, ...) -> SampleTMajResult
-
-Delta tracking loop for heterogeneous medium using DDA majorant iterator.
-Iterates over voxel segments with per-voxel majorant bounds.
-Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
-"""
-@propagate_inbounds function sample_T_maj_loop!(
-    iter::DDAMajorantIterator,
-    T_maj_accum::SpectralRadiance,
-    beta::SpectralRadiance,
-    r_u::SpectralRadiance,
-    r_l::SpectralRadiance,
-    rng_state::UInt64,
-    scatter_items, scatter_size,
-    pixel_L,
-    work::VPMediumSampleWorkItem,
-    media,
-    medium_type_idx::Int32,
-    rgb2spec_table,
-    max_depth::Int32,
-    max_queued::Int32
-)
-    # Iterate over DDA segments (bounded for GPU)
-    max_segments = Int32(256)  # Reasonable upper bound for majorant grid traversal
+    # Iterate over majorant segments (bounded for GPU)
+    # For homogeneous media this loops once, for DDA it traverses voxels
+    max_segments = Int32(256)
 
     current_iter = iter
     current_rng = rng_state
     for _ in Int32(1):max_segments
-        seg, new_iter, valid = dda_next(current_iter)
+        seg, new_iter, valid = ray_majorant_next(current_iter)
         if !valid
             # No more segments - ray survived
             break

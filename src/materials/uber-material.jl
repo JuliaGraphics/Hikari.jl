@@ -274,7 +274,7 @@ _to_texture(v::Tuple{Real,Real,Real}) = Texture(RGBSpectrum(Float32(v[1]), Float
 _to_texture(v::AbstractVector{<:Real}) = length(v) == 3 ? Texture(RGBSpectrum(Float32.(v)...)) : error("Expected 3-element color")
 # Support Colors.jl RGB types (RGB, RGBA, etc.)
 _to_texture(c::Colorant) = Texture(RGBSpectrum(Float32(red(c)), Float32(green(c)), Float32(blue(c))))
-
+_to_texture(c::AbstractMatrix{<: RGB}) = Texture(map(c-> RGBSpectrum(Float32(red(c)), Float32(green(c)), Float32(blue(c))), c))
 """
     MatteMaterial(; Kd=RGBSpectrum(0.5), σ=0.0)
 

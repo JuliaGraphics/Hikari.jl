@@ -206,6 +206,29 @@ function to_gpu(ArrayType, m::Hikari.GridMedium)
     )
 end
 
+# GPU conversion for RGBGridMedium - convert RGB grids and majorant grid to GPU
+function to_gpu(ArrayType, m::Hikari.RGBGridMedium)
+    # Convert optional grids to GPU (nothing stays nothing)
+    σ_a_grid_gpu = isnothing(m.σ_a_grid) ? nothing : Raycore.to_gpu(ArrayType, m.σ_a_grid)
+    σ_s_grid_gpu = isnothing(m.σ_s_grid) ? nothing : Raycore.to_gpu(ArrayType, m.σ_s_grid)
+    Le_grid_gpu = isnothing(m.Le_grid) ? nothing : Raycore.to_gpu(ArrayType, m.Le_grid)
+    majorant_voxels_gpu = Raycore.to_gpu(ArrayType, m.majorant_grid.voxels)
+    majorant_grid_gpu = Hikari.MajorantGrid(majorant_voxels_gpu, m.majorant_grid.res)
+    return Hikari.RGBGridMedium(
+        m.bounds,
+        m.render_to_medium,
+        m.medium_to_render,
+        σ_a_grid_gpu,
+        σ_s_grid_gpu,
+        m.sigma_scale,
+        Le_grid_gpu,
+        m.Le_scale,
+        m.grid_res,
+        m.g,
+        majorant_grid_gpu
+    )
+end
+
 # GPU conversion for NanoVDBMedium - convert buffer and majorant grid to GPU
 function to_gpu(ArrayType, m::Hikari.NanoVDBMedium)
     buffer_gpu = Raycore.to_gpu(ArrayType, m.buffer)

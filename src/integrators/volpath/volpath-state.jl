@@ -56,8 +56,10 @@ mutable struct VolPathState{Backend}
     pixel_L::AbstractVector{Float32}
 
     # Accumulators for progressive rendering (moved from main loop)
-    pixel_rgb::AbstractVector{Float32}  # n_pixels * 3 (RGB accumulator)
-    pixel_weight_sum::AbstractVector{Float32}  # n_pixels (filter weight accumulator)
+    # NOTE: Using Float64 to match pbrt-v4's double precision accumulators (film.h:304-305)
+    # This is critical for proper variance reduction at high sample counts
+    pixel_rgb::AbstractVector{Float64}  # n_pixels * 3 (RGB accumulator)
+    pixel_weight_sum::AbstractVector{Float64}  # n_pixels (filter weight accumulator)
     wavelengths_per_pixel::AbstractVector{Float32}  # n_pixels * 4 (wavelength samples)
     pdf_per_pixel::AbstractVector{Float32}  # n_pixels * 4 (wavelength PDFs)
     filter_weight_per_pixel::AbstractVector{Float32}  # n_pixels (filter weight per sample)
@@ -119,11 +121,11 @@ function VolPathState(
     pixel_L = KA.allocate(backend, Float32, n_pixels * 4)
     KA.fill!(pixel_L, 0f0)
 
-    # Accumulators for progressive rendering
-    pixel_rgb = KA.allocate(backend, Float32, n_pixels * 3)
-    KA.fill!(pixel_rgb, 0f0)
-    pixel_weight_sum = KA.allocate(backend, Float32, n_pixels)
-    KA.fill!(pixel_weight_sum, 0f0)
+    # Accumulators for progressive rendering (Float64 to match pbrt-v4)
+    pixel_rgb = KA.allocate(backend, Float64, n_pixels * 3)
+    KA.fill!(pixel_rgb, 0.0)
+    pixel_weight_sum = KA.allocate(backend, Float64, n_pixels)
+    KA.fill!(pixel_weight_sum, 0.0)
     wavelengths_per_pixel = KA.allocate(backend, Float32, n_pixels * 4)
     KA.fill!(wavelengths_per_pixel, 0f0)
     pdf_per_pixel = KA.allocate(backend, Float32, n_pixels * 4)

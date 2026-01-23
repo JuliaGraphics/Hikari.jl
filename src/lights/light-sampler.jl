@@ -122,7 +122,7 @@ Returns 1-based index and its PMF.
 
     # Scale u to [0, n) and extract integer and fractional parts
     scaled = u * Float32(n)
-    offset = min(floor(Int32, scaled), Int32(n - 1))
+    offset = min(floor_int32(scaled), Int32(n - 1))
     up = min(scaled - Float32(offset), 0.99999994f0)  # OneMinusEpsilon
 
     # 1-based index
@@ -189,7 +189,7 @@ Sample a light uniformly. Returns 1-based index and PMF.
     if n < Int32(1)
         return (Int32(0), 0f0)
     end
-    idx = min(floor(Int32, u * Float32(n)), n - Int32(1)) + Int32(1)
+    idx = min(floor_int32(u * Float32(n)), n - Int32(1)) + Int32(1)
     return (idx, 1f0 / Float32(n))
 end
 
@@ -412,7 +412,7 @@ GPU-compatible light sampling using pre-computed alias table arrays.
 
     # Scale u to [0, n) and extract integer and fractional parts
     scaled = u * Float32(n)
-    offset = min(floor(Int32, scaled), Int32(n - 1))
+    offset = min(floor_int32(scaled), Int32(n - 1))
     up = min(scaled - Float32(offset), 0.99999994f0)
 
     # 1-based index

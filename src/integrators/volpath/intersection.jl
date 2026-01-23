@@ -445,6 +445,10 @@ Returns (T_ray, r_u, r_l) where:
         return (SpectralRadiance(1f0), SpectralRadiance(1f0), SpectralRadiance(1f0))
     end
 
+    # Initialize PCG32 RNG seeded with ray origin and direction (matching pbrt-v4)
+    # See pbrt-v4/src/pbrt/wavefront/intersect.h: RNG rng(Hash(ray.o), Hash(ray.d))
+    rng = pcg32_init(pbrt_hash(origin), pbrt_hash(dir))
+
     # Ratio tracking state
     T_ray = SpectralRadiance(1f0)
     r_u = SpectralRadiance(1f0)
@@ -454,8 +458,8 @@ Returns (T_ray, r_u, r_l) where:
     # Step through medium using ratio tracking
     max_iterations = Int32(256)
     for _ in 1:max_iterations
-        # Sample exponential distance
-        u = rand(Float32)
+        # Sample exponential distance using PCG32
+        u, rng = pcg32_uniform_f32(rng)
         dt = -log(max(1f-10, 1f0 - u)) / σ_maj_0
         t_sample = t + dt
 
@@ -500,7 +504,8 @@ Returns (T_ray, r_u, r_l) where:
         Tr_estimate = T_ray / max(1f-10, average(r_l + r_u))
         if max_component(Tr_estimate) < 0.05f0
             q = 0.75f0
-            if rand(Float32) < q
+            rr_sample, rng = pcg32_uniform_f32(rng)
+            if rr_sample < q
                 T_ray = SpectralRadiance(0f0)
                 break
             else

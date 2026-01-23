@@ -34,6 +34,34 @@ function PointLight(position, i::S, scale::Float32=1f0) where S<:Spectrum
 end
 
 """
+    PointLight(i::RGBSpectrum, position)
+    PointLight(i::RGB{Float32}, position)
+
+Create a PointLight with automatic photometric normalization matching pbrt-v4.
+
+The intensity spectrum `i` is treated as an RGB illuminant (like pbrt's "rgb I" parameter).
+The scale is automatically computed as `1 / D65_PHOTOMETRIC` to normalize to photometric units.
+
+# Example
+```julia
+# Equivalent to pbrt-v4's: LightSource "point" "rgb I" [50 50 50]
+light = PointLight(RGBf(50, 50, 50), Vec3f(10, 10, 10))
+```
+"""
+function PointLight(i::RGBSpectrum, position)
+    # Apply photometric normalization matching pbrt-v4:
+    # scale = 1 / SpectrumToPhotometric(D65_illuminant)
+    # For RGBIlluminantSpectrum, PBRT extracts just the D65 illuminant for normalization
+    scale = 1f0 / D65_PHOTOMETRIC
+    PointLight(translate(Vec3f(position)), i, scale)
+end
+
+# Convenience constructor for Colors.jl RGB type
+function PointLight(i::RGB{Float32}, position)
+    PointLight(RGBSpectrum(i.r, i.g, i.b), position)
+end
+
+"""
 Compute radiance arriving at `ref.p` interaction point at `ref.time` time
 due to that light, assuming there are no occluding objects between them.
 

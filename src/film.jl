@@ -263,9 +263,9 @@ end
     tiles::AbstractMatrix{FilmTilePixel}, tile::Bounds2, tile_column::Int32,
     point::Point2f, spectrum::RGBSpectrum, filter_weight::Float32, sample_weight::Float32=1.0f0,
 )
-    # Get the pixel containing this sample point
-    pixel_x = u_int32(floor(point[1]))
-    pixel_y = u_int32(floor(point[2]))
+    # Get the pixel containing this sample point (use floor_int32 for GPU compatibility)
+    pixel_x = u_int32(floor_int32(point[1]))
+    pixel_y = u_int32(floor_int32(point[2]))
 
     # Check if pixel is within tile bounds
     pmin = u_int32.(tile.p_min)

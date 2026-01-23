@@ -661,7 +661,7 @@ function GPUFilterSamplerData(filter::AbstractFilter)
         end
     end
 
-    # Build marginal distribution (row integrals)
+    # Build marginal distribution (row sums, NOT including dx - that's handled in func_integral)
     marginal_func = zeros(Float32, ny)
     for iy in 1:ny
         for ix in 1:nx
@@ -675,9 +675,13 @@ function GPUFilterSamplerData(filter::AbstractFilter)
     for iy in 1:ny
         marginal_cdf[iy + 1] = marginal_cdf[iy] + marginal_func[iy]
     end
-    func_integral = marginal_cdf[end]
-    if func_integral > 0f0
-        marginal_cdf ./= func_integral
+    # func_integral = sum of all func values * cell_area (proper 2D integral)
+    # This is what pbrt computes: integral of filter over domain
+    func_integral = marginal_cdf[end] * dx * dy
+    # Normalize CDF by its endpoint so it goes 0 to 1
+    marginal_cdf_end = marginal_cdf[end]
+    if marginal_cdf_end > 0f0
+        marginal_cdf ./= marginal_cdf_end
     else
         # Uniform fallback
         for iy in 1:ny+1

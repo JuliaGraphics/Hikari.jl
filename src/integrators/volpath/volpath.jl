@@ -100,8 +100,8 @@ Clear the integrator's internal state (RGB and weight accumulators) for restarti
 """
 function Hikari.clear!(vp::VolPath)
     if vp.state !== nothing
-        KernelAbstractions.fill!(vp.state.pixel_rgb, 0f0)
-        KernelAbstractions.fill!(vp.state.pixel_weight_sum, 0f0)
+        KernelAbstractions.fill!(vp.state.pixel_rgb, 0.0)  # Float64
+        KernelAbstractions.fill!(vp.state.pixel_weight_sum, 0.0)  # Float64
     end
 end
 
@@ -244,16 +244,23 @@ This replaces rand() calls with correlated low-discrepancy samples.
 
         # Base dimension: 6 (camera) + 7 * depth
         # Camera uses dims 0-5: wavelength(1), film_x(1), film_y(1), lens_x(1), lens_y(1), filter(1)
+        # pbrt-v4's Get1D/Get2D increment dimension BEFORE computing hash, so:
+        # - Get1D for direct.uc: dim++ → 7, hash uses 7
+        # - Get2D for direct.u: dim+=2 → 9, hash uses 9
+        # - Get1D for indirect.uc: dim++ → 10, hash uses 10
+        # - Get2D for indirect.u: dim+=2 → 12, hash uses 12
+        # - Get1D for indirect.rr: dim++ → 13, hash uses 13
+        # So dimensions used are: 7, 9, 10, 12, 13 (for depth 0)
         base_dim = Int32(6) + Int32(7) * depth
         # Generate 7 samples for this bounce using SobolRNG
         # Direct lighting: light selection (1D) + light position (2D)
-        direct_uc = sample_1d(rng, px, py, sample_idx, base_dim)
-        direct_u = sample_2d(rng, px, py, sample_idx, base_dim + Int32(1))
+        direct_uc = sample_1d(rng, px, py, sample_idx, base_dim + Int32(1))    # dim 7
+        direct_u = sample_2d(rng, px, py, sample_idx, base_dim + Int32(3))     # dim 9
 
         # Indirect: BSDF component (1D) + direction (2D) + Russian roulette (1D)
-        indirect_uc = sample_1d(rng, px, py, sample_idx, base_dim + Int32(3))
-        indirect_u = sample_2d(rng, px, py, sample_idx, base_dim + Int32(4))
-        indirect_rr = sample_1d(rng, px, py, sample_idx, base_dim + Int32(6))
+        indirect_uc = sample_1d(rng, px, py, sample_idx, base_dim + Int32(4))  # dim 10
+        indirect_u = sample_2d(rng, px, py, sample_idx, base_dim + Int32(6))   # dim 12
+        indirect_rr = sample_1d(rng, px, py, sample_idx, base_dim + Int32(7))  # dim 13
 
         # Store in pixel samples buffer (SOA layout)
         pixel_samples_direct_uc[pixel_index] = direct_uc
@@ -418,11 +425,13 @@ Following pbrt-v4's RGBFilm::GetPixelRGB:
         weight_sum = pixel_weight_sum[pixel_idx]
 
         # Normalize by weight sum (pbrt-v4 style)
-        if weight_sum > 0f0
-            inv_weight = 1f0 / weight_sum
-            r = pixel_rgb[rgb_base + Int32(1)] * inv_weight
-            g = pixel_rgb[rgb_base + Int32(2)] * inv_weight
-            b = pixel_rgb[rgb_base + Int32(3)] * inv_weight
+        # Note: pixel_rgb and pixel_weight_sum are Float64 for accumulation precision,
+        # but we convert to Float32 for the final framebuffer output
+        if weight_sum > 0.0
+            inv_weight = 1.0 / weight_sum
+            r = Float32(pixel_rgb[rgb_base + Int32(1)] * inv_weight)
+            g = Float32(pixel_rgb[rgb_base + Int32(2)] * inv_weight)
+            b = Float32(pixel_rgb[rgb_base + Int32(3)] * inv_weight)
         else
             r = 0f0
             g = 0f0

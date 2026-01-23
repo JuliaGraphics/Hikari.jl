@@ -748,6 +748,15 @@ end
     murmur_hash_64a(bytes, UInt64(0))
 end
 
+@inline function pbrt_hash(p::Point3f)::UInt64
+    # Point3f is 12 bytes (3 x Float32)
+    x_bytes = float32_to_bytes(p[1])
+    y_bytes = float32_to_bytes(p[2])
+    z_bytes = float32_to_bytes(p[3])
+    bytes = (x_bytes..., y_bytes..., z_bytes...)
+    murmur_hash_64a(bytes, UInt64(0))
+end
+
 @inline function pbrt_hash(seed::UInt64, v::Vec3f)::UInt64
     # Hash(seed, wo) - combine seed with vector
     seed_bytes = uint64_to_bytes(seed)

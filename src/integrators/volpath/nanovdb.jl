@@ -421,10 +421,10 @@ Matches pbrt-v4's SampleFromVoxels<TreeT, 1, false> sampler.
     # Transform to index space
     p_idx = world_to_index_f(medium, p_world)
 
-    # Floor to get base voxel
-    ix = floor(Int32, p_idx[1])
-    iy = floor(Int32, p_idx[2])
-    iz = floor(Int32, p_idx[3])
+    # Floor to get base voxel (use floor_int32 for GPU compatibility)
+    ix = floor_int32(p_idx[1])
+    iy = floor_int32(p_idx[2])
+    iz = floor_int32(p_idx[3])
 
     # Fractional parts
     fx = p_idx[1] - Float32(ix)
@@ -507,10 +507,11 @@ For better performance, use create_majorant_iterator for DDA-based traversal.
 end
 
 """
-    create_majorant_iterator(table, medium::NanoVDBMedium, ray, t_max, λ) -> DDAMajorantIterator
+    create_majorant_iterator(table, medium::NanoVDBMedium, ray, t_max, λ) -> RayMajorantIterator
 
 Create a DDA majorant iterator for traversing the medium along a ray.
 Uses the precomputed majorant grid (same as GridMedium).
+Returns a RayMajorantIterator wrapping the DDA iterator.
 """
 @propagate_inbounds function create_majorant_iterator(
     table::RGBToSpectrumTable,
@@ -527,7 +528,7 @@ Uses the precomputed majorant grid (same as GridMedium).
     t_exit = min(t_exit, t_max)
 
     if t_enter >= t_exit
-        return DDAMajorantIterator(medium.majorant_grid)
+        return RayMajorantIterator(medium.majorant_grid)
     end
 
     # Compute base extinction coefficient
@@ -536,7 +537,7 @@ Uses the precomputed majorant grid (same as GridMedium).
     σ_t = σ_a + σ_s
 
     # Create DDA iterator (ray is already in world space, majorant grid is in world space)
-    return create_dda_iterator(
+    dda_iter = create_dda_iterator(
         medium.majorant_grid,
         medium.bounds,
         ray.o,
@@ -545,6 +546,19 @@ Uses the precomputed majorant grid (same as GridMedium).
         t_exit,
         σ_t
     )
+    return RayMajorantIterator(dda_iter)
+end
+
+# 6-argument version that forwards to 5-argument version (for uniform interface)
+@propagate_inbounds function create_majorant_iterator(
+    table::RGBToSpectrumTable,
+    medium::NanoVDBMedium,
+    ray::Raycore.Ray,
+    t_max::Float32,
+    λ::Wavelengths,
+    ::MajorantGrid
+)
+    return create_majorant_iterator(table, medium, ray, t_max, λ)
 end
 
 # ============================================================================
