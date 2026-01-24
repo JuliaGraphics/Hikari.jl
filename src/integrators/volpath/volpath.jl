@@ -344,12 +344,7 @@ values and the sensor conversion happens at output time.
     @inbounds if pixel_idx <= n_pixels
         base = (pixel_idx - Int32(1)) * Int32(4)
 
-        L = SpectralRadiance(
-            pixel_L[base + Int32(1)],
-            pixel_L[base + Int32(2)],
-            pixel_L[base + Int32(3)],
-            pixel_L[base + Int32(4)]
-        )
+        L = load(pixel_L, base + Int32(1), SpectralRadiance)
 
         lambda_tuple = (
             wavelengths_per_pixel[base + Int32(1)],

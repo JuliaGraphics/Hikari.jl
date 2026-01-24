@@ -99,6 +99,16 @@ end
     SampledSpectrum{N}(ntuple(i -> clamp(s.data[i], Float32(lo), Float32(hi)), Val(N)))
 end
 
+# Element-wise max with scalar
+@propagate_inbounds Base.max(x::Real, s::SampledSpectrum{N}) where {N} =
+    SampledSpectrum{N}(ntuple(i -> max(Float32(x), s.data[i]), Val(N)))
+@propagate_inbounds Base.max(s::SampledSpectrum{N}, x::Real) where {N} = max(x, s)
+
+# Element-wise min with scalar
+@propagate_inbounds Base.min(x::Real, s::SampledSpectrum{N}) where {N} =
+    SampledSpectrum{N}(ntuple(i -> min(Float32(x), s.data[i]), Val(N)))
+@propagate_inbounds Base.min(s::SampledSpectrum{N}, x::Real) where {N} = min(x, s)
+
 # ============================================================================
 # Sampled Wavelengths
 # ============================================================================
@@ -266,8 +276,11 @@ Check if wavelength i has non-zero PDF (should contribute).
     Atomix.@atomic pixel_L[base_idx+Int32(4)] += contrib[4]
 end
 
+_pointer(x, idx) = pointer(x, idx)
+_pointer(x::Base.Experimental.Const, idx) = pointer(x.a, idx)
+
 Base.@propagate_inbounds function load(array::AbstractArray{Float32}, index::Integer, ::Type{T}) where T
-    ptr = pointer(array, index)
+    ptr = _pointer(array, index)
     ptr32 = as_pointer(T, ptr)
     return Base.unsafe_load(ptr32)
 end

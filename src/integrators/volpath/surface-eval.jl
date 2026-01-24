@@ -51,10 +51,7 @@
             pixel_idx = work.pixel_index
             base_idx = (pixel_idx - Int32(1)) * Int32(4)
 
-            Atomix.@atomic pixel_L[base_idx + Int32(1)] += final_contrib[1]
-            Atomix.@atomic pixel_L[base_idx + Int32(2)] += final_contrib[2]
-            Atomix.@atomic pixel_L[base_idx + Int32(3)] += final_contrib[3]
-            Atomix.@atomic pixel_L[base_idx + Int32(4)] += final_contrib[4]
+            accumulate_spectrum!(pixel_L, base_idx, final_contrib)
         end
     end
 

@@ -279,16 +279,8 @@ Trace shadow rays and accumulate unoccluded contributions to pixel buffer.
                 # Apply MIS weight to Ld
                 if mis_weight_inv > 0f0
                     mis_weight = 1f0 / mis_weight_inv
-                    Ld1 = work.Ld.data[1] * mis_weight
-                    Ld2 = work.Ld.data[2] * mis_weight
-                    Ld3 = work.Ld.data[3] * mis_weight
-                    Ld4 = work.Ld.data[4] * mis_weight
-
-                    # Atomic add for each spectral channel
-                    Atomix.@atomic pixel_L[base_idx + Int32(1)] += Ld1
-                    Atomix.@atomic pixel_L[base_idx + Int32(2)] += Ld2
-                    Atomix.@atomic pixel_L[base_idx + Int32(3)] += Ld3
-                    Atomix.@atomic pixel_L[base_idx + Int32(4)] += Ld4
+                    Ld_weighted = work.Ld * mis_weight
+                    accumulate_spectrum!(pixel_L, base_idx, Ld_weighted)
                 end
             end
         end
@@ -369,10 +361,7 @@ Handle rays that escaped the scene by evaluating environment lights.
                 pixel_idx = work.pixel_index
                 base_idx = (pixel_idx - Int32(1)) * Int32(4)
 
-                Atomix.@atomic pixel_L[base_idx + Int32(1)] += final_contrib.data[1]
-                Atomix.@atomic pixel_L[base_idx + Int32(2)] += final_contrib.data[2]
-                Atomix.@atomic pixel_L[base_idx + Int32(3)] += final_contrib.data[3]
-                Atomix.@atomic pixel_L[base_idx + Int32(4)] += final_contrib.data[4]
+                accumulate_spectrum!(pixel_L, base_idx, final_contrib)
             end
         end
     end
@@ -424,10 +413,7 @@ Handle rays that hit emissive surfaces.
                 pixel_idx = work.pixel_index
                 base_idx = (pixel_idx - Int32(1)) * Int32(4)
 
-                Atomix.@atomic pixel_L[base_idx + Int32(1)] += final_contrib.data[1]
-                Atomix.@atomic pixel_L[base_idx + Int32(2)] += final_contrib.data[2]
-                Atomix.@atomic pixel_L[base_idx + Int32(3)] += final_contrib.data[3]
-                Atomix.@atomic pixel_L[base_idx + Int32(4)] += final_contrib.data[4]
+                accumulate_spectrum!(pixel_L, base_idx, final_contrib)
             end
         end
     end

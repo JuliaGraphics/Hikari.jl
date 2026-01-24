@@ -69,11 +69,7 @@ end
     lambda::Wavelengths
 )
     base = (pixel_index - Int32(1)) * Int32(4)
-    ntuple(Val(4)) do i
-        # Atomic add for thread safety
-        Atomix.@atomic pixel_L[base + i] += L[i]
-        return
-    end
+    accumulate_spectrum!(pixel_L, base, L)
 end
 
 # ============================================================================
