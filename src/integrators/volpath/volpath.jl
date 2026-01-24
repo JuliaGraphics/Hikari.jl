@@ -346,41 +346,20 @@ values and the sensor conversion happens at output time.
 
         L = load(pixel_L, base + Int32(1), SpectralRadiance)
 
-        lambda_tuple = (
-            wavelengths_per_pixel[base + Int32(1)],
-            wavelengths_per_pixel[base + Int32(2)],
-            wavelengths_per_pixel[base + Int32(3)],
-            wavelengths_per_pixel[base + Int32(4)]
-        )
-
-        pdf_tuple = (
-            pdf_per_pixel[base + Int32(1)],
-            pdf_per_pixel[base + Int32(2)],
-            pdf_per_pixel[base + Int32(3)],
-            pdf_per_pixel[base + Int32(4)]
-        )
+        lambda_tuple = load(wavelengths_per_pixel, base + Int32(1), NTuple{4, Float32})
+        pdf_tuple = load(pdf_per_pixel, base + Int32(1), NTuple{4, Float32})
 
         lambda = Wavelengths(lambda_tuple, pdf_tuple)
 
-        # Convert spectral to XYZ
-        X, Y, Z = spectral_to_xyz(cie_table, L, lambda)
-
-        # Convert XYZ to linear sRGB (no sensor white balance - that's in postprocessing)
-        R, G, B = xyz_to_linear_srgb(X, Y, Z)
-
-        # Clamp negative values
-        R = max(0f0, R)
-        G = max(0f0, G)
-        B = max(0f0, B)
+        # Convert spectral to XYZ then to linear sRGB
+        xyz = spectral_to_xyz(cie_table, L, lambda)
+        rgb = max.(0f0, xyz_to_linear_srgb(xyz))
 
         # Apply maxComponentValue clamping (pbrt-v4 firefly suppression)
         # This preserves color hue while preventing extremely bright values
-        m = max(R, max(G, B))
+        m = maximum(rgb)
         if m > max_component_value
-            scale = max_component_value / m
-            R *= scale
-            G *= scale
-            B *= scale
+            rgb = rgb * (max_component_value / m)
         end
 
         # Get filter weight for this sample (pbrt-v4 style weighted accumulation)
@@ -388,9 +367,9 @@ values and the sensor conversion happens at output time.
 
         # Accumulate weighted RGB (pbrt-v4: pixel.rgbSum[c] += weight * rgb[c])
         rgb_base = (pixel_idx - Int32(1)) * Int32(3)
-        Atomix.@atomic pixel_rgb[rgb_base + Int32(1)] += weight * R
-        Atomix.@atomic pixel_rgb[rgb_base + Int32(2)] += weight * G
-        Atomix.@atomic pixel_rgb[rgb_base + Int32(3)] += weight * B
+        Atomix.@atomic pixel_rgb[rgb_base + Int32(1)] += weight * rgb[1]
+        Atomix.@atomic pixel_rgb[rgb_base + Int32(2)] += weight * rgb[2]
+        Atomix.@atomic pixel_rgb[rgb_base + Int32(3)] += weight * rgb[3]
 
         # Accumulate weight (pbrt-v4: pixel.weightSum += weight)
         Atomix.@atomic pixel_weight_sum[pixel_idx] += weight

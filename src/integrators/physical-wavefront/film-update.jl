@@ -46,44 +46,22 @@ Arguments:
     idx = @index(Global)
 
     if idx <= num_pixels
-        # Extract spectral radiance for this pixel
-        base = (idx - Int32(1)) * Int32(4)
-        L = SpectralRadiance((
-            pixel_L[base + Int32(1)],
-            pixel_L[base + Int32(2)],
-            pixel_L[base + Int32(3)],
-            pixel_L[base + Int32(4)]
-        ))
+        base = (idx - Int32(1)) * Int32(4) + Int32(1)
+        L = load(pixel_L, base, SpectralRadiance)
+        lambda_tuple = load(wavelengths_per_pixel, base, NTuple{4, Float32})
+        pdf_tuple = load(pdf_per_pixel, base, NTuple{4, Float32})
+        lambda = Wavelengths(lambda_tuple, pdf_tuple)
 
-        # Reconstruct THIS PIXEL's wavelengths
-        lambda = Wavelengths((
-            wavelengths_per_pixel[base + Int32(1)],
-            wavelengths_per_pixel[base + Int32(2)],
-            wavelengths_per_pixel[base + Int32(3)],
-            wavelengths_per_pixel[base + Int32(4)]
-        ), (
-            pdf_per_pixel[base + Int32(1)],
-            pdf_per_pixel[base + Int32(2)],
-            pdf_per_pixel[base + Int32(3)],
-            pdf_per_pixel[base + Int32(4)]
-        ))
-
-        # Reconstruct CIE table from array components
         cie_table = CIEXYZTable(cie_x, cie_y, cie_z)
-
-        # Convert spectral to RGB using THIS PIXEL's wavelengths
-        R, G, B = spectral_to_linear_rgb(cie_table, L, lambda)
+        rgb = spectral_to_linear_rgb(cie_table, L, lambda)
 
         # Clamp negative values and NaN/Inf
-        R = ifelse(isfinite(R), max(0.0f0, R), 0.0f0)
-        G = ifelse(isfinite(G), max(0.0f0, G), 0.0f0)
-        B = ifelse(isfinite(B), max(0.0f0, B), 0.0f0)
-
+        rgb = map(c-> ifelse(isfinite(c), c, 0f0), rgb)
         # Accumulate into RGB buffer (atomic add for thread safety)
         base_rgb = (idx - Int32(1)) * Int32(3)
-        pixel_rgb[base_rgb + Int32(1)] += R
-        pixel_rgb[base_rgb + Int32(2)] += G
-        pixel_rgb[base_rgb + Int32(3)] += B
+        pixel_rgb[base_rgb + Int32(1)] += rgb[1]
+        pixel_rgb[base_rgb + Int32(2)] += rgb[2]
+        pixel_rgb[base_rgb + Int32(3)] += rgb[3]
     end
 end
 
@@ -139,21 +117,17 @@ Copy accumulated RGB values to film framebuffer, dividing by sample count.
 
     if idx <= num_pixels
         base = (idx - Int32(1)) * Int32(3)
-        R = pixel_rgb[base + Int32(1)] * inv_samples
-        G = pixel_rgb[base + Int32(2)] * inv_samples
-        B = pixel_rgb[base + Int32(3)] * inv_samples
+        rgb = load(pixel_rgb, base + Int32(1), Vec3f) * inv_samples
 
         # Clamp
-        R = ifelse(isfinite(R), max(0.0f0, R), 0.0f0)
-        G = ifelse(isfinite(G), max(0.0f0, G), 0.0f0)
-        B = ifelse(isfinite(B), max(0.0f0, B), 0.0f0)
+        rgb = map(c -> ifelse(isfinite(c), max(0f0, c), 0f0), rgb)
 
         # Convert linear index to 2D coordinates
         pixel_idx = idx - Int32(1)
         x = u_int32(mod(pixel_idx, width)) + Int32(1)
         y = u_int32(div(pixel_idx, width)) + Int32(1)
 
-        framebuffer[y, x] = RGB{Float32}(R, G, B)
+        framebuffer[y, x] = RGB{Float32}(rgb[1], rgb[2], rgb[3])
     end
 end
 
@@ -215,53 +189,29 @@ stores the sampled wavelengths. Uses CIE XYZ color matching for accurate convers
     num_pixels = width * height
 
     if idx <= num_pixels
-        # Extract spectral radiance for this pixel
         base = (idx - Int32(1)) * Int32(4)
-        L = SpectralRadiance((
-            pixel_L[base + Int32(1)],
-            pixel_L[base + Int32(2)],
-            pixel_L[base + Int32(3)],
-            pixel_L[base + Int32(4)]
-        ))
+        L = load(pixel_L, base + Int32(1), SpectralRadiance)
+        lambda_tuple = load(wavelengths_per_pixel, base + Int32(1), NTuple{4, Float32})
+        pdf_tuple = load(pdf_per_pixel, base + Int32(1), NTuple{4, Float32})
+        lambda = Wavelengths(lambda_tuple, pdf_tuple)
 
-        # Extract wavelengths and PDFs for this pixel
-        lambda = Wavelengths((
-            wavelengths_per_pixel[base + Int32(1)],
-            wavelengths_per_pixel[base + Int32(2)],
-            wavelengths_per_pixel[base + Int32(3)],
-            wavelengths_per_pixel[base + Int32(4)]
-        ), (
-            pdf_per_pixel[base + Int32(1)],
-            pdf_per_pixel[base + Int32(2)],
-            pdf_per_pixel[base + Int32(3)],
-            pdf_per_pixel[base + Int32(4)]
-        ))
-
-        # Reconstruct CIE table from array components
         cie_table = CIEXYZTable(cie_x, cie_y, cie_z)
-
-        # Convert to linear RGB via XYZ
-        R, G, B = spectral_to_linear_rgb(cie_table, L, lambda)
+        rgb = spectral_to_linear_rgb(cie_table, L, lambda)
 
         # Average by number of samples
         if samples_accumulated > Int32(0)
-            inv_samples = 1.0f0 / Float32(samples_accumulated)
-            R *= inv_samples
-            G *= inv_samples
-            B *= inv_samples
+            rgb = rgb * (1.0f0 / Float32(samples_accumulated))
         end
 
-        # Clamp negative values and NaN/Inf
-        R = ifelse(isfinite(R), max(0.0f0, R), 0.0f0)
-        G = ifelse(isfinite(G), max(0.0f0, G), 0.0f0)
-        B = ifelse(isfinite(B), max(0.0f0, B), 0.0f0)
+        # Clamp NaN/Inf
+        rgb = map(c -> ifelse(isfinite(c), c, 0f0), rgb)
 
         # Convert linear index to 2D coordinates
         pixel_idx = idx - Int32(1)
         x = u_int32(mod(pixel_idx, width)) + Int32(1)
         y = u_int32(div(pixel_idx, width)) + Int32(1)
 
-        framebuffer[y, x] = RGB{Float32}(R, G, B)
+        framebuffer[y, x] = RGB{Float32}(rgb[1], rgb[2], rgb[3])
     end
 end
 
@@ -293,40 +243,26 @@ within a sample iteration. This kernel uses a single Wavelengths value for all p
     num_pixels = width * height
 
     if idx <= num_pixels
-        # Extract spectral radiance for this pixel
         base = (idx - Int32(1)) * Int32(4)
-        L = SpectralRadiance((
-            pixel_L[base + Int32(1)],
-            pixel_L[base + Int32(2)],
-            pixel_L[base + Int32(3)],
-            pixel_L[base + Int32(4)]
-        ))
+        L = load(pixel_L, base + Int32(1), SpectralRadiance)
 
-        # Reconstruct CIE table from array components
         cie_table = CIEXYZTable(cie_x, cie_y, cie_z)
-
-        # Convert to linear RGB via XYZ
-        R, G, B = spectral_to_linear_rgb(cie_table, L, lambda)
+        rgb = spectral_to_linear_rgb(cie_table, L, lambda)
 
         # Average by number of samples
         if samples_accumulated > Int32(0)
-            inv_samples = 1.0f0 / Float32(samples_accumulated)
-            R *= inv_samples
-            G *= inv_samples
-            B *= inv_samples
+            rgb = rgb * (1.0f0 / Float32(samples_accumulated))
         end
 
-        # Clamp negative values and NaN/Inf
-        R = ifelse(isfinite(R), max(0.0f0, R), 0.0f0)
-        G = ifelse(isfinite(G), max(0.0f0, G), 0.0f0)
-        B = ifelse(isfinite(B), max(0.0f0, B), 0.0f0)
+        # Clamp NaN/Inf
+        rgb = map(c -> ifelse(isfinite(c), c, 0f0), rgb)
 
         # Convert linear index to 2D coordinates
         pixel_idx = idx - Int32(1)
         x = u_int32(mod(pixel_idx, width)) + Int32(1)
         y = u_int32(div(pixel_idx, width)) + Int32(1)
 
-        framebuffer[y, x] = RGB{Float32}(R, G, B)
+        framebuffer[y, x] = RGB{Float32}(rgb[1], rgb[2], rgb[3])
     end
 end
 

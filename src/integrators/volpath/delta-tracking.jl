@@ -201,43 +201,10 @@ end
 
     if !work.has_surface_hit
         # Ray escaped scene (t_max was Infinity)
-        escaped_item = VPEscapedRayWorkItem(
-            work.ray.d,
-            work.lambda,
-            work.pixel_index,
-            beta,
-            r_u,
-            r_l,
-            work.depth,
-            work.specular_bounce,
-            work.prev_intr_p,
-            work.prev_intr_n
-        )
-        push!(escaped_queue, escaped_item)
+        push!(escaped_queue, VPEscapedRayWorkItem(work, beta, r_u, r_l))
     else
         # Ray reached surface - push to hit_surface_queue for material eval
-        hit_item = VPHitSurfaceWorkItem(
-            work.ray,
-            work.hit_pi,
-            work.hit_n,
-            work.hit_ns,
-            work.hit_uv,
-            work.hit_material_idx,
-            work.lambda,
-            work.pixel_index,
-            beta,
-            r_u,
-            r_l,
-            work.depth,
-            work.eta_scale,
-            work.specular_bounce,
-            work.any_non_specular_bounces,
-            work.prev_intr_p,
-            work.prev_intr_n,
-            work.medium_idx,
-            work.t_max
-        )
-        push!(hit_surface_queue, hit_item)
+        push!(hit_surface_queue, VPHitSurfaceWorkItem(work, beta, r_u, r_l))
     end
     return
 end

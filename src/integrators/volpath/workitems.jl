@@ -119,6 +119,37 @@ struct VPMediumSampleWorkItem
     hit_material_idx::MaterialIndex
 end
 
+# Constructor from VPRayWorkItem with surface hit
+function VPMediumSampleWorkItem(
+    work::VPRayWorkItem,
+    t_max::Float32,
+    pi::Point3f, n::Vec3f, ns::Vec3f, uv::Point2f, mat_idx::MaterialIndex
+)
+    VPMediumSampleWorkItem(
+        work.ray, work.depth, t_max,
+        work.lambda, work.beta, work.r_u, work.r_l,
+        work.pixel_index, work.eta_scale,
+        work.specular_bounce, work.any_non_specular_bounces,
+        work.prev_intr_p, work.prev_intr_n,
+        work.medium_idx,
+        true, pi, n, ns, uv, mat_idx
+    )
+end
+
+# Constructor from VPRayWorkItem for escaped rays (no surface hit)
+function VPMediumSampleWorkItem(work::VPRayWorkItem)
+    VPMediumSampleWorkItem(
+        work.ray, work.depth, Inf32,
+        work.lambda, work.beta, work.r_u, work.r_l,
+        work.pixel_index, work.eta_scale,
+        work.specular_bounce, work.any_non_specular_bounces,
+        work.prev_intr_p, work.prev_intr_n,
+        work.medium_idx,
+        false, Point3f(0f0), Vec3f(0f0, 0f0, 1f0), Vec3f(0f0, 0f0, 1f0),
+        Point2f(0f0, 0f0), MaterialIndex()
+    )
+end
+
 # ============================================================================
 # Medium Scatter Work Item
 # ============================================================================
@@ -181,6 +212,19 @@ struct VPMaterialEvalWorkItem
     # Note: After surface interaction, new medium depends on refraction/reflection
 end
 
+# Constructor from VPHitSurfaceWorkItem (wo and material_idx are computed externally)
+function VPMaterialEvalWorkItem(work::VPHitSurfaceWorkItem, wo::Vec3f, material_idx::MaterialIndex)
+    VPMaterialEvalWorkItem(
+        work.pi, work.n, work.ns, wo, work.uv, material_idx,
+        work.lambda, work.pixel_index,
+        work.beta, work.r_u, work.r_l,
+        work.depth, work.eta_scale,
+        work.specular_bounce, work.any_non_specular_bounces,
+        work.prev_intr_p, work.prev_intr_n,
+        work.current_medium
+    )
+end
+
 # ============================================================================
 # Shadow Ray Work Item
 # ============================================================================
@@ -223,6 +267,29 @@ struct VPEscapedRayWorkItem
     prev_intr_n::Vec3f
 end
 
+# Constructor from VPRayWorkItem
+function VPEscapedRayWorkItem(work::VPRayWorkItem)
+    VPEscapedRayWorkItem(
+        work.ray.d, work.lambda, work.pixel_index,
+        work.beta, work.r_u, work.r_l,
+        work.depth, work.specular_bounce,
+        work.prev_intr_p, work.prev_intr_n
+    )
+end
+
+# Constructor from VPMediumSampleWorkItem (with updated beta/r_u/r_l from delta tracking)
+function VPEscapedRayWorkItem(
+    work::VPMediumSampleWorkItem,
+    beta::SpectralRadiance, r_u::SpectralRadiance, r_l::SpectralRadiance
+)
+    VPEscapedRayWorkItem(
+        work.ray.d, work.lambda, work.pixel_index,
+        beta, r_u, r_l,
+        work.depth, work.specular_bounce,
+        work.prev_intr_p, work.prev_intr_n
+    )
+end
+
 # ============================================================================
 # Hit Surface Work Item (intermediate, before material eval)
 # ============================================================================
@@ -262,4 +329,39 @@ struct VPHitSurfaceWorkItem
 
     # Distance traveled through medium (for transmittance)
     t_hit::Float32
+end
+
+# Constructor from VPRayWorkItem with hit geometry
+function VPHitSurfaceWorkItem(
+    work::VPRayWorkItem,
+    pi::Point3f, n::Vec3f, ns::Vec3f, uv::Point2f, mat_idx::MaterialIndex,
+    t_hit::Float32
+)
+    VPHitSurfaceWorkItem(
+        work.ray,
+        pi, n, ns, uv, mat_idx,
+        work.lambda, work.pixel_index,
+        work.beta, work.r_u, work.r_l,
+        work.depth, work.eta_scale,
+        work.specular_bounce, work.any_non_specular_bounces,
+        work.prev_intr_p, work.prev_intr_n,
+        work.medium_idx, t_hit
+    )
+end
+
+# Constructor from VPMediumSampleWorkItem (with updated beta/r_u/r_l from delta tracking)
+function VPHitSurfaceWorkItem(
+    work::VPMediumSampleWorkItem,
+    beta::SpectralRadiance, r_u::SpectralRadiance, r_l::SpectralRadiance
+)
+    VPHitSurfaceWorkItem(
+        work.ray,
+        work.hit_pi, work.hit_n, work.hit_ns, work.hit_uv, work.hit_material_idx,
+        work.lambda, work.pixel_index,
+        beta, r_u, r_l,
+        work.depth, work.eta_scale,
+        work.specular_bounce, work.any_non_specular_bounces,
+        work.prev_intr_p, work.prev_intr_n,
+        work.medium_idx, work.t_max
+    )
 end

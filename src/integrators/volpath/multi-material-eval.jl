@@ -106,27 +106,7 @@ end
 
     # Only create material work item if not pure emissive (has BSDF)
     if !is_pure_emissive_dispatch(materials, material_idx)
-        # Create material eval work item
-        mat_work = VPMaterialEvalWorkItem(
-            work.pi,
-            work.n,
-            work.ns,
-            wo,
-            work.uv,
-            material_idx,
-            work.lambda,
-            work.pixel_index,
-            work.beta,
-            work.r_u,
-            work.r_l,
-            work.depth,
-            work.eta_scale,
-            work.specular_bounce,
-            work.any_non_specular_bounces,
-            work.prev_intr_p,
-            work.prev_intr_n,
-            work.current_medium
-        )
+        mat_work = VPMaterialEvalWorkItem(work, wo, material_idx)
 
         # Route to correct per-type queue based on material_type
         mat_type = material_idx.material_type

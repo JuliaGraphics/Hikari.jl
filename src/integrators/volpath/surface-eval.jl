@@ -58,28 +58,7 @@
     # Create material evaluation work item (for non-emissive or mixed materials)
     # Skip pure emissive materials (using resolved material_idx)
     if !is_pure_emissive_dispatch(materials, material_idx)
-        mat_work = VPMaterialEvalWorkItem(
-            work.pi,
-            work.n,
-            work.ns,
-            wo,
-            work.uv,
-            material_idx,  # Use resolved material index (MixMaterial already resolved)
-            work.lambda,
-            work.pixel_index,
-            work.beta,
-            work.r_u,
-            work.r_l,
-            work.depth,
-            work.eta_scale,
-            work.specular_bounce,
-            work.any_non_specular_bounces,
-            work.prev_intr_p,
-            work.prev_intr_n,
-            work.current_medium
-        )
-
-        push!(material_queue, mat_work)
+        push!(material_queue, VPMaterialEvalWorkItem(work, wo, material_idx))
     end
 end
 

@@ -396,31 +396,17 @@ Sample CIE Z color matching function at wavelength lambda (in nm).
 end
 
 """
-    sample_cie_xyz(table::CIEXYZTable, lambda::Wavelengths) -> (SpectralRadiance, SpectralRadiance, SpectralRadiance)
+    sample_cie_xyz(table::CIEXYZTable, lambda::Float32) -> Vec3f
 
-Sample CIE XYZ color matching functions at the given wavelengths.
-Returns (X_samples, Y_samples, Z_samples) as SpectralRadiance.
+Sample CIE XYZ color matching functions at a single wavelength.
+Returns Vec3f(X, Y, Z) values at that wavelength.
 """
-@propagate_inbounds function sample_cie_xyz(table::CIEXYZTable, lambda::Wavelengths)
-    X = SpectralRadiance((
-        sample_cie_x(table, lambda.lambda[1]),
-        sample_cie_x(table, lambda.lambda[2]),
-        sample_cie_x(table, lambda.lambda[3]),
-        sample_cie_x(table, lambda.lambda[4])
-    ))
-    Y = SpectralRadiance((
-        sample_cie_y(table, lambda.lambda[1]),
-        sample_cie_y(table, lambda.lambda[2]),
-        sample_cie_y(table, lambda.lambda[3]),
-        sample_cie_y(table, lambda.lambda[4])
-    ))
-    Z = SpectralRadiance((
-        sample_cie_z(table, lambda.lambda[1]),
-        sample_cie_z(table, lambda.lambda[2]),
-        sample_cie_z(table, lambda.lambda[3]),
-        sample_cie_z(table, lambda.lambda[4])
-    ))
-    return (X, Y, Z)
+@propagate_inbounds function sample_cie_xyz(table::CIEXYZTable, lambda::Float32)
+    return Vec3f(
+        sample_cie_x(table, lambda),
+        sample_cie_y(table, lambda),
+        sample_cie_z(table, lambda)
+    )
 end
 
 # =============================================================================
@@ -428,7 +414,7 @@ end
 # =============================================================================
 
 """
-    spectral_to_xyz(table::CIEXYZTable, L::SpectralRadiance, lambda::Wavelengths) -> (X, Y, Z)
+    spectral_to_xyz(table::CIEXYZTable, L::SpectralRadiance, lambda::Wavelengths) -> Vec3f
 
 Convert spectral radiance to CIE XYZ using the pbrt-v4 algorithm.
 
@@ -438,32 +424,19 @@ The formula is:
 where CMF is the color matching function and pdf is the wavelength sampling PDF.
 """
 @propagate_inbounds function spectral_to_xyz(table::CIEXYZTable, L::SpectralRadiance, lambda::Wavelengths)
-    # Sample the X, Y, Z matching curves at lambda
-    X_cmf, Y_cmf, Z_cmf = sample_cie_xyz(table, lambda)
-
-    # Compute SafeDiv(CMF * L, pdf) for each channel and average
-    X_sum = 0.0f0
-    Y_sum = 0.0f0
-    Z_sum = 0.0f0
+    xyz_sum = Vec3f(0f0)
 
     for i in Int32(1):Int32(4)
         pdf_i = lambda.pdf[i]
         if pdf_i != 0.0f0
-            inv_pdf = 1.0f0 / pdf_i
-            L_i = L.data[i]
-            X_sum += X_cmf.data[i] * L_i * inv_pdf
-            Y_sum += Y_cmf.data[i] * L_i * inv_pdf
-            Z_sum += Z_cmf.data[i] * L_i * inv_pdf
+            cmf = sample_cie_xyz(table, lambda.lambda[i])
+            xyz_sum += cmf * L.data[i] / pdf_i
         end
     end
 
     # Average over 4 samples
     # NOTE: We do NOT divide by CIE_Y_INTEGRAL here to match pbrt-v4's RGBFilm behavior.
-    # pbrt's ToSensorRGB just averages (CMF * L / pdf), without the CIE_Y_integral normalization.
-    # The CIE_Y_integral factor would only be used for proper colorimetric XYZ, but for
-    # rendering we want unnormalized values that scale linearly with radiance.
-    scale = 0.25f0
-    return (X_sum * scale, Y_sum * scale, Z_sum * scale)
+    return xyz_sum * 0.25f0
 end
 
 # =============================================================================
@@ -590,21 +563,23 @@ end
 # SRGB_FROM_XYZ_E = sRGB_from_XYZ * WHITE_BALANCE_E_TO_D65
 
 """
-    xyz_to_linear_srgb(X::Float32, Y::Float32, Z::Float32) -> (R, G, B)
+    xyz_to_linear_srgb(xyz::Vec3f) -> Vec3f
 
 Convert CIE XYZ to linear sRGB color space.
 Uses the standard XYZ to sRGB matrix (D65 white point).
 Note: This assumes XYZ is already in D65 illuminant space.
 """
-@propagate_inbounds function xyz_to_linear_srgb(X::Float32, Y::Float32, Z::Float32)
-    R =  3.2404542f0 * X - 1.5371385f0 * Y - 0.4985314f0 * Z
-    G = -0.9692660f0 * X + 1.8760108f0 * Y + 0.0415560f0 * Z
-    B =  0.0556434f0 * X - 0.2040259f0 * Y + 1.0572252f0 * Z
-    return (R, G, B)
+@propagate_inbounds function xyz_to_linear_srgb(xyz::Vec3f)
+    X, Y, Z = xyz[1], xyz[2], xyz[3]
+    return Vec3f(
+         3.2404542f0 * X - 1.5371385f0 * Y - 0.4985314f0 * Z,
+        -0.9692660f0 * X + 1.8760108f0 * Y + 0.0415560f0 * Z,
+         0.0556434f0 * X - 0.2040259f0 * Y + 1.0572252f0 * Z
+    )
 end
 
 """
-    xyz_e_to_linear_srgb(X::Float32, Y::Float32, Z::Float32) -> (R, G, B)
+    xyz_e_to_linear_srgb(xyz::Vec3f) -> Vec3f
 
 Convert CIE XYZ (in Equal-Energy illuminant space) to linear sRGB (D65).
 This applies Bradford chromatic adaptation from E to D65 before the XYZ-to-sRGB
@@ -613,25 +588,29 @@ an equal-energy white spectrum.
 
 Matrix values are inlined for performance and to avoid const reload issues.
 """
-@propagate_inbounds function xyz_e_to_linear_srgb(X::Float32, Y::Float32, Z::Float32)
+@propagate_inbounds function xyz_e_to_linear_srgb(xyz::Vec3f)
     # Pre-computed: sRGB_from_XYZ * WHITE_BALANCE_E_TO_D65
-    # Verified: xyz_e_to_linear_srgb(1,1,1) ≈ (1,1,1)
-    R =  3.1462066f0 * X - 1.666208f0   * Y - 0.48011315f0 * Z
-    G = -0.99555516f0 * X + 1.9558191f0  * Y + 0.03977213f0 * Z
-    B =  0.063599624f0 * X - 0.21459788f0 * Y + 1.1509721f0  * Z
-    return (R, G, B)
+    # Verified: xyz_e_to_linear_srgb(Vec3f(1,1,1)) ≈ Vec3f(1,1,1)
+    X, Y, Z = xyz[1], xyz[2], xyz[3]
+    return Vec3f(
+         3.1462066f0 * X - 1.666208f0   * Y - 0.48011315f0 * Z,
+        -0.99555516f0 * X + 1.9558191f0  * Y + 0.03977213f0 * Z,
+         0.063599624f0 * X - 0.21459788f0 * Y + 1.1509721f0  * Z
+    )
 end
 
 """
-    linear_srgb_to_xyz(R::Float32, G::Float32, B::Float32) -> (X, Y, Z)
+    linear_srgb_to_xyz(rgb::Vec3f) -> Vec3f
 
 Convert linear sRGB to CIE XYZ color space.
 """
-@propagate_inbounds function linear_srgb_to_xyz(R::Float32, G::Float32, B::Float32)
-    X = 0.4124564f0 * R + 0.3575761f0 * G + 0.1804375f0 * B
-    Y = 0.2126729f0 * R + 0.7151522f0 * G + 0.0721750f0 * B
-    Z = 0.0193339f0 * R + 0.1191920f0 * G + 0.9503041f0 * B
-    return (X, Y, Z)
+@propagate_inbounds function linear_srgb_to_xyz(rgb::Vec3f)
+    R, G, B = rgb[1], rgb[2], rgb[3]
+    return Vec3f(
+        0.4124564f0 * R + 0.3575761f0 * G + 0.1804375f0 * B,
+        0.2126729f0 * R + 0.7151522f0 * G + 0.0721750f0 * B,
+        0.0193339f0 * R + 0.1191920f0 * G + 0.9503041f0 * B
+    )
 end
 
 """
@@ -661,7 +640,7 @@ Remove sRGB gamma curve from an sRGB value to get linear RGB.
 end
 
 """
-    spectral_to_srgb(L::SpectralRadiance, lambda::Wavelengths) -> (R, G, B)
+    spectral_to_srgb(table::CIEXYZTable, L::SpectralRadiance, lambda::Wavelengths) -> Vec3f
 
 Convert spectral radiance to sRGB:
 1. Convert to XYZ using color matching functions
@@ -672,22 +651,17 @@ This matches pbrt-v4's RGBFilm pipeline. Light sources use `uplift_rgb_illuminan
 which multiplies by D65 illuminant spectrum, so no chromatic adaptation is needed.
 """
 @propagate_inbounds function spectral_to_srgb(table::CIEXYZTable, L::SpectralRadiance, lambda::Wavelengths)
-    # Convert to XYZ
-    X, Y, Z = spectral_to_xyz(table, L, lambda)
-
-    # Convert to linear sRGB using standard matrix (D65 white point)
-    R, G, B = xyz_to_linear_srgb(X, Y, Z)
-
-    # Apply gamma (clamp negative values first)
-    R = linear_to_srgb_gamma(max(0.0f0, R))
-    G = linear_to_srgb_gamma(max(0.0f0, G))
-    B = linear_to_srgb_gamma(max(0.0f0, B))
-
-    return (R, G, B)
+    xyz = spectral_to_xyz(table, L, lambda)
+    rgb = max(0f0, xyz_to_linear_srgb(xyz))
+    return Vec3f(
+        linear_to_srgb_gamma(rgb[1]),
+        linear_to_srgb_gamma(rgb[2]),
+        linear_to_srgb_gamma(rgb[3])
+    )
 end
 
 """
-    spectral_to_linear_rgb(table::CIEXYZTable, L::SpectralRadiance, lambda::Wavelengths) -> (R, G, B)
+    spectral_to_linear_rgb(table::CIEXYZTable, L::SpectralRadiance, lambda::Wavelengths) -> Vec3f
 
 Convert spectral radiance to linear RGB (no gamma):
 1. Convert to XYZ using color matching functions
@@ -701,21 +675,17 @@ D65-shaped spectra integrated under CIE XYZ naturally produce the correct
 white balance when transformed using the standard sRGB matrix.
 """
 @propagate_inbounds function spectral_to_linear_rgb(table::CIEXYZTable, L::SpectralRadiance, lambda::Wavelengths)
-    X, Y, Z = spectral_to_xyz(table, L, lambda)
-    R, G, B = xyz_to_linear_srgb(X, Y, Z)
-    return (max(0.0f0, R), max(0.0f0, G), max(0.0f0, B))
+    xyz = spectral_to_xyz(table, L, lambda)
+    return max(0f0, xyz_to_linear_srgb(xyz))
 end
 
 """
-    spectral_to_linear_rgb_passthrough(L::SpectralRadiance) -> (R, G, B)
+    spectral_to_linear_rgb_passthrough(L::SpectralRadiance) -> Vec3f
 
 Pseudo-spectral passthrough: read RGB directly from spectral channels.
 For use when `uplift_rgb(...; method=:passthrough)` was used to store RGB directly.
 This matches PbrtWavefront behavior and avoids spectral-to-XYZ conversion noise.
 """
 @propagate_inbounds function spectral_to_linear_rgb_passthrough(L::SpectralRadiance)
-    R = max(0.0f0, L.data[1])
-    G = max(0.0f0, L.data[2])
-    B = max(0.0f0, L.data[3])
-    return (R, G, B)
+    return max(0f0, Vec3f(L.data[1], L.data[2], L.data[3]))
 end

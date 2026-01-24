@@ -93,65 +93,16 @@ end
             uv = vp_compute_uv_barycentric(primitive, barycentric)
             ns = vp_compute_shading_normal(primitive, barycentric, n)
 
-            sample_item = VPMediumSampleWorkItem(
-                work.ray,
-                work.depth,
-                t_hit,
-                work.lambda,
-                work.beta,
-                work.r_u,
-                work.r_l,
-                work.pixel_index,
-                work.eta_scale,
-                work.specular_bounce,
-                work.any_non_specular_bounces,
-                work.prev_intr_p,
-                work.prev_intr_n,
-                work.medium_idx,
-                true,   # has_surface_hit
-                pi, n, ns, uv, mat_idx
-            )
-            push!(medium_sample_queue, sample_item)
+            push!(medium_sample_queue, VPMediumSampleWorkItem(work, t_hit, pi, n, ns, uv, mat_idx))
         else
             # Ray in medium but escaped scene - t_max = Infinity
-            sample_item = VPMediumSampleWorkItem(
-                work.ray,
-                work.depth,
-                Inf32,
-                work.lambda,
-                work.beta,
-                work.r_u,
-                work.r_l,
-                work.pixel_index,
-                work.eta_scale,
-                work.specular_bounce,
-                work.any_non_specular_bounces,
-                work.prev_intr_p,
-                work.prev_intr_n,
-                work.medium_idx,
-                false,  # no surface hit
-                Point3f(0f0), Vec3f(0f0, 0f0, 1f0), Vec3f(0f0, 0f0, 1f0),
-                Point2f(0f0, 0f0), MaterialIndex()
-            )
-            push!(medium_sample_queue, sample_item)
+            push!(medium_sample_queue, VPMediumSampleWorkItem(work))
         end
     else
         # Ray NOT in medium - route directly
         if !hit
             # Ray escaped - push to escaped queue
-            escaped_item = VPEscapedRayWorkItem(
-                work.ray.d,
-                work.lambda,
-                work.pixel_index,
-                work.beta,
-                work.r_u,
-                work.r_l,
-                work.depth,
-                work.specular_bounce,
-                work.prev_intr_p,
-                work.prev_intr_n
-            )
-            push!(escaped_queue, escaped_item)
+            push!(escaped_queue, VPEscapedRayWorkItem(work))
         else
             # Hit surface - extract geometry
             mat_idx = primitive.metadata::MaterialIndex
@@ -160,24 +111,7 @@ end
             uv = vp_compute_uv_barycentric(primitive, barycentric)
             ns = vp_compute_shading_normal(primitive, barycentric, n)
 
-            hit_item = VPHitSurfaceWorkItem(
-                work.ray,
-                pi, n, ns, uv, mat_idx,
-                work.lambda,
-                work.pixel_index,
-                work.beta,
-                work.r_u,
-                work.r_l,
-                work.depth,
-                work.eta_scale,
-                work.specular_bounce,
-                work.any_non_specular_bounces,
-                work.prev_intr_p,
-                work.prev_intr_n,
-                work.medium_idx,
-                t_hit
-            )
-            push!(hit_surface_queue, hit_item)
+            push!(hit_surface_queue, VPHitSurfaceWorkItem(work, pi, n, ns, uv, mat_idx, t_hit))
         end
     end
 end
