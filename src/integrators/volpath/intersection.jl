@@ -84,20 +84,20 @@ so delta tracking can run with bounded t_max and process the hit if ray survives
 """
 @kernel inbounds=true function vp_trace_rays_kernel!(
     # Output queues
-    medium_sample_items, medium_sample_size,   # Rays in medium with t_max
-    escaped_items, escaped_size,                # Rays that missed (not in medium)
-    hit_surface_items, hit_surface_size,        # Rays that hit (not in medium)
+    medium_sample_queue,   # Rays in medium with t_max
+    escaped_queue,         # Rays that missed (not in medium)
+    hit_surface_queue,     # Rays that hit (not in medium)
     # Input
-    @Const(ray_items), @Const(ray_size),
+    @Const(ray_queue),
     @Const(accel),
     @Const(max_queued::Int32)
 )
     idx = @index(Global)
 
     @inbounds if idx <= max_queued
-        current_size = ray_size[1]
+        current_size = ray_queue.size[1]
         if idx <= current_size
-            work = ray_items[idx]
+            work = ray_queue.items[idx]
 
             # Trace ray to find closest intersection
             hit, primitive, t_hit, barycentric = Raycore.closest_hit(accel, work.ray)
@@ -133,10 +133,7 @@ so delta tracking can run with bounded t_max and process the hit if ray survives
                         true,   # has_surface_hit
                         pi, n, ns, uv, mat_idx
                     )
-                    new_idx = @atomic medium_sample_size[1] += Int32(1)
-                    if new_idx <= max_queued
-                        medium_sample_items[new_idx] = sample_item
-                    end
+                    push!(medium_sample_queue, sample_item)
                 else
                     # Ray in medium but escaped scene - t_max = Infinity
                     sample_item = VPMediumSampleWorkItem(
@@ -158,10 +155,7 @@ so delta tracking can run with bounded t_max and process the hit if ray survives
                         Point3f(0f0), Vec3f(0f0, 0f0, 1f0), Vec3f(0f0, 0f0, 1f0),
                         Point2f(0f0, 0f0), MaterialIndex()
                     )
-                    new_idx = @atomic medium_sample_size[1] += Int32(1)
-                    if new_idx <= max_queued
-                        medium_sample_items[new_idx] = sample_item
-                    end
+                    push!(medium_sample_queue, sample_item)
                 end
             else
                 # Ray NOT in medium - route directly
@@ -179,10 +173,7 @@ so delta tracking can run with bounded t_max and process the hit if ray survives
                         work.prev_intr_p,
                         work.prev_intr_n
                     )
-                    new_idx = @atomic escaped_size[1] += Int32(1)
-                    if new_idx <= max_queued
-                        escaped_items[new_idx] = escaped_item
-                    end
+                    push!(escaped_queue, escaped_item)
                 else
                     # Hit surface - extract geometry
                     mat_idx = primitive.metadata::MaterialIndex
@@ -208,10 +199,7 @@ so delta tracking can run with bounded t_max and process the hit if ray survives
                         work.medium_idx,
                         t_hit
                     )
-                    new_idx = @atomic hit_surface_size[1] += Int32(1)
-                    if new_idx <= max_queued
-                        hit_surface_items[new_idx] = hit_item
-                    end
+                    push!(hit_surface_queue, hit_item)
                 end
             end
         end
@@ -235,10 +223,10 @@ function vp_trace_rays!(
 
     kernel! = vp_trace_rays_kernel!(backend)
     kernel!(
-        state.medium_sample_queue.items, state.medium_sample_queue.size,
-        state.escaped_queue.items, state.escaped_queue.size,
-        state.hit_surface_queue.items, state.hit_surface_queue.size,
-        input_queue.items, input_queue.size,
+        state.medium_sample_queue,
+        state.escaped_queue,
+        state.hit_surface_queue,
+        input_queue,
         accel, state.escaped_queue.capacity;
         ndrange=Int(input_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
     )
@@ -259,21 +247,19 @@ Handles transmissive boundaries (MediumInterface) by tracing through them.
 """
 @kernel inbounds=true function vp_trace_shadow_rays_kernel!(
     pixel_L,
-    @Const(shadow_items), @Const(shadow_size),
+    @Const(shadow_queue),
     @Const(accel),
     @Const(materials),
     @Const(media),
-    @Const(rgb2spec_scale), @Const(rgb2spec_coeffs), @Const(rgb2spec_res::Int32),
+    @Const(rgb2spec_table),
     @Const(max_queued::Int32)
 )
     idx = @index(Global)
 
-    rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
-
     @inbounds if idx <= max_queued
-        current_size = shadow_size[1]
+        current_size = shadow_queue.size[1]
         if idx <= current_size
-            work = shadow_items[idx]
+            work = shadow_queue.items[idx]
 
             # Trace shadow ray, handling transmissive boundaries
             # Returns (T_ray, tr_r_u, tr_r_l, visible) following pbrt-v4's TraceTransmittance
@@ -555,9 +541,9 @@ function vp_trace_shadow_rays!(
     kernel! = vp_trace_shadow_rays_kernel!(backend)
     kernel!(
         state.pixel_L,
-        state.shadow_queue.items, state.shadow_queue.size,
+        state.shadow_queue,
         accel, materials, media,
-        state.rgb2spec_table.scale, state.rgb2spec_table.coeffs, state.rgb2spec_table.res,
+        state.rgb2spec_table,
         state.shadow_queue.capacity;
         ndrange=Int(state.shadow_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
     )
@@ -576,19 +562,17 @@ Handle rays that escaped the scene by evaluating environment lights.
 """
 @kernel inbounds=true function vp_handle_escaped_rays_kernel!(
     pixel_L,
-    @Const(escaped_items), @Const(escaped_size),
+    @Const(escaped_queue),
     @Const(lights),
-    @Const(rgb2spec_scale), @Const(rgb2spec_coeffs), @Const(rgb2spec_res::Int32),
+    @Const(rgb2spec_table),
     @Const(max_queued::Int32)
 )
     idx = @index(Global)
 
-    rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
-
     @inbounds if idx <= max_queued
-        current_size = escaped_size[1]
+        current_size = escaped_queue.size[1]
         if idx <= current_size
-            work = escaped_items[idx]
+            work = escaped_queue.items[idx]
 
             # Evaluate environment lights
             Le = evaluate_escaped_ray_spectral(rgb2spec_table, lights, work.ray_d, work.lambda)
@@ -653,9 +637,9 @@ function vp_handle_escaped_rays!(
     kernel! = vp_handle_escaped_rays_kernel!(backend)
     kernel!(
         state.pixel_L,
-        state.escaped_queue.items, state.escaped_queue.size,
+        state.escaped_queue,
         lights,
-        state.rgb2spec_table.scale, state.rgb2spec_table.coeffs, state.rgb2spec_table.res,
+        state.rgb2spec_table,
         state.escaped_queue.capacity;
         ndrange=Int(state.escaped_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
     )

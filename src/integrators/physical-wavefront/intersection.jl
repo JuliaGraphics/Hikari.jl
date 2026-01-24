@@ -17,11 +17,11 @@ This kernel does NOT generate shadow rays - that happens in direct lighting.
 """
 @kernel inbounds=true function pw_trace_rays_kernel!(
     # Output queues
-    escaped_queue_items, escaped_queue_size,
-    hit_light_queue_items, hit_light_queue_size,
-    material_queue_items, material_queue_size,
+    escaped_queue,
+    hit_light_queue,
+    material_queue,
     # Input
-    @Const(ray_queue_items), @Const(ray_queue_size),
+    @Const(ray_queue),
     # Scene data
     @Const(accel),           # BVH/TLAS accelerator
     @Const(materials),       # Tuple of material arrays
@@ -30,9 +30,9 @@ This kernel does NOT generate shadow rays - that happens in direct lighting.
     idx = @index(Global)
 
      if idx <= max_queued
-        current_size = ray_queue_size[1]
+        current_size = ray_queue.size[1]
         if idx <= current_size
-            work = ray_queue_items[idx]
+            work = ray_queue.items[idx]
 
             # Trace ray using Raycore - capture barycentric coordinates for interpolation
             hit, primitive, t_hit, barycentric = Raycore.closest_hit(accel, work.ray)
@@ -40,8 +40,7 @@ This kernel does NOT generate shadow rays - that happens in direct lighting.
             if !hit
                 # Ray escaped - push to escaped queue for environment light
                 escaped_item = PWEscapedRayWorkItem(work)
-                new_idx = @atomic escaped_queue_size[1] += Int32(1)
-                escaped_queue_items[new_idx] = escaped_item
+                push!(escaped_queue, escaped_item)
             else
                 # Got a hit - extract surface info
                 raw_mat_idx = primitive.metadata::MaterialIndex
@@ -78,8 +77,7 @@ This kernel does NOT generate shadow rays - that happens in direct lighting.
                         work.specular_bounce, work.pixel_index,
                         mat_idx
                     )
-                    new_idx = @atomic hit_light_queue_size[1] += Int32(1)
-                    hit_light_queue_items[new_idx] = hit_light_item
+                    push!(hit_light_queue, hit_light_item)
                 end
 
                 # Always push to material queue for BSDF evaluation
@@ -93,8 +91,7 @@ This kernel does NOT generate shadow rays - that happens in direct lighting.
                         wo, work.beta, work.r_u, work.eta_scale,
                         mat_idx
                     )
-                    new_idx = @atomic material_queue_size[1] += Int32(1)
-                    material_queue_items[new_idx] = mat_item
+                    push!(material_queue, mat_item)
                 end
             end
         end
@@ -244,23 +241,22 @@ end
 # ============================================================================
 
 """
-    pw_trace_shadow_rays_kernel!(pixel_L, shadow_queue_items, shadow_queue_size,
-                                  accel, max_queued)
+    pw_trace_shadow_rays_kernel!(pixel_L, shadow_queue, accel, max_queued)
 
 Trace shadow rays and accumulate unoccluded contributions to pixel buffer.
 """
 @kernel inbounds=true function pw_trace_shadow_rays_kernel!(
     pixel_L,  # Flat array: 4 floats per pixel (spectral)
-    @Const(shadow_queue_items), @Const(shadow_queue_size),
+    @Const(shadow_queue),
     @Const(accel),
     @Const(max_queued::Int32)
 )
     idx = @index(Global)
 
      if idx <= max_queued
-        current_size = shadow_queue_size[1]
+        current_size = shadow_queue.size[1]
         if idx <= current_size
-            work = shadow_queue_items[idx]
+            work = shadow_queue.items[idx]
 
             # Check for occlusion using any_hit
             # Create ray with limited t_max
@@ -304,29 +300,23 @@ end
 # ============================================================================
 
 """
-    pw_handle_escaped_rays_kernel!(pixel_L, escaped_queue_items, escaped_queue_size,
-                                    lights, rgb2spec_table, max_queued)
+    pw_handle_escaped_rays_kernel!(pixel_L, escaped_queue, lights, rgb2spec_table, max_queued)
 
 Handle rays that escaped the scene by evaluating environment lights.
 """
 @kernel inbounds=true function pw_handle_escaped_rays_kernel!(
     pixel_L,
-    @Const(escaped_queue_items), @Const(escaped_queue_size),
+    @Const(escaped_queue),
     @Const(lights),  # Tuple of lights
-    @Const(rgb2spec_scale),  # RGB to spectrum table scale array
-    @Const(rgb2spec_coeffs), # RGB to spectrum table coefficients
-    @Const(rgb2spec_res::Int32),  # RGB to spectrum table resolution
+    @Const(rgb2spec_table),
     @Const(max_queued::Int32)
 )
     idx = @index(Global)
 
-    # Reconstruct table struct from components for GPU compatibility
-    rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
-
      if idx <= max_queued
-        current_size = escaped_queue_size[1]
+        current_size = escaped_queue.size[1]
         if idx <= current_size
-            work = escaped_queue_items[idx]
+            work = escaped_queue.items[idx]
 
             # Evaluate environment lights for this direction
             Le = evaluate_escaped_ray_spectral(rgb2spec_table, lights, work.ray_d, work.lambda)
@@ -393,23 +383,22 @@ end
 # ============================================================================
 
 """
-    pw_handle_hit_area_lights_kernel!(pixel_L, hit_light_queue_items, hit_light_queue_size,
-                                       materials, max_queued)
+    pw_handle_hit_area_lights_kernel!(pixel_L, hit_light_queue, materials, max_queued)
 
 Handle rays that hit emissive surfaces.
 """
 @kernel inbounds=true function pw_handle_hit_area_lights_kernel!(
     pixel_L,
-    @Const(hit_light_queue_items), @Const(hit_light_queue_size),
+    @Const(hit_light_queue),
     @Const(materials),
     @Const(max_queued::Int32)
 )
     idx = @index(Global)
 
      if idx <= max_queued
-        current_size = hit_light_queue_size[1]
+        current_size = hit_light_queue.size[1]
         if idx <= current_size
-            work = hit_light_queue_items[idx]
+            work = hit_light_queue.items[idx]
 
             # Get emission from material
             Le = get_emission_spectral_dispatch(
@@ -473,12 +462,12 @@ function pw_trace_rays!(
 
     kernel! = pw_trace_rays_kernel!(backend)
     kernel!(
-        escaped_queue.items, escaped_queue.size,
-        hit_light_queue.items, hit_light_queue.size,
-        material_queue.items, material_queue.size,
-        ray_queue.items, ray_queue.size,
-        accel, materials, Int32(n);
-        ndrange=Int(n)
+        escaped_queue,
+        hit_light_queue,
+        material_queue,
+        ray_queue,
+        accel, materials, ray_queue.capacity;
+        ndrange=Int(ray_queue.capacity)
     )
 
     KernelAbstractions.synchronize(backend)
@@ -500,7 +489,7 @@ function pw_trace_shadow_rays!(
     n == 0 && return nothing
 
     kernel! = pw_trace_shadow_rays_kernel!(backend)
-    kernel!(pixel_L, shadow_queue.items, shadow_queue.size, accel, Int32(n); ndrange=Int(n))
+    kernel!(pixel_L, shadow_queue, accel, shadow_queue.capacity; ndrange=Int(shadow_queue.capacity))
 
     KernelAbstractions.synchronize(backend)
     return nothing
@@ -523,10 +512,10 @@ function pw_handle_escaped_rays!(
 
     kernel! = pw_handle_escaped_rays_kernel!(backend)
     kernel!(
-        pixel_L, escaped_queue.items, escaped_queue.size, lights,
-        rgb2spec_table.scale, rgb2spec_table.coeffs, rgb2spec_table.res,
-        Int32(n);
-        ndrange=Int(n)
+        pixel_L, escaped_queue, lights,
+        rgb2spec_table,
+        escaped_queue.capacity;
+        ndrange=Int(escaped_queue.capacity)
     )
 
     KernelAbstractions.synchronize(backend)
@@ -548,7 +537,7 @@ function pw_handle_hit_area_lights!(
     n == 0 && return nothing
 
     kernel! = pw_handle_hit_area_lights_kernel!(backend)
-    kernel!(pixel_L, hit_light_queue.items, hit_light_queue.size, materials, Int32(n); ndrange=Int(n))
+    kernel!(pixel_L, hit_light_queue, materials, hit_light_queue.capacity; ndrange=Int(hit_light_queue.capacity))
 
     KernelAbstractions.synchronize(backend)
     return nothing

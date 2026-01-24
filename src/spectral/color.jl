@@ -39,9 +39,9 @@ Uses KernelAbstractions backend for allocation.
 """
 function to_gpu(backend, table::CIEXYZTable)
     CIEXYZTable(
-        transfer(backend, table.cie_x),
-        transfer(backend, table.cie_y),
-        transfer(backend, table.cie_z)
+        adapt(backend, table.cie_x),
+        adapt(backend, table.cie_y),
+        adapt(backend, table.cie_z)
     )
 end
 

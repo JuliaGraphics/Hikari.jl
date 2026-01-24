@@ -64,39 +64,37 @@ to the queue matching their material type.
 """
 @kernel inbounds=true function vp_process_surface_hits_multi_kernel!(
     # Output - per-type material queues (up to 16 types supported)
-    mat_items_1, mat_size_1,
-    mat_items_2, mat_size_2,
-    mat_items_3, mat_size_3,
-    mat_items_4, mat_size_4,
-    mat_items_5, mat_size_5,
-    mat_items_6, mat_size_6,
-    mat_items_7, mat_size_7,
-    mat_items_8, mat_size_8,
-    mat_items_9, mat_size_9,
-    mat_items_10, mat_size_10,
-    mat_items_11, mat_size_11,
-    mat_items_12, mat_size_12,
-    mat_items_13, mat_size_13,
-    mat_items_14, mat_size_14,
-    mat_items_15, mat_size_15,
-    mat_items_16, mat_size_16,
+    mat_queue_1,
+    mat_queue_2,
+    mat_queue_3,
+    mat_queue_4,
+    mat_queue_5,
+    mat_queue_6,
+    mat_queue_7,
+    mat_queue_8,
+    mat_queue_9,
+    mat_queue_10,
+    mat_queue_11,
+    mat_queue_12,
+    mat_queue_13,
+    mat_queue_14,
+    mat_queue_15,
+    mat_queue_16,
     pixel_L,
     # Input
-    @Const(hit_items), @Const(hit_size),
+    @Const(hit_queue),
     @Const(materials),
     @Const(textures),
-    @Const(rgb2spec_scale), @Const(rgb2spec_coeffs), @Const(rgb2spec_res::Int32),
+    @Const(rgb2spec_table),
     @Const(num_types::Int32),
     @Const(max_queued::Int32)
 )
     idx = @index(Global)
 
-    rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
-
     @inbounds if idx <= max_queued
-        current_size = hit_size[1]
+        current_size = hit_queue.size[1]
         if idx <= current_size
-            work = hit_items[idx]
+            work = hit_queue.items[idx]
 
             wo = -work.ray.d
 
@@ -165,85 +163,37 @@ to the queue matching their material type.
             # Route to correct per-type queue based on material_type
             mat_type = material_idx.material_type
             if mat_type == UInt8(1) && num_types >= Int32(1)
-                new_idx = @atomic mat_size_1[1] += Int32(1)
-                if new_idx <= length(mat_items_1)
-                    mat_items_1[new_idx] = mat_work
-                end
+                push!(mat_queue_1, mat_work)
             elseif mat_type == UInt8(2) && num_types >= Int32(2)
-                new_idx = @atomic mat_size_2[1] += Int32(1)
-                if new_idx <= length(mat_items_2)
-                    mat_items_2[new_idx] = mat_work
-                end
+                push!(mat_queue_2, mat_work)
             elseif mat_type == UInt8(3) && num_types >= Int32(3)
-                new_idx = @atomic mat_size_3[1] += Int32(1)
-                if new_idx <= length(mat_items_3)
-                    mat_items_3[new_idx] = mat_work
-                end
+                push!(mat_queue_3, mat_work)
             elseif mat_type == UInt8(4) && num_types >= Int32(4)
-                new_idx = @atomic mat_size_4[1] += Int32(1)
-                if new_idx <= length(mat_items_4)
-                    mat_items_4[new_idx] = mat_work
-                end
+                push!(mat_queue_4, mat_work)
             elseif mat_type == UInt8(5) && num_types >= Int32(5)
-                new_idx = @atomic mat_size_5[1] += Int32(1)
-                if new_idx <= length(mat_items_5)
-                    mat_items_5[new_idx] = mat_work
-                end
+                push!(mat_queue_5, mat_work)
             elseif mat_type == UInt8(6) && num_types >= Int32(6)
-                new_idx = @atomic mat_size_6[1] += Int32(1)
-                if new_idx <= length(mat_items_6)
-                    mat_items_6[new_idx] = mat_work
-                end
+                push!(mat_queue_6, mat_work)
             elseif mat_type == UInt8(7) && num_types >= Int32(7)
-                new_idx = @atomic mat_size_7[1] += Int32(1)
-                if new_idx <= length(mat_items_7)
-                    mat_items_7[new_idx] = mat_work
-                end
+                push!(mat_queue_7, mat_work)
             elseif mat_type == UInt8(8) && num_types >= Int32(8)
-                new_idx = @atomic mat_size_8[1] += Int32(1)
-                if new_idx <= length(mat_items_8)
-                    mat_items_8[new_idx] = mat_work
-                end
+                push!(mat_queue_8, mat_work)
             elseif mat_type == UInt8(9) && num_types >= Int32(9)
-                new_idx = @atomic mat_size_9[1] += Int32(1)
-                if new_idx <= length(mat_items_9)
-                    mat_items_9[new_idx] = mat_work
-                end
+                push!(mat_queue_9, mat_work)
             elseif mat_type == UInt8(10) && num_types >= Int32(10)
-                new_idx = @atomic mat_size_10[1] += Int32(1)
-                if new_idx <= length(mat_items_10)
-                    mat_items_10[new_idx] = mat_work
-                end
+                push!(mat_queue_10, mat_work)
             elseif mat_type == UInt8(11) && num_types >= Int32(11)
-                new_idx = @atomic mat_size_11[1] += Int32(1)
-                if new_idx <= length(mat_items_11)
-                    mat_items_11[new_idx] = mat_work
-                end
+                push!(mat_queue_11, mat_work)
             elseif mat_type == UInt8(12) && num_types >= Int32(12)
-                new_idx = @atomic mat_size_12[1] += Int32(1)
-                if new_idx <= length(mat_items_12)
-                    mat_items_12[new_idx] = mat_work
-                end
+                push!(mat_queue_12, mat_work)
             elseif mat_type == UInt8(13) && num_types >= Int32(13)
-                new_idx = @atomic mat_size_13[1] += Int32(1)
-                if new_idx <= length(mat_items_13)
-                    mat_items_13[new_idx] = mat_work
-                end
+                push!(mat_queue_13, mat_work)
             elseif mat_type == UInt8(14) && num_types >= Int32(14)
-                new_idx = @atomic mat_size_14[1] += Int32(1)
-                if new_idx <= length(mat_items_14)
-                    mat_items_14[new_idx] = mat_work
-                end
+                push!(mat_queue_14, mat_work)
             elseif mat_type == UInt8(15) && num_types >= Int32(15)
-                new_idx = @atomic mat_size_15[1] += Int32(1)
-                if new_idx <= length(mat_items_15)
-                    mat_items_15[new_idx] = mat_work
-                end
+                push!(mat_queue_15, mat_work)
             elseif mat_type == UInt8(16) && num_types >= Int32(16)
-                new_idx = @atomic mat_size_16[1] += Int32(1)
-                if new_idx <= length(mat_items_16)
-                    mat_items_16[new_idx] = mat_work
-                end
+                push!(mat_queue_16, mat_work)
             end
             end  # end if !is_pure_emissive_dispatch
         end
@@ -263,12 +213,12 @@ Uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
 """
 @kernel inbounds=true function vp_evaluate_single_type_kernel!(
     # Output
-    next_ray_items, next_ray_size,
+    next_ray_queue,
     # Input - queue for THIS material type only
-    @Const(material_items), @Const(material_size),
+    @Const(material_queue),
     @Const(mat_array),  # The specific material array for this type
     @Const(textures),
-    @Const(rgb2spec_scale), @Const(rgb2spec_coeffs), @Const(rgb2spec_res::Int32),
+    @Const(rgb2spec_table),
     @Const(max_depth::Int32), @Const(max_queued::Int32),
     @Const(do_regularize::Bool),
     # Pre-computed Sobol samples (SOA layout)
@@ -276,18 +226,16 @@ Uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
 )
     idx = @index(Global)
 
-    rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
-
-    @inbounds if idx <= material_size[1]
-        work = material_items[idx]
+    @inbounds if idx <= material_queue.size[1]
+        work = material_queue.items[idx]
 
         # Direct lookup - all items have same type, so mat_array is correct
         mat = mat_array[work.material_idx.material_idx]
 
         _evaluate_typed_material!(
-            next_ray_items, next_ray_size,
+            next_ray_queue,
             work, mat, textures, rgb2spec_table,
-            max_depth, max_queued, do_regularize,
+            max_depth, do_regularize,
             pixel_samples_indirect_uc, pixel_samples_indirect_u, pixel_samples_indirect_rr
         )
     end
@@ -299,13 +247,12 @@ Inner evaluation for a typed material (no dispatch needed).
 Uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
 """
 @propagate_inbounds function _evaluate_typed_material!(
-    next_ray_items, next_ray_size,
+    next_ray_queue,
     work::VPMaterialEvalWorkItem,
     mat,  # Concrete material type (known at compile time)
     textures,
     rgb2spec_table,
     max_depth::Int32,
-    max_queued::Int32,
     do_regularize::Bool,
     # Pre-computed Sobol samples (SOA layout)
     pixel_samples_indirect_uc,
@@ -378,10 +325,7 @@ Uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
                 new_medium
             )
 
-            new_idx = @atomic next_ray_size[1] += Int32(1)
-            if new_idx <= max_queued
-                next_ray_items[new_idx] = ray_item
-            end
+            push!(next_ray_queue, ray_item)
         end
     end
     return
@@ -447,39 +391,24 @@ function vp_process_surface_hits_coherent!(
     reset_queues!(backend, multi_queue)
 
     # Pad queues to 16 for kernel (supports up to 16 material types)
-    dummy_items = KernelAbstractions.allocate(backend, VPMaterialEvalWorkItem, 1)
-    dummy_size = KernelAbstractions.allocate(backend, Int32, 1)
+    # Create a dummy queue for unused slots
+    dummy_queue = WorkQueue{VPMaterialEvalWorkItem}(backend, 1)
 
-    items = ntuple(16) do i
-        i <= N ? multi_queue.queues[i].items : dummy_items
-    end
-    sizes = ntuple(16) do i
-        i <= N ? multi_queue.queues[i].size : dummy_size
+    queues = ntuple(16) do i
+        i <= N ? multi_queue.queues[i] : dummy_queue
     end
 
     kernel! = vp_process_surface_hits_multi_kernel!(backend)
     kernel!(
-        items[1], sizes[1],
-        items[2], sizes[2],
-        items[3], sizes[3],
-        items[4], sizes[4],
-        items[5], sizes[5],
-        items[6], sizes[6],
-        items[7], sizes[7],
-        items[8], sizes[8],
-        items[9], sizes[9],
-        items[10], sizes[10],
-        items[11], sizes[11],
-        items[12], sizes[12],
-        items[13], sizes[13],
-        items[14], sizes[14],
-        items[15], sizes[15],
-        items[16], sizes[16],
+        queues[1], queues[2], queues[3], queues[4],
+        queues[5], queues[6], queues[7], queues[8],
+        queues[9], queues[10], queues[11], queues[12],
+        queues[13], queues[14], queues[15], queues[16],
         state.pixel_L,
-        state.hit_surface_queue.items, state.hit_surface_queue.size,
+        state.hit_surface_queue,
         materials,
         textures,
-        state.rgb2spec_table.scale, state.rgb2spec_table.coeffs, state.rgb2spec_table.res,
+        state.rgb2spec_table,
         Int32(N),
         state.hit_surface_queue.capacity;
         ndrange=Int(state.hit_surface_queue.capacity)
@@ -528,11 +457,11 @@ function vp_evaluate_materials_coherent!(
         # Launch type-specialized kernel (Julia specializes on mat_array type)
         kernel! = vp_evaluate_single_type_kernel!(backend)
         kernel!(
-            output_queue.items, output_queue.size,
-            type_queue.items, type_queue.size,
+            output_queue,
+            type_queue,
             mat_array,
             textures,
-            state.rgb2spec_table.scale, state.rgb2spec_table.coeffs, state.rgb2spec_table.res,
+            state.rgb2spec_table,
             state.max_depth, output_queue.capacity, regularize,
             pixel_samples.indirect_uc, pixel_samples.indirect_u, pixel_samples.indirect_rr;
             ndrange=Int(type_queue.capacity)  # pbrt-v4 ForAllQueued pattern
@@ -549,8 +478,8 @@ function _copy_multi_to_material_queue!(backend, state::VolPathState, multi_queu
         type_queue = multi_queue.queues[type_idx]
         kernel! = _copy_queue_kernel!(backend)
         kernel!(
-            state.material_queue.items, state.material_queue.size,
-            type_queue.items, type_queue.size,
+            state.material_queue,
+            type_queue,
             state.material_queue.capacity;
             ndrange=Int(type_queue.capacity)
         )
@@ -558,17 +487,14 @@ function _copy_multi_to_material_queue!(backend, state::VolPathState, multi_queu
 end
 
 @kernel inbounds=true function _copy_queue_kernel!(
-    dst_items, dst_size,
-    @Const(src_items), @Const(src_size),
+    dst_queue,
+    @Const(src_queue),
     @Const(max_dst::Int32)
 )
     idx = @index(Global)
-    @inbounds if idx <= src_size[1]
-        work = src_items[idx]
-        new_idx = Atomix.@atomic dst_size[1] += Int32(1)
-        if new_idx <= max_dst
-            dst_items[new_idx] = work
-        end
+    @inbounds if idx <= src_queue.size[1]
+        work = src_queue.items[idx]
+        push!(dst_queue, work)
     end
 end
 
@@ -618,12 +544,12 @@ function vp_sample_direct_lighting_from_queue!(
 
     kernel! = vp_sample_surface_direct_lighting_kernel!(backend)
     kernel!(
-        state.shadow_queue.items, state.shadow_queue.size,
-        mat_queue.items, mat_queue.size,
+        state.shadow_queue,
+        mat_queue,
         materials,
         textures,
         lights,
-        state.rgb2spec_table.scale, state.rgb2spec_table.coeffs, state.rgb2spec_table.res,
+        state.rgb2spec_table,
         state.light_sampler_p, state.light_sampler_q, state.light_sampler_alias,
         state.num_lights, state.shadow_queue.capacity,
         pixel_samples.direct_uc, pixel_samples.direct_u;
@@ -684,13 +610,13 @@ function vp_evaluate_materials_sorted!(
 
     kernel! = vp_evaluate_materials_sorted_kernel!(backend)
     kernel!(
-        output_queue.items, output_queue.size,
+        output_queue,
         sorted_items, Int32(n_total),
         materials,
         textures,
         media,
-        state.rgb2spec_table.scale, state.rgb2spec_table.coeffs, state.rgb2spec_table.res,
-        state.max_depth, output_queue.capacity, regularize,
+        state.rgb2spec_table,
+        state.max_depth, regularize,
         pixel_samples.indirect_uc, pixel_samples.indirect_u, pixel_samples.indirect_rr;
         ndrange=Int(n_total)
     )
@@ -705,7 +631,7 @@ function _count_material_types(backend, queue::WorkQueue{VPMaterialEvalWorkItem}
     n = length(queue)
     if n > 0
         kernel! = _count_types_kernel!(backend)
-        kernel!(counts_gpu, queue.items, queue.size, Int32(N); ndrange=Int(queue.capacity))
+        kernel!(counts_gpu, queue, Int32(N); ndrange=Int(queue.capacity))
     end
 
     return Int.(Array(counts_gpu))
@@ -713,13 +639,13 @@ end
 
 @kernel inbounds=true function _count_types_kernel!(
     counts,
-    @Const(items), @Const(size),
+    @Const(queue),
     @Const(num_types::Int32)
 )
     idx = @index(Global)
 
-    @inbounds if idx <= size[1]
-        work = items[idx]
+    @inbounds if idx <= queue.size[1]
+        work = queue.items[idx]
         mat_type = Int32(work.material_idx.material_type)
         if mat_type >= Int32(1) && mat_type <= num_types
             Atomix.@atomic counts[mat_type] += Int32(1)
@@ -745,7 +671,7 @@ function _scatter_by_material_type!(
         kernel! = _scatter_kernel!(backend)
         kernel!(
             dst_items, offsets_gpu, counters_gpu,
-            src_queue.items, src_queue.size,
+            src_queue,
             Int32(N);
             ndrange=Int(src_queue.capacity)
         )
@@ -755,13 +681,13 @@ end
 @kernel inbounds=true function _scatter_kernel!(
     dst_items,
     @Const(offsets), counters,
-    @Const(src_items), @Const(src_size),
+    @Const(src_queue),
     @Const(num_types::Int32)
 )
     idx = @index(Global)
 
-    @inbounds if idx <= src_size[1]
-        work = src_items[idx]
+    @inbounds if idx <= src_queue.size[1]
+        work = src_queue.items[idx]
         mat_type = Int32(work.material_idx.material_type)
 
         if mat_type >= Int32(1) && mat_type <= num_types
@@ -775,26 +701,24 @@ end
 end
 
 @kernel inbounds=true function vp_evaluate_materials_sorted_kernel!(
-    next_ray_items, next_ray_size,
+    next_ray_queue,
     @Const(material_items), @Const(material_count::Int32),
     @Const(materials),
     @Const(textures),
     @Const(media),
-    @Const(rgb2spec_scale), @Const(rgb2spec_coeffs), @Const(rgb2spec_res::Int32),
-    @Const(max_depth::Int32), @Const(max_queued::Int32),
+    @Const(rgb2spec_table),
+    @Const(max_depth::Int32),
     @Const(do_regularize::Bool),
     # Pre-computed Sobol samples (SOA layout)
     @Const(pixel_samples_indirect_uc), @Const(pixel_samples_indirect_u), @Const(pixel_samples_indirect_rr)
 )
     idx = @index(Global)
 
-    rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
-
     @inbounds if idx <= material_count
         work = material_items[idx]
         evaluate_material_inner!(
-            next_ray_items, next_ray_size,
-            work, materials, textures, rgb2spec_table, max_depth, max_queued,
+            next_ray_queue,
+            work, materials, textures, rgb2spec_table, max_depth,
             do_regularize,
             pixel_samples_indirect_uc, pixel_samples_indirect_u, pixel_samples_indirect_rr
         )

@@ -435,7 +435,15 @@ Convert RGBToSpectrumTable to use GPU-compatible arrays.
 Uses KernelAbstractions backend for allocation.
 """
 function to_gpu(backend, table::RGBToSpectrumTable)
-    scale_gpu = transfer(backend, table.scale)
-    coeffs_gpu = transfer(backend, table.coeffs)
+    scale_gpu = adapt(backend, table.scale)
+    coeffs_gpu = adapt(backend, table.coeffs)
     return RGBToSpectrumTable(table.res, scale_gpu, coeffs_gpu)
+end
+
+function Adapt.adapt_structure(to, table::RGBToSpectrumTable)
+    RGBToSpectrumTable(
+        table.res,
+        Adapt.adapt(to, table.scale),
+        Adapt.adapt(to, table.coeffs),
+    )
 end

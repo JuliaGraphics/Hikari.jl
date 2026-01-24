@@ -188,13 +188,13 @@ begin
     integrator = Hikari.FastWavefront(samples=8)
     # integrator = Hikari.Whitted(samples=8)
     # integrator = Hikari.PhysicalWavefront(samples_per_pixel=10, max_depth=8)
-    # integrator = Hikari.VolPath(samples_per_pixel=10, max_depth=8)
+    sensor = Hikari.FilmSensor(iso=1, white_balance=6500)
+    integrator = Hikari.VolPath(samples=10, max_depth=8)
     gpu_film = to_gpu(Array, film)
     gpu_scene = to_gpu(Array, scene)
     Hikari.clear!(gpu_film)
     @time integrator(gpu_scene, gpu_film, camera)
-
-    Hikari.postprocess!(gpu_film; exposure=1.0f0, tonemap=:aces, gamma=1.2f0)
+    Hikari.postprocess!(gpu_film; sensor, exposure=0.5f0, tonemap=:aces, gamma=2.2f0)
     Array(gpu_film.postprocess)
 end
 

@@ -13,7 +13,7 @@ in scenes with lights of varying intensities (pbrt-v4's PowerLightSampler approa
 Now uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
 """
 @propagate_inbounds function medium_direct_lighting_inner!(
-    shadow_items, shadow_size,
+    shadow_queue,
     work::VPMediumScatterWorkItem,
     lights,
     rgb2spec_table,
@@ -21,7 +21,6 @@ Now uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style
     light_sampler_q,
     light_sampler_alias,
     num_lights::Int32,
-    max_queued::Int32,
     # Pre-computed Sobol samples (SOA layout)
     pixel_samples_direct_uc,
     pixel_samples_direct_u
@@ -104,12 +103,7 @@ Now uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style
                 work.medium_idx  # Shadow ray travels through same medium
             )
 
-            @inbounds begin
-                new_idx = @atomic shadow_size[1] += Int32(1)
-                if new_idx <= max_queued
-                    shadow_items[new_idx] = shadow_item
-                end
-            end
+            push!(shadow_queue, shadow_item)
         end
     end
     return
@@ -129,12 +123,12 @@ Uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
 """
 @kernel inbounds=true function vp_medium_direct_lighting_kernel!(
     # Output
-    shadow_items, shadow_size,
+    shadow_queue,
     # Input
-    @Const(scatter_items), @Const(scatter_size),
+    @Const(scatter_queue),
     @Const(lights),
     @Const(media),
-    @Const(rgb2spec_scale), @Const(rgb2spec_coeffs), @Const(rgb2spec_res::Int32),
+    @Const(rgb2spec_table),
     @Const(light_sampler_p), @Const(light_sampler_q), @Const(light_sampler_alias),
     @Const(num_lights::Int32), @Const(max_queued::Int32),
     # Pre-computed Sobol samples (SOA layout)
@@ -142,17 +136,15 @@ Uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
 )
     idx = @index(Global)
 
-    rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
-
     @inbounds if idx <= max_queued
-        current_size = scatter_size[1]
+        current_size = scatter_queue.size[1]
         if idx <= current_size
-            work = scatter_items[idx]
+            work = scatter_queue.items[idx]
             medium_direct_lighting_inner!(
-                shadow_items, shadow_size,
+                shadow_queue,
                 work, lights, rgb2spec_table,
                 light_sampler_p, light_sampler_q, light_sampler_alias,
-                num_lights, max_queued,
+                num_lights,
                 pixel_samples_direct_uc, pixel_samples_direct_u
             )
         end
@@ -168,10 +160,9 @@ end
 Now uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
 """
 @propagate_inbounds function medium_scatter_inner!(
-    ray_items, ray_size,
+    ray_queue,
     work::VPMediumScatterWorkItem,
     max_depth::Int32,
-    max_queued::Int32,
     # Pre-computed Sobol samples (SOA layout)
     pixel_samples_indirect_u
 )
@@ -220,12 +211,7 @@ Now uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style
             work.medium_idx   # Stay in same medium
         )
 
-        @inbounds begin
-            new_idx = @atomic ray_size[1] += Int32(1)
-            if new_idx <= max_queued
-                ray_items[new_idx] = ray_item
-            end
-        end
+        push!(ray_queue, ray_item)
     end
     return
 end
@@ -243,9 +229,9 @@ Uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
 """
 @kernel inbounds=true function vp_medium_scatter_kernel!(
     # Output
-    ray_items, ray_size,
+    ray_queue,
     # Input
-    @Const(scatter_items), @Const(scatter_size),
+    @Const(scatter_queue),
     @Const(max_depth::Int32), @Const(max_queued::Int32),
     # Pre-computed Sobol samples (SOA layout)
     @Const(pixel_samples_indirect_u)
@@ -253,10 +239,10 @@ Uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
     idx = @index(Global)
 
     @inbounds if idx <= max_queued
-        current_size = scatter_size[1]
+        current_size = scatter_queue.size[1]
         if idx <= current_size
-            work = scatter_items[idx]
-            medium_scatter_inner!(ray_items, ray_size, work, max_depth, max_queued, pixel_samples_indirect_u)
+            work = scatter_queue.items[idx]
+            medium_scatter_inner!(ray_queue, work, max_depth, pixel_samples_indirect_u)
         end
     end
 end
@@ -286,11 +272,11 @@ function vp_sample_medium_direct_lighting!(
 
     kernel! = vp_medium_direct_lighting_kernel!(backend)
     kernel!(
-        state.shadow_queue.items, state.shadow_queue.size,
-        state.medium_scatter_queue.items, state.medium_scatter_queue.size,
+        state.shadow_queue,
+        state.medium_scatter_queue,
         lights,
         media,
-        state.rgb2spec_table.scale, state.rgb2spec_table.coeffs, state.rgb2spec_table.res,
+        state.rgb2spec_table,
         state.light_sampler_p, state.light_sampler_q, state.light_sampler_alias,
         state.num_lights, state.shadow_queue.capacity,
         pixel_samples.direct_uc, pixel_samples.direct_u;
@@ -321,8 +307,8 @@ function vp_sample_medium_scatter!(
 
     kernel! = vp_medium_scatter_kernel!(backend)
     kernel!(
-        output_queue.items, output_queue.size,
-        state.medium_scatter_queue.items, state.medium_scatter_queue.size,
+        output_queue,
+        state.medium_scatter_queue,
         state.max_depth, output_queue.capacity,
         pixel_samples.indirect_u;
         ndrange=Int(state.medium_scatter_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation

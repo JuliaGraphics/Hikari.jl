@@ -524,7 +524,7 @@ function pw_update_aux_from_material_queue!(
         film.depth,
         material_queue.items, material_queue.size,
         materials,
-        rgb2spec_table.scale, rgb2spec_table.coeffs, rgb2spec_table.res,
+        rgb2spec_table,
         width, height, Int32(n);
         ndrange=Int(n)
     )
@@ -536,7 +536,7 @@ end
 """
     pw_update_aux_kernel!(aux_albedo, aux_normal, aux_depth,
                            material_queue_items, material_queue_size,
-                           materials, rgb2spec_scale, rgb2spec_coeffs, rgb2spec_res,
+                           materials, rgb2spec_table,
                            width, height, max_queued)
 
 Kernel to update auxiliary buffers from depth=0 material queue items.
@@ -547,16 +547,11 @@ Kernel to update auxiliary buffers from depth=0 material queue items.
     aux_depth,     # Float32 matrix (height × width)
     @Const(material_queue_items), @Const(material_queue_size),
     @Const(materials),
-    @Const(rgb2spec_scale),  # RGB to spectrum table scale array
-    @Const(rgb2spec_coeffs), # RGB to spectrum table coefficients
-    @Const(rgb2spec_res::Int32),  # RGB to spectrum table resolution
+    @Const(rgb2spec_table),
     @Const(width::Int32), @Const(height::Int32),
     @Const(max_queued::Int32)
 )
     idx = @index(Global)
-
-    # Reconstruct table struct from components for GPU compatibility
-    rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
 
      if idx <= max_queued
         current_size = material_queue_size[1]

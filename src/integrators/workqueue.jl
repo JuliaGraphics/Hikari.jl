@@ -11,47 +11,6 @@ using StructArrays
 using Adapt
 
 # ============================================================================
-# Backend Utilities
-# ============================================================================
-
-"""
-    get_array_type(backend) -> Type
-
-Get the concrete array type for a KernelAbstractions backend.
-Returns the wrapper type (e.g., `CuArray`, `ROCArray`, `Array`).
-"""
-function get_array_type(backend)
-    dummy = KA.allocate(backend, Float32, 1)
-    ArrayType = typeof(dummy).name.wrapper
-    finalize(dummy)  # Clean up immediately
-    return ArrayType
-end
-
-"""
-    transfer(backend, array::AbstractArray) -> AbstractArray
-
-Transfer a CPU array to the specified backend.
-Allocates memory on the backend and copies the data.
-
-This is a convenience function for the common pattern:
-```julia
-gpu_array = KA.allocate(backend, eltype(array), size(array)...)
-KA.copyto!(backend, gpu_array, array)
-```
-
-# Example
-```julia
-cpu_data = rand(Float32, 100)
-gpu_data = transfer(CUDABackend(), cpu_data)
-```
-"""
-function transfer(backend, array::AbstractArray{T,N}) where {T,N}
-    gpu_array = KA.allocate(backend, T, size(array)...)
-    KA.copyto!(backend, gpu_array, array)
-    return gpu_array
-end
-
-# ============================================================================
 # SOA/AOS Array Allocation (following pbrt-v4's SOA pattern)
 # ============================================================================
 
@@ -186,7 +145,7 @@ end
 # ============================================================================
 
 """
-    Adapt.adapt_structure(to, queue::WorkQueue)
+    Adapt.adapt_structure(backend, queue::WorkQueue)
 
 Adapt WorkQueue for use inside GPU kernels. This converts the host-side
 arrays (e.g., CLArray, CuArray) to device-compatible representations
@@ -195,10 +154,10 @@ arrays (e.g., CLArray, CuArray) to device-compatible representations
 This allows passing the entire WorkQueue to a kernel instead of
 passing items and size arrays separately.
 """
-function Adapt.adapt_structure(to, queue::WorkQueue)
+function Adapt.adapt_structure(backend, queue::WorkQueue)
     WorkQueue(
-        Adapt.adapt(to, queue.items),
-        Adapt.adapt(to, queue.size),
+        Adapt.adapt(backend, queue.items),
+        Adapt.adapt(backend, queue.size),
         queue.capacity
     )
 end
@@ -219,9 +178,9 @@ function Base.foreach(f, queue::WorkQueue, args...; workgroupsize=nothing)
     backend = KA.get_backend(queue.items)
     kernel! = _workqueue_map_kernel!(backend)
     if workgroupsize === nothing
-        kernel!(f, queue, args; ndrange=n)
+        kernel!(f, queue, args...; ndrange=n)
     else
-        kernel!(f, queue, args; ndrange=n, workgroupsize=workgroupsize)
+        kernel!(f, queue, args...; ndrange=n, workgroupsize=workgroupsize)
     end
     return nothing
 end

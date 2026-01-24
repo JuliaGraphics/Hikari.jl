@@ -82,31 +82,28 @@ end
 
 @kernel inbounds=true function vp_sample_medium_kernel!(
     # Output queues
-    scatter_items, scatter_size,                       # Real scatter events -> phase sampling
-    hit_surface_items, hit_surface_size,              # Surface hits (ray survived medium)
-    escaped_items, escaped_size,                       # Escaped rays (no surface hit)
+    scatter_queue,                                     # Real scatter events -> phase sampling
+    hit_surface_queue,                                 # Surface hits (ray survived medium)
+    escaped_queue,                                     # Escaped rays (no surface hit)
     pixel_L,                                           # Film (for medium emission)
     # Input
-    @Const(medium_sample_items), @Const(medium_sample_size),
+    @Const(medium_sample_queue),
     @Const(media),                                    # Media tuple
-    @Const(rgb2spec_scale), @Const(rgb2spec_coeffs), @Const(rgb2spec_res::Int32),
+    @Const(rgb2spec_table),
     @Const(max_depth::Int32), @Const(max_queued::Int32)
 )
     idx = @index(Global)
 
-    # Reconstruct RGB to spectrum table
-    rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
-
     @inbounds if idx <= max_queued
-        current_size = medium_sample_size[1]
+        current_size = medium_sample_queue.size[1]
         if idx <= current_size
-            work = medium_sample_items[idx]
+            work = medium_sample_queue.items[idx]
 
             # Run delta tracking for this ray
             sample_medium_interaction!(
-                scatter_items, scatter_size,
-                hit_surface_items, hit_surface_size,
-                escaped_items, escaped_size,
+                scatter_queue,
+                hit_surface_queue,
+                escaped_queue,
                 pixel_L,
                 work, media, rgb2spec_table, max_depth, max_queued
             )
@@ -136,7 +133,7 @@ significantly reducing null scattering events in sparse heterogeneous media.
     r_u::SpectralRadiance,
     r_l::SpectralRadiance,
     rng_state::UInt64,
-    scatter_items, scatter_size,
+    scatter_queue,
     pixel_L,
     work::VPMediumSampleWorkItem,
     media,
@@ -151,7 +148,7 @@ significantly reducing null scattering events in sparse heterogeneous media.
     # Call type-stable iteration (dispatches on iter type)
     return sample_T_maj_loop!(
         iter, T_maj_accum, beta, r_u, r_l, rng_state,
-        scatter_items, scatter_size,
+        scatter_queue,
         pixel_L,
         work, media, medium_type_idx, table, max_depth, max_queued
     )
@@ -159,9 +156,9 @@ end
 
 @propagate_inbounds function sample_medium_interaction!(
     # Output queues
-    scatter_items, scatter_size,
-    hit_surface_items, hit_surface_size,
-    escaped_items, escaped_size,
+    scatter_queue,
+    hit_surface_queue,
+    escaped_queue,
     pixel_L,
     # Input
     work::VPMediumSampleWorkItem,
@@ -195,7 +192,7 @@ end
         media, medium_type_idx,
         rgb2spec_table, work.ray, t_max, work.lambda,
         T_maj_accum, beta, r_u, r_l, rng_state,
-        scatter_items, scatter_size,
+        scatter_queue,
         pixel_L,
         work, media, medium_type_idx, max_depth, max_queued,
         template_grid
@@ -231,12 +228,7 @@ end
             work.prev_intr_p,
             work.prev_intr_n
         )
-        @inbounds begin
-            new_idx = @atomic escaped_size[1] += Int32(1)
-            if new_idx <= max_queued
-                escaped_items[new_idx] = escaped_item
-            end
-        end
+        push!(escaped_queue, escaped_item)
     else
         # Ray reached surface - push to hit_surface_queue for material eval
         hit_item = VPHitSurfaceWorkItem(
@@ -260,12 +252,7 @@ end
             work.medium_idx,
             work.t_max
         )
-        @inbounds begin
-            new_idx = @atomic hit_surface_size[1] += Int32(1)
-            if new_idx <= max_queued
-                hit_surface_items[new_idx] = hit_item
-            end
-        end
+        push!(hit_surface_queue, hit_item)
     end
     return
 end
@@ -293,7 +280,7 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
     r_u::SpectralRadiance,
     r_l::SpectralRadiance,
     rng_state::UInt64,
-    scatter_items, scatter_size,
+    scatter_queue,
     pixel_L,
     work::VPMediumSampleWorkItem,
     media,
@@ -319,7 +306,7 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
         # Sample within this segment
         result = sample_segment!(
             seg, T_maj_accum, beta, r_u, r_l, current_rng,
-            scatter_items, scatter_size,
+            scatter_queue,
             pixel_L,
             work, media, medium_type_idx, rgb2spec_table, max_depth, max_queued
         )
@@ -355,7 +342,7 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
     r_u::SpectralRadiance,
     r_l::SpectralRadiance,
     rng_state::UInt64,
-    scatter_items, scatter_size,
+    scatter_queue,
     pixel_L,
     work::VPMediumSampleWorkItem,
     media,
@@ -460,12 +447,7 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
                 mp.g
             )
 
-            @inbounds begin
-                new_idx = @atomic scatter_size[1] += Int32(1)
-                if new_idx <= max_queued
-                    scatter_items[new_idx] = scatter_item
-                end
-            end
+            push!(scatter_queue, scatter_item)
             return SampleTMajResult(beta, r_u, r_l, current_rng, true)
 
         else
@@ -515,13 +497,13 @@ function vp_sample_medium_interaction!(
 
     kernel! = vp_sample_medium_kernel!(backend)
     kernel!(
-        state.medium_scatter_queue.items, state.medium_scatter_queue.size,
-        state.hit_surface_queue.items, state.hit_surface_queue.size,
-        state.escaped_queue.items, state.escaped_queue.size,
+        state.medium_scatter_queue,
+        state.hit_surface_queue,
+        state.escaped_queue,
         state.pixel_L,
-        state.medium_sample_queue.items, state.medium_sample_queue.size,
+        state.medium_sample_queue,
         media,
-        state.rgb2spec_table.scale, state.rgb2spec_table.coeffs, state.rgb2spec_table.res,
+        state.rgb2spec_table,
         state.max_depth, state.medium_sample_queue.capacity;
         ndrange=Int(state.medium_sample_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
     )

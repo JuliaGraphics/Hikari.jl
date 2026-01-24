@@ -145,9 +145,9 @@ function VolPathState(
     if n_lights > 0
         sampler = PowerLightSampler(lights; scene_radius=scene_radius)
         sampler_data = LightSamplerData(sampler)
-        light_sampler_p = transfer(backend, sampler_data.p)
-        light_sampler_q = transfer(backend, sampler_data.q)
-        light_sampler_alias = transfer(backend, sampler_data.alias)
+        light_sampler_p = adapt(backend, sampler_data.p)
+        light_sampler_q = adapt(backend, sampler_data.q)
+        light_sampler_alias = adapt(backend, sampler_data.alias)
     else
         light_sampler_p = KA.allocate(backend, Float32, 1)
         light_sampler_q = KA.allocate(backend, Float32, 1)

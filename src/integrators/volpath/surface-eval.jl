@@ -18,23 +18,21 @@ Process surface hits:
 """
 @kernel inbounds=true function vp_process_surface_hits_kernel!(
     # Output
-    material_items, material_size,
+    material_queue,
     pixel_L,
     # Input
-    @Const(hit_items), @Const(hit_size),
+    @Const(hit_queue),
     @Const(materials),
     @Const(textures),
-    @Const(rgb2spec_scale), @Const(rgb2spec_coeffs), @Const(rgb2spec_res::Int32),
+    @Const(rgb2spec_table),
     @Const(max_queued::Int32)
 )
     idx = @index(Global)
 
-    rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
-
     @inbounds if idx <= max_queued
-        current_size = hit_size[1]
+        current_size = hit_queue.size[1]
         if idx <= current_size
-            work = hit_items[idx]
+            work = hit_queue.items[idx]
 
             wo = -work.ray.d
 
@@ -101,10 +99,7 @@ Process surface hits:
                     work.current_medium
                 )
 
-                new_idx = @atomic material_size[1] += Int32(1)
-                if new_idx <= length(material_items)
-                    material_items[new_idx] = mat_work
-                end
+                push!(material_queue, mat_work)
             end
         end
     end
@@ -126,12 +121,12 @@ function vp_process_surface_hits!(
 
     kernel! = vp_process_surface_hits_kernel!(backend)
     kernel!(
-        state.material_queue.items, state.material_queue.size,
+        state.material_queue,
         state.pixel_L,
-        state.hit_surface_queue.items, state.hit_surface_queue.size,
+        state.hit_surface_queue,
         materials,
         textures,
-        state.rgb2spec_table.scale, state.rgb2spec_table.coeffs, state.rgb2spec_table.res,
+        state.rgb2spec_table,
         state.material_queue.capacity;
         ndrange=Int(state.hit_surface_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
     )
@@ -151,7 +146,7 @@ in scenes with lights of varying intensities (pbrt-v4's PowerLightSampler approa
 Now uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
 """
 @propagate_inbounds function surface_direct_lighting_inner!(
-    shadow_items, shadow_size,
+    shadow_queue,
     work::VPMaterialEvalWorkItem,
     materials,
     textures,
@@ -229,12 +224,7 @@ Now uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style
                     work.current_medium  # Shadow ray starts in same medium
                 )
 
-                @inbounds begin
-                    new_idx = @atomic shadow_size[1] += Int32(1)
-                    if new_idx <= length(shadow_items)
-                        shadow_items[new_idx] = shadow_item
-                    end
-                end
+                push!(shadow_queue, shadow_item)
             end
         end
     end
@@ -255,13 +245,13 @@ Uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
 """
 @kernel inbounds=true function vp_sample_surface_direct_lighting_kernel!(
     # Output
-    shadow_items, shadow_size,
+    shadow_queue,
     # Input
-    @Const(material_items), @Const(material_size),
+    @Const(material_queue),
     @Const(materials),
     @Const(textures),
     @Const(lights),
-    @Const(rgb2spec_scale), @Const(rgb2spec_coeffs), @Const(rgb2spec_res::Int32),
+    @Const(rgb2spec_table),
     @Const(light_sampler_p), @Const(light_sampler_q), @Const(light_sampler_alias),
     @Const(num_lights::Int32), @Const(max_queued::Int32),
     # Pre-computed Sobol samples (SOA layout)
@@ -269,14 +259,12 @@ Uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
 )
     idx = @index(Global)
 
-    rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
-
     @inbounds if idx <= max_queued
-        current_size = material_size[1]
+        current_size = material_queue.size[1]
         if idx <= current_size
-            work = material_items[idx]
+            work = material_queue.items[idx]
             surface_direct_lighting_inner!(
-                shadow_items, shadow_size,
+                shadow_queue,
                 work, materials, textures, lights, rgb2spec_table,
                 light_sampler_p, light_sampler_q, light_sampler_alias,
                 num_lights,
@@ -308,12 +296,12 @@ function vp_sample_surface_direct_lighting!(
 
     kernel! = vp_sample_surface_direct_lighting_kernel!(backend)
     kernel!(
-        state.shadow_queue.items, state.shadow_queue.size,
-        state.material_queue.items, state.material_queue.size,
+        state.shadow_queue,
+        state.material_queue,
         materials,
         textures,
         lights,
-        state.rgb2spec_table.scale, state.rgb2spec_table.coeffs, state.rgb2spec_table.res,
+        state.rgb2spec_table,
         state.light_sampler_p, state.light_sampler_q, state.light_sampler_alias,
         state.num_lights, state.shadow_queue.capacity,
         pixel_samples.direct_uc, pixel_samples.direct_u;
@@ -333,13 +321,12 @@ end
 Now uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
 """
 @propagate_inbounds function evaluate_material_inner!(
-    next_ray_items, next_ray_size,
+    next_ray_queue,
     work::VPMaterialEvalWorkItem,
     materials,
     textures,
     rgb2spec_table,
     max_depth::Int32,
-    max_queued::Int32,
     do_regularize::Bool,
     # Pre-computed Sobol samples (SOA layout)
     pixel_samples_indirect_uc,
@@ -440,12 +427,7 @@ Now uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style
                 new_medium
             )
 
-            @inbounds begin
-                new_idx = @atomic next_ray_size[1] += Int32(1)
-                if new_idx <= max_queued
-                    next_ray_items[new_idx] = ray_item
-                end
-            end
+            push!(next_ray_queue, ray_item)
         end
     end
     return
@@ -465,13 +447,13 @@ Uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
 """
 @kernel inbounds=true function vp_evaluate_materials_kernel!(
     # Output
-    next_ray_items, next_ray_size,
+    next_ray_queue,
     # Input
-    @Const(material_items), @Const(material_size),
+    @Const(material_queue),
     @Const(materials),
     @Const(textures),
     @Const(media),  # For determining medium after refraction
-    @Const(rgb2spec_scale), @Const(rgb2spec_coeffs), @Const(rgb2spec_res::Int32),
+    @Const(rgb2spec_table),
     @Const(max_depth::Int32), @Const(max_queued::Int32),
     @Const(do_regularize::Bool),  # Whether to apply BSDF regularization
     # Pre-computed Sobol samples (SOA layout)
@@ -479,15 +461,13 @@ Uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
 )
     idx = @index(Global)
 
-    rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
-
     @inbounds if idx <= max_queued
-        current_size = material_size[1]
+        current_size = material_queue.size[1]
         if idx <= current_size
-            work = material_items[idx]
+            work = material_queue.items[idx]
             evaluate_material_inner!(
-                next_ray_items, next_ray_size,
-                work, materials, textures, rgb2spec_table, max_depth, max_queued,
+                next_ray_queue,
+                work, materials, textures, rgb2spec_table, max_depth,
                 do_regularize,
                 pixel_samples_indirect_uc, pixel_samples_indirect_u, pixel_samples_indirect_rr
             )
@@ -523,12 +503,12 @@ function vp_evaluate_materials!(
 
     kernel! = vp_evaluate_materials_kernel!(backend)
     kernel!(
-        output_queue.items, output_queue.size,
-        state.material_queue.items, state.material_queue.size,
+        output_queue,
+        state.material_queue,
         materials,
         textures,
         media,
-        state.rgb2spec_table.scale, state.rgb2spec_table.coeffs, state.rgb2spec_table.res,
+        state.rgb2spec_table,
         state.max_depth, output_queue.capacity, regularize,
         pixel_samples.indirect_uc, pixel_samples.indirect_u, pixel_samples.indirect_rr;
         ndrange=Int(state.material_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation

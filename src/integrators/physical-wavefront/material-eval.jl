@@ -10,35 +10,28 @@
 # ============================================================================
 
 """
-    pw_sample_direct_lighting_kernel!(shadow_queue_items, shadow_queue_size,
-                                       material_queue_items, material_queue_size,
-                                       materials, textures, lights, rgb2spec_table, num_lights, max_queued)
+    pw_sample_direct_lighting_kernel!(shadow_queue, material_queue, ...)
 
 Sample direct lighting for all material evaluation work items.
 For each item, selects a light, samples a direction, evaluates BSDF,
 and creates a shadow ray work item.
 """
 @kernel inbounds=true function pw_sample_direct_lighting_kernel!(
-    shadow_queue_items, shadow_queue_size,
-    @Const(material_queue_items), @Const(material_queue_size),
+    shadow_queue,
+    @Const(material_queue),
     @Const(materials),
     @Const(textures),
     @Const(lights),        # Tuple of lights
-    @Const(rgb2spec_scale),  # RGB to spectrum table scale array
-    @Const(rgb2spec_coeffs), # RGB to spectrum table coefficients
-    @Const(rgb2spec_res::Int32),  # RGB to spectrum table resolution
+    @Const(rgb2spec_table),
     @Const(num_lights::Int32),
     @Const(max_queued::Int32)
 )
     idx = @index(Global)
 
-    # Reconstruct table struct from components for GPU compatibility
-    rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
-
      if idx <= max_queued
-        current_size = material_queue_size[1]
+        current_size = material_queue.size[1]
         if idx <= current_size
-            work = material_queue_items[idx]
+            work = material_queue.items[idx]
 
             # Generate random numbers for light sampling using Julia's RNG
             u_light = rand(Point2f)
@@ -82,9 +75,7 @@ and creates a shadow ray work item.
                             work.pixel_index
                         )
 
-                        # Push to shadow queue
-                        new_idx = @atomic shadow_queue_size[1] += Int32(1)
-                        shadow_queue_items[new_idx] = shadow_item
+                        push!(shadow_queue, shadow_item)
                     end
                 end
             end
@@ -97,10 +88,7 @@ end
 # ============================================================================
 
 """
-    pw_evaluate_materials_kernel!(next_ray_queue_items, next_ray_queue_size,
-                                   pixel_L, material_queue_items, material_queue_size,
-                                   materials, textures, rgb2spec_scale, rgb2spec_coeffs, rgb2spec_res,
-                                   max_depth, max_queued)
+    pw_evaluate_materials_kernel!(next_ray_queue, pixel_L, material_queue, ...)
 
 Evaluate materials for all work items:
 1. Sample BSDF for indirect lighting direction
@@ -108,27 +96,22 @@ Evaluate materials for all work items:
 3. Create continuation ray if path should continue
 """
 @kernel inbounds=true function pw_evaluate_materials_kernel!(
-    next_ray_queue_items, next_ray_queue_size,
+    next_ray_queue,
     pixel_L,
-    @Const(material_queue_items), @Const(material_queue_size),
+    @Const(material_queue),
     @Const(materials),
     @Const(textures),
-    @Const(rgb2spec_scale),  # RGB to spectrum table scale array
-    @Const(rgb2spec_coeffs), # RGB to spectrum table coefficients
-    @Const(rgb2spec_res::Int32),  # RGB to spectrum table resolution
+    @Const(rgb2spec_table),
     @Const(max_depth::Int32),
     @Const(max_queued::Int32),
     @Const(do_regularize::Bool)  # Whether to apply BSDF regularization
 )
     idx = @index(Global)
 
-    # Reconstruct table struct from components for GPU compatibility
-    rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
-
      if idx <= max_queued
-        current_size = material_queue_size[1]
+        current_size = material_queue.size[1]
         if idx <= current_size
-            work = material_queue_items[idx]
+            work = material_queue.items[idx]
 
             # Generate random numbers for BSDF sampling using Julia's RNG
             u = rand(Point2f)
@@ -172,9 +155,7 @@ Evaluate materials for all work items:
                             sample.is_specular, sample.pdf, new_eta_scale
                         )
 
-                        # Push to next ray queue
-                        new_idx = @atomic next_ray_queue_size[1] += Int32(1)
-                        next_ray_queue_items[new_idx] = new_ray
+                        push!(next_ray_queue, new_ray)
                     end
                 end
             end
@@ -210,13 +191,13 @@ function pw_sample_direct_lighting!(
 
     kernel! = pw_sample_direct_lighting_kernel!(backend)
     kernel!(
-        shadow_queue.items, shadow_queue.size,
-        material_queue.items, material_queue.size,
+        shadow_queue,
+        material_queue,
         materials, (),  # textures (empty tuple, ignored on CPU)
         lights,
-        rgb2spec_table.scale, rgb2spec_table.coeffs, rgb2spec_table.res,
-        num_lights, Int32(n);
-        ndrange=Int(n)
+        rgb2spec_table,
+        num_lights, material_queue.capacity;
+        ndrange=Int(material_queue.capacity)
     )
 
     KernelAbstractions.synchronize(backend)
@@ -246,13 +227,13 @@ function pw_evaluate_materials!(
 
     kernel! = pw_evaluate_materials_kernel!(backend)
     kernel!(
-        next_ray_queue.items, next_ray_queue.size,
+        next_ray_queue,
         pixel_L,
-        material_queue.items, material_queue.size,
+        material_queue,
         materials, (),  # textures (empty tuple, ignored on CPU)
-        rgb2spec_table.scale, rgb2spec_table.coeffs, rgb2spec_table.res,
-        max_depth, Int32(n), regularize;
-        ndrange=Int(n)
+        rgb2spec_table,
+        max_depth, material_queue.capacity, regularize;
+        ndrange=Int(material_queue.capacity)
     )
 
     KernelAbstractions.synchronize(backend)
@@ -264,9 +245,7 @@ end
 # ============================================================================
 
 """
-    pw_populate_aux_buffers_kernel!(aux_albedo, aux_normal, aux_depth,
-                                     material_queue_items, material_queue_size,
-                                     materials, rgb2spec_scale, rgb2spec_coeffs, rgb2spec_res, max_queued)
+    pw_populate_aux_buffers_kernel!(aux_albedo, aux_normal, aux_depth, material_queue, ...)
 
 Populate auxiliary buffers for denoising on first bounce.
 Only processes depth=0 items (primary ray hits).
@@ -275,22 +254,17 @@ Only processes depth=0 items (primary ray hits).
     aux_albedo,   # 3 floats per pixel (RGB)
     aux_normal,   # 3 floats per pixel
     aux_depth,    # 1 float per pixel
-    @Const(material_queue_items), @Const(material_queue_size),
+    @Const(material_queue),
     @Const(materials),
-    @Const(rgb2spec_scale),  # RGB to spectrum table scale array
-    @Const(rgb2spec_coeffs), # RGB to spectrum table coefficients
-    @Const(rgb2spec_res::Int32),  # RGB to spectrum table resolution
+    @Const(rgb2spec_table),
     @Const(max_queued::Int32)
 )
     idx = @index(Global)
 
-    # Reconstruct table struct from components for GPU compatibility
-    rgb2spec_table = RGBToSpectrumTable(rgb2spec_res, rgb2spec_scale, rgb2spec_coeffs)
-
      if idx <= max_queued
-        current_size = material_queue_size[1]
+        current_size = material_queue.size[1]
         if idx <= current_size
-            work = material_queue_items[idx]
+            work = material_queue.items[idx]
 
             # Only populate on first bounce
             if work.depth == Int32(0)
@@ -345,11 +319,11 @@ function pw_populate_aux_buffers!(
     kernel! = pw_populate_aux_buffers_kernel!(backend)
     kernel!(
         aux_albedo, aux_normal, aux_depth,
-        material_queue.items, material_queue.size,
+        material_queue,
         materials,
-        rgb2spec_table.scale, rgb2spec_table.coeffs, rgb2spec_table.res,
-        Int32(n);
-        ndrange=Int(n)
+        rgb2spec_table,
+        material_queue.capacity;
+        ndrange=Int(material_queue.capacity)
     )
 
     KernelAbstractions.synchronize(backend)

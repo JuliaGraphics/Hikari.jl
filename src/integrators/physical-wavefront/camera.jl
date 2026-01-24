@@ -10,8 +10,7 @@
 # ============================================================================
 
 """
-    pw_generate_camera_rays_kernel!(ray_queue_items, ray_queue_size,
-                                     wavelengths_per_pixel, pdf_per_pixel,
+    pw_generate_camera_rays_kernel!(ray_queue, wavelengths_per_pixel, pdf_per_pixel,
                                      width, height, camera, sample_idx, rng_base)
 
 Generate camera rays for all pixels with PER-PIXEL wavelength sampling.
@@ -21,8 +20,7 @@ This matches pbrt-v4's approach where each pixel samples its own wavelengths,
 which decorrelates color noise across pixels for faster convergence.
 """
 @kernel inbounds=true function pw_generate_camera_rays_kernel!(
-    ray_queue_items,
-    ray_queue_size,
+    ray_queue,
     wavelengths_per_pixel,  # Output: 4 floats per pixel (lambda values)
     pdf_per_pixel,          # Output: 4 floats per pixel (PDF values)
     @Const(width::Int32),
@@ -83,9 +81,7 @@ which decorrelates color noise across pixels for faster convergence.
             # Create work item with per-pixel wavelengths
             work_item = PWRayWorkItem(raycore_ray, lambda, Int32(idx))
 
-            # Push to queue atomically
-            new_idx = @atomic ray_queue_size[1] += Int32(1)
-            ray_queue_items[new_idx] = work_item
+            push!(ray_queue, work_item)
         end
     end
 end
@@ -115,7 +111,7 @@ function pw_generate_camera_rays!(
     kernel! = pw_generate_camera_rays_kernel!(backend)
 
     kernel!(
-        ray_queue.items, ray_queue.size,
+        ray_queue,
         wavelengths_per_pixel, pdf_per_pixel,
         width, height,
         camera,
