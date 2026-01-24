@@ -9,128 +9,92 @@
 # Process Surface Hits - Emission and Material Queue Setup
 # ============================================================================
 
-"""
-    vp_process_surface_hits_kernel!(...)
-
-Process surface hits:
-1. Add emission from emissive surfaces (with MIS weight)
-2. Create material evaluation work items for BSDF sampling
-"""
-@kernel inbounds=true function vp_process_surface_hits_kernel!(
-    # Output
+@propagate_inbounds function vp_process_surface_hits_kernel!(
+    work,
     material_queue,
     pixel_L,
-    # Input
-    @Const(hit_queue),
-    @Const(materials),
-    @Const(textures),
-    @Const(rgb2spec_table),
-    @Const(max_queued::Int32)
+    materials,
+    textures,
+    rgb2spec_table
 )
-    idx = @index(Global)
+    wo = -work.ray.d
 
-    @inbounds if idx <= max_queued
-        current_size = hit_queue.size[1]
-        if idx <= current_size
-            work = hit_queue.items[idx]
+    # Resolve MixMaterial to get the actual material index
+    # Following pbrt-v4: MixMaterial is resolved at intersection time
+    # using stochastic selection based on the amount texture and a hash
+    material_idx = resolve_mix_material(
+        materials, textures, work.material_idx,
+        work.pi, wo, work.uv
+    )
 
-            wo = -work.ray.d
+    # Check if surface is emissive
+    if is_emissive_dispatch(materials, material_idx)
+        # Get emission
+        Le = get_emission_spectral_dispatch(
+            rgb2spec_table, materials, textures, material_idx,
+            wo, work.n, work.uv, work.lambda
+        )
 
-            # Resolve MixMaterial to get the actual material index
-            # Following pbrt-v4: MixMaterial is resolved at intersection time
-            # using stochastic selection based on the amount texture and a hash
-            material_idx = resolve_mix_material(
-                materials, textures, work.material_idx,
-                work.pi, wo, work.uv
-            )
+        if !is_black(Le)
+            # Apply path throughput
+            contribution = work.beta * Le
 
-            # Check if surface is emissive
-            if is_emissive_dispatch(materials, material_idx)
-                # Get emission
-                Le = get_emission_spectral_dispatch(
-                    rgb2spec_table, materials, textures, material_idx,
-                    wo, work.n, work.uv, work.lambda
-                )
-
-                if !is_black(Le)
-                    # Apply path throughput
-                    contribution = work.beta * Le
-
-                    # MIS weight: on first bounce or specular, no MIS
-                    final_contrib = if work.depth == Int32(0) || work.specular_bounce
-                        contribution / average(work.r_u)
-                    else
-                        # Full MIS weight
-                        contribution / average(work.r_u + work.r_l)
-                    end
-
-                    # Add to pixel
-                    pixel_idx = work.pixel_index
-                    base_idx = (pixel_idx - Int32(1)) * Int32(4)
-
-                    Atomix.@atomic pixel_L[base_idx + Int32(1)] += final_contrib[1]
-                    Atomix.@atomic pixel_L[base_idx + Int32(2)] += final_contrib[2]
-                    Atomix.@atomic pixel_L[base_idx + Int32(3)] += final_contrib[3]
-                    Atomix.@atomic pixel_L[base_idx + Int32(4)] += final_contrib[4]
-                end
+            # MIS weight: on first bounce or specular, no MIS
+            final_contrib = if work.depth == Int32(0) || work.specular_bounce
+                contribution / average(work.r_u)
+            else
+                # Full MIS weight
+                contribution / average(work.r_u + work.r_l)
             end
 
-            # Create material evaluation work item (for non-emissive or mixed materials)
-            # Skip pure emissive materials (using resolved material_idx)
-            if !is_pure_emissive_dispatch(materials, material_idx)
-                mat_work = VPMaterialEvalWorkItem(
-                    work.pi,
-                    work.n,
-                    work.ns,
-                    wo,
-                    work.uv,
-                    material_idx,  # Use resolved material index (MixMaterial already resolved)
-                    work.lambda,
-                    work.pixel_index,
-                    work.beta,
-                    work.r_u,
-                    work.r_l,
-                    work.depth,
-                    work.eta_scale,
-                    work.specular_bounce,
-                    work.any_non_specular_bounces,
-                    work.prev_intr_p,
-                    work.prev_intr_n,
-                    work.current_medium
-                )
+            # Add to pixel
+            pixel_idx = work.pixel_index
+            base_idx = (pixel_idx - Int32(1)) * Int32(4)
 
-                push!(material_queue, mat_work)
-            end
+            Atomix.@atomic pixel_L[base_idx + Int32(1)] += final_contrib[1]
+            Atomix.@atomic pixel_L[base_idx + Int32(2)] += final_contrib[2]
+            Atomix.@atomic pixel_L[base_idx + Int32(3)] += final_contrib[3]
+            Atomix.@atomic pixel_L[base_idx + Int32(4)] += final_contrib[4]
         end
+    end
+
+    # Create material evaluation work item (for non-emissive or mixed materials)
+    # Skip pure emissive materials (using resolved material_idx)
+    if !is_pure_emissive_dispatch(materials, material_idx)
+        mat_work = VPMaterialEvalWorkItem(
+            work.pi,
+            work.n,
+            work.ns,
+            wo,
+            work.uv,
+            material_idx,  # Use resolved material index (MixMaterial already resolved)
+            work.lambda,
+            work.pixel_index,
+            work.beta,
+            work.r_u,
+            work.r_l,
+            work.depth,
+            work.eta_scale,
+            work.specular_bounce,
+            work.any_non_specular_bounces,
+            work.prev_intr_p,
+            work.prev_intr_n,
+            work.current_medium
+        )
+
+        push!(material_queue, mat_work)
     end
 end
 
-"""
-    vp_process_surface_hits!(backend, state, materials, textures)
-
-Process all surface hits.
-"""
-function vp_process_surface_hits!(
-    backend,
-    state::VolPathState,
-    materials,
-    textures
-)
-    n = length(state.hit_surface_queue)
-    n == 0 && return nothing
-
-    kernel! = vp_process_surface_hits_kernel!(backend)
-    kernel!(
+function vp_process_surface_hits!(state::VolPathState, materials, textures)
+    foreach(vp_process_surface_hits_kernel!,
+        state.hit_surface_queue,
         state.material_queue,
         state.pixel_L,
-        state.hit_surface_queue,
         materials,
         textures,
         state.rgb2spec_table,
-        state.material_queue.capacity;
-        ndrange=Int(state.hit_surface_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
     )
-    # No synchronize needed - OpenCL commands queue in order
     return nothing
 end
 
@@ -235,80 +199,39 @@ end
 # Direct Lighting at Surface Hits
 # ============================================================================
 
-"""
-    vp_sample_surface_direct_lighting_kernel!(...)
-
-Sample direct lighting at surface hits using power-weighted light sampling.
-Creates shadow rays for unoccluded light contributions.
-
-Uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
-"""
-@kernel inbounds=true function vp_sample_surface_direct_lighting_kernel!(
-    # Output
+@propagate_inbounds function vp_sample_surface_direct_lighting_kernel!(
+    work,
     shadow_queue,
-    # Input
-    @Const(material_queue),
-    @Const(materials),
-    @Const(textures),
-    @Const(lights),
-    @Const(rgb2spec_table),
-    @Const(light_sampler_p), @Const(light_sampler_q), @Const(light_sampler_alias),
-    @Const(num_lights::Int32), @Const(max_queued::Int32),
-    # Pre-computed Sobol samples (SOA layout)
-    @Const(pixel_samples_direct_uc), @Const(pixel_samples_direct_u)
-)
-    idx = @index(Global)
-
-    @inbounds if idx <= max_queued
-        current_size = material_queue.size[1]
-        if idx <= current_size
-            work = material_queue.items[idx]
-            surface_direct_lighting_inner!(
-                shadow_queue,
-                work, materials, textures, lights, rgb2spec_table,
-                light_sampler_p, light_sampler_q, light_sampler_alias,
-                num_lights,
-                pixel_samples_direct_uc, pixel_samples_direct_u
-            )
-        end
-    end
-end
-
-"""
-    vp_sample_surface_direct_lighting!(backend, state, materials, textures, lights)
-
-Sample direct lighting at all surface material evaluation points.
-Uses power-weighted light sampling from state.light_sampler_* arrays.
-Uses pre-computed Sobol samples from state.pixel_samples.
-"""
-function vp_sample_surface_direct_lighting!(
-    backend,
-    state::VolPathState,
     materials,
     textures,
-    lights
+    lights,
+    rgb2spec_table,
+    light_sampler_p, light_sampler_q, light_sampler_alias,
+    num_lights::Int32,
+    pixel_samples_direct_uc, pixel_samples_direct_u
 )
-    n = length(state.material_queue)
-    n == 0 && return nothing
+    surface_direct_lighting_inner!(
+        shadow_queue,
+        work, materials, textures, lights, rgb2spec_table,
+        light_sampler_p, light_sampler_q, light_sampler_alias,
+        num_lights,
+        pixel_samples_direct_uc, pixel_samples_direct_u
+    )
+end
 
-    # Access SOA components of pixel_samples
+function vp_sample_surface_direct_lighting!(state::VolPathState, materials, textures, lights)
     pixel_samples = state.pixel_samples
-
-    kernel! = vp_sample_surface_direct_lighting_kernel!(backend)
-    kernel!(
-        state.shadow_queue,
+    foreach(vp_sample_surface_direct_lighting_kernel!,
         state.material_queue,
+        state.shadow_queue,
         materials,
         textures,
         lights,
         state.rgb2spec_table,
         state.light_sampler_p, state.light_sampler_q, state.light_sampler_alias,
-        state.num_lights, state.shadow_queue.capacity,
-        pixel_samples.direct_uc, pixel_samples.direct_u;
-        ndrange=Int(state.material_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
+        state.num_lights,
+        pixel_samples.direct_uc, pixel_samples.direct_u,
     )
-
-    KernelAbstractions.synchronize(backend)
     return nothing
 end
 
@@ -437,84 +360,37 @@ end
 # BSDF Sampling and Path Continuation
 # ============================================================================
 
-"""
-    vp_evaluate_materials_kernel!(...)
-
-Sample BSDF at surface hits to generate continuation rays.
-Includes Russian roulette for path termination.
-
-Uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
-"""
-@kernel inbounds=true function vp_evaluate_materials_kernel!(
-    # Output
+@propagate_inbounds function vp_evaluate_materials_kernel!(
+    work,
     next_ray_queue,
-    # Input
-    @Const(material_queue),
-    @Const(materials),
-    @Const(textures),
-    @Const(media),  # For determining medium after refraction
-    @Const(rgb2spec_table),
-    @Const(max_depth::Int32), @Const(max_queued::Int32),
-    @Const(do_regularize::Bool),  # Whether to apply BSDF regularization
-    # Pre-computed Sobol samples (SOA layout)
-    @Const(pixel_samples_indirect_uc), @Const(pixel_samples_indirect_u), @Const(pixel_samples_indirect_rr)
-)
-    idx = @index(Global)
-
-    @inbounds if idx <= max_queued
-        current_size = material_queue.size[1]
-        if idx <= current_size
-            work = material_queue.items[idx]
-            evaluate_material_inner!(
-                next_ray_queue,
-                work, materials, textures, rgb2spec_table, max_depth,
-                do_regularize,
-                pixel_samples_indirect_uc, pixel_samples_indirect_u, pixel_samples_indirect_rr
-            )
-        end
-    end
-end
-
-"""
-    vp_evaluate_materials!(backend, state, materials, textures, media, regularize=true)
-
-Evaluate materials and spawn continuation rays.
-
-When `regularize=true`, near-specular BSDFs are roughened after the first non-specular
-bounce to reduce fireflies (matches pbrt-v4's BSDF::Regularize).
-
-Uses pre-computed Sobol samples from state.pixel_samples.
-"""
-function vp_evaluate_materials!(
-    backend,
-    state::VolPathState,
     materials,
     textures,
-    media,
-    regularize::Bool = true
+    rgb2spec_table,
+    max_depth::Int32,
+    do_regularize::Bool,
+    pixel_samples_indirect_uc, pixel_samples_indirect_u, pixel_samples_indirect_rr
 )
-    n = length(state.material_queue)
-    n == 0 && return nothing
+    evaluate_material_inner!(
+        next_ray_queue,
+        work, materials, textures, rgb2spec_table, max_depth,
+        do_regularize,
+        pixel_samples_indirect_uc, pixel_samples_indirect_u, pixel_samples_indirect_rr
+    )
+end
 
+function vp_evaluate_materials!(state::VolPathState, materials, textures, regularize::Bool = true)
     output_queue = next_ray_queue(state)
-
-    # Access SOA components of pixel_samples
     pixel_samples = state.pixel_samples
-
-    kernel! = vp_evaluate_materials_kernel!(backend)
-    kernel!(
-        output_queue,
+    foreach(vp_evaluate_materials_kernel!,
         state.material_queue,
+        output_queue,
         materials,
         textures,
-        media,
         state.rgb2spec_table,
-        state.max_depth, output_queue.capacity, regularize,
-        pixel_samples.indirect_uc, pixel_samples.indirect_u, pixel_samples.indirect_rr;
-        ndrange=Int(state.material_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
+        state.max_depth,
+        regularize,
+        pixel_samples.indirect_uc, pixel_samples.indirect_u, pixel_samples.indirect_rr,
     )
-
-    KernelAbstractions.synchronize(backend)
     return nothing
 end
 

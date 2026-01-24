@@ -165,7 +165,7 @@ end
 # ============================================================================
 # Map Operations for GPU Kernel Execution
 # ============================================================================
-@kernel function _workqueue_map_kernel!(f, queue, args)
+@kernel function _workqueue_map_kernel!(f, queue, args...)
     i = @index(Global)
     if i <= queue.size[1]
         @inbounds f(queue.items[i], args...)

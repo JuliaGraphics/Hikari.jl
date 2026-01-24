@@ -567,12 +567,12 @@ function render!(
         vp_generate_ray_samples!(backend, state, sample_idx, Int32(depth), sobol_rng)
 
         reset_iteration_queues!(state)
-        vp_trace_rays!(backend, state, accel)
+        vp_trace_rays!(state, accel)
 
         if !isempty(media)
             n_medium = length(state.medium_sample_queue)
             if n_medium > 0
-                vp_sample_medium_interaction!(backend, state, media)
+                vp_sample_medium_interaction!(state, media)
             end
         end
 
@@ -580,52 +580,52 @@ function render!(
             n_scatter = length(state.medium_scatter_queue)
             if n_scatter > 0
                 if count_lights(lights) > 0
-                    vp_sample_medium_direct_lighting!(backend, state, lights, media)
+                    vp_sample_medium_direct_lighting!(state, lights)
                 end
-                vp_sample_medium_scatter!(backend, state)
+                vp_sample_medium_scatter!(state)
             end
         end
 
         n_escaped = length(state.escaped_queue)
         if n_escaped > 0 && count_lights(lights) > 0
-            vp_handle_escaped_rays!(backend, state, lights)
+            vp_handle_escaped_rays!(state, lights)
         end
 
         n_hits = length(state.hit_surface_queue)
         if n_hits > 0
             if vp.material_coherence == :per_type && multi_queue !== nothing
                 reset_queues!(backend, multi_queue)
-                vp_process_surface_hits_coherent!(backend, state, multi_queue, materials, textures)
+                vp_process_surface_hits_coherent!(state, multi_queue, materials, textures)
 
                 # Following pbrt-v4: launch kernels unconditionally, let them check size internally
                 # This avoids expensive GPU→CPU sync from length() / total_size() calls
                 if count_lights(lights) > 0
-                    vp_sample_direct_lighting_coherent!(backend, state, multi_queue, materials, textures, lights)
+                    vp_sample_direct_lighting_coherent!(state, multi_queue, materials, textures, lights)
                 end
 
                 # Shadow rays still need size check since it's a different queue
                 # But we can batch this with other checks later
-                vp_trace_shadow_rays!(backend, state, accel, materials, media)
+                vp_trace_shadow_rays!(state, accel, materials, media)
 
-                vp_evaluate_materials_coherent!(backend, state, multi_queue, materials, textures, media, vp.regularize)
+                vp_evaluate_materials_coherent!(state, multi_queue, materials, textures, vp.regularize)
             else
-                vp_process_surface_hits!(backend, state, materials, textures)
+                vp_process_surface_hits!(state, materials, textures)
 
                 n_material = length(state.material_queue)
                 if n_material > 0 && count_lights(lights) > 0
-                    vp_sample_surface_direct_lighting!(backend, state, materials, textures, lights)
+                    vp_sample_surface_direct_lighting!(state, materials, textures, lights)
                 end
 
                 n_shadow = length(state.shadow_queue)
                 if n_shadow > 0
-                    vp_trace_shadow_rays!(backend, state, accel, materials, media)
+                    vp_trace_shadow_rays!(state, accel, materials, media)
                 end
 
                 if n_material > 0
                     if vp.material_coherence == :sorted
-                        vp_evaluate_materials_sorted!(backend, state, materials, textures, media, vp.regularize)
+                        vp_evaluate_materials_sorted!(state, materials, textures, vp.regularize)
                     else
-                        vp_evaluate_materials!(backend, state, materials, textures, media, vp.regularize)
+                        vp_evaluate_materials!(state, materials, textures, vp.regularize)
                     end
                 end
             end

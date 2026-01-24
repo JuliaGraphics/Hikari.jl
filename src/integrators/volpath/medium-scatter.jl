@@ -113,42 +113,22 @@ end
 # Medium Scatter Kernel (Direct Lighting)
 # ============================================================================
 
-"""
-    vp_medium_direct_lighting_kernel!(...)
-
-Sample direct lighting at medium scattering events using power-weighted light sampling.
-Creates shadow rays for each scatter point.
-
-Uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
-"""
-@kernel inbounds=true function vp_medium_direct_lighting_kernel!(
-    # Output
+@propagate_inbounds function vp_medium_direct_lighting_kernel!(
+    work,
     shadow_queue,
-    # Input
-    @Const(scatter_queue),
-    @Const(lights),
-    @Const(media),
-    @Const(rgb2spec_table),
-    @Const(light_sampler_p), @Const(light_sampler_q), @Const(light_sampler_alias),
-    @Const(num_lights::Int32), @Const(max_queued::Int32),
-    # Pre-computed Sobol samples (SOA layout)
-    @Const(pixel_samples_direct_uc), @Const(pixel_samples_direct_u)
+    lights,
+    rgb2spec_table,
+    light_sampler_p, light_sampler_q, light_sampler_alias,
+    num_lights::Int32,
+    pixel_samples_direct_uc, pixel_samples_direct_u
 )
-    idx = @index(Global)
-
-    @inbounds if idx <= max_queued
-        current_size = scatter_queue.size[1]
-        if idx <= current_size
-            work = scatter_queue.items[idx]
-            medium_direct_lighting_inner!(
-                shadow_queue,
-                work, lights, rgb2spec_table,
-                light_sampler_p, light_sampler_q, light_sampler_alias,
-                num_lights,
-                pixel_samples_direct_uc, pixel_samples_direct_u
-            )
-        end
-    end
+    medium_direct_lighting_inner!(
+        shadow_queue,
+        work, lights, rgb2spec_table,
+        light_sampler_p, light_sampler_q, light_sampler_alias,
+        num_lights,
+        pixel_samples_direct_uc, pixel_samples_direct_u
+    )
 end
 
 # ============================================================================
@@ -220,100 +200,41 @@ end
 # Medium Scatter Kernel (Phase Function Sampling)
 # ============================================================================
 
-"""
-    vp_medium_scatter_kernel!(...)
-
-Sample phase function at scatter points to generate continuation rays.
-
-Uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
-"""
-@kernel inbounds=true function vp_medium_scatter_kernel!(
-    # Output
+@propagate_inbounds function vp_medium_scatter_kernel!(
+    work,
     ray_queue,
-    # Input
-    @Const(scatter_queue),
-    @Const(max_depth::Int32), @Const(max_queued::Int32),
-    # Pre-computed Sobol samples (SOA layout)
-    @Const(pixel_samples_indirect_u)
+    max_depth::Int32,
+    pixel_samples_indirect_u
 )
-    idx = @index(Global)
-
-    @inbounds if idx <= max_queued
-        current_size = scatter_queue.size[1]
-        if idx <= current_size
-            work = scatter_queue.items[idx]
-            medium_scatter_inner!(ray_queue, work, max_depth, pixel_samples_indirect_u)
-        end
-    end
+    medium_scatter_inner!(ray_queue, work, max_depth, pixel_samples_indirect_u)
 end
 
 # ============================================================================
 # High-Level Functions
 # ============================================================================
 
-"""
-    vp_sample_medium_direct_lighting!(backend, state, lights, media)
-
-Sample direct lighting at all medium scatter points.
-Uses power-weighted light sampling from state.light_sampler_* arrays.
-Uses pre-computed Sobol samples from state.pixel_samples.
-"""
-function vp_sample_medium_direct_lighting!(
-    backend,
-    state::VolPathState,
-    lights,
-    media
-)
-    n = length(state.medium_scatter_queue)
-    n == 0 && return nothing
-
-    # Access SOA components of pixel_samples
+function vp_sample_medium_direct_lighting!(state::VolPathState, lights)
     pixel_samples = state.pixel_samples
-
-    kernel! = vp_medium_direct_lighting_kernel!(backend)
-    kernel!(
-        state.shadow_queue,
+    foreach(vp_medium_direct_lighting_kernel!,
         state.medium_scatter_queue,
+        state.shadow_queue,
         lights,
-        media,
         state.rgb2spec_table,
         state.light_sampler_p, state.light_sampler_q, state.light_sampler_alias,
-        state.num_lights, state.shadow_queue.capacity,
-        pixel_samples.direct_uc, pixel_samples.direct_u;
-        ndrange=Int(state.medium_scatter_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
+        state.num_lights,
+        pixel_samples.direct_uc, pixel_samples.direct_u,
     )
-
-    KernelAbstractions.synchronize(backend)
     return nothing
 end
 
-"""
-    vp_sample_medium_scatter!(backend, state)
-
-Sample phase functions at scatter points to generate continuation rays.
-Uses pre-computed Sobol samples from state.pixel_samples.
-"""
-function vp_sample_medium_scatter!(
-    backend,
-    state::VolPathState
-)
-    n = length(state.medium_scatter_queue)
-    n == 0 && return nothing
-
+function vp_sample_medium_scatter!(state::VolPathState)
     output_queue = next_ray_queue(state)
-
-    # Access SOA components of pixel_samples
     pixel_samples = state.pixel_samples
-
-    kernel! = vp_medium_scatter_kernel!(backend)
-    kernel!(
-        output_queue,
+    foreach(vp_medium_scatter_kernel!,
         state.medium_scatter_queue,
-        state.max_depth, output_queue.capacity,
-        pixel_samples.indirect_u;
-        ndrange=Int(state.medium_scatter_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
+        output_queue,
+        state.max_depth,
+        pixel_samples.indirect_u,
     )
-
-    KernelAbstractions.synchronize(backend)
     return nothing
 end

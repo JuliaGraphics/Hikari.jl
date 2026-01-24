@@ -70,167 +70,127 @@ end
 # Primary Ray Intersection Kernel
 # ============================================================================
 
-"""
-    vp_trace_rays_kernel!(...)
-
-Trace rays and classify into queues following pbrt-v4's architecture:
-- Rays in medium -> medium_sample_queue (delta tracking with known t_max)
-- Rays NOT in medium that miss -> escaped_queue
-- Rays NOT in medium that hit -> hit_surface_queue
-
-This implements the key pbrt-v4 pattern: intersection FIRST, then medium sampling.
-For rays in media, we store both the ray and the surface hit info together,
-so delta tracking can run with bounded t_max and process the hit if ray survives.
-"""
-@kernel inbounds=true function vp_trace_rays_kernel!(
-    # Output queues
-    medium_sample_queue,   # Rays in medium with t_max
-    escaped_queue,         # Rays that missed (not in medium)
-    hit_surface_queue,     # Rays that hit (not in medium)
-    # Input
-    @Const(ray_queue),
-    @Const(accel),
-    @Const(max_queued::Int32)
+@propagate_inbounds function vp_trace_rays_kernel!(
+    work,
+    medium_sample_queue,
+    escaped_queue,
+    hit_surface_queue,
+    accel
 )
-    idx = @index(Global)
+    # Trace ray to find closest intersection
+    hit, primitive, t_hit, barycentric = Raycore.closest_hit(accel, work.ray)
 
-    @inbounds if idx <= max_queued
-        current_size = ray_queue.size[1]
-        if idx <= current_size
-            work = ray_queue.items[idx]
+    # Check if ray is currently traveling through a medium
+    if has_medium(work.medium_idx)
+        # Ray is in medium - route to medium_sample_queue with intersection info
+        # Delta tracking will use t_hit as t_max
 
-            # Trace ray to find closest intersection
-            hit, primitive, t_hit, barycentric = Raycore.closest_hit(accel, work.ray)
+        if hit
+            # Have surface hit info for when ray survives delta tracking
+            mat_idx = primitive.metadata::MaterialIndex
+            pi = Point3f(work.ray.o + work.ray.d * t_hit)
+            n = vp_compute_geometric_normal(primitive)
+            uv = vp_compute_uv_barycentric(primitive, barycentric)
+            ns = vp_compute_shading_normal(primitive, barycentric, n)
 
-            # Check if ray is currently traveling through a medium
-            if has_medium(work.medium_idx)
-                # Ray is in medium - route to medium_sample_queue with intersection info
-                # Delta tracking will use t_hit as t_max
+            sample_item = VPMediumSampleWorkItem(
+                work.ray,
+                work.depth,
+                t_hit,
+                work.lambda,
+                work.beta,
+                work.r_u,
+                work.r_l,
+                work.pixel_index,
+                work.eta_scale,
+                work.specular_bounce,
+                work.any_non_specular_bounces,
+                work.prev_intr_p,
+                work.prev_intr_n,
+                work.medium_idx,
+                true,   # has_surface_hit
+                pi, n, ns, uv, mat_idx
+            )
+            push!(medium_sample_queue, sample_item)
+        else
+            # Ray in medium but escaped scene - t_max = Infinity
+            sample_item = VPMediumSampleWorkItem(
+                work.ray,
+                work.depth,
+                Inf32,
+                work.lambda,
+                work.beta,
+                work.r_u,
+                work.r_l,
+                work.pixel_index,
+                work.eta_scale,
+                work.specular_bounce,
+                work.any_non_specular_bounces,
+                work.prev_intr_p,
+                work.prev_intr_n,
+                work.medium_idx,
+                false,  # no surface hit
+                Point3f(0f0), Vec3f(0f0, 0f0, 1f0), Vec3f(0f0, 0f0, 1f0),
+                Point2f(0f0, 0f0), MaterialIndex()
+            )
+            push!(medium_sample_queue, sample_item)
+        end
+    else
+        # Ray NOT in medium - route directly
+        if !hit
+            # Ray escaped - push to escaped queue
+            escaped_item = VPEscapedRayWorkItem(
+                work.ray.d,
+                work.lambda,
+                work.pixel_index,
+                work.beta,
+                work.r_u,
+                work.r_l,
+                work.depth,
+                work.specular_bounce,
+                work.prev_intr_p,
+                work.prev_intr_n
+            )
+            push!(escaped_queue, escaped_item)
+        else
+            # Hit surface - extract geometry
+            mat_idx = primitive.metadata::MaterialIndex
+            pi = Point3f(work.ray.o + work.ray.d * t_hit)
+            n = vp_compute_geometric_normal(primitive)
+            uv = vp_compute_uv_barycentric(primitive, barycentric)
+            ns = vp_compute_shading_normal(primitive, barycentric, n)
 
-                if hit
-                    # Have surface hit info for when ray survives delta tracking
-                    mat_idx = primitive.metadata::MaterialIndex
-                    pi = Point3f(work.ray.o + work.ray.d * t_hit)
-                    n = vp_compute_geometric_normal(primitive)
-                    uv = vp_compute_uv_barycentric(primitive, barycentric)
-                    ns = vp_compute_shading_normal(primitive, barycentric, n)
-
-                    sample_item = VPMediumSampleWorkItem(
-                        work.ray,
-                        work.depth,
-                        t_hit,
-                        work.lambda,
-                        work.beta,
-                        work.r_u,
-                        work.r_l,
-                        work.pixel_index,
-                        work.eta_scale,
-                        work.specular_bounce,
-                        work.any_non_specular_bounces,
-                        work.prev_intr_p,
-                        work.prev_intr_n,
-                        work.medium_idx,
-                        true,   # has_surface_hit
-                        pi, n, ns, uv, mat_idx
-                    )
-                    push!(medium_sample_queue, sample_item)
-                else
-                    # Ray in medium but escaped scene - t_max = Infinity
-                    sample_item = VPMediumSampleWorkItem(
-                        work.ray,
-                        work.depth,
-                        Inf32,
-                        work.lambda,
-                        work.beta,
-                        work.r_u,
-                        work.r_l,
-                        work.pixel_index,
-                        work.eta_scale,
-                        work.specular_bounce,
-                        work.any_non_specular_bounces,
-                        work.prev_intr_p,
-                        work.prev_intr_n,
-                        work.medium_idx,
-                        false,  # no surface hit
-                        Point3f(0f0), Vec3f(0f0, 0f0, 1f0), Vec3f(0f0, 0f0, 1f0),
-                        Point2f(0f0, 0f0), MaterialIndex()
-                    )
-                    push!(medium_sample_queue, sample_item)
-                end
-            else
-                # Ray NOT in medium - route directly
-                if !hit
-                    # Ray escaped - push to escaped queue
-                    escaped_item = VPEscapedRayWorkItem(
-                        work.ray.d,
-                        work.lambda,
-                        work.pixel_index,
-                        work.beta,
-                        work.r_u,
-                        work.r_l,
-                        work.depth,
-                        work.specular_bounce,
-                        work.prev_intr_p,
-                        work.prev_intr_n
-                    )
-                    push!(escaped_queue, escaped_item)
-                else
-                    # Hit surface - extract geometry
-                    mat_idx = primitive.metadata::MaterialIndex
-                    pi = Point3f(work.ray.o + work.ray.d * t_hit)
-                    n = vp_compute_geometric_normal(primitive)
-                    uv = vp_compute_uv_barycentric(primitive, barycentric)
-                    ns = vp_compute_shading_normal(primitive, barycentric, n)
-
-                    hit_item = VPHitSurfaceWorkItem(
-                        work.ray,
-                        pi, n, ns, uv, mat_idx,
-                        work.lambda,
-                        work.pixel_index,
-                        work.beta,
-                        work.r_u,
-                        work.r_l,
-                        work.depth,
-                        work.eta_scale,
-                        work.specular_bounce,
-                        work.any_non_specular_bounces,
-                        work.prev_intr_p,
-                        work.prev_intr_n,
-                        work.medium_idx,
-                        t_hit
-                    )
-                    push!(hit_surface_queue, hit_item)
-                end
-            end
+            hit_item = VPHitSurfaceWorkItem(
+                work.ray,
+                pi, n, ns, uv, mat_idx,
+                work.lambda,
+                work.pixel_index,
+                work.beta,
+                work.r_u,
+                work.r_l,
+                work.depth,
+                work.eta_scale,
+                work.specular_bounce,
+                work.any_non_specular_bounces,
+                work.prev_intr_p,
+                work.prev_intr_n,
+                work.medium_idx,
+                t_hit
+            )
+            push!(hit_surface_queue, hit_item)
         end
     end
 end
 
-"""
-    vp_trace_rays!(backend, state, accel)
-
-Trace all rays in the current ray queue and populate output queues.
-Following pbrt-v4: rays in medium go to medium_sample_queue with t_hit info.
-"""
-function vp_trace_rays!(
-    backend,
-    state::VolPathState,
-    accel
-)
+function vp_trace_rays!(state::VolPathState, accel)
     input_queue = current_ray_queue(state)
-    n = length(input_queue)
-    n == 0 && return nothing
-
-    kernel! = vp_trace_rays_kernel!(backend)
-    kernel!(
+    foreach(vp_trace_rays_kernel!,
+        input_queue,
         state.medium_sample_queue,
         state.escaped_queue,
         state.hit_surface_queue,
-        input_queue,
-        accel, state.escaped_queue.capacity;
-        ndrange=Int(input_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
+        accel,
     )
-    # No synchronize needed - OpenCL commands queue in order
     return nothing
 end
 
@@ -238,62 +198,6 @@ end
 # Shadow Ray Tracing Kernel (with medium transmittance)
 # ============================================================================
 
-"""
-    vp_trace_shadow_rays_kernel!(...)
-
-Trace shadow rays and accumulate unoccluded contributions.
-For rays through media, computes transmittance along the ray.
-Handles transmissive boundaries (MediumInterface) by tracing through them.
-"""
-@kernel inbounds=true function vp_trace_shadow_rays_kernel!(
-    pixel_L,
-    @Const(shadow_queue),
-    @Const(accel),
-    @Const(materials),
-    @Const(media),
-    @Const(rgb2spec_table),
-    @Const(max_queued::Int32)
-)
-    idx = @index(Global)
-
-    @inbounds if idx <= max_queued
-        current_size = shadow_queue.size[1]
-        if idx <= current_size
-            work = shadow_queue.items[idx]
-
-            # Trace shadow ray, handling transmissive boundaries
-            # Returns (T_ray, tr_r_u, tr_r_l, visible) following pbrt-v4's TraceTransmittance
-            T_ray, tr_r_u, tr_r_l, visible = trace_shadow_transmittance(
-                accel, materials, media, rgb2spec_table,
-                work.ray.o, work.ray.d, work.t_max, work.lambda, work.medium_idx
-            )
-
-            if visible && !is_black(T_ray)
-                # Following pbrt-v4 TraceTransmittance (intersect.h line 266):
-                # Ld *= T_ray / (sr.r_u * r_u + sr.r_l * r_l).Average()
-                # This combines path MIS weights (work.r_u, work.r_l) with transmittance
-                # MIS weights (tr_r_u, tr_r_l)
-                mis_weight = work.r_u * tr_r_u + work.r_l * tr_r_l
-                mis_denom = average(mis_weight)
-
-                if mis_denom > 1f-10
-                    final_L = work.Ld * T_ray / mis_denom
-
-                    if !is_black(final_L)
-                        # Add to pixel
-                        pixel_idx = work.pixel_index
-                        base_idx = (pixel_idx - Int32(1)) * Int32(4)
-
-                        Atomix.@atomic pixel_L[base_idx + Int32(1)] += final_L[1]
-                        Atomix.@atomic pixel_L[base_idx + Int32(2)] += final_L[2]
-                        Atomix.@atomic pixel_L[base_idx + Int32(3)] += final_L[3]
-                        Atomix.@atomic pixel_L[base_idx + Int32(4)] += final_L[4]
-                    end
-                end
-            end
-        end
-    end
-end
 
 # ============================================================================
 # Helper functions for with_material dispatch (no variable capture)
@@ -522,32 +426,65 @@ Simple wrapper that returns only the transmittance (for compatibility).
     return T_ray
 end
 
-"""
-    vp_trace_shadow_rays!(backend, state, accel, materials, media)
 
-Trace shadow rays and accumulate contributions.
+"""
+    vp_trace_shadow_rays_kernel!(...)
+
+Trace shadow rays and accumulate unoccluded contributions.
+For rays through media, computes transmittance along the ray.
 Handles transmissive boundaries (MediumInterface) by tracing through them.
 """
-function vp_trace_shadow_rays!(
-    backend,
-    state::VolPathState,
-    accel,
-    materials,
-    media
-)
-    n = length(state.shadow_queue)
-    n == 0 && return nothing
-
-    kernel! = vp_trace_shadow_rays_kernel!(backend)
-    kernel!(
-        state.pixel_L,
-        state.shadow_queue,
-        accel, materials, media,
-        state.rgb2spec_table,
-        state.shadow_queue.capacity;
-        ndrange=Int(state.shadow_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
+@propagate_inbounds function vp_trace_shadow_rays_kernel!(
+        work,
+        pixel_L,
+        rgb2spec_table,
+        accel,
+        materials,
+        media,
     )
-    # No synchronize needed - OpenCL commands queue in order
+    # Trace shadow ray, handling transmissive boundaries
+    # Returns (T_ray, tr_r_u, tr_r_l, visible) following pbrt-v4's TraceTransmittance
+    T_ray, tr_r_u, tr_r_l, visible = trace_shadow_transmittance(
+        accel, materials, media, rgb2spec_table,
+        work.ray.o, work.ray.d, work.t_max, work.lambda, work.medium_idx
+    )
+
+    if visible && !is_black(T_ray)
+        # Following pbrt-v4 TraceTransmittance (intersect.h line 266):
+        # Ld *= T_ray / (sr.r_u * r_u + sr.r_l * r_l).Average()
+        # This combines path MIS weights (work.r_u, work.r_l) with transmittance
+        # MIS weights (tr_r_u, tr_r_l)
+        mis_weight = work.r_u * tr_r_u + work.r_l * tr_r_l
+        mis_denom = average(mis_weight)
+
+        if mis_denom > 1f-10
+            final_L = work.Ld * T_ray / mis_denom
+            if !is_black(final_L)
+                # Add to pixel
+                pixel_idx = work.pixel_index
+                base_idx = (pixel_idx - Int32(1)) * Int32(4)
+
+                Atomix.@atomic pixel_L[base_idx+Int32(1)] += final_L[1]
+                Atomix.@atomic pixel_L[base_idx+Int32(2)] += final_L[2]
+                Atomix.@atomic pixel_L[base_idx+Int32(3)] += final_L[3]
+                Atomix.@atomic pixel_L[base_idx+Int32(4)] += final_L[4]
+            end
+        end
+    end
+end
+
+function vp_trace_shadow_rays!(
+        state::VolPathState,
+        accel,
+        materials,
+        media
+    )
+    foreach(vp_trace_shadow_rays_kernel!,
+        state.shadow_queue,
+        state.pixel_L,
+        state.rgb2spec_table,
+        accel, materials, media,
+    )
     return nothing
 end
 
@@ -555,94 +492,63 @@ end
 # Escaped Ray Handling (Environment Light)
 # ============================================================================
 
-"""
-    vp_handle_escaped_rays_kernel!(...)
-
-Handle rays that escaped the scene by evaluating environment lights.
-"""
-@kernel inbounds=true function vp_handle_escaped_rays_kernel!(
+@propagate_inbounds function vp_handle_escaped_rays_kernel!(
+    work,
     pixel_L,
-    @Const(escaped_queue),
-    @Const(lights),
-    @Const(rgb2spec_table),
-    @Const(max_queued::Int32)
+    rgb2spec_table,
+    lights
 )
-    idx = @index(Global)
+    # Evaluate environment lights
+    Le = evaluate_escaped_ray_spectral(rgb2spec_table, lights, work.ray_d, work.lambda)
 
-    @inbounds if idx <= max_queued
-        current_size = escaped_queue.size[1]
-        if idx <= current_size
-            work = escaped_queue.items[idx]
+    # Apply path throughput
+    contribution = work.beta * Le
 
-            # Evaluate environment lights
-            Le = evaluate_escaped_ray_spectral(rgb2spec_table, lights, work.ray_d, work.lambda)
+    if !is_black(contribution)
+        # MIS weighting following pbrt-v4 (integrator.cpp HandleEscapedRays)
+        # depth=0 or specular bounce: L = beta * Le / r_u.Average()
+        # Otherwise: L = beta * Le / (r_u + r_l).Average()
+        #   where r_l = work.r_l * lightChoicePDF * light.PDF_Li(ctx, wi)
+        final_contrib = if work.depth == Int32(0) || work.specular_bounce
+            contribution / average(work.r_u)
+        else
+            # Full MIS: compute light sampling PDF and combine with BSDF PDF
+            # r_l = work.r_l * lightChoicePDF * light.PDF_Li
+            num_lights = Int32(length(lights))
+            light_choice_pdf = num_lights > 0 ? 1f0 / Float32(num_lights) : 0f0
 
-            # Apply path throughput
-            contribution = work.beta * Le
+            # Compute PDF from environment light for this direction
+            light_pdf = compute_env_light_pdf(lights, work.ray_d)
+            r_l = work.r_l * light_choice_pdf * light_pdf
 
-            if !is_black(contribution)
-                # MIS weighting following pbrt-v4 (integrator.cpp HandleEscapedRays)
-                # depth=0 or specular bounce: L = beta * Le / r_u.Average()
-                # Otherwise: L = beta * Le / (r_u + r_l).Average()
-                #   where r_l = work.r_l * lightChoicePDF * light.PDF_Li(ctx, wi)
-                final_contrib = if work.depth == Int32(0) || work.specular_bounce
-                    contribution / average(work.r_u)
-                else
-                    # Full MIS: compute light sampling PDF and combine with BSDF PDF
-                    # r_l = work.r_l * lightChoicePDF * light.PDF_Li
-                    num_lights = Int32(length(lights))
-                    light_choice_pdf = num_lights > 0 ? 1f0 / Float32(num_lights) : 0f0
+            # Combine r_u and r_l
+            r_sum = work.r_u + r_l
+            mis_denom = average(r_sum)
 
-                    # Compute PDF from environment light for this direction
-                    light_pdf = compute_env_light_pdf(lights, work.ray_d)
-                    r_l = work.r_l * light_choice_pdf * light_pdf
-
-                    # Combine r_u and r_l
-                    r_sum = work.r_u + r_l
-                    mis_denom = average(r_sum)
-
-                    if mis_denom > 1f-10
-                        contribution / mis_denom
-                    else
-                        contribution / average(work.r_u)
-                    end
-                end
-
-                # Add to pixel
-                pixel_idx = work.pixel_index
-                base_idx = (pixel_idx - Int32(1)) * Int32(4)
-
-                Atomix.@atomic pixel_L[base_idx + Int32(1)] += final_contrib[1]
-                Atomix.@atomic pixel_L[base_idx + Int32(2)] += final_contrib[2]
-                Atomix.@atomic pixel_L[base_idx + Int32(3)] += final_contrib[3]
-                Atomix.@atomic pixel_L[base_idx + Int32(4)] += final_contrib[4]
+            if mis_denom > 1f-10
+                contribution / mis_denom
+            else
+                contribution / average(work.r_u)
             end
         end
+
+        # Add to pixel
+        pixel_idx = work.pixel_index
+        base_idx = (pixel_idx - Int32(1)) * Int32(4)
+
+        Atomix.@atomic pixel_L[base_idx + Int32(1)] += final_contrib[1]
+        Atomix.@atomic pixel_L[base_idx + Int32(2)] += final_contrib[2]
+        Atomix.@atomic pixel_L[base_idx + Int32(3)] += final_contrib[3]
+        Atomix.@atomic pixel_L[base_idx + Int32(4)] += final_contrib[4]
     end
 end
 
-"""
-    vp_handle_escaped_rays!(backend, state, lights)
-
-Evaluate environment lights for escaped rays.
-"""
-function vp_handle_escaped_rays!(
-    backend,
-    state::VolPathState,
-    lights
-)
-    n = length(state.escaped_queue)
-    n == 0 && return nothing
-
-    kernel! = vp_handle_escaped_rays_kernel!(backend)
-    kernel!(
-        state.pixel_L,
+function vp_handle_escaped_rays!(state::VolPathState, lights)
+    foreach(vp_handle_escaped_rays_kernel!,
         state.escaped_queue,
-        lights,
+        state.pixel_L,
         state.rgb2spec_table,
-        state.escaped_queue.capacity;
-        ndrange=Int(state.escaped_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
+        lights,
     )
-    # No synchronize needed - OpenCL commands queue in order
     return nothing
 end

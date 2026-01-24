@@ -80,35 +80,24 @@ end
 # Delta Tracking Kernel (processes VPMediumSampleWorkItem)
 # ============================================================================
 
-@kernel inbounds=true function vp_sample_medium_kernel!(
-    # Output queues
-    scatter_queue,                                     # Real scatter events -> phase sampling
-    hit_surface_queue,                                 # Surface hits (ray survived medium)
-    escaped_queue,                                     # Escaped rays (no surface hit)
-    pixel_L,                                           # Film (for medium emission)
-    # Input
-    @Const(medium_sample_queue),
-    @Const(media),                                    # Media tuple
-    @Const(rgb2spec_table),
-    @Const(max_depth::Int32), @Const(max_queued::Int32)
+@propagate_inbounds function vp_sample_medium_kernel!(
+    work,
+    scatter_queue,
+    hit_surface_queue,
+    escaped_queue,
+    pixel_L,
+    media,
+    rgb2spec_table,
+    max_depth::Int32
 )
-    idx = @index(Global)
-
-    @inbounds if idx <= max_queued
-        current_size = medium_sample_queue.size[1]
-        if idx <= current_size
-            work = medium_sample_queue.items[idx]
-
-            # Run delta tracking for this ray
-            sample_medium_interaction!(
-                scatter_queue,
-                hit_surface_queue,
-                escaped_queue,
-                pixel_L,
-                work, media, rgb2spec_table, max_depth, max_queued
-            )
-        end
-    end
+    # Run delta tracking for this ray
+    sample_medium_interaction!(
+        scatter_queue,
+        hit_surface_queue,
+        escaped_queue,
+        pixel_L,
+        work, media, rgb2spec_table, max_depth, Int32(0)  # max_queued not needed anymore
+    )
 end
 
 """
@@ -481,33 +470,16 @@ end
 # High-Level Medium Sampling Function
 # ============================================================================
 
-"""
-    vp_sample_medium_interaction!(backend, state, media)
-
-Run delta tracking on rays in medium_sample_queue.
-These rays already have t_max from intersection testing.
-"""
-function vp_sample_medium_interaction!(
-    backend,
-    state::VolPathState,
-    media
-)
-    n = length(state.medium_sample_queue)
-    n == 0 && return nothing
-
-    kernel! = vp_sample_medium_kernel!(backend)
-    kernel!(
+function vp_sample_medium_interaction!(state::VolPathState, media)
+    foreach(vp_sample_medium_kernel!,
+        state.medium_sample_queue,
         state.medium_scatter_queue,
         state.hit_surface_queue,
         state.escaped_queue,
         state.pixel_L,
-        state.medium_sample_queue,
         media,
         state.rgb2spec_table,
-        state.max_depth, state.medium_sample_queue.capacity;
-        ndrange=Int(state.medium_sample_queue.capacity)  # Fixed ndrange to avoid OpenCL recompilation
+        state.max_depth,
     )
-
-    KernelAbstractions.synchronize(backend)
     return nothing
 end

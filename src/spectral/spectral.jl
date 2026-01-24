@@ -257,3 +257,17 @@ end
 Check if wavelength i has non-zero PDF (should contribute).
 """
 @propagate_inbounds pdf_is_nonzero(lambda::Wavelengths, i::Int) = lambda.pdf[i] > 0.0f0
+
+
+@propagate_inbounds function accumulate_spectrum!(pixel_L, base_idx::Int32, contrib::SpectralRadiance)
+    Atomix.@atomic pixel_L[base_idx+Int32(1)] += contrib[1]
+    Atomix.@atomic pixel_L[base_idx+Int32(2)] += contrib[2]
+    Atomix.@atomic pixel_L[base_idx+Int32(3)] += contrib[3]
+    Atomix.@atomic pixel_L[base_idx+Int32(4)] += contrib[4]
+end
+
+Base.@propagate_inbounds function load(array::AbstractArray{Float32}, index::Integer, ::Type{T}) where T
+    ptr = pointer(array, index)
+    ptr32 = as_pointer(T, ptr)
+    return Base.unsafe_load(ptr32)
+end
