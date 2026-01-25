@@ -1,9 +1,8 @@
 # Material evaluation and direct lighting for PhysicalWavefront
 # Handles BSDF sampling, direct lighting with MIS, and path continuation
 #
-# NOTE: All kernels take a `textures` parameter for GPU compatibility.
-# On CPU, textures is ignored (Texture structs contain their data).
-# On GPU, textures is a tuple of CLDeviceArrays, and materials contain TextureRef.
+# NOTE: `materials` is a StaticMultiTypeVec containing both materials and textures.
+# Use eval_tex(materials, field, uv) to sample textures via TextureRef.
 
 # ============================================================================
 # Direct Lighting Kernel
@@ -20,7 +19,6 @@ and creates a shadow ray work item.
     shadow_queue,
     @Const(material_queue),
     @Const(materials),
-    @Const(textures),
     @Const(lights),        # Tuple of lights
     @Const(rgb2spec_table),
     @Const(num_lights::Int32),
@@ -48,7 +46,7 @@ and creates a shadow ray work item.
             if light_sample.pdf > 0f0 && !is_black(light_sample.Li)
                 # Evaluate BSDF for light direction
                 bsdf_f, bsdf_pdf = evaluate_spectral_material(
-                    rgb2spec_table, materials, textures, work.material_idx,
+                    rgb2spec_table, materials, work.material_idx,
                     work.wo, light_sample.wi, work.ns, work.uv, work.lambda
                 )
 
@@ -100,7 +98,6 @@ Evaluate materials for all work items:
     pixel_L,
     @Const(material_queue),
     @Const(materials),
-    @Const(textures),
     @Const(rgb2spec_table),
     @Const(max_depth::Int32),
     @Const(max_queued::Int32),
@@ -124,7 +121,7 @@ Evaluate materials for all work items:
 
             # Sample BSDF
             sample = sample_spectral_material(
-                rgb2spec_table, materials, textures, work.material_idx,
+                rgb2spec_table, materials, work.material_idx,
                 work.wo, work.ns, work.uv, work.lambda, u, rng, regularize
             )
 
@@ -187,13 +184,13 @@ function pw_sample_direct_lighting!(
     empty!(shadow_queue)
 
     # Count lights in tuple
-    num_lights = count_lights(lights)
+    num_lights = length(lights)
 
     kernel! = pw_sample_direct_lighting_kernel!(backend)
     kernel!(
         shadow_queue,
         material_queue,
-        materials, (),  # textures (empty tuple, ignored on CPU)
+        materials,
         lights,
         rgb2spec_table,
         num_lights, material_queue.capacity;
@@ -230,7 +227,7 @@ function pw_evaluate_materials!(
         next_ray_queue,
         pixel_L,
         material_queue,
-        materials, (),  # textures (empty tuple, ignored on CPU)
+        materials,
         rgb2spec_table,
         max_depth, material_queue.capacity, regularize;
         ndrange=Int(material_queue.capacity)

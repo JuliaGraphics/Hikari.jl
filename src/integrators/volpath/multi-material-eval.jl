@@ -63,7 +63,6 @@ end
     mat_queue_13, mat_queue_14, mat_queue_15, mat_queue_16,
     pixel_L,
     materials,
-    textures,
     rgb2spec_table,
     num_types::Int32
 )
@@ -71,7 +70,7 @@ end
 
     # Resolve MixMaterial
     material_idx = resolve_mix_material(
-        materials, textures, work.material_idx,
+        materials, work.material_idx,
         work.pi, wo, work.uv
     )
 
@@ -79,7 +78,7 @@ end
     if is_emissive_dispatch(materials, material_idx)
         # Get emission - pass wo and n like the standard version
         Le = get_emission_spectral_dispatch(
-            rgb2spec_table, materials, textures, material_idx,
+            rgb2spec_table, materials, material_idx,
             wo, work.n, work.uv, work.lambda
         )
 
@@ -109,7 +108,7 @@ end
         mat_work = VPMaterialEvalWorkItem(work, wo, material_idx)
 
         # Route to correct per-type queue based on material_type
-        mat_type = material_idx.material_type
+        mat_type = material_idx.type_idx
         if mat_type == UInt8(1) && num_types >= Int32(1)
             push!(mat_queue_1, mat_work)
         elseif mat_type == UInt8(2) && num_types >= Int32(2)
@@ -154,18 +153,17 @@ end
     work,
     next_ray_queue,
     mat_array,
-    textures,
     rgb2spec_table,
     max_depth::Int32,
     do_regularize::Bool,
     pixel_samples_indirect_uc, pixel_samples_indirect_u, pixel_samples_indirect_rr
 )
     # Direct lookup - all items have same type, so mat_array is correct
-    mat = mat_array[work.material_idx.material_idx]
+    mat = mat_array[work.material_idx.vec_idx]
 
     _evaluate_typed_material!(
         next_ray_queue,
-        work, mat, textures, rgb2spec_table,
+        work, mat, rgb2spec_table,
         max_depth, do_regularize,
         pixel_samples_indirect_uc, pixel_samples_indirect_u, pixel_samples_indirect_rr
     )
@@ -180,7 +178,6 @@ Uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
     next_ray_queue,
     work::VPMaterialEvalWorkItem,
     mat,  # Concrete material type (known at compile time)
-    textures,
     rgb2spec_table,
     max_depth::Int32,
     do_regularize::Bool,
@@ -202,7 +199,7 @@ Uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
 
     # Direct BSDF sample - no dispatch
     sample = sample_bsdf_spectral(
-        rgb2spec_table, mat, textures,
+        rgb2spec_table, mat,
         work.wo, work.ns, work.uv, work.lambda, u, rng, regularize
     )
 
@@ -305,8 +302,7 @@ end
 function vp_process_surface_hits_coherent!(
     state::VolPathState,
     multi_queue::MultiMaterialQueue{N},
-    materials::NTuple{N, Any},
-    textures
+    materials::NTuple{N, Any}
 ) where {N}
     # Reset per-type queues
     reset_queues!(KA.get_backend(state.hit_surface_queue.items), multi_queue)
@@ -327,8 +323,7 @@ function vp_process_surface_hits_coherent!(
         queues[13], queues[14], queues[15], queues[16],
         state.pixel_L,
         materials,
-        textures,
-        state.rgb2spec_table,
+            state.rgb2spec_table,
         Int32(N),
     )
     return nothing
@@ -338,7 +333,6 @@ function vp_evaluate_materials_coherent!(
     state::VolPathState,
     multi_queue::MultiMaterialQueue{N},
     materials::NTuple{N, Any},
-    textures,
     regularize::Bool = true
 ) where {N}
     output_queue = next_ray_queue(state)
@@ -353,8 +347,7 @@ function vp_evaluate_materials_coherent!(
             type_queue,
             output_queue,
             mat_array,
-            textures,
-            state.rgb2spec_table,
+                    state.rgb2spec_table,
             state.max_depth,
             regularize,
             pixel_samples.indirect_uc, pixel_samples.indirect_u, pixel_samples.indirect_rr,
@@ -379,13 +372,12 @@ function vp_sample_direct_lighting_coherent!(
     state::VolPathState,
     multi_queue::MultiMaterialQueue{N},
     materials::NTuple{N, Any},
-    textures,
     lights
 ) where {N}
     # Process each per-type queue for direct lighting
     for type_idx in 1:N
         type_queue = multi_queue.queues[type_idx]
-        vp_sample_direct_lighting_from_queue!(state, type_queue, materials, textures, lights)
+        vp_sample_direct_lighting_from_queue!(state, type_queue, materials, lights)
     end
 end
 
@@ -393,7 +385,6 @@ function vp_sample_direct_lighting_from_queue!(
     state::VolPathState,
     mat_queue::WorkQueue{VPMaterialEvalWorkItem},
     materials,
-    textures,
     lights
 )
     pixel_samples = state.pixel_samples
@@ -401,8 +392,7 @@ function vp_sample_direct_lighting_from_queue!(
         mat_queue,
         state.shadow_queue,
         materials,
-        textures,
-        lights,
+            lights,
         state.rgb2spec_table,
         state.light_sampler_p, state.light_sampler_q, state.light_sampler_alias,
         state.num_lights,
@@ -418,7 +408,6 @@ end
 function vp_evaluate_materials_sorted!(
     state::VolPathState,
     materials::NTuple{N, Any},
-    textures,
     regularize::Bool = true
 ) where {N}
     n_total = length(state.material_queue)
@@ -426,7 +415,7 @@ function vp_evaluate_materials_sorted!(
 
     # For small queues, sorting overhead isn't worth it
     if n_total < 512 || N == 1
-        vp_evaluate_materials!(state, materials, textures, regularize)
+        vp_evaluate_materials!(state, materials, regularize)
         return nothing
     end
 
@@ -438,7 +427,7 @@ function vp_evaluate_materials_sorted!(
     # Check if sorting is beneficial
     max_count = maximum(type_counts)
     if max_count >= n_total * 0.9
-        vp_evaluate_materials!(state, materials, textures, regularize)
+        vp_evaluate_materials!(state, materials, regularize)
         return nothing
     end
 
@@ -459,8 +448,7 @@ function vp_evaluate_materials_sorted!(
         output_queue,
         sorted_items, Int32(n_total),
         materials,
-        textures,
-        state.rgb2spec_table,
+            state.rgb2spec_table,
         state.max_depth, regularize,
         pixel_samples.indirect_uc, pixel_samples.indirect_u, pixel_samples.indirect_rr;
         ndrange=Int(n_total)
@@ -479,7 +467,7 @@ function _count_material_types(queue::WorkQueue{VPMaterialEvalWorkItem}, N::Int)
 end
 
 @propagate_inbounds function _count_types_kernel!(work, counts, num_types::Int32)
-    mat_type = Int32(work.material_idx.material_type)
+    mat_type = Int32(work.material_idx.type_idx)
     if mat_type >= Int32(1) && mat_type <= num_types
         Atomix.@atomic counts[mat_type] += Int32(1)
     end
@@ -502,7 +490,7 @@ function _scatter_by_material_type!(
 end
 
 @propagate_inbounds function _scatter_kernel!(work, dst_items, offsets, counters, num_types::Int32)
-    mat_type = Int32(work.material_idx.material_type)
+    mat_type = Int32(work.material_idx.type_idx)
 
     if mat_type >= Int32(1) && mat_type <= num_types
         local_idx = Atomix.@atomic counters[mat_type] += Int32(1)
@@ -517,7 +505,6 @@ end
     next_ray_queue,
     @Const(material_items), @Const(material_count::Int32),
     @Const(materials),
-    @Const(textures),
     @Const(rgb2spec_table),
     @Const(max_depth::Int32),
     @Const(do_regularize::Bool),
@@ -529,7 +516,7 @@ end
         work = material_items[idx]
         evaluate_material_inner!(
             next_ray_queue,
-            work, materials, textures, rgb2spec_table, max_depth,
+            work, materials, rgb2spec_table, max_depth,
             do_regularize,
             pixel_samples_indirect_uc, pixel_samples_indirect_u, pixel_samples_indirect_rr
         )

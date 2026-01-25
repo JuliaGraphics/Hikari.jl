@@ -95,10 +95,10 @@ function CoatedConductorMaterial(
 )
     use_eta_k = !isnothing(conductor_eta)
 
-    # If not using eta/k, set them to dummy values
-    ce = isnothing(conductor_eta) ? ConstantTexture(RGBSpectrum(1f0)) : conductor_eta
-    ck = isnothing(conductor_k) ? ConstantTexture(RGBSpectrum(0f0)) : conductor_k
-    refl = isnothing(reflectance) ? ConstantTexture(RGBSpectrum(1f0)) : reflectance
+    # If not using eta/k, set them to dummy values (raw values for constants)
+    ce = isnothing(conductor_eta) ? RGBSpectrum(1f0) : conductor_eta
+    ck = isnothing(conductor_k) ? RGBSpectrum(0f0) : conductor_k
+    refl = isnothing(reflectance) ? RGBSpectrum(1f0) : reflectance
 
     CoatedConductorMaterial{
         typeof(interface_u_roughness), typeof(interface_v_roughness),

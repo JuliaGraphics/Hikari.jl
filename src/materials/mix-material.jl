@@ -138,11 +138,11 @@ produce the same result, ensuring consistent rendering across samples.
     h = xor(h, reinterpret(UInt32, wo[3]) << 12)
 
     # Mix material indices
-    h = xor(h, UInt64(idx1.material_type) << 24)
-    h = xor(h, UInt64(idx1.material_idx))
+    h = xor(h, UInt64(idx1.type_idx) << 24)
+    h = xor(h, UInt64(idx1.vec_idx))
     h = h * UInt64(0xcc9e2d51)
-    h = xor(h, UInt64(idx2.material_type) << 28)
-    h = xor(h, UInt64(idx2.material_idx) << 4)
+    h = xor(h, UInt64(idx2.type_idx) << 28)
+    h = xor(h, UInt64(idx2.vec_idx) << 4)
     h = h * UInt64(0x1b873593)
 
     # Final mixing (from pbrt-v4's MixBits)
@@ -176,10 +176,10 @@ Following pbrt-v4's ChooseMaterial:
 This function is called at intersection time, before material evaluation.
 """
 @propagate_inbounds function choose_material(
-    mix::MixMaterial, textures,
+    mix::MixMaterial, ctx::StaticMultiTypeVec,
     p::Point3f, wo::Vec3f, uv::Point2f
 )::MaterialIndex
-    amt = eval_tex(textures, mix.amount, uv)
+    amt = eval_tex(ctx, mix.amount, uv)
 
     # Early exit for boundary cases
     if amt <= 0f0
@@ -210,55 +210,48 @@ is_mix_material(::MixMaterial) = true
 
 Type-stable dispatch to check if a material is MixMaterial.
 """
-@propagate_inbounds @generated function is_mix_material_dispatch(
-    materials::NTuple{N,Any}, idx::MaterialIndex
-) where {N}
-    branches = [quote
-         if idx.material_type === UInt8($i)
-            @inbounds return is_mix_material(materials[$i][idx.material_idx])
-        end
-    end for i in 1:N]
-
-    quote
-        $(branches...)
-        return false
-    end
+@propagate_inbounds function is_mix_material_dispatch(
+    materials::StaticMultiTypeVec, idx::MaterialIndex
+)::Bool
+    return with_index(is_mix_material, materials, idx)
 end
 
 """
-    choose_material_dispatch(materials, textures, idx::MaterialIndex, p, wo, uv) -> MaterialIndex
+    choose_material_dispatch(materials::StaticMultiTypeVec, idx::MaterialIndex, p, wo, uv) -> MaterialIndex
 
 Type-stable dispatch for choosing material from MixMaterial.
 If the material is not MixMaterial, returns the input index unchanged.
+`materials` is used both for material lookup and texture evaluation.
 """
-@propagate_inbounds @generated function choose_material_dispatch(
-    materials::NTuple{N,Any}, textures,
+@propagate_inbounds function choose_material_dispatch(
+    materials::StaticMultiTypeVec,
     idx::MaterialIndex,
     p::Point3f, wo::Vec3f, uv::Point2f
-) where {N}
-    branches = [quote
-         if idx.material_type === UInt8($i)
-            mat = @inbounds materials[$i][idx.material_idx]
-            return is_mix_material(mat) ? choose_material(mat, textures, p, wo, uv) : idx
-        end
-    end for i in 1:N]
+)::MaterialIndex
+    return with_index(_choose_material_impl, materials, idx, materials, p, wo, uv)
+end
 
-    quote
-        $(branches...)
-        return idx
-    end
+# Helper for choose_material_dispatch - called with concrete material type
+@propagate_inbounds function _choose_material_impl(mat, ctx, p, wo, uv)
+    return is_mix_material(mat) ? choose_material(mat, ctx, p, wo, uv) : MaterialIndex()
+end
+
+# Overload that preserves the index for non-mix materials
+@propagate_inbounds function _choose_material_impl(mat, ctx, p, wo, uv, idx::MaterialIndex)
+    return is_mix_material(mat) ? choose_material(mat, ctx, p, wo, uv) : idx
 end
 
 """
-    resolve_mix_material(materials, textures, idx::MaterialIndex, p, wo, uv) -> MaterialIndex
+    resolve_mix_material(materials::StaticMultiTypeVec, idx::MaterialIndex, p, wo, uv) -> MaterialIndex
 
 Resolve any MixMaterial chain to get the final material index.
 Handles nested MixMaterials by iterating until a non-mix material is found.
+`materials` is used both for material lookup and texture evaluation.
 
 This should be called at intersection time before creating material work items.
 """
 @propagate_inbounds function resolve_mix_material(
-    materials, textures,
+    materials::StaticMultiTypeVec,
     idx::MaterialIndex,
     p::Point3f, wo::Vec3f, uv::Point2f
 )::MaterialIndex
@@ -268,7 +261,7 @@ This should be called at intersection time before creating material work items.
         if !is_mix_material_dispatch(materials, current_idx)
             return current_idx
         end
-        current_idx = choose_material_dispatch(materials, textures, current_idx, p, wo, uv)
+        current_idx = with_index(_choose_material_impl, materials, current_idx, materials, p, wo, uv, current_idx)
     end
     return current_idx
 end

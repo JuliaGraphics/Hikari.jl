@@ -1,9 +1,8 @@
 # Surface material evaluation for VolPath
 # Handles BSDF sampling, direct lighting, and path continuation at surface hits
 #
-# NOTE: All kernels take a `textures` parameter for GPU compatibility.
-# On CPU, textures is ignored (Texture structs contain their data).
-# On GPU, textures is a tuple of CLDeviceArrays, and materials contain TextureRef.
+# NOTE: `materials` is a StaticMultiTypeVec containing both materials and textures.
+# Use eval_tex(materials, field, uv) to sample textures via TextureRef.
 
 # ============================================================================
 # Process Surface Hits - Emission and Material Queue Setup
@@ -14,7 +13,6 @@
     material_queue,
     pixel_L,
     materials,
-    textures,
     rgb2spec_table
 )
     wo = -work.ray.d
@@ -23,7 +21,7 @@
     # Following pbrt-v4: MixMaterial is resolved at intersection time
     # using stochastic selection based on the amount texture and a hash
     material_idx = resolve_mix_material(
-        materials, textures, work.material_idx,
+        materials, work.material_idx,
         work.pi, wo, work.uv
     )
 
@@ -31,7 +29,7 @@
     if is_emissive_dispatch(materials, material_idx)
         # Get emission
         Le = get_emission_spectral_dispatch(
-            rgb2spec_table, materials, textures, material_idx,
+            rgb2spec_table, materials, material_idx,
             wo, work.n, work.uv, work.lambda
         )
 
@@ -62,13 +60,12 @@
     end
 end
 
-function vp_process_surface_hits!(state::VolPathState, materials, textures)
+function vp_process_surface_hits!(state::VolPathState, materials)
     foreach(vp_process_surface_hits_kernel!,
         state.hit_surface_queue,
         state.material_queue,
         state.pixel_L,
         materials,
-        textures,
         state.rgb2spec_table,
     )
     return nothing
@@ -89,7 +86,6 @@ Now uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style
     shadow_queue,
     work::VPMaterialEvalWorkItem,
     materials,
-    textures,
     lights,
     rgb2spec_table,
     light_sampler_p,
@@ -127,7 +123,7 @@ Now uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style
     if light_sample.pdf > 0f0 && !is_black(light_sample.Li)
         # Evaluate BSDF for light direction
         bsdf_f, bsdf_pdf = evaluate_spectral_material(
-            rgb2spec_table, materials, textures, work.material_idx,
+            rgb2spec_table, materials, work.material_idx,
             work.wo, light_sample.wi, work.ns, work.uv, work.lambda
         )
 
@@ -179,7 +175,6 @@ end
     work,
     shadow_queue,
     materials,
-    textures,
     lights,
     rgb2spec_table,
     light_sampler_p, light_sampler_q, light_sampler_alias,
@@ -188,20 +183,19 @@ end
 )
     surface_direct_lighting_inner!(
         shadow_queue,
-        work, materials, textures, lights, rgb2spec_table,
+        work, materials, lights, rgb2spec_table,
         light_sampler_p, light_sampler_q, light_sampler_alias,
         num_lights,
         pixel_samples_direct_uc, pixel_samples_direct_u
     )
 end
 
-function vp_sample_surface_direct_lighting!(state::VolPathState, materials, textures, lights)
+function vp_sample_surface_direct_lighting!(state::VolPathState, materials, lights)
     pixel_samples = state.pixel_samples
     foreach(vp_sample_surface_direct_lighting_kernel!,
         state.material_queue,
         state.shadow_queue,
         materials,
-        textures,
         lights,
         state.rgb2spec_table,
         state.light_sampler_p, state.light_sampler_q, state.light_sampler_alias,
@@ -223,7 +217,6 @@ Now uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style
     next_ray_queue,
     work::VPMaterialEvalWorkItem,
     materials,
-    textures,
     rgb2spec_table,
     max_depth::Int32,
     do_regularize::Bool,
@@ -250,7 +243,7 @@ Now uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style
 
     # Sample BSDF
     sample = sample_spectral_material(
-        rgb2spec_table, materials, textures, work.material_idx,
+        rgb2spec_table, materials, work.material_idx,
         work.wo, work.ns, work.uv, work.lambda, u, rng, regularize
     )
 
@@ -340,7 +333,6 @@ end
     work,
     next_ray_queue,
     materials,
-    textures,
     rgb2spec_table,
     max_depth::Int32,
     do_regularize::Bool,
@@ -348,20 +340,19 @@ end
 )
     evaluate_material_inner!(
         next_ray_queue,
-        work, materials, textures, rgb2spec_table, max_depth,
+        work, materials, rgb2spec_table, max_depth,
         do_regularize,
         pixel_samples_indirect_uc, pixel_samples_indirect_u, pixel_samples_indirect_rr
     )
 end
 
-function vp_evaluate_materials!(state::VolPathState, materials, textures, regularize::Bool = true)
+function vp_evaluate_materials!(state::VolPathState, materials, regularize::Bool = true)
     output_queue = next_ray_queue(state)
     pixel_samples = state.pixel_samples
     foreach(vp_evaluate_materials_kernel!,
         state.material_queue,
         output_queue,
         materials,
-        textures,
         state.rgb2spec_table,
         state.max_depth,
         regularize,
@@ -394,7 +385,7 @@ Check if material has a BSDF component.
 @propagate_inbounds function has_bsdf_dispatch(materials, mat_idx::MaterialIndex)
     # Most materials have BSDF
     # EmissiveMaterial does not
-    type_idx = mat_idx.material_type
+    type_idx = mat_idx.type_idx
     # This would need proper dispatch based on material type
     # For now, return true (most materials have BSDF)
     return true

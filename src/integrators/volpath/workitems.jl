@@ -212,18 +212,7 @@ struct VPMaterialEvalWorkItem
     # Note: After surface interaction, new medium depends on refraction/reflection
 end
 
-# Constructor from VPHitSurfaceWorkItem (wo and material_idx are computed externally)
-function VPMaterialEvalWorkItem(work::VPHitSurfaceWorkItem, wo::Vec3f, material_idx::MaterialIndex)
-    VPMaterialEvalWorkItem(
-        work.pi, work.n, work.ns, wo, work.uv, material_idx,
-        work.lambda, work.pixel_index,
-        work.beta, work.r_u, work.r_l,
-        work.depth, work.eta_scale,
-        work.specular_bounce, work.any_non_specular_bounces,
-        work.prev_intr_p, work.prev_intr_n,
-        work.current_medium
-    )
-end
+# Note: Constructor from VPHitSurfaceWorkItem is defined after VPHitSurfaceWorkItem struct
 
 # ============================================================================
 # Shadow Ray Work Item
@@ -363,5 +352,19 @@ function VPHitSurfaceWorkItem(
         work.specular_bounce, work.any_non_specular_bounces,
         work.prev_intr_p, work.prev_intr_n,
         work.medium_idx, work.t_max
+    )
+end
+
+# Constructor for VPMaterialEvalWorkItem from VPHitSurfaceWorkItem
+# (wo and material_idx are computed externally, e.g. after MixMaterial resolution)
+function VPMaterialEvalWorkItem(work::VPHitSurfaceWorkItem, wo::Vec3f, material_idx::MaterialIndex)
+    VPMaterialEvalWorkItem(
+        work.pi, work.n, work.ns, wo, work.uv, material_idx,
+        work.lambda, work.pixel_index,
+        work.beta, work.r_u, work.r_l,
+        work.depth, work.eta_scale,
+        work.specular_bounce, work.any_non_specular_bounces,
+        work.prev_intr_p, work.prev_intr_n,
+        work.current_medium
     )
 end

@@ -25,17 +25,12 @@ by shadow rays and indirect illumination when hit by camera/bounce rays.
 - The actual emitted radiance is `Le * scale`
 """
 struct EmissiveMaterial{LeTex} <: Material
-    Le::LeTex  # Texture{RGBSpectrum} or TextureRef{RGBSpectrum}
+    Le::LeTex  # Texture, Raycore.TextureRef, or raw RGBSpectrum
     scale::Float32
     two_sided::Bool
 end
 
-function EmissiveMaterial(Le::Texture, scale::Float32, two_sided::Bool)
-    EmissiveMaterial{typeof(Le)}(Le, scale, two_sided)
-end
-
-# Constructor for TextureRef (GPU path)
-function EmissiveMaterial(Le::TextureRef{RGBSpectrum}, scale::Float32, two_sided::Bool)
+function EmissiveMaterial(Le, scale::Float32, two_sided::Bool)
     EmissiveMaterial{typeof(Le)}(Le, scale, two_sided)
 end
 
@@ -118,6 +113,14 @@ Check if a material emits light.
 """
 @propagate_inbounds is_emissive(::EmissiveMaterial) = true
 @propagate_inbounds is_emissive(::Material) = false
+
+"""
+    is_pure_emissive(mat::Material) -> Bool
+
+Check if a material is purely emissive (no BSDF, only emits light).
+"""
+@propagate_inbounds is_pure_emissive(::EmissiveMaterial) = true
+@propagate_inbounds is_pure_emissive(::Material) = false
 
 # ============================================================================
 # BSDF Implementation for EmissiveMaterial

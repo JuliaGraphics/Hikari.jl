@@ -451,10 +451,9 @@ function render!(
     camera::Camera
 )
     img = film.framebuffer
-    accel = scene.aggregate.accel
-    materials = scene.aggregate.materials
-    textures = get_textures(scene.aggregate)
-    media = scene.aggregate.media
+    accel = scene.accel
+    materials = scene.materials.static  # StaticMultiTypeVec (contains textures)
+    media = scene.media.static  # StaticMultiTypeVec
     lights = scene.lights
 
     height, width = size(img)
@@ -462,7 +461,7 @@ function render!(
 
     # Allocate or validate state
     # Note: Rebuild state if lights changed (num_lights mismatch) to update light sampler
-    n_lights = count_lights(lights)
+    n_lights = length(lights)
     if vp.state === nothing ||
        vp.state.width != width ||
        vp.state.height != height ||
@@ -553,7 +552,7 @@ function render!(
         if !isempty(media)
             n_scatter = length(state.medium_scatter_queue)
             if n_scatter > 0
-                if count_lights(lights) > 0
+                if length(lights) > 0
                     vp_sample_medium_direct_lighting!(state, lights)
                 end
                 vp_sample_medium_scatter!(state)
@@ -561,7 +560,7 @@ function render!(
         end
 
         n_escaped = length(state.escaped_queue)
-        if n_escaped > 0 && count_lights(lights) > 0
+        if n_escaped > 0 && length(lights) > 0
             vp_handle_escaped_rays!(state, lights)
         end
 
@@ -569,25 +568,25 @@ function render!(
         if n_hits > 0
             if vp.material_coherence == :per_type && multi_queue !== nothing
                 reset_queues!(backend, multi_queue)
-                vp_process_surface_hits_coherent!(state, multi_queue, materials, textures)
+                vp_process_surface_hits_coherent!(state, multi_queue, materials)
 
                 # Following pbrt-v4: launch kernels unconditionally, let them check size internally
                 # This avoids expensive GPU→CPU sync from length() / total_size() calls
-                if count_lights(lights) > 0
-                    vp_sample_direct_lighting_coherent!(state, multi_queue, materials, textures, lights)
+                if length(lights) > 0
+                    vp_sample_direct_lighting_coherent!(state, multi_queue, materials, lights)
                 end
 
                 # Shadow rays still need size check since it's a different queue
                 # But we can batch this with other checks later
                 vp_trace_shadow_rays!(state, accel, materials, media)
 
-                vp_evaluate_materials_coherent!(state, multi_queue, materials, textures, vp.regularize)
+                vp_evaluate_materials_coherent!(state, multi_queue, materials, vp.regularize)
             else
-                vp_process_surface_hits!(state, materials, textures)
+                vp_process_surface_hits!(state, materials)
 
                 n_material = length(state.material_queue)
-                if n_material > 0 && count_lights(lights) > 0
-                    vp_sample_surface_direct_lighting!(state, materials, textures, lights)
+                if n_material > 0 && length(lights) > 0
+                    vp_sample_surface_direct_lighting!(state, materials, lights)
                 end
 
                 n_shadow = length(state.shadow_queue)
@@ -597,9 +596,9 @@ function render!(
 
                 if n_material > 0
                     if vp.material_coherence == :sorted
-                        vp_evaluate_materials_sorted!(state, materials, textures, vp.regularize)
+                        vp_evaluate_materials_sorted!(state, materials, vp.regularize)
                     else
-                        vp_evaluate_materials!(state, materials, textures, vp.regularize)
+                        vp_evaluate_materials!(state, materials, vp.regularize)
                     end
                 end
             end
@@ -638,7 +637,7 @@ end
 Render using volumetric spectral wavefront path tracing.
 
 Media are automatically extracted from `MediumInterface` materials during scene
-construction and stored in `scene.aggregate.media`.
+construction and stored in `scene.media`.
 
 The render loop follows pbrt-v4's VolPathIntegrator:
 1. Generate camera rays (possibly in a medium)

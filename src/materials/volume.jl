@@ -300,14 +300,14 @@ inside or in front of the volume are properly rendered with correct transmittanc
     # Ray should only travel up to the volume exit (minus a small offset to avoid back face)
     max_dist = (t_far - t_near) - 2*entry_offset
     volume_ray = RayDifferentials(Ray(entry_point, ray_d, max_dist, ray.time))
-    scene_hit, scene_primitive, scene_si = intersect!(scene.aggregate, volume_ray)
+    scene_hit, scene_primitive, scene_si = intersect!(scene, volume_ray)
 
     # Determine effective march distance - stop at scene intersection if closer
     t_stop = t_far
     has_scene_hit_in_volume = false
     if scene_hit
         # Skip hits on CloudVolume materials (self-intersection with volume box)
-        hit_mat = get_material(scene.aggregate.materials, scene_primitive.metadata)
+        hit_mat = get_material(scene.materials, scene_primitive.metadata)
         if !(hit_mat isa CloudVolume)
             # Compute hit distance from the hit point (intersect! doesn't update t_max)
             hit_p = scene_si.core.p
@@ -357,7 +357,7 @@ inside or in front of the volume are properly rendered with correct transmittanc
         if has_scene_hit_in_volume
             # Hit an object inside/before the volume exit - shade it
             background = shade_material(
-                scene.aggregate.materials, scene_primitive.metadata,
+                scene.materials, scene_primitive.metadata,
                 volume_ray, scene_si, scene, RGBSpectrum(1f0), depth + Int32(1), max_depth
             )
         else
@@ -370,12 +370,12 @@ inside or in front of the volume are properly rendered with correct transmittanc
             continuation_ray = RayDifferentials(Ray(exit_point, ray_d, ray.t_max - t_far, ray.time))
 
             # Trace the continuation ray through the scene
-            hit_found, primitive, cont_si = intersect!(scene.aggregate, continuation_ray)
+            hit_found, primitive, cont_si = intersect!(scene, continuation_ray)
 
             if hit_found
                 # Hit something behind the volume - shade it
                 background = shade_material(
-                    scene.aggregate.materials, primitive.metadata,
+                    scene.materials, primitive.metadata,
                     continuation_ray, cont_si, scene, RGBSpectrum(1f0), depth + Int32(1), max_depth
                 )
             else

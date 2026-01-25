@@ -178,18 +178,10 @@ Matte (diffuse) material with Lambertian or Oren-Nayar BRDF.
 * `σ`: Scalar roughness for Oren-Nayar model (0 = Lambertian)
 """
 struct MatteMaterial{KdTex, σTex} <: Material
-    Kd::KdTex   # Texture{RGBSpectrum} or TextureRef{RGBSpectrum}
-    σ::σTex     # Texture{Float32} or TextureRef{Float32}
+    Kd::KdTex   # Texture, Raycore.TextureRef, or raw RGBSpectrum
+    σ::σTex     # Texture, Raycore.TextureRef, or raw Float32
 end
 
-function MatteMaterial(Kd::Texture, σ::Texture)
-    MatteMaterial{typeof(Kd), typeof(σ)}(Kd, σ)
-end
-
-# Constructor for TextureRef (GPU path)
-function MatteMaterial(Kd::TextureRef{RGBSpectrum}, σ::TextureRef{Float32})
-    MatteMaterial{typeof(Kd), typeof(σ)}(Kd, σ)
-end
 
 """
     MirrorMaterial(Kr::Texture)
@@ -199,16 +191,7 @@ Perfect mirror (specular reflection) material.
 * `Kr`: Spectral reflectance (color texture or TextureRef)
 """
 struct MirrorMaterial{KrTex} <: Material
-    Kr::KrTex   # Texture{RGBSpectrum} or TextureRef{RGBSpectrum}
-end
-
-function MirrorMaterial(Kr::Texture)
-    MirrorMaterial{typeof(Kr)}(Kr)
-end
-
-# Constructor for TextureRef (GPU path)
-function MirrorMaterial(Kr::TextureRef{RGBSpectrum})
-    MirrorMaterial{typeof(Kr)}(Kr)
+    Kr::KrTex   # Texture, Raycore.TextureRef, or raw RGBSpectrum
 end
 
 """
@@ -224,33 +207,12 @@ Glass/dielectric material with reflection and transmission.
 * `remap_roughness`: Whether to remap roughness to alpha
 """
 struct GlassMaterial{KrTex, KtTex, URoughTex, VRoughTex, IndexTex} <: Material
-    Kr::KrTex           # Texture{RGBSpectrum} or TextureRef{RGBSpectrum}
-    Kt::KtTex           # Texture{RGBSpectrum} or TextureRef{RGBSpectrum}
-    u_roughness::URoughTex  # Texture{Float32} or TextureRef{Float32}
-    v_roughness::VRoughTex  # Texture{Float32} or TextureRef{Float32}
-    index::IndexTex     # Texture{Float32} or TextureRef{Float32}
+    Kr::KrTex           # Texture, Raycore.TextureRef, or raw RGBSpectrum
+    Kt::KtTex           # Texture, Raycore.TextureRef, or raw RGBSpectrum
+    u_roughness::URoughTex  # Texture, Raycore.TextureRef, or raw Float32
+    v_roughness::VRoughTex  # Texture, Raycore.TextureRef, or raw Float32
+    index::IndexTex     # Texture, Raycore.TextureRef, or raw Float32
     remap_roughness::Bool
-end
-
-function GlassMaterial(
-    Kr::Texture, Kt::Texture,
-    u_roughness::Texture, v_roughness::Texture,
-    index::Texture, remap_roughness::Bool
-)
-    GlassMaterial{typeof(Kr), typeof(Kt), typeof(u_roughness), typeof(v_roughness), typeof(index)}(
-        Kr, Kt, u_roughness, v_roughness, index, remap_roughness
-    )
-end
-
-# Constructor for TextureRef (GPU path)
-function GlassMaterial(
-    Kr::TextureRef{RGBSpectrum}, Kt::TextureRef{RGBSpectrum},
-    u_roughness::TextureRef{Float32}, v_roughness::TextureRef{Float32},
-    index::TextureRef{Float32}, remap_roughness::Bool
-)
-    GlassMaterial{typeof(Kr), typeof(Kt), typeof(u_roughness), typeof(v_roughness), typeof(index)}(
-        Kr, Kt, u_roughness, v_roughness, index, remap_roughness
-    )
 end
 
 # ============================================================================
@@ -266,15 +228,15 @@ end
 
 # Helper to wrap values in Texture if not already a Texture
 _to_texture(t::Texture) = t
-_to_texture(v::RGBSpectrum) = Texture(v)
-_to_texture(v::Float32) = Texture(v)
-_to_texture(v::Real) = Texture(Float32(v))
+_to_texture(v::RGBSpectrum) = ConstTexture(v)
+_to_texture(v::Float32) = ConstTexture(v)
+_to_texture(v::Real) = _to_texture(Float32(v))
 # For color tuples/vectors (use Tuple{Real,Real,Real} to handle mixed Int/Float)
-_to_texture(v::Tuple{Real,Real,Real}) = Texture(RGBSpectrum(Float32(v[1]), Float32(v[2]), Float32(v[3])))
-_to_texture(v::AbstractVector{<:Real}) = length(v) == 3 ? Texture(RGBSpectrum(Float32.(v)...)) : error("Expected 3-element color")
+_to_texture(v::Tuple{Real,Real,Real}) = _to_texture(RGBSpectrum(Float32(v[1]), Float32(v[2]), Float32(v[3])))
 # Support Colors.jl RGB types (RGB, RGBA, etc.)
-_to_texture(c::Colorant) = Texture(RGBSpectrum(Float32(red(c)), Float32(green(c)), Float32(blue(c))))
+_to_texture(c::Colorant) = _to_texture(RGBSpectrum(Float32(red(c)), Float32(green(c)), Float32(blue(c))))
 _to_texture(c::AbstractMatrix{<: RGB}) = Texture(map(c-> RGBSpectrum(Float32(red(c)), Float32(green(c)), Float32(blue(c))), c))
+
 """
     MatteMaterial(; Kd=RGBSpectrum(0.5), σ=0.0)
 
@@ -414,37 +376,21 @@ Metals reflect light based on Fresnel equations for conductors, characterized by
 * `remap_roughness`: Whether to remap roughness to alpha
 """
 struct MetalMaterial{EtaTex, KTex, RoughTex, ReflTex} <: Material
-    eta::EtaTex             # Texture{RGBSpectrum} or TextureRef{RGBSpectrum}
-    k::KTex                 # Texture{RGBSpectrum} or TextureRef{RGBSpectrum}
-    roughness::RoughTex     # Texture{Float32} or TextureRef{Float32}
-    reflectance::ReflTex    # Texture{RGBSpectrum} or TextureRef{RGBSpectrum}
+    eta::EtaTex             # Texture, Raycore.TextureRef, or raw RGBSpectrum
+    k::KTex                 # Texture, Raycore.TextureRef, or raw RGBSpectrum
+    roughness::RoughTex     # Texture, Raycore.TextureRef, or raw Float32
+    reflectance::ReflTex    # Texture, Raycore.TextureRef, or raw RGBSpectrum
     remap_roughness::Bool
-end
-
-function MetalMaterial(
-    eta::Texture, k::Texture, roughness::Texture, reflectance::Texture, remap_roughness::Bool
-)
-    MetalMaterial{typeof(eta), typeof(k), typeof(roughness), typeof(reflectance)}(
-        eta, k, roughness, reflectance, remap_roughness
-    )
-end
-
-# Constructor for TextureRef (GPU path)
-function MetalMaterial(
-    eta::TextureRef{RGBSpectrum}, k::TextureRef{RGBSpectrum},
-    roughness::TextureRef{Float32}, reflectance::TextureRef{RGBSpectrum}, remap_roughness::Bool
-)
-    MetalMaterial{typeof(eta), typeof(k), typeof(roughness), typeof(reflectance)}(
-        eta, k, roughness, reflectance, remap_roughness
-    )
 end
 
 # Backwards-compatible constructor without reflectance (defaults to white = no tint)
 function MetalMaterial(
-    eta::Texture, k::Texture, roughness::Texture, remap_roughness::Bool
+    eta, k, roughness, remap_roughness::Bool
 )
-    reflectance = ConstantTexture(RGBSpectrum(1f0))
-    MetalMaterial(eta, k, roughness, reflectance, remap_roughness)
+    reflectance = RGBSpectrum(1f0)
+    MetalMaterial{typeof(eta), typeof(k), typeof(roughness), typeof(reflectance)}(
+        eta, k, roughness, reflectance, remap_roughness
+    )
 end
 
 # Common metal presets (approximate values at 550nm)

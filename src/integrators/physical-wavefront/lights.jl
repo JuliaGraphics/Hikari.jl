@@ -325,14 +325,6 @@ end
 
     return expr
 end
-
-"""
-    count_lights(lights::Tuple) -> Int32
-
-Count total number of lights in a tuple (recursively for nested structures).
-"""
-@propagate_inbounds count_lights(::NTuple{N, Any}) where {N} = Int32(N)
-
 # ============================================================================
 # Environment Light Evaluation (for escaped rays)
 # All functions take rgb2spec_table for GPU-compatible spectral conversion

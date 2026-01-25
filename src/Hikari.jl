@@ -14,6 +14,8 @@ using KernelAbstractions
 using Raycore
 using Zlib_jll
 using Adapt
+using KernelAbstractions: @kernel, @index, @Const
+import KernelAbstractions as KA
 
 # Re-export Raycore types and functions that Trace uses
 import Raycore: AbstractRay, Ray, RayDifferentials, apply, check_direction, scale_differentials
@@ -28,6 +30,7 @@ import Raycore: Normal3f, intersect, intersect_p
 import Raycore: is_dir_negative, increase_hit, intersect_p!
 import Raycore: to_gpu
 import Raycore: sum_unrolled, reduce_unrolled, for_unrolled, map_unrolled, getindex_unrolled
+import Raycore: HeteroVecIndex, MultiTypeVec, StaticMultiTypeVec, with_index, is_invalid, n_slots
 
 abstract type Spectrum end
 abstract type Light end
@@ -197,65 +200,85 @@ include("surface_interaction.jl")
 # Abstract scene type for dispatch - allows both mutable and immutable implementations
 abstract type AbstractScene end
 
-# Mutable scene for CPU use - allows updating lights after creation
-mutable struct Scene{P, L<:NTuple{N, Light} where N} <: AbstractScene
+# Scene stores lights, accelerator, materials, and media directly.
+# Materials and media use MultiTypeVec (or StaticMultiTypeVec for GPU/kernels).
+# Textures are stored within the materials MultiTypeVec (materials have TextureRef fields).
+mutable struct Scene{Accel, L<:NTuple{N, Light} where N, MatVec<:AbstractVector, MedVec<:AbstractVector} <: AbstractScene
     lights::L
-    aggregate::P
+    accel::Accel  # BVH, TLAS, or any accelerator supporting closest_hit/any_hit
+    materials::MatVec  # MultiTypeVec or StaticMultiTypeVec
+    media::MedVec  # MultiTypeVec or StaticMultiTypeVec
     bound::Bounds3
     world_center::Point3f
     world_radius::Float32
 end
 
 # Immutable scene for e.g. GPU use - required for GPU kernels (must be bitstype)
-struct ImmutableScene{P, L<:NTuple{N, Light} where N} <: AbstractScene
+struct ImmutableScene{Accel, L<:NTuple{N, Light} where N, MatVec<:AbstractVector, MedVec<:AbstractVector} <: AbstractScene
     lights::L
-    aggregate::P
+    accel::Accel
+    materials::MatVec
+    media::MedVec
     bound::Bounds3
     world_center::Point3f
     world_radius::Float32
 end
 
-function Scene(
-        lights::Union{Tuple,AbstractVector}, aggregate::P,
-    ) where {P}
+function Scene(lights::Union{Tuple,AbstractVector}, accel, materials, media)
     ltuple = Tuple(lights)
-    bounds = world_bound(aggregate)
+    bounds = world_bound(accel)
     world_center, world_radius = bounding_sphere(bounds)
-    Scene{P,typeof(ltuple)}(ltuple, aggregate, bounds, world_center, world_radius)
+    Scene(ltuple, accel, materials, media, bounds, world_center, world_radius)
 end
 
 # Convert Scene to ImmutableScene for GPU rendering
-ImmutableScene(s::Scene) = ImmutableScene(s.lights, s.aggregate, s.bound, s.world_center, s.world_radius)
+ImmutableScene(s::Scene) = ImmutableScene(s.lights, s.accel, s.materials, s.media, s.bound, s.world_center, s.world_radius)
 ImmutableScene(s::ImmutableScene) = s  # Already immutable
 
 # Common interface for both scene types
 @propagate_inbounds function intersect!(scene::AbstractScene, ray::AbstractRay)
-    intersect!(scene.aggregate, ray)
+    intersect!(scene.accel, ray)
 end
 
 @propagate_inbounds function intersect_p(scene::AbstractScene, ray::AbstractRay)
-    intersect_p(scene.aggregate, ray)
+    hit_found, _, _, _ = any_hit(scene.accel, ray)
+    return hit_found
 end
 
 # Pretty printing for Scene
 function Base.show(io::IO, ::MIME"text/plain", scene::Scene)
     n_lights = length(scene.lights)
+    n_material_types = length(scene.materials)
+    n_materials_total = sum(length, scene.materials; init=0)
+    accel = scene.accel
+    accel_type = nameof(typeof(accel))
 
-    println(io, "Scene:")
+    println(io, "Scene ($accel_type):")
     println(io, "  Lights:     ", n_lights)
     if n_lights > 0
         for (i, light) in enumerate(scene.lights)
             println(io, "    [", i, "] ", typeof(light).name.name)
         end
     end
-    println(io, "  Aggregate:  ", typeof(scene.aggregate).name.name)
+    println(io, "  Materials:  ", n_materials_total, " ($n_material_types types)")
+    if accel isa TLAS
+        n_instances = length(accel.instances)
+        n_geometries = length(accel.blas_array)
+        println(io, "  Geometries: ", n_geometries)
+        println(io, "  Instances:  ", n_instances)
+    elseif accel isa BVH
+        n_triangles = length(accel.primitives)
+        println(io, "  Triangles:  ", n_triangles)
+    end
     print(io,   "  Bounds:     ", scene.bound.p_min, " to ", scene.bound.p_max)
 end
 
 function Base.show(io::IO, scene::Scene)
     if get(io, :compact, false)
         n_lights = length(scene.lights)
-        print(io, "Scene(lights=", n_lights, ", aggregate=", typeof(scene.aggregate).name.name, ")")
+        accel_type = nameof(typeof(scene.accel))
+        n_material_types = length(scene.materials)
+        print(io, "Scene($accel_type, lights=$n_lights, materials=$n_material_types)")
     else
         show(io, MIME("text/plain"), scene)
     end
@@ -264,143 +287,45 @@ end
 # spawn_ray functions are now in Raycore, but we need versions for our SurfaceInteraction
 # Raycore only has spawn_ray for its simpler Interaction type
 
-# We'll create a MaterialScene wrapper below
-
 """
     MaterialIndex
 
 Metadata type for triangles that stores material lookup information.
-- `material_type`: Which tuple slot (1-based) in the materials tuple
-- `material_idx`: Index within that material type's array
+Now an alias for `HeteroVecIndex` from Raycore.
+- `type_idx`: Which tuple slot (1-based) in the materials tuple
+- `vec_idx`: Index within that material type's array
 """
-struct MaterialIndex
-    material_type::UInt8
-    material_idx::UInt32
-end
-
-# Default constructor for invalid/placeholder MaterialIndex
-MaterialIndex() = MaterialIndex(UInt8(0), UInt32(0))
-
-# MaterialScene: wraps any accelerator (BVH, TLAS, etc.) with materials stored as a tuple of arrays
-# Each material type gets its own array, indexed by triangle.metadata::MaterialIndex
-# Also stores media tuple for volumetric rendering (empty tuple if no media)
-# Textures tuple is for GPU compatibility - on CPU it's empty (Texture structs hold data),
-# on GPU it contains CLDeviceArrays and materials use TextureRef to index into it.
-struct MaterialScene{Accel, Materials<:Tuple, Media<:Tuple, Textures<:Tuple}
-    accel::Accel  # BVH, TLAS, or any accelerator supporting closest_hit/any_hit
-    materials::Materials  # Tuple of material arrays, e.g., (Vector{MatteMaterial}, Vector{GlassMaterial})
-    media::Media  # Tuple of media, e.g., (HomogeneousMedium, GridMedium) - empty () if no media
-    textures::Textures  # Tuple of texture arrays for GPU, empty () on CPU
-end
-
-# Backwards-compatible constructor (no media, no textures)
-MaterialScene(accel, materials::Tuple) = MaterialScene(accel, materials, (), ())
-
-# Constructor with media but no textures (CPU path)
-MaterialScene(accel, materials::Tuple, media::Tuple) = MaterialScene(accel, materials, media, ())
-
-# Helper to get textures (for unified CPU/GPU code)
-get_textures(ms::MaterialScene) = ms.textures
-
-@propagate_inbounds world_bound(ms::MaterialScene) = world_bound(ms.accel)
-
-# Generated function for type-stable material dispatch
-# Returns the material from the appropriate tuple slot
-@generated function get_material(materials::NTuple{N,Any}, idx::MaterialIndex) where N
-    branches = [quote
-        if idx.material_type === UInt8($i)
-            return  materials[$i][idx.material_idx]
-        end
-    end for i in 1:N]
-    # Return first material type as fallback (GPU-compatible, no error() call)
-    # This should never happen in practice if material indices are valid
-    quote
-        $(branches...)
-        return  materials[1][1]
-    end
-end
+const MaterialIndex = HeteroVecIndex
 
 # ============================================================================
-# with_material - GPU-safe closure dispatch over materials
+# with_material - delegates to Raycore.with_index for StaticMultiTypeVec
 # ============================================================================
 
 """
-    with_material(f, materials, idx, args...)
+    with_material(f, materials::StaticMultiTypeVec, idx::MaterialIndex, args...)
 
 Execute function `f` with the material at index `idx`, passing additional `args`.
-The function is called as `f(material, args...)` where `material` has a concrete type.
-
-This provides type-stable material dispatch by using compile-time unrolled if-branches.
-The closure receives the material as its first argument plus any additional args,
-avoiding variable capture issues on GPU.
-
-# Example
-```julia
-# Instead of:
-material = get_material(materials, mat_idx)
-is_transmissive = is_medium_interface_idx(material)  # Union type issue on GPU
-
-# Use:
-is_transmissive = with_material(check_transmissive, materials, mat_idx)
-# Where: check_transmissive(mat) = is_medium_interface_idx(mat)
-
-# With additional arguments:
-result = with_material(process_material, materials, mat_idx, ray, normal)
-# Where: process_material(mat, ray, n) = ...
-```
+Delegates to `Raycore.with_index` for type-stable dispatch.
 """
-@propagate_inbounds @generated function with_material(f::F, materials::NTuple{N,Any}, idx::MaterialIndex, args...) where {F, N}
-    branches = [quote
-         if idx.material_type === UInt8($i)
-            return f(materials[$i][idx.material_idx], args...)
-        end
-    end for i in 1:N]
-
-    quote
-        $(branches...)
-        # Fallback - should never reach if material indices are valid
-        # Call with first material type for type stability (GPU-compatible, no error)
-        return f((materials[1][1]), args...)
-    end
+@propagate_inbounds function with_material(f, materials::StaticMultiTypeVec, idx::MaterialIndex, args...)
+    return with_index(f, materials, idx, args...)
 end
 
-# Type-stable shade dispatch - each material type implements shade(material, ray, si, scene, beta, depth, max_depth)
-# IMPORTANT: Type annotations on ray, si, scene, beta prevent argument boxing in generated code
-# Note: Use T<:Tuple instead of NTuple{N} to support heterogeneous material type tuples
-@propagate_inbounds @generated function shade_material(
-    materials::T, idx::MaterialIndex,
-    ray::RayDifferentials, si::SurfaceInteraction, scene::S, beta::RGBSpectrum, depth::Int32, max_depth::Int32
-) where {T<:Tuple, S<:AbstractScene}
-    N = length(T.parameters)
-    branches = [quote
-         if idx.material_type === UInt8($i)
-            return shade(materials[$i][idx.material_idx], ray, si, scene, beta, depth, max_depth)
-        end
-    end for i in 1:N]
-    quote
-        $(branches...)
-        return RGBSpectrum(0f0)
-    end
-end
+# ============================================================================
+# shade_material - delegates to material's shade method via with_index
+# ============================================================================
 
-# Type-stable bounce ray generation - materials implement sample_bounce(material, ray, si, scene, beta, depth)
-# IMPORTANT: Type annotations prevent argument boxing in generated code
-# Note: Use T<:Tuple instead of NTuple{N} to support heterogeneous material type tuples
-@propagate_inbounds @generated function sample_material_bounce(
-    materials::T, idx::MaterialIndex,
-    ray::RayDifferentials, si::SurfaceInteraction, scene::S, beta::RGBSpectrum, depth::Int32
-) where {T<:Tuple, S<:AbstractScene}
-    N = length(T.parameters)
-    branches = [quote
-         if idx.material_type === UInt8($i)
-            return sample_bounce(materials[$i][idx.material_idx], ray, si, scene, beta, depth)
-        end
-    end for i in 1:N]
-    quote
-        $(branches...)
-        # No bounce
-        return (false, ray, RGBSpectrum(0f0), Int32(0))
-    end
+"""
+    shade_material(materials::StaticMultiTypeVec, idx::MaterialIndex, ray, si, scene, beta, depth, max_depth)
+
+Shade a surface hit using the material at the given index.
+Dispatches to the appropriate material's `shade` method via `with_index`.
+"""
+@propagate_inbounds function shade_material(
+    materials::StaticMultiTypeVec, idx::MaterialIndex,
+    ray, si, scene, beta, depth::Int32, max_depth::Int32
+)
+    return with_index(shade, materials, idx, ray, si, scene, beta, depth, max_depth)
 end
 
 # Calculate partial derivatives for texture mapping
@@ -488,211 +413,134 @@ end
 end
 
 
-# Intersect function for MaterialScene - returns hit info, primitive, and SurfaceInteraction
+# Intersect TLAS - returns hit info, primitive, and SurfaceInteraction
 # The primitive (triangle) contains material_type and material_idx for dispatch
-@propagate_inbounds function intersect!(ms::MaterialScene, ray::AbstractRay)
-    accel = ms.accel
+@propagate_inbounds function intersect!(accel::TLAS, ray::AbstractRay)
+    hit_found, triangle, distance, bary_coords, instance_id = closest_hit(accel, ray)
 
-    # Handle TLAS (instanced) vs BVH (non-instanced) differently
-    if accel isa TLAS
-        hit_found, triangle, distance, bary_coords, instance_id = closest_hit(accel, ray)
-
-        if !hit_found
-            return false, triangle, SurfaceInteraction()
-        end
-
-        # Convert to SurfaceInteraction (in local/BLAS space)
-        interaction = triangle_to_surface_interaction(triangle, ray, bary_coords)
-
-        # Transform surface interaction to world space using instance transform
-        # instance_id is 1-based array index into accel.instances (set during TLAS construction)
-        # Use it directly instead of searching - this ensures we get the current transform
-        # even after updates via update_transform!
-        if instance_id >= 1 && instance_id <= length(accel.instances)
-            inst = accel.instances[instance_id]
-            transform = inst.transform
-            inv_transform = inst.inv_transform
-
-            # Transform hit point to world space
-            local_p = interaction.core.p
-            world_p = Point3f(transform * Vec4f(local_p..., 1f0))
-
-            # Transform normal to world space: n_world = normalize(transpose(inv_transform) * n_local)
-            # For a 4x4 matrix, we use the upper-left 3x3 for direction transforms
-            local_n = Vec3f(interaction.core.n)
-            # transpose(inv_transform) is equivalent to inverse-transpose of transform
-            inv_t_3x3 = Mat3f(inv_transform[1,1], inv_transform[2,1], inv_transform[3,1],
-                              inv_transform[1,2], inv_transform[2,2], inv_transform[3,2],
-                              inv_transform[1,3], inv_transform[2,3], inv_transform[3,3])
-            world_n = Normal3f(normalize(inv_t_3x3 * local_n))
-
-            # Transform shading normal similarly
-            local_sn = Vec3f(interaction.shading.n)
-            world_sn = Normal3f(normalize(inv_t_3x3 * local_sn))
-
-            # Transform tangent/bitangent (these transform like directions, using the forward transform)
-            t_3x3 = Mat3f(transform[1,1], transform[2,1], transform[3,1],
-                          transform[1,2], transform[2,2], transform[3,2],
-                          transform[1,3], transform[2,3], transform[3,3])
-            # ∂p∂u and ∂p∂v are on SurfaceInteraction directly, not on core
-            world_dpdu = normalize(t_3x3 * interaction.∂p∂u)
-            world_dpdv = normalize(t_3x3 * interaction.∂p∂v)
-            # Shading tangent/bitangent
-            world_st = normalize(t_3x3 * interaction.shading.∂p∂u)
-            world_sb = normalize(t_3x3 * interaction.shading.∂p∂v)
-
-            # Reconstruct SurfaceInteraction with world-space values
-            # Interaction fields: p, time, wo, n
-            core = Interaction(world_p, interaction.core.time, interaction.core.wo, world_n)
-            # ShadingInteraction fields: n, ∂p∂u, ∂p∂v, ∂n∂u, ∂n∂v
-            shading = ShadingInteraction(world_sn, world_st, world_sb, interaction.shading.∂n∂u, interaction.shading.∂n∂v)
-            # SurfaceInteraction constructor: core, shading, uv, ∂p∂u, ∂p∂v, ∂n∂u, ∂n∂v, ∂u∂x, ∂u∂y, ∂v∂x, ∂v∂y, ∂p∂x, ∂p∂y
-            interaction = SurfaceInteraction(
-                core, shading, interaction.uv,
-                world_dpdu, world_dpdv, interaction.∂n∂u, interaction.∂n∂v,
-                interaction.∂u∂x, interaction.∂u∂y, interaction.∂v∂x, interaction.∂v∂y,
-                interaction.∂p∂x, interaction.∂p∂y
-            )
-        end
-
-        return true, triangle, interaction
-    else
-        # Non-instanced BVH path (original behavior)
-        hit_found, triangle, distance, bary_coords = closest_hit(accel, ray)
-
-        if !hit_found
-            return false, triangle, SurfaceInteraction()
-        end
-
-        # Convert to SurfaceInteraction
-        interaction = triangle_to_surface_interaction(triangle, ray, bary_coords)
-
-        # Return primitive so caller can access triangle.metadata (MaterialIndex)
-        return true, triangle, interaction
-    end
-end
-
-@propagate_inbounds function intersect_p(ms::MaterialScene, ray::AbstractRay)
-    hit_found, _, _, _ = any_hit(ms.accel, ray)
-    return hit_found
-end
-
-# Pretty printing for MaterialScene
-function Base.show(io::IO, ::MIME"text/plain", ms::MaterialScene)
-    accel = ms.accel
-    accel_type = nameof(typeof(accel))
-    n_material_types = length(ms.materials)
-    n_materials_total = sum(length, ms.materials)
-    bounds = world_bound(accel)
-
-    println(io, "MaterialScene ($accel_type):")
-
-    # Show accelerator-specific stats
-    if accel isa TLAS
-        n_instances = length(accel.instances)
-        n_geometries = length(accel.blas_array)
-        n_triangles = sum(blas -> length(blas.primitives), accel.blas_array)
-        n_top_nodes = length(accel.nodes)
-        n_top_leaves = count(node -> Raycore.is_leaf(node), accel.nodes)
-        n_top_interior = n_top_nodes - n_top_leaves
-
-        println(io, "  Geometries:     ", n_geometries)
-        println(io, "  Instances:      ", n_instances)
-        println(io, "  Triangles:      ", n_triangles, " (in BLAS)")
-        println(io, "  TLAS nodes:     ", n_top_nodes, " (", n_top_interior, " interior, ", n_top_leaves, " leaves)")
-    elseif accel isa BVH
-        n_triangles = length(accel.primitives)
-        n_nodes = length(accel.nodes)
-        println(io, "  Triangles:      ", n_triangles)
-        println(io, "  BVH nodes:      ", n_nodes)
-    else
-        # Generic fallback
-        println(io, "  Accelerator:    ", accel_type)
+    if !hit_found
+        return false, triangle, SurfaceInteraction()
     end
 
-    println(io, "  Material types: ", n_material_types)
-    println(io, "  Total materials:", n_materials_total)
-    print(io,   "  Bounds:         ", bounds.p_min, " to ", bounds.p_max)
-end
+    # Convert to SurfaceInteraction (in local/BLAS space)
+    interaction = triangle_to_surface_interaction(triangle, ray, bary_coords)
 
-function Base.show(io::IO, ms::MaterialScene)
-    if get(io, :compact, false)
-        accel = ms.accel
-        accel_type = nameof(typeof(accel))
-        n_material_types = length(ms.materials)
+    # Transform surface interaction to world space using instance transform
+    # instance_id is 1-based array index into accel.instances (set during TLAS construction)
+    # Use it directly instead of searching - this ensures we get the current transform
+    # even after updates via update_transform!
+    if instance_id >= 1 && instance_id <= length(accel.instances)
+        inst = accel.instances[instance_id]
+        transform = inst.transform
+        inv_transform = inst.inv_transform
 
-        if accel isa TLAS
-            n_instances = length(accel.instances)
-            n_geometries = length(accel.blas_array)
-            print(io, "MaterialScene($accel_type, geoms=$n_geometries, instances=$n_instances, materials=$n_material_types)")
-        elseif accel isa BVH
-            n_triangles = length(accel.primitives)
-            print(io, "MaterialScene($accel_type, triangles=$n_triangles, materials=$n_material_types)")
-        else
-            print(io, "MaterialScene($accel_type, materials=$n_material_types)")
-        end
-    else
-        show(io, MIME("text/plain"), ms)
+        # Transform hit point to world space
+        local_p = interaction.core.p
+        world_p = Point3f(transform * Vec4f(local_p..., 1f0))
+
+        # Transform normal to world space: n_world = normalize(transpose(inv_transform) * n_local)
+        # For a 4x4 matrix, we use the upper-left 3x3 for direction transforms
+        local_n = Vec3f(interaction.core.n)
+        # transpose(inv_transform) is equivalent to inverse-transpose of transform
+        inv_t_3x3 = Mat3f(inv_transform[1,1], inv_transform[2,1], inv_transform[3,1],
+                          inv_transform[1,2], inv_transform[2,2], inv_transform[3,2],
+                          inv_transform[1,3], inv_transform[2,3], inv_transform[3,3])
+        world_n = Normal3f(normalize(inv_t_3x3 * local_n))
+
+        # Transform shading normal similarly
+        local_sn = Vec3f(interaction.shading.n)
+        world_sn = Normal3f(normalize(inv_t_3x3 * local_sn))
+
+        # Transform tangent/bitangent (these transform like directions, using the forward transform)
+        t_3x3 = Mat3f(transform[1,1], transform[2,1], transform[3,1],
+                      transform[1,2], transform[2,2], transform[3,2],
+                      transform[1,3], transform[2,3], transform[3,3])
+        # ∂p∂u and ∂p∂v are on SurfaceInteraction directly, not on core
+        world_dpdu = normalize(t_3x3 * interaction.∂p∂u)
+        world_dpdv = normalize(t_3x3 * interaction.∂p∂v)
+        # Shading tangent/bitangent
+        world_st = normalize(t_3x3 * interaction.shading.∂p∂u)
+        world_sb = normalize(t_3x3 * interaction.shading.∂p∂v)
+
+        # Reconstruct SurfaceInteraction with world-space values
+        # Interaction fields: p, time, wo, n
+        core = Interaction(world_p, interaction.core.time, interaction.core.wo, world_n)
+        # ShadingInteraction fields: n, ∂p∂u, ∂p∂v, ∂n∂u, ∂n∂v
+        shading = ShadingInteraction(world_sn, world_st, world_sb, interaction.shading.∂n∂u, interaction.shading.∂n∂v)
+        # SurfaceInteraction constructor: core, shading, uv, ∂p∂u, ∂p∂v, ∂n∂u, ∂n∂v, ∂u∂x, ∂u∂y, ∂v∂x, ∂v∂y, ∂p∂x, ∂p∂y
+        interaction = SurfaceInteraction(
+            core, shading, interaction.uv,
+            world_dpdu, world_dpdv, interaction.∂n∂u, interaction.∂n∂v,
+            interaction.∂u∂x, interaction.∂u∂y, interaction.∂v∂x, interaction.∂v∂y,
+            interaction.∂p∂x, interaction.∂p∂y
+        )
     end
+
+    return true, triangle, interaction
 end
+
+# Intersect BVH - returns hit info, primitive, and SurfaceInteraction
+@propagate_inbounds function intersect!(accel::BVH, ray::AbstractRay)
+    hit_found, triangle, distance, bary_coords = closest_hit(accel, ray)
+
+    if !hit_found
+        return false, triangle, SurfaceInteraction()
+    end
+
+    # Convert to SurfaceInteraction
+    interaction = triangle_to_surface_interaction(triangle, ray, bary_coords)
+
+    # Return primitive so caller can access triangle.metadata (MaterialIndex)
+    return true, triangle, interaction
+end
+
+# ============================================================================
+# Scene Constructors
+# ============================================================================
 
 """
-    MaterialScene(meshes, material_types, material_indices, materials::Tuple)
+    Scene(meshes, material_types, material_indices, materials::Tuple; lights=(), media=(), transforms=nothing)
 
-Construct a MaterialScene with multiple material types using TLAS.
+Construct a Scene with multiple material types using TLAS.
 
 # Arguments
 - `meshes`: Vector of TriangleMesh geometries
 - `material_types`: Vector{UInt8} specifying which tuple slot each mesh uses (1-based)
 - `material_indices`: Vector{UInt32} specifying index within that material type's array
 - `materials`: Tuple of material arrays, e.g., (Vector{MatteMaterial}, Vector{GlassMaterial})
-
-# Example
-```julia
-# Create materials
-uber_materials = [MatteMaterial(...), MirrorMaterial(...)]
-volumes = [CloudVolume(...)]
-
-# Create meshes
-ground_mesh = TriangleMesh(ground_geometry)
-cloud_box_mesh = TriangleMesh(box_geometry)
-
-# Build scene: ground uses MatteMaterial[1], cloud uses CloudVolume[1]
-scene = MaterialScene(
-    [ground_mesh, cloud_box_mesh],
-    UInt8[1, 2],           # material types (1=uber, 2=volume)
-    UInt32[1, 1],          # indices within each type
-    (uber_materials, volumes)
-)
-```
+- `lights`: Tuple or vector of lights (default empty)
+- `media`: Tuple of media types (default empty)
+- `transforms`: Optional vector of transforms per mesh
 """
-function MaterialScene(
+function Scene(
     meshes::AbstractVector,
     material_types::AbstractVector{UInt8},
     material_indices::AbstractVector{<:Integer},
-    materials::Tuple,
-    media::Tuple = ();
+    materials::Tuple;
+    lights::Union{Tuple,AbstractVector} = (),
+    media::Tuple = (),
     transforms::Union{Nothing, AbstractVector{Mat4f}} = nothing
 )
-    scene, _handles = material_scene_with_handles(meshes, material_types, material_indices, materials, media; transforms)
+    scene, _handles = scene_with_handles(meshes, material_types, material_indices, materials; lights, media, transforms)
     return scene
 end
 
 """
-    material_scene_with_handles(meshes, material_types, material_indices, materials, media=(); transforms=nothing)
+    scene_with_handles(meshes, material_types, material_indices, materials; lights=(), media=(), transforms=nothing)
 
-Like `MaterialScene(...)` but also returns instance handles for dynamic updates.
-Returns `(scene::MaterialScene, handles::Vector{InstanceHandle})`.
+Like `Scene(...)` but also returns instance handles for dynamic updates.
+Returns `(scene::Scene, handles::Vector{InstanceHandle})`.
 
 The handles can be used with `Raycore.update_transform!(tlas, handle, new_transform)`
 followed by `Raycore.refit_tlas!(tlas)` for animation.
 """
-function material_scene_with_handles(
+function scene_with_handles(
     meshes::AbstractVector,
     material_types::AbstractVector{UInt8},
     material_indices::AbstractVector{<:Integer},
-    materials::Tuple,
-    media::Tuple = ();
+    materials::Tuple;
+    lights::Union{Tuple,AbstractVector} = (),
+    media::Tuple = (),
     transforms::Union{Nothing, AbstractVector{Mat4f}} = nothing
 )
     # Create Instance objects with MaterialIndex metadata
@@ -708,13 +556,29 @@ function material_scene_with_handles(
         ]
     end
     tlas, handles = TLAS(instances)
-    return MaterialScene(tlas, materials, media), handles
+
+    # Build MultiTypeVec for materials
+    materials_mtv = MultiTypeVec(CPU())
+    for mat_array in materials
+        for mat in mat_array
+            push!(materials_mtv, mat)
+        end
+    end
+
+    # Build MultiTypeVec for media
+    media_mtv = MultiTypeVec(CPU())
+    for medium in media
+        push!(media_mtv, medium)
+    end
+
+    scene = Scene(lights, tlas, materials_mtv, media_mtv)
+    return scene, handles
 end
 
 """
-    MaterialScene(mesh_material_pairs::Vector{<:Tuple{Any, <:Material}})
+    Scene(mesh_material_pairs::Vector{<:Tuple}; lights=())
 
-Construct a MaterialScene from a vector of (mesh, material) pairs.
+Construct a Scene from a vector of (mesh, material) pairs.
 Automatically groups materials by type and assigns material_type/material_idx.
 
 # Example
@@ -724,114 +588,29 @@ cloud_mesh = TriangleMesh(cloud_box_geom)
 ground_mat = MatteMaterial(...)
 cloud_vol = CloudVolume(data, extent)
 
-scene = MaterialScene([
+scene = Scene([
     (ground_mesh, ground_mat),
     (cloud_mesh, cloud_vol),
-])
+]; lights=(PointLight(...),))
 ```
 
 Also supports 3-tuples with transforms: `(mesh, material, transform::Mat4f)`.
-When transforms are provided, the returned scene's TLAS uses instanced transforms
-which can be updated via `Raycore.update_transform!` and `Raycore.refit_tlas!`.
 """
-function MaterialScene(mesh_material_pairs::Vector{<:Tuple})
-    # Extract components - handle both 2-tuples and 3-tuples
-    meshes = [pair[1] for pair in mesh_material_pairs]
-    materials_list = [pair[2] for pair in mesh_material_pairs]
-    has_transforms = length(mesh_material_pairs) > 0 && length(first(mesh_material_pairs)) >= 3
-    transforms = has_transforms ? [Mat4f(pair[3]) for pair in mesh_material_pairs] : nothing
-
-    # === Extract media from MediumInterface materials ===
-    # Collect unique media objects and build mapping
-    media_list = Any[]  # Unique media objects
-    medium_to_index = Dict{Any, Int}()  # Medium object -> 1-based index
-
-    for mat in materials_list
-        if mat isa MediumInterface
-            for medium in (mat.inside, mat.outside)
-                if medium !== nothing && !haskey(medium_to_index, medium)
-                    push!(media_list, medium)
-                    medium_to_index[medium] = length(media_list)
-                end
-            end
-        end
-    end
-
-    # Convert MediumInterface -> MediumInterfaceIdx with proper indices
-    converted_materials = [to_indexed(mat, medium_to_index) for mat in materials_list]
-
-    # Build media tuple (empty if no media)
-    media_tuple = isempty(media_list) ? () : Tuple(media_list)
-
-    # === Build materials tuple (same logic as before, but with converted materials) ===
-    # First pass: discover unique material types and their order
-    type_to_slot = Dict{DataType, UInt8}()
-    type_order = DataType[]  # Keep track of order types were discovered
-
-    for mat in converted_materials
-        T = typeof(mat)
-        if !haskey(type_to_slot, T)
-            type_to_slot[T] = UInt8(length(type_to_slot) + 1)
-            push!(type_order, T)
-        end
-    end
-
-    # Second pass: count materials per type to pre-allocate
-    type_counts = Dict{DataType, Int}()
-    for mat in converted_materials
-        T = typeof(mat)
-        type_counts[T] = get(type_counts, T, 0) + 1
-    end
-
-    # Create properly typed vectors for each material type
-    # We use a function barrier to ensure type stability
-    function create_typed_vectors(type_order, type_counts, materials_list, type_to_slot)
-        # Create typed vectors
-        typed_vectors = Dict{DataType, Any}()
-        type_current_idx = Dict{DataType, Int}()
-        for T in type_order
-            typed_vectors[T] = Vector{T}(undef, type_counts[T])
-            type_current_idx[T] = 0
-        end
-
-        material_types = Vector{UInt8}(undef, length(materials_list))
-        material_indices = Vector{UInt32}(undef, length(materials_list))
-
-        # Fill in materials
-        for (i, mat) in enumerate(materials_list)
-            T = typeof(mat)
-            slot = type_to_slot[T]
-            type_current_idx[T] += 1
-            idx = type_current_idx[T]
-            typed_vectors[T][idx] = mat
-            material_types[i] = slot
-            material_indices[i] = UInt32(idx)
-        end
-
-        # Build tuple in slot order
-        materials_arrays = [typed_vectors[type_order[i]] for i in 1:length(type_order)]
-        return Tuple(materials_arrays), material_types, material_indices
-    end
-
-    materials_tuple, material_types, material_indices = create_typed_vectors(
-        type_order, type_counts, converted_materials, type_to_slot
-    )
-
-    # Use the first constructor which builds the TLAS (with media)
-    return MaterialScene(meshes, material_types, material_indices, materials_tuple, media_tuple; transforms)
+function Scene(mesh_material_pairs::Vector{<:Tuple}; lights::Union{Tuple,AbstractVector} = ())
+    scene, _handles = scene_with_handles(mesh_material_pairs; lights)
+    return scene
 end
 
 """
-    material_scene_with_handles(mesh_material_pairs::Vector{<:Tuple})
+    scene_with_handles(mesh_material_pairs::Vector{<:Tuple}; lights=())
 
-Like `MaterialScene(pairs)` but also returns instance handles for dynamic updates.
-Accepts 2-tuples `(mesh, material)` or 3-tuples `(mesh, material, transform)`.
-Returns `(scene::MaterialScene, handles::Vector{InstanceHandle})`.
+Like `Scene(pairs)` but also returns instance handles for dynamic updates.
+Returns `(scene::Scene, handles::Vector{InstanceHandle})`.
 
 Automatically extracts media from `MediumInterface` materials and converts them
 to `MediumInterfaceIdx` with proper indices for GPU dispatch.
 """
-function material_scene_with_handles(mesh_material_pairs::Vector{<:Tuple})
+function scene_with_handles(mesh_material_pairs::Vector{<:Tuple}; lights::Union{Tuple,AbstractVector} = ())
     # Extract components - handle both 2-tuples and 3-tuples
     meshes = [pair[1] for pair in mesh_material_pairs]
     materials_list = [pair[2] for pair in mesh_material_pairs]
@@ -903,7 +682,7 @@ function material_scene_with_handles(mesh_material_pairs::Vector{<:Tuple})
     materials_arrays = [typed_vectors[type_order[i]] for i in 1:length(type_order)]
     materials_tuple = Tuple(materials_arrays)
 
-    return material_scene_with_handles(meshes, material_types, material_indices, materials_tuple, media_tuple; transforms)
+    return scene_with_handles(meshes, material_types, material_indices, materials_tuple; lights, media=media_tuple, transforms)
 end
 
 include("filter.jl")
@@ -947,24 +726,24 @@ include("sampler/stratified.jl")
 
 include("primitive.jl")
 
-# GeometricPrimitive convenience constructor for MaterialScene
+# GeometricPrimitive convenience constructor for Scene
 # Must be after primitive.jl which defines GeometricPrimitive
 """
-    MaterialScene(primitives::Vector{<:GeometricPrimitive})
+    Scene(primitives::Vector{<:GeometricPrimitive}; lights=())
 
-Construct a MaterialScene from a vector of GeometricPrimitive objects.
+Construct a Scene from a vector of GeometricPrimitive objects.
 Converts to (mesh, material) pairs and delegates to the tuple constructor.
 
 # Example
 ```julia
 s1 = GeometricPrimitive(mesh1, MatteMaterial(...))
 s2 = GeometricPrimitive(mesh2, MirrorMaterial(...))
-scene = MaterialScene([s1, s2])
+scene = Scene([s1, s2]; lights=(PointLight(...),))
 ```
 """
-function MaterialScene(primitives::Vector{<:GeometricPrimitive})
+function Scene(primitives::Vector{<:GeometricPrimitive}; lights::Union{Tuple,AbstractVector} = ())
     pairs = [(p.shape, p.material) for p in primitives]
-    return MaterialScene(pairs)
+    return Scene(pairs; lights)
 end
 
 include("lights/emission.jl")
@@ -993,7 +772,6 @@ include("integrators/physical-wavefront/camera.jl")
 include("integrators/physical-wavefront/intersection.jl")
 include("integrators/physical-wavefront/material-eval.jl")
 include("integrators/physical-wavefront/film-update.jl")
-include("integrators/physical-wavefront/physical-wavefront.jl")
 
 # VolPath volumetric path tracer
 include("integrators/volpath/media.jl")

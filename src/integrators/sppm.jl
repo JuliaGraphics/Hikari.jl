@@ -172,7 +172,7 @@ end
         # Process SPPM camera ray intersection.
         # Compute BSDF at SPPM camera ray intersection.
         si = compute_differentials(si, rayd)
-        material = get_material(scene.aggregate.materials, primitive.metadata)
+        material = get_material(scene.materials, primitive.metadata)
         bsdf = compute_bsdf(material, si, true, Radiance)
         if bsdf.bxdfs.last == 0
             rayd = RayDifferentials(spawn_ray(si, rayd.d))
@@ -425,7 +425,7 @@ function _trace_photons!(
             # Sample new photon direction.
             # Compute BSDF at photon intersection point.
             si = compute_differentials(si, photon_ray)
-            material = get_material(scene.aggregate.materials, primitive.metadata)
+            material = get_material(scene.materials, primitive.metadata)
             bsdf = compute_bsdf(material, si, true, Importance)
             if bsdf.bxdfs.last == 0
                 photon_ray = RayDifferentials(spawn_ray(si, photon_ray.d))

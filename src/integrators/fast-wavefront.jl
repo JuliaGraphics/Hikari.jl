@@ -109,8 +109,8 @@ end
 ) where {T<:Tuple}
     N = length(T.parameters)
     branches = [quote
-         if idx.material_type === UInt8($i)
-            return extract_fast_props(materials[$i][idx.material_idx], uv)
+         if idx.type_idx === UInt8($i)
+            return extract_fast_props(materials[$i][idx.vec_idx], uv)
         end
     end for i in 1:N]
     quote
@@ -818,8 +818,8 @@ end
 
 function (integrator::FastWavefront)(scene::AbstractScene, film::Film, camera::Camera)
     img = film.framebuffer
-    accel = scene.aggregate.accel
-    materials = scene.aggregate.materials
+    accel = scene.accel
+    materials = scene.materials
     original_lights = scene.lights
 
     # Extract sky color from SunSkyLight if present

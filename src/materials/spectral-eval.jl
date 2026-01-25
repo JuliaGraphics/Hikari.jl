@@ -1,9 +1,9 @@
 # Spectral BSDF Evaluation Interface for PhysicalWavefront
 # Enables spectral path tracing while keeping materials as RGB containers
 #
-# NOTE: All functions take a `textures` parameter for GPU compatibility.
-# On CPU, textures is ignored (Texture structs contain their data).
-# On GPU, textures is a tuple of CLDeviceArrays, and materials contain TextureRef.
+# NOTE: All functions take a context parameter (historically named `textures`)
+# which is a StaticMultiTypeVec containing both materials and textures.
+# Use eval_tex(ctx, field, uv) to sample textures via TextureRef.
 
 # ============================================================================
 # Spectral BSDF Sample Result

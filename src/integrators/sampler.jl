@@ -172,7 +172,7 @@ function li(
     # Compute emitted light if ray hit an area light source.
     l += le(si, wo)
     # Use type-stable dispatch for material-dependent computation
-    l += li_material(scene.aggregate.materials, primitive.metadata,
+    l += li_material(scene.materials, primitive.metadata,
                      sampler, max_depth, ray, si, scene, lights, wo, depth)
     l
 end
@@ -186,8 +186,8 @@ end
 ) where {T<:Tuple, S<:AbstractScene}
     N = length(T.parameters)
     branches = [quote
-         if idx.material_type === UInt8($i)
-            bsdf = compute_bsdf(materials[$i][idx.material_idx], si, false, Radiance)
+         if idx.type_idx === UInt8($i)
+            bsdf = compute_bsdf(materials[$i][idx.vec_idx], si, false, Radiance)
             l = light_contribution(RGBSpectrum(0f0), lights, wo, scene, bsdf, sampler, si)
             if depth + Int32(1) ≤ max_depth
                 l += specular_reflect(bsdf, sampler, max_depth, ray, si, scene, depth)
@@ -372,8 +372,7 @@ end
     throughput = RGBSpectrum(1.0f0)  # Path throughput
     ray = initial_ray
     lights = scene.lights
-    materials = scene.aggregate.materials
-    textures = get_textures(scene.aggregate)
+    materials = scene.materials
 
     depth = Int32(0)
     while depth <= max_depth
@@ -395,7 +394,7 @@ end
 
         # Get material and compute BSDF (or detect volume)
         idx = primitive.metadata
-        valid, is_volume, bsdf = compute_bsdf_for_material(materials, textures, idx, si)
+        valid, is_volume, bsdf = compute_bsdf_for_material(materials, idx, si)
 
         if !valid
             break
@@ -474,7 +473,7 @@ end
 # Returns a tuple to avoid Union{Nothing, BSDF} type instability
 # For volume materials, is_volume=true indicates caller should use shade_material instead of BSDF
 @propagate_inbounds @generated function compute_bsdf_for_material(
-    materials::T, textures, idx::MaterialIndex, si::SurfaceInteraction
+    materials::T, idx::MaterialIndex, si::SurfaceInteraction
 ) where {T<:Tuple}
     N = length(T.parameters)
     branches = []
@@ -484,8 +483,8 @@ end
         mat_type = eltype(mat_array_type)
         is_vol = mat_type <: CloudVolume
         push!(branches, quote
-             if idx.material_type === UInt8($i)
-                return (true, $is_vol, compute_bsdf(materials[$i][idx.material_idx], textures, si, false, Radiance))
+             if idx.type_idx === UInt8($i)
+                return (true, $is_vol, compute_bsdf(materials[$i][idx.vec_idx], materials, si, false, Radiance))
             end
         end)
     end
