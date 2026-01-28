@@ -4,14 +4,7 @@ interface for it is vacuum, otherwise all the light would've been absorbed
 by the medium, since the light is infinitely far away.
 """
 struct DirectionalLight{S<:Spectrum} <: Light
-    """
-    Since directional lights represent singularities that emit light
-    along a single direction, flag is set to `LightδDirection`.
-    """
-    flags::LightFlags
-    """
-    Light-source is positioned at the origin of its light space.
-    """
+    """Light-source is positioned at the origin of its light space."""
     light_to_world::Transformation
     world_to_light::Transformation
 
@@ -22,11 +15,16 @@ struct DirectionalLight{S<:Spectrum} <: Light
         light_to_world::Transformation, l::S, direction::Vec3f,
     ) where S<:Spectrum
         new{S}(
-            LightδDirection, light_to_world, inv(light_to_world),
+            light_to_world, inv(light_to_world),
             l, normalize(light_to_world(direction)),
         )
     end
 end
+
+# Directional lights are delta lights (emit along a single direction)
+is_δ_light(::DirectionalLight) = true
+# Directional lights are infinite (at infinity)
+is_infinite_light(::DirectionalLight) = true
 
 @propagate_inbounds function sample_li(
         d::DirectionalLight{S}, ref::Interaction, u::Point2f, scene::AbstractScene,

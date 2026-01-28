@@ -12,8 +12,6 @@ Uses importance sampling based on pre-computed sky radiance distribution for
 efficient sampling with low variance.
 """
 struct SunSkyLight{S<:Spectrum, D} <: Light
-    flags::LightFlags
-
     # Sun parameters
     sun_direction::Vec3f      # Direction TO the sun (normalized)
     sun_intensity::S          # Sun radiance
@@ -38,7 +36,7 @@ struct SunSkyLight{S<:Spectrum, D} <: Light
     # Importance sampling distribution for the sky hemisphere
     distribution::D
 
-    """Inner constructor for pre-computed lights (used by to_gpu)."""
+    """Inner constructor for pre-computed lights (used by Adapt)."""
     function SunSkyLight(
         sun_direction::Vec3f,
         sun_intensity::S,
@@ -55,7 +53,7 @@ struct SunSkyLight{S<:Spectrum, D} <: Light
         distribution::D,
     ) where {S<:Spectrum, D}
         new{S, D}(
-            LightInfinite, sun_direction, sun_intensity, sun_angular_radius,
+            sun_direction, sun_intensity, sun_angular_radius,
             turbidity, ground_albedo, ground_enabled,
             perez_Y, perez_x, perez_y, zenith_Y, zenith_x, zenith_y,
             distribution,
@@ -123,7 +121,6 @@ struct SunSkyLight{S<:Spectrum, D} <: Light
         distribution = Distribution2D(radiance_grid)
 
         new{S, typeof(distribution)}(
-            LightInfinite,  # Infinite light (provides le() for background)
             dir, sun_intensity, sun_angular_radius,
             turbidity, ground_albedo, ground_enabled,
             perez_Y, perez_x, perez_y,
@@ -132,6 +129,9 @@ struct SunSkyLight{S<:Spectrum, D} <: Light
         )
     end
 end
+
+# SunSky lights are infinite (provide background sky)
+is_infinite_light(::SunSkyLight) = true
 
 """
 Internal function to compute sky radiance without light struct.

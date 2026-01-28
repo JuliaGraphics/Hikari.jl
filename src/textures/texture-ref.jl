@@ -21,8 +21,8 @@ Materials should always use TextureRef or raw values, never Texture directly.
     return _sample_texture_data(data, uv)
 end
 
-# Raw value path (constant) - for Float32, Spectrum types
-@propagate_inbounds function eval_tex(::Raycore.StaticMultiTypeVec, val::T, ::Point2f) where T<:Union{Float32, Spectrum}
+# Raw value path (constant) - for Float32, RGB, Spectrum types
+@propagate_inbounds function eval_tex(::Raycore.StaticMultiTypeVec, val::T, ::Point2f) where T<:Union{Float32, RGB{Float32}, Spectrum}
     return val
 end
 
@@ -33,9 +33,15 @@ end
 """
     Raycore.maybe_convert_field(dhv::MultiTypeVec, tex::Texture)
 
-Convert Hikari Texture to Raycore.TextureRef for MultiTypeVec storage.
-Texture is only used for loading data - materials store TextureRef.
+Convert Hikari Texture to Raycore.TextureRef or raw value for MultiTypeVec storage.
+- Const textures (scalars): return constval directly (no indirection needed)
+- Non-const textures (arrays): convert to TextureRef
 """
 function Raycore.maybe_convert_field(dhv::Raycore.MultiTypeVec, tex::Texture)
+    # Const textures store the value in constval, data is uninitialized
+    tex.isconst && return tex.constval
     return Raycore.store_texture(dhv, tex.data)
 end
+
+# Light skip methods are in lights/light-sampler.jl (after light types are defined)
+# Distribution types are now converted via the standard texture ref infrastructure

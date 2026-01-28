@@ -26,7 +26,7 @@
     )
 
     # Check if surface is emissive
-    if is_emissive_dispatch(materials, material_idx)
+    if is_emissive(materials, material_idx)
         # Get emission
         Le = get_emission_spectral_dispatch(
             rgb2spec_table, materials, material_idx,
@@ -115,8 +115,8 @@ Now uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style
         return
     end
 
-    # Sample the light
-    light_sample = sample_light_from_tuple(
+    # Sample the light (works with both Tuple and StaticMultiTypeVec)
+    light_sample = sample_light_spectral(
         rgb2spec_table, lights, light_idx, work.pi, work.lambda, u_light
     )
 
@@ -373,7 +373,7 @@ Check if material is purely emissive (no BSDF).
 @propagate_inbounds function is_pure_emissive_dispatch(materials, mat_idx::MaterialIndex)
     # Default: assume materials with emission also have BSDF
     # Override for EmissiveMaterial which has no BSDF
-    return is_emissive_dispatch(materials, mat_idx) &&
+    return is_emissive(materials, mat_idx) &&
            !has_bsdf_dispatch(materials, mat_idx)
 end
 

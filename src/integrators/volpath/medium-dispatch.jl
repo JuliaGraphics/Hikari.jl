@@ -19,8 +19,8 @@ This provides type-stable medium dispatch by using Raycore.getindex_unrolled for
 mp = sample_point_dispatch(table, media, idx, p, λ)  # May have GPU issues
 
 # Use:
-mp = with_medium(_sample_point_helper, media, idx, table, p, λ)
-# Where: _sample_point_helper(medium, table, p, λ) = sample_point(table, medium, p, λ)
+mp = with_medium(_sample_point, media, idx, table, p, λ)
+# Where: _sample_point(medium, table, p, λ) = sample_point(table, medium, p, λ)
 ```
 """
 @propagate_inbounds @generated function with_medium(f::F, media::M, idx::Int32, args...) where {F, M <: Tuple}
@@ -52,29 +52,40 @@ end
     return f(medium, args...)
 end
 
+# StaticMultiTypeVec support - uses HeteroVecIndex (type_idx, vec_idx)
+# This matches the MaterialIndex pattern - proper indexing into typed arrays
+@propagate_inbounds @generated function with_medium(
+    f::F, media::Raycore.StaticMultiTypeVec{Data, Textures}, idx::MediumIndex, args...
+) where {F, Data<:Tuple, Textures}
+    N = length(Data.parameters)
+
+    if N == 0
+        return :(error("with_medium: empty StaticMultiTypeVec"))
+    end
+
+    # Build unrolled if-branches using type_idx and vec_idx
+    branches = [quote
+        if idx.type_idx === UInt8($i)
+            @inbounds return f(media.data[$i][idx.vec_idx], args...)
+        end
+    end for i in 1:N]
+
+    quote
+        $(branches...)
+        # Fallback (should not be reached with valid index)
+        @inbounds return f(media.data[1][1], args...)
+    end
+end
+
 # ============================================================================
-# Helper functions for medium dispatch (no variable capture)
+# Helper functions for with_medium dispatch (argument reordering)
+# These are needed because with_medium calls f(element, args...) but
+# our functions have different argument orders (e.g., sample_point(table, medium, ...))
 # ============================================================================
 
-"""Sample medium properties at a point - helper for with_medium"""
-@propagate_inbounds function _sample_point_helper(medium, table::RGBToSpectrumTable, p::Point3f, λ::Wavelengths)
-    return sample_point(table, medium, p, λ)
-end
-
-"""Get ray majorant from medium - helper for with_medium"""
-@propagate_inbounds function _get_majorant_helper(medium, table::RGBToSpectrumTable, ray::Raycore.Ray, t_min::Float32, t_max::Float32, λ::Wavelengths)
-    return get_majorant(table, medium, ray, t_min, t_max, λ)
-end
-
-"""Check if medium is emissive - helper for with_medium"""
-@propagate_inbounds function _is_emissive_helper(medium)
-    return is_emissive(medium)
-end
-
-"""Create majorant iterator - helper for with_medium"""
-@propagate_inbounds function _create_majorant_iterator_helper(medium, table::RGBToSpectrumTable, ray::Raycore.Ray, t_max::Float32, λ::Wavelengths)
-    return create_majorant_iterator(table, medium, ray, t_max, λ)
-end
+@propagate_inbounds _sample_point(medium, table, p, λ) = sample_point(table, medium, p, λ)
+@propagate_inbounds _get_majorant(medium, table, ray, t_min, t_max, λ) = get_majorant(table, medium, ray, t_min, t_max, λ)
+@propagate_inbounds _create_majorant_iterator(medium, table, ray, t_max, λ) = create_majorant_iterator(table, medium, ray, t_max, λ)
 
 # ============================================================================
 # Medium Point Sampling Dispatch
@@ -93,7 +104,7 @@ Uses with_medium pattern for GPU compatibility.
     p::Point3f,
     λ::Wavelengths
 ) where {N}
-    return with_medium(_sample_point_helper, media, idx, table, p, λ)
+    return with_medium(_sample_point, media, idx, table, p, λ)
 end
 
 # ============================================================================
@@ -115,7 +126,7 @@ Uses with_medium pattern for GPU compatibility.
     t_max::Float32,
     λ::Wavelengths
 ) where {N}
-    return with_medium(_get_majorant_helper, media, idx, table, ray, t_min, t_max, λ)
+    return with_medium(_get_majorant, media, idx, table, ray, t_min, t_max, λ)
 end
 
 # ============================================================================
@@ -132,7 +143,7 @@ Uses with_medium pattern for GPU compatibility.
     media::NTuple{N,Any},
     idx::Int32
 ) where {N}
-    return with_medium(_is_emissive_helper, media, idx)
+    return with_medium(is_emissive, media, idx)
 end
 
 # ============================================================================
@@ -166,6 +177,43 @@ end
 end
 
 # ============================================================================
+# StaticMultiTypeVec Dispatch Methods (use MediumIndex = HeteroVecIndex)
+# ============================================================================
+
+@propagate_inbounds function sample_point_dispatch(
+    table::RGBToSpectrumTable,
+    media::Raycore.StaticMultiTypeVec,
+    idx::MediumIndex,
+    p::Point3f,
+    λ::Wavelengths
+)
+    return with_medium(_sample_point, media, idx, table, p, λ)
+end
+
+@propagate_inbounds function get_majorant_dispatch(
+    table::RGBToSpectrumTable,
+    media::Raycore.StaticMultiTypeVec,
+    idx::MediumIndex,
+    ray::Raycore.Ray,
+    t_min::Float32,
+    t_max::Float32,
+    λ::Wavelengths
+)
+    return with_medium(_get_majorant, media, idx, table, ray, t_min, t_max, λ)
+end
+
+@propagate_inbounds function create_majorant_iterator_dispatch(
+    table::RGBToSpectrumTable,
+    media::Raycore.StaticMultiTypeVec,
+    idx::MediumIndex,
+    ray::Raycore.Ray,
+    t_max::Float32,
+    λ::Wavelengths
+)
+    return with_medium(_create_majorant_iterator, media, idx, table, ray, t_max, λ)
+end
+
+# ============================================================================
 # Majorant Iterator Creation Dispatch
 # ============================================================================
 
@@ -185,7 +233,7 @@ Returns either HomogeneousMajorantIterator or DDAMajorantIterator depending on m
     t_max::Float32,
     λ::Wavelengths
 ) where {N}
-    return with_medium(_create_majorant_iterator_helper, media, idx, table, ray, t_max, λ)
+    return with_medium(_create_majorant_iterator, media, idx, table, ray, t_max, λ)
 end
 
 # Single medium fallback

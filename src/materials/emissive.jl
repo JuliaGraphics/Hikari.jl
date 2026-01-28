@@ -30,10 +30,6 @@ struct EmissiveMaterial{LeTex} <: Material
     two_sided::Bool
 end
 
-function EmissiveMaterial(Le, scale::Float32, two_sided::Bool)
-    EmissiveMaterial{typeof(Le)}(Le, scale, two_sided)
-end
-
 # ============================================================================
 # User-friendly keyword constructor
 # ============================================================================

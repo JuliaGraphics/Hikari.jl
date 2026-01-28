@@ -448,34 +448,35 @@ Returns (point, pdf, grid_index).
     Point2f(px, py), pdf, Point2{Int32}(x_idx, y_idx)
 end
 
+# GPU-compatible branchless binary search - fully unrolled (SPIR-V requires no loops)
+# Uses @nexprs to generate 20 iterations of branchless binary search at compile time
 @inline function binary_search_cdf(cdf::AbstractVector{Float32}, u::Float32)::Int32
     n = length(cdf)
     lo = Int32(1)
     hi = Int32(n)
 
-    while lo < hi
+    # Fully unrolled branchless binary search (20 iterations enough for 2^20 elements)
+    Base.Cartesian.@nexprs 20 _ -> begin
         mid = (lo + hi) ÷ Int32(2)
-        if cdf[mid] < u
-            lo = mid + Int32(1)
-        else
-            hi = mid
-        end
+        cond = cdf[mid] < u
+        lo = ifelse(cond, mid + Int32(1), lo)
+        hi = ifelse(cond, hi, mid)
     end
     lo
 end
 
+# GPU-compatible branchless binary search for matrix rows - fully unrolled
 @inline function binary_search_cdf_row(cdfs::AbstractMatrix{Float32}, row::Int32, u::Float32)::Int32
     n = size(cdfs, 2)
     lo = Int32(1)
     hi = Int32(n)
 
-    while lo < hi
+    # Fully unrolled branchless binary search (20 iterations enough for 2^20 elements)
+    Base.Cartesian.@nexprs 20 _ -> begin
         mid = (lo + hi) ÷ Int32(2)
-        if cdfs[row, mid] < u
-            lo = mid + Int32(1)
-        else
-            hi = mid
-        end
+        cond = cdfs[row, mid] < u
+        lo = ifelse(cond, mid + Int32(1), lo)
+        hi = ifelse(cond, hi, mid)
     end
     lo
 end
@@ -727,19 +728,19 @@ end
 Binary search in CDF to find interval containing u.
 Returns index o such that cdf[o] <= u < cdf[o+1] (1-based indexing).
 CDF has size n+1 with cdf[1]=0 and cdf[n+1]=1.
+GPU-compatible fully unrolled branchless implementation.
 """
 @inline function find_interval(cdf::AbstractVector{Float32}, u::Float32, n::Int32)::Int32
-    # Binary search for interval containing u
+    # Fully unrolled branchless binary search for interval containing u
     lo = Int32(1)
     hi = n + Int32(1)
 
-    while lo < hi - Int32(1)
+    # 20 iterations (enough for 2^20 elements)
+    Base.Cartesian.@nexprs 20 _ -> begin
         mid = (lo + hi) >> Int32(1)
-        if cdf[mid] <= u
-            lo = mid
-        else
-            hi = mid
-        end
+        cond = cdf[mid] <= u
+        lo = ifelse(cond, mid, lo)
+        hi = ifelse(cond, hi, mid)
     end
     lo
 end
@@ -794,17 +795,15 @@ Sample 1D from conditional distribution (row of 2D distribution).
     domain_min::Float32,
     domain_max::Float32
 )
-    # Find interval in this row's CDF
+    # Find interval in this row's CDF (fully unrolled branchless binary search)
     lo = Int32(1)
     hi = nx + Int32(1)
 
-    while lo < hi - Int32(1)
+    Base.Cartesian.@nexprs 20 _ -> begin
         mid = (lo + hi) >> Int32(1)
-        if conditional_cdf[row, mid] <= u
-            lo = mid
-        else
-            hi = mid
-        end
+        cond = conditional_cdf[row, mid] <= u
+        lo = ifelse(cond, mid, lo)
+        hi = ifelse(cond, hi, mid)
     end
     o = clamp(lo, Int32(1), nx)
 
@@ -1036,39 +1035,6 @@ function Filter(type::Symbol; kwargs...)
         error("Unknown filter type: $type. Use :box, :triangle, :gaussian, :mitchell, or :lanczos")
     end
 end
-
-# ============================================================================
-# GPU Adaptation for Filter Sampler Data
-# ============================================================================
-
-"""
-    adapt_filter_sampler_data(backend, data::GPUFilterSamplerData)
-
-Adapt filter sampler data arrays to the target GPU backend.
-This converts CPU arrays to GPU arrays for use in kernels.
-"""
-function adapt_filter_sampler_data(backend, data::GPUFilterSamplerData)
-    # Check if already on the correct backend
-    if KernelAbstractions.get_backend(data.func) == backend
-        return data
-    end
-
-    # Adapt arrays to GPU
-    GPUFilterSamplerData(
-        KernelAbstractions.adapt(backend, data.func),
-        KernelAbstractions.adapt(backend, data.marginal_cdf),
-        KernelAbstractions.adapt(backend, data.marginal_func),
-        KernelAbstractions.adapt(backend, data.conditional_cdf),
-        data.domain_min,
-        data.domain_max,
-        data.nx,
-        data.ny,
-        data.func_integral
-    )
-end
-
-# No-op for nothing (Box/Triangle filters)
-adapt_filter_sampler_data(_, ::Nothing) = nothing
 
 # ============================================================================
 # Adapt.jl Integration for GPU Kernels

@@ -9,20 +9,18 @@
 """
     MediumIndex
 
-Index into media tuple for runtime dispatch.
-- medium_type: Which tuple slot (1-based), 0 = vacuum/no medium
+Index into media MultiTypeVec for runtime dispatch.
+Alias for `HeteroVecIndex` from Raycore.
+- `type_idx`: Which type slot (1-based), 0 = vacuum/no medium
+- `vec_idx`: Index within that type's array
 
 This is an internal type - users should use `MediumInterface` with actual
 medium objects, which gets converted to indices during scene building.
 """
-struct MediumIndex
-    medium_type::Int32   # Which medium type in tuple (0 = vacuum/no medium)
-end
+const MediumIndex = Raycore.HeteroVecIndex
 
-MediumIndex() = MediumIndex(Int32(0))
-
-@propagate_inbounds is_vacuum(idx::MediumIndex) = idx.medium_type == Int32(0)
-@propagate_inbounds has_medium(idx::MediumIndex) = idx.medium_type > Int32(0)
+@propagate_inbounds is_vacuum(idx::MediumIndex) = Raycore.is_invalid(idx)
+@propagate_inbounds has_medium(idx::MediumIndex) = Raycore.is_valid(idx)
 
 # ============================================================================
 # User-facing MediumInterface (stores actual Medium objects)
@@ -91,7 +89,8 @@ end
 
 """Check if this interface represents a medium transition"""
 @propagate_inbounds function is_medium_transition(mi::MediumInterfaceIdx)
-    mi.inside.medium_type != mi.outside.medium_type
+    # Compare both type_idx and vec_idx to check if indices point to different media
+    mi.inside.type_idx != mi.outside.type_idx || mi.inside.vec_idx != mi.outside.vec_idx
 end
 
 # Trait functions for GPU-compatible type checking (avoids `isa` runtime dispatch)
@@ -144,11 +143,11 @@ end
     to_indexed(mi::MediumInterface, medium_to_index::Dict) -> MediumInterfaceIdx
 
 Convert a user-facing MediumInterface to an indexed version for GPU dispatch.
-`medium_to_index` maps medium objects to their tuple indices.
+`medium_to_index` maps medium objects to their HeteroVecIndex from push!(media_mtv, medium).
 """
 function to_indexed(mi::MediumInterface, medium_to_index::Dict)
-    inside_idx = mi.inside === nothing ? MediumIndex() : MediumIndex(Int32(medium_to_index[mi.inside]))
-    outside_idx = mi.outside === nothing ? MediumIndex() : MediumIndex(Int32(medium_to_index[mi.outside]))
+    inside_idx = mi.inside === nothing ? MediumIndex() : medium_to_index[mi.inside]
+    outside_idx = mi.outside === nothing ? MediumIndex() : medium_to_index[mi.outside]
     MediumInterfaceIdx(mi.material, inside_idx, outside_idx)
 end
 

@@ -1,5 +1,4 @@
 struct SpotLight{S<:Spectrum} <: Light
-    flags::LightFlags
     light_to_world::Transformation
     world_to_light::Transformation
     position::Point3f
@@ -18,12 +17,15 @@ struct SpotLight{S<:Spectrum} <: Light
         scale::Float32=1f0,
     ) where S<:Spectrum
         new{S}(
-            LightδPosition, light_to_world, inv(light_to_world),
+            light_to_world, inv(light_to_world),
             light_to_world(Point3f(0f0)), i, scale,
             cos(deg2rad(total_width)), cos(deg2rad(falloff_start)),
         )
     end
 end
+
+# Spot lights are delta lights (emit from a single point)
+is_δ_light(::SpotLight) = true
 
 """
     SpotLight(position, target, intensity, cone_angle, falloff_angle; scale=1f0)

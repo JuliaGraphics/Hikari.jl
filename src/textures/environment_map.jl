@@ -16,8 +16,8 @@ struct EnvironmentMap{S<:Spectrum, T<:AbstractMatrix{S}, D}
     """2D distribution for importance sampling based on luminance."""
     distribution::D
 
-    """Inner constructor for pre-computed environment maps (used by to_gpu)."""
-    function EnvironmentMap(data::T, rotation::Mat3f, distribution::D) where {S<:Spectrum, T<:AbstractMatrix{S}, D<:Union{Distribution2D, FlatDistribution2D}}
+    """Inner constructor for pre-computed environment maps (used by Adapt)."""
+    function EnvironmentMap(data::T, rotation::Mat3f, distribution::D) where {S<:Spectrum, T<:AbstractMatrix{S}, D<:Distribution2D}
         new{S, T, D}(data, rotation, distribution)
     end
 

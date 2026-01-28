@@ -177,29 +177,28 @@ function li(
     l
 end
 
+# Helper for li_material - operates on concrete material type
+@propagate_inbounds function _li_material_impl(
+    mat, ctx, sampler, max_depth, ray::RayDifferentials, si::SurfaceInteraction,
+    scene, lights, wo, depth::Int32
+)
+    bsdf = compute_bsdf(mat, ctx, si, false, Radiance)
+    l = light_contribution(RGBSpectrum(0f0), lights, wo, scene, bsdf, sampler, si)
+    if depth + Int32(1) ≤ max_depth
+        l += specular_reflect(bsdf, sampler, max_depth, ray, si, scene, depth)
+        l += specular_transmit(bsdf, sampler, max_depth, ray, si, scene, depth)
+    end
+    return l
+end
+
 # Type-stable material dispatch for li computation
-# Uses @generated to avoid union types from get_material flowing into BSDF computation
-@propagate_inbounds @generated function li_material(
-    materials::T, idx::MaterialIndex,
+# Uses with_index for type-stable dispatch over StaticMultiTypeVec
+@propagate_inbounds function li_material(
+    materials::StaticMultiTypeVec, idx::MaterialIndex,
     sampler, max_depth, ray::RayDifferentials, si::SurfaceInteraction,
     scene::S, lights, wo, depth::Int32
-) where {T<:Tuple, S<:AbstractScene}
-    N = length(T.parameters)
-    branches = [quote
-         if idx.type_idx === UInt8($i)
-            bsdf = compute_bsdf(materials[$i][idx.vec_idx], si, false, Radiance)
-            l = light_contribution(RGBSpectrum(0f0), lights, wo, scene, bsdf, sampler, si)
-            if depth + Int32(1) ≤ max_depth
-                l += specular_reflect(bsdf, sampler, max_depth, ray, si, scene, depth)
-                l += specular_transmit(bsdf, sampler, max_depth, ray, si, scene, depth)
-            end
-            return l
-        end
-    end for i in 1:N]
-    quote
-        $(branches...)
-        return RGBSpectrum(0f0)
-    end
+) where {S<:AbstractScene}
+    return with_index(_li_material_impl, materials, idx, materials, sampler, max_depth, ray, si, scene, lights, wo, depth)
 end
 
 @propagate_inbounds function specular_reflect(
@@ -469,29 +468,20 @@ end
 @propagate_inbounds is_volume_material(::Material) = false
 @propagate_inbounds is_volume_material(::CloudVolume) = true
 
+# Helper for compute_bsdf_for_material - operates on concrete material type
+@propagate_inbounds function _compute_bsdf_impl(mat, ctx, si::SurfaceInteraction)
+    is_vol = is_volume_material(mat)
+    bsdf = compute_bsdf(mat, ctx, si, false, Radiance)
+    return (true, is_vol, bsdf)
+end
+
 # Helper to compute BSDF for a material index - returns (valid::Bool, is_volume::Bool, bsdf::BSDF)
 # Returns a tuple to avoid Union{Nothing, BSDF} type instability
 # For volume materials, is_volume=true indicates caller should use shade_material instead of BSDF
-@propagate_inbounds @generated function compute_bsdf_for_material(
-    materials::T, idx::MaterialIndex, si::SurfaceInteraction
-) where {T<:Tuple}
-    N = length(T.parameters)
-    branches = []
-    for i in 1:N
-        # Get the element type of the material array at position i
-        mat_array_type = T.parameters[i]
-        mat_type = eltype(mat_array_type)
-        is_vol = mat_type <: CloudVolume
-        push!(branches, quote
-             if idx.type_idx === UInt8($i)
-                return (true, $is_vol, compute_bsdf(materials[$i][idx.vec_idx], materials, si, false, Radiance))
-            end
-        end)
-    end
-    quote
-        $(branches...)
-        return (false, false, BSDF())
-    end
+@propagate_inbounds function compute_bsdf_for_material(
+    materials::StaticMultiTypeVec, idx::MaterialIndex, si::SurfaceInteraction
+)
+    return with_index(_compute_bsdf_impl, materials, idx, materials, si)
 end
 
 

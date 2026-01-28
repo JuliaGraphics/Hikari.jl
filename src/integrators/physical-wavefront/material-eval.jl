@@ -39,9 +39,9 @@ and creates a shadow ray work item.
             light_idx = floor_int32(light_select * Float32(num_lights)) + Int32(1)
             light_idx = min(light_idx, num_lights)
 
-            # Sample the selected light
+            # Sample the selected light (works with both Tuple and StaticMultiTypeVec)
             p = work.pi
-            light_sample = sample_light_from_tuple(rgb2spec_table, lights, light_idx, p, work.lambda, u_light)
+            light_sample = sample_light_spectral(rgb2spec_table, lights, light_idx, p, work.lambda, u_light)
 
             if light_sample.pdf > 0f0 && !is_black(light_sample.Li)
                 # Evaluate BSDF for light direction

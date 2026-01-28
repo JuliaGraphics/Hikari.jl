@@ -25,7 +25,10 @@ import Raycore: distance, distance_squared, bounding_sphere
 import Raycore: Transformation, translate, scale, rotate, rotate_x, rotate_y, rotate_z, look_at, perspective
 import Raycore: swaps_handedness, has_scale
 import Raycore: AbstractShape, Triangle, TriangleMesh
-import Raycore: AccelPrimitive, BVH, TLAS, Instance, InstanceHandle, world_bound, closest_hit, any_hit
+import Raycore: AccelPrimitive, BVH, TLAS, TLASHandle, Instance, world_bound, closest_hit, any_hit, sync!
+
+# Legacy alias - InstanceHandle was renamed to TLASHandle
+const InstanceHandle = TLASHandle
 import Raycore: Normal3f, intersect, intersect_p
 import Raycore: is_dir_negative, increase_hit, intersect_p!
 import Raycore: to_gpu
@@ -203,8 +206,9 @@ abstract type AbstractScene end
 # Scene stores lights, accelerator, materials, and media directly.
 # Materials and media use MultiTypeVec (or StaticMultiTypeVec for GPU/kernels).
 # Textures are stored within the materials MultiTypeVec (materials have TextureRef fields).
-mutable struct Scene{Accel, L<:NTuple{N, Light} where N, MatVec<:AbstractVector, MedVec<:AbstractVector} <: AbstractScene
-    lights::L
+# LightVec can be Tuple (for type-stable iteration) or AbstractVector.
+mutable struct Scene{Accel,LightVec,MatVec<:AbstractVector,MedVec<:AbstractVector} <: AbstractScene
+    lights::LightVec
     accel::Accel  # BVH, TLAS, or any accelerator supporting closest_hit/any_hit
     materials::MatVec  # MultiTypeVec or StaticMultiTypeVec
     media::MedVec  # MultiTypeVec or StaticMultiTypeVec
@@ -214,8 +218,8 @@ mutable struct Scene{Accel, L<:NTuple{N, Light} where N, MatVec<:AbstractVector,
 end
 
 # Immutable scene for e.g. GPU use - required for GPU kernels (must be bitstype)
-struct ImmutableScene{Accel, L<:NTuple{N, Light} where N, MatVec<:AbstractVector, MedVec<:AbstractVector} <: AbstractScene
-    lights::L
+struct ImmutableScene{Accel, LightVec, MatVec<:AbstractVector, MedVec<:AbstractVector} <: AbstractScene
+    lights::LightVec
     accel::Accel
     materials::MatVec
     media::MedVec
@@ -231,9 +235,89 @@ function Scene(lights::Union{Tuple,AbstractVector}, accel, materials, media)
     Scene(ltuple, accel, materials, media, bounds, world_center, world_radius)
 end
 
+function Scene(lights::MultiTypeVec, accel, materials, media)
+    bounds = world_bound(accel)
+    world_center, world_radius = bounding_sphere(bounds)
+    Scene(lights, accel, materials, media, bounds, world_center, world_radius)
+end
+
+"""
+    Scene(; backend=KA.CPU())
+
+Create an empty mutable Scene for incremental construction.
+
+# Example
+```julia
+scene = Scene()
+push!(scene, mesh, material)           # Add geometry
+push!(scene.lights, PointLight(...))   # Add lights
+push!(scene.lights, AmbientLight(...))
+sync!(scene)  # Build acceleration structure
+```
+"""
+function Scene(; backend=KA.CPU())
+    tlas = TLAS(backend)
+    lights = MultiTypeVec(backend)
+    materials = MultiTypeVec(backend)
+    media = MultiTypeVec(backend)
+    Scene(lights, tlas, materials, media, Bounds3(), Point3f(0), 0f0)
+end
+
+"""
+    push!(scene::Scene, geometry, material) -> TLASHandle
+
+Add geometry with material to the scene. Returns a handle for later reference.
+The material is added to the materials collection and the geometry is added to the TLAS.
+"""
+function Base.push!(scene::Scene{<:TLAS}, geometry, material)
+    mat_idx = push!(scene.materials, material)
+    handle = push!(scene.accel, geometry, mat_idx)
+    return handle
+end
+
+"""
+    push!(scene::Scene, geometry, material, transform::Mat4f) -> TLASHandle
+
+Add geometry with material and transform to the scene.
+"""
+function Base.push!(scene::Scene{<:TLAS}, geometry, material, transform::Mat4f)
+    mat_idx = push!(scene.materials, material)
+    handle = push!(scene.accel, geometry, mat_idx, transform)
+    return handle
+end
+
+"""
+    sync!(scene::Scene)
+
+Build/rebuild the acceleration structure and update scene bounds.
+Call this after adding geometry with `push!`.
+"""
+function sync!(scene::Scene{<:TLAS})
+    sync!(scene.accel)
+    scene.bound = world_bound(scene.accel)
+    scene.world_center, scene.world_radius = bounding_sphere(scene.bound)
+    return scene
+end
+
 # Convert Scene to ImmutableScene for GPU rendering
 ImmutableScene(s::Scene) = ImmutableScene(s.lights, s.accel, s.materials, s.media, s.bound, s.world_center, s.world_radius)
 ImmutableScene(s::ImmutableScene) = s  # Already immutable
+
+# Adapt ImmutableScene for GPU kernels - converts CLArray to CLDeviceVector etc.
+function Adapt.adapt_structure(to, scene::ImmutableScene)
+    ImmutableScene(
+        scene.lights,  # Tuple of lights, already bitstype
+        Adapt.adapt(to, scene.accel),
+        Adapt.adapt(to, scene.materials),
+        Adapt.adapt(to, scene.media),
+        scene.bound,
+        scene.world_center,
+        scene.world_radius
+    )
+end
+
+# Type alias for scenes with materials (used for get_material dispatch)
+const MaterialScene = AbstractScene
 
 # Common interface for both scene types
 @propagate_inbounds function intersect!(scene::AbstractScene, ray::AbstractRay)
@@ -296,6 +380,7 @@ Now an alias for `HeteroVecIndex` from Raycore.
 - `vec_idx`: Index within that material type's array
 """
 const MaterialIndex = HeteroVecIndex
+const LightIndex = HeteroVecIndex
 
 # ============================================================================
 # with_material - delegates to Raycore.with_index for StaticMultiTypeVec
@@ -610,79 +695,67 @@ Returns `(scene::Scene, handles::Vector{InstanceHandle})`.
 Automatically extracts media from `MediumInterface` materials and converts them
 to `MediumInterfaceIdx` with proper indices for GPU dispatch.
 """
-function scene_with_handles(mesh_material_pairs::Vector{<:Tuple}; lights::Union{Tuple,AbstractVector} = ())
-    # Extract components - handle both 2-tuples and 3-tuples
-    meshes = [pair[1] for pair in mesh_material_pairs]
-    materials_list = [pair[2] for pair in mesh_material_pairs]
-    has_transforms = length(mesh_material_pairs) > 0 && length(first(mesh_material_pairs)) >= 3
-    transforms = has_transforms ? [Mat4f(pair[3]) for pair in mesh_material_pairs] : nothing
+function scene_with_handles(mesh_material_pairs::Vector{<:Tuple}; lights::Union{Tuple,AbstractVector} = (), backend = KA.CPU())
+    isempty(mesh_material_pairs) && error("Cannot create scene from empty mesh_material_pairs")
 
-    # === Extract media from MediumInterface materials ===
-    media_list = Any[]  # Unique media objects
-    medium_to_index = Dict{Any, Int}()  # Medium object -> 1-based index
+    # Check for transforms (3-tuples)
+    has_transforms = length(first(mesh_material_pairs)) >= 3
 
-    for mat in materials_list
+    # === Create empty TLAS and MultiTypeVecs ===
+    tlas = TLAS(backend)
+    materials_mtv = MultiTypeVec(backend)
+    media_mtv = MultiTypeVec(backend)
+    lights_mtv = MultiTypeVec(backend)
+
+    # === Push lights to MultiTypeVec ===
+    for light in lights
+        push!(lights_mtv, light)
+    end
+
+    # === First pass: collect unique media from MediumInterface materials ===
+    # Push to media_mtv and store the returned HeteroVecIndex
+    medium_to_index = Dict{Any, HeteroVecIndex}()
+
+    for pair in mesh_material_pairs
+        mat = pair[2]
         if mat isa MediumInterface
             for medium in (mat.inside, mat.outside)
                 if medium !== nothing && !haskey(medium_to_index, medium)
-                    push!(media_list, medium)
-                    medium_to_index[medium] = length(media_list)
+                    idx = push!(media_mtv, medium)
+                    medium_to_index[medium] = idx
                 end
             end
         end
     end
 
-    # Convert MediumInterface -> MediumInterfaceIdx with proper indices
-    converted_materials = [to_indexed(mat, medium_to_index) for mat in materials_list]
+    # === Main loop: push materials and geometry to scene ===
+    handles = TLASHandle[]
 
-    # Build media tuple (empty if no media)
-    media_tuple = isempty(media_list) ? () : Tuple(media_list)
+    for pair in mesh_material_pairs
+        mesh = pair[1]
+        mat = pair[2]
+        transform = has_transforms ? Mat4f(pair[3]) : nothing
 
-    # === Build materials tuple with converted materials ===
-    # First pass: discover unique material types and their order
-    type_to_slot = Dict{DataType, UInt8}()
-    type_order = DataType[]
+        # Convert MediumInterface -> MediumInterfaceIdx with proper indices
+        converted_mat = to_indexed(mat, medium_to_index)
 
-    for mat in converted_materials
-        T = typeof(mat)
-        if !haskey(type_to_slot, T)
-            type_to_slot[T] = UInt8(length(type_to_slot) + 1)
-            push!(type_order, T)
+        # Push material to MultiTypeVec, get MaterialIndex
+        mat_idx = push!(materials_mtv, converted_mat)
+
+        # Push geometry with material to TLAS
+        handle = if transform === nothing
+            push!(tlas, mesh, mat_idx)
+        else
+            push!(tlas, mesh, mat_idx, transform)
         end
+        push!(handles, handle)
     end
 
-    # Second pass: count materials per type
-    type_counts = Dict{DataType, Int}()
-    for mat in converted_materials
-        T = typeof(mat)
-        type_counts[T] = get(type_counts, T, 0) + 1
-    end
+    # Build the BVH structure
+    sync!(tlas)
 
-    # Create typed vectors and indices
-    typed_vectors = Dict{DataType, Any}()
-    type_current_idx = Dict{DataType, Int}()
-    for T in type_order
-        typed_vectors[T] = Vector{T}(undef, type_counts[T])
-        type_current_idx[T] = 0
-    end
-
-    material_types = Vector{UInt8}(undef, length(converted_materials))
-    material_indices = Vector{UInt32}(undef, length(converted_materials))
-
-    for (i, mat) in enumerate(converted_materials)
-        T = typeof(mat)
-        slot = type_to_slot[T]
-        type_current_idx[T] += 1
-        idx = type_current_idx[T]
-        typed_vectors[T][idx] = mat
-        material_types[i] = slot
-        material_indices[i] = UInt32(idx)
-    end
-
-    materials_arrays = [typed_vectors[type_order[i]] for i in 1:length(type_order)]
-    materials_tuple = Tuple(materials_arrays)
-
-    return scene_with_handles(meshes, material_types, material_indices, materials_tuple; lights, media=media_tuple, transforms)
+    scene = Scene(lights_mtv, tlas, materials_mtv, media_mtv)
+    return scene, handles
 end
 
 include("filter.jl")

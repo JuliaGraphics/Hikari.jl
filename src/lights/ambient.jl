@@ -1,15 +1,9 @@
 struct AmbientLight{S<:Spectrum} <: Light
-    """
-    Since ambient lights emit light uniformly in all directions
-    from all points in the scene, `LightInfinite` flag is used.
-    """
-    flags::LightFlags
     i::S
-
-    function AmbientLight(i::S) where {S<:Spectrum}
-        new{S}(LightInfinite, i,)
-    end
 end
+
+# Ambient lights are infinite (emit from all directions)
+is_infinite_light(::AmbientLight) = true
 
 """
 Compute radiance arriving at `ref.p` interaction point at `ref.time` time

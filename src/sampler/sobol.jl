@@ -106,16 +106,6 @@ end
 # Core Sobol sample function (matching pbrt-v4/src/pbrt/util/lowdiscrepancy.h)
 # =============================================================================
 
-# Helper for sobol_sample unrolled loop - must not capture variables
-@inline function _sobol_xor_bit!(bit::Int32, v_ref::Base.RefValue{UInt32}, a::Int64, base_i::Int32, sobol_matrices)
-    # bit is 1-indexed from for_unrolled, convert to 0-indexed
-    bit0 = bit - Int32(1)
-    if (a & (Int64(1) << bit0)) != Int64(0)
-        @inbounds v_ref[] ⊻= sobol_matrices[base_i + bit0]
-    end
-    return nothing
-end
-
 """
     sobol_sample(a::Int64, dimension::Int32, scramble_seed::UInt32, sobol_matrices) -> Float32
 
@@ -131,14 +121,22 @@ Arguments:
 @inline function sobol_sample(a::Int64, dimension::Int32, scramble_seed::UInt32, sobol_matrices)::Float32
     # Compute Sobol sample via generator matrix multiplication (XOR)
     # Use fixed-count loop for GPU compatibility (max 52 bits = SOBOL_MATRIX_SIZE)
-    v_ref = Ref(UInt32(0))
+    v = UInt32(0)
     base_i = dimension * SOBOL_MATRIX_SIZE + Int32(1)  # Julia is 1-indexed
 
-    # Unroll 52 iterations (for_unrolled iterates 1 to N)
-    for_unrolled(_sobol_xor_bit!, Val(52), v_ref, a, base_i, sobol_matrices)
+    # Fully unrolled loop using @nexprs for SPIR-V structured control flow compatibility
+    # Each iteration: branchless XOR - always read matrix, mask with bit value
+    # Uses pure bitwise ops to avoid any conditional branches
+    Base.Cartesian.@nexprs 52 bit -> begin
+        bit0 = Int32(bit) - Int32(1)
+        # Extract bit and spread to all 32 bits: 0 if bit clear, 0xffffffff if bit set
+        bit_val = UInt32((a >> bit0) & Int64(1))
+        mask = (bit_val * UInt32(0xffffffff))  # 0 or 0xffffffff
+        @inbounds v ⊻= sobol_matrices[base_i + bit0] & mask
+    end
 
     # Apply FastOwen scrambling for decorrelation
-    v = fast_owen_scramble(v_ref[], scramble_seed)
+    v = fast_owen_scramble(v, scramble_seed)
 
     # Convert to [0, 1) float
     return min(Float32(v) * FLOAT32_SCALE, ONE_MINUS_EPSILON)
@@ -197,35 +195,22 @@ const PERMUTATIONS_4WAY = (
     (UInt64(3), UInt64(0), UInt64(1), UInt64(2)),  # perm 23
 )
 
-# Helper for zsobol_get_sample_index unrolled loop - must not capture variables
-@inline function _zsobol_permute_digit!(
-    iter::Int32,
-    sample_index_ref::Base.RefValue{UInt64},
-    morton_index::UInt64,
-    dimension::Int32,
-    n_base4_digits::Int32,
-    last_digit::Int32,
-    pow2_adjust::Int32
-)
-    # iter is 1-indexed from for_unrolled, convert to 0-indexed
-    iter0 = iter - Int32(1)
-    i = n_base4_digits - Int32(1) - iter0
-    if i >= last_digit
-        digit_shift = 2 * i - pow2_adjust
-        digit = u_int32((morton_index >> digit_shift) & UInt64(3))
+# Branchless max for Int32 - avoids potential branching in max()
+@inline function branchless_max_i32(a::Int32, b::Int32)::Int32
+    diff = a - b
+    # If a >= b, diff >= 0, so (diff >> 31) is 0, result is a
+    # If a < b, diff < 0, so (diff >> 31) is -1 (all 1s), result is b
+    mask = diff >> Int32(31)  # arithmetic shift: 0 if a >= b, -1 if a < b
+    return b + (diff & ~mask)
+end
 
-        # Choose permutation based on higher digits and dimension
-        higher_digits = morton_index >> (digit_shift + 2)
-        hash_val = mix_bits(higher_digits ⊻ (0x55555555 * u_uint64(dimension)))
-        # p in [0, 23] - select one of 24 permutations
-        p = u_int32((hash_val >> 24) % UInt64(24)) + Int32(1)  # 1-indexed for tuple
-
-        # Lookup permuted digit from nested tuple (both 1-indexed)
-        @inbounds perm = PERMUTATIONS_4WAY[p]
-        @inbounds permuted_digit = perm[digit + Int32(1)]
-        sample_index_ref[] |= permuted_digit << digit_shift
-    end
-    return nothing
+# Direct permutation lookup from PERMUTATIONS_4WAY using tuple indexing
+# Returns the permuted digit for a given permutation index p (1-24) and digit (0-3)
+@inline function lookup_permutation(p::Int32, digit::Int32)::UInt64
+    # p is 1-indexed (1-24), digit is 0-indexed (0-3)
+    # Direct tuple indexing - GPU-safe with @inbounds
+    @inbounds perm_tuple = PERMUTATIONS_4WAY[p]
+    @inbounds return perm_tuple[digit + Int32(1)]
 end
 
 """
@@ -236,6 +221,8 @@ Reference: pbrt-v4/src/pbrt/samplers.h ZSobolSampler::GetSampleIndex (lines 301-
 
 This applies random base-4 digit permutations to the Morton-encoded index,
 ensuring good sample distribution across pixels while maintaining low-discrepancy.
+
+Uses compile-time unrolled loop with branchless operations for SPIR-V compatibility.
 """
 @inline function zsobol_get_sample_index(
     morton_index::UInt64,
@@ -243,24 +230,47 @@ ensuring good sample distribution across pixels while maintaining low-discrepanc
     log2_spp::Int32,
     n_base4_digits::Int32
 )::UInt64
-    sample_index_ref = Ref(UInt64(0))
-    pow2_samples = (log2_spp & Int32(1)) != Int32(0)
-    last_digit = pow2_samples ? Int32(1) : Int32(0)
-    pow2_adjust = pow2_samples ? Int32(1) : Int32(0)
+    sample_index = UInt64(0)
 
-    # Unrolled loop with max 32 iterations (covers up to 64-bit Morton codes)
-    # GPU-friendly: fixed iteration count with conditional execution
-    for_unrolled(_zsobol_permute_digit!, Val(32),
-        sample_index_ref, morton_index, dimension, n_base4_digits, last_digit, pow2_adjust)
+    # Branchless computation of pow2_samples flag and derived values
+    pow2_flag = (log2_spp & Int32(1))  # 0 or 1
+    last_digit = pow2_flag
+    pow2_adjust = pow2_flag
 
-    # Handle power-of-2 (but not power-of-4) sample count
-    if pow2_samples
-        digit = morton_index & UInt64(1)
-        xor_bit = mix_bits((morton_index >> 1) ⊻ (0x55555555 * u_uint64(dimension))) & UInt64(1)
-        sample_index_ref[] |= digit ⊻ xor_bit
+    # Compile-time unrolled loop (32 iterations covers up to 64-bit Morton codes)
+    Base.Cartesian.@nexprs 32 iter -> begin
+        iter0 = Int32(iter) - Int32(1)
+        i = n_base4_digits - Int32(1) - iter0
+
+        # Branchless max to ensure digit_shift >= 0
+        raw_shift = Int32(2) * i - pow2_adjust
+        digit_shift = branchless_max_i32(Int32(0), raw_shift)
+
+        # Extract base-4 digit
+        digit = u_int32((morton_index >> digit_shift) & UInt64(3))
+
+        # Compute permutation index from higher digits and dimension
+        higher_digits = morton_index >> (digit_shift + Int32(2))
+        hash_val = mix_bits(higher_digits ⊻ (UInt64(0x55555555) * u_uint64(dimension)))
+        p = u_int32((hash_val >> 24) % UInt64(24)) + Int32(1)  # 1-indexed
+
+        # Branchless permutation lookup
+        permuted_digit = lookup_permutation(p, digit)
+
+        # Branchless conditional: only apply if i >= last_digit
+        # Create mask: all 1s if i >= last_digit, all 0s otherwise
+        apply_mask = UInt64(u_int32(i >= last_digit)) * UInt64(0xffffffffffffffff)
+        sample_index |= (permuted_digit << digit_shift) & apply_mask
     end
 
-    return sample_index_ref[]
+    # Handle power-of-2 (but not power-of-4) sample count
+    digit = morton_index & UInt64(1)
+    xor_bit = mix_bits((morton_index >> 1) ⊻ (UInt64(0x55555555) * u_uint64(dimension))) & UInt64(1)
+    # Branchless: mask by pow2_flag
+    pow2_mask = UInt64(pow2_flag) * UInt64(0xffffffffffffffff)
+    sample_index |= (digit ⊻ xor_bit) & pow2_mask
+
+    return sample_index
 end
 
 # =============================================================================

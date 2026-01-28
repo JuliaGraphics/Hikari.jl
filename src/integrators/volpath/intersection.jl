@@ -256,11 +256,9 @@ Returns (T_ray, r_u, r_l) where:
     rgb2spec_table, media, medium_idx::MediumIndex,
     origin::Point3f, dir::Vec3f, t_max::Float32, lambda::Wavelengths
 )
-    medium_type_idx = medium_idx.medium_type
-
     # Get majorant for this ray segment
     ray = Raycore.Ray(o=origin, d=dir)
-    majorant = get_majorant_dispatch(rgb2spec_table, media, medium_type_idx, ray, 0f0, t_max, lambda)
+    majorant = get_majorant_dispatch(rgb2spec_table, media, medium_idx, ray, 0f0, t_max, lambda)
 
     σ_maj_0 = majorant.σ_maj[1]  # First wavelength for sampling
 
@@ -302,7 +300,7 @@ Returns (T_ray, r_u, r_l) where:
 
         # Sample medium properties at this point
         p = Point3f(origin + dir * t_sample)
-        mp = sample_point_dispatch(rgb2spec_table, media, medium_type_idx, p, lambda)
+        mp = sample_point_dispatch(rgb2spec_table, media, medium_idx, p, lambda)
 
         # Compute null-scattering coefficient
         σ_n = majorant.σ_maj - mp.σ_a - mp.σ_s

@@ -122,7 +122,7 @@ significantly reducing null scattering events in sparse heterogeneous media.
     pixel_L,
     work::VPMediumSampleWorkItem,
     media,
-    medium_type_idx::Int32,
+    medium_idx::MediumIndex,
     max_depth::Int32,
     max_queued::Int32,
     template_grid::MajorantGrid
@@ -135,7 +135,7 @@ significantly reducing null scattering events in sparse heterogeneous media.
         iter, T_maj_accum, beta, r_u, r_l, rng_state,
         scatter_queue,
         pixel_L,
-        work, media, medium_type_idx, table, max_depth, max_queued
+        work, media, medium_idx, table, max_depth, max_queued
     )
 end
 
@@ -152,7 +152,7 @@ end
     max_depth::Int32,
     max_queued::Int32
 )
-    medium_type_idx = work.medium_idx.medium_type
+    medium_idx = work.medium_idx
     t_max = work.t_max
 
     # Delta tracking state
@@ -174,12 +174,12 @@ end
     # Use with_medium pattern to avoid Union types (GPU-safe)
     result = with_medium(
         _sample_with_iterator_helper,
-        media, medium_type_idx,
+        media, medium_idx,
         rgb2spec_table, work.ray, t_max, work.lambda,
         T_maj_accum, beta, r_u, r_l, rng_state,
         scatter_queue,
         pixel_L,
-        work, media, medium_type_idx, max_depth, max_queued,
+        work, media, medium_idx, max_depth, max_queued,
         template_grid
     )
 
@@ -236,7 +236,7 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
     pixel_L,
     work::VPMediumSampleWorkItem,
     media,
-    medium_type_idx::Int32,
+    medium_idx::MediumIndex,
     rgb2spec_table,
     max_depth::Int32,
     max_queued::Int32
@@ -260,7 +260,7 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
             seg, T_maj_accum, beta, r_u, r_l, current_rng,
             scatter_queue,
             pixel_L,
-            work, media, medium_type_idx, rgb2spec_table, max_depth, max_queued
+            work, media, medium_idx, rgb2spec_table, max_depth, max_queued
         )
 
         if result.done
@@ -298,7 +298,7 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
     pixel_L,
     work::VPMediumSampleWorkItem,
     media,
-    medium_type_idx::Int32,
+    medium_idx::MediumIndex,
     rgb2spec_table,
     max_depth::Int32,
     max_queued::Int32
@@ -347,7 +347,7 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
 
         # Sample medium properties at interaction point
         p = Point3f(work.ray.o + work.ray.d * t_sample)
-        mp = sample_point_dispatch(rgb2spec_table, media, medium_type_idx, p, work.lambda)
+        mp = sample_point_dispatch(rgb2spec_table, media, medium_idx, p, work.lambda)
 
         # Add emission if present
         if !is_black(mp.Le) && work.depth < max_depth

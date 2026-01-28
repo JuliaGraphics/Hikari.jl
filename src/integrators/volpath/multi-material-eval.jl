@@ -75,7 +75,7 @@ end
     )
 
     # Check emission
-    if is_emissive_dispatch(materials, material_idx)
+    if is_emissive(materials, material_idx)
         # Get emission - pass wo and n like the standard version
         Le = get_emission_spectral_dispatch(
             rgb2spec_table, materials, material_idx,

@@ -3,9 +3,6 @@ Environment light that illuminates the scene from all directions using an HDR en
 Uses equirectangular (lat-long) mapping.
 """
 struct EnvironmentLight{S<:Spectrum, E<:EnvironmentMap{S}} <: Light
-    """LightInfinite flag - environment lights are at infinity."""
-    flags::LightFlags
-
     """HDR environment map."""
     env_map::E
 
@@ -16,9 +13,12 @@ struct EnvironmentLight{S<:Spectrum, E<:EnvironmentMap{S}} <: Light
         env_map::E,
         scale::S=RGBSpectrum(1f0);
     ) where {S<:Spectrum, E<:EnvironmentMap{S}}
-        new{S, E}(LightInfinite, env_map, scale)
+        new{S, E}(env_map, scale)
     end
 end
+
+# Environment lights are infinite (at infinity)
+is_infinite_light(::EnvironmentLight) = true
 
 """
 Convenience constructor that loads an environment map from a file.

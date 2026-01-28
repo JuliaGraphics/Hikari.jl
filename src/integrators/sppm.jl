@@ -579,7 +579,7 @@ function estimate_direct(
             # Compute effect of visibility for light source sample.
             !unoccluded(visibility, scene) && (Li = RGBSpectrum(0f0))
             if !is_black(Li)
-                if is_δ_light(light.flags)
+                if is_δ_light(light)
                     Ld += f * Li / light_pdf
                 else
                     @real_assert false # TODO no non delta lights right now

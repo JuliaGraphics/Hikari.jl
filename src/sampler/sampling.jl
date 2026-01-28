@@ -4,34 +4,29 @@ struct Distribution1D{V<:AbstractVector{Float32}}
     func::V
     cdf::V
     func_int::Float32
+end
 
-    """Inner constructor for pre-computed distributions (used by to_gpu)."""
-    function Distribution1D(func::V, cdf::V, func_int::Float32) where {V<:AbstractVector{Float32}}
-        new{V}(func, cdf, func_int)
+function Distribution1D(func::Vector{Float32})
+    n = length(func)
+    cdf = Vector{Float32}(undef, n + 1)
+    # Compute integral of step function at `xᵢ`.
+    cdf[1] = 0f0
+    for i in 2:length(cdf)
+        cdf[i] = cdf[i-1] + func[i-1] / n
+    end
+    # Transform step function integral into CDF.
+    func_int = cdf[n+1]
+    if func_int ≈ 0f0
+        for i in 2:n+1
+            cdf[i] = i / n
+        end
+    else
+        for i in 2:n+1
+            cdf[i] /= func_int
+        end
     end
 
-    function Distribution1D(func::Vector{Float32})
-        n = length(func)
-        cdf = Vector{Float32}(undef, n + 1)
-        # Compute integral of step function at `xᵢ`.
-        cdf[1] = 0f0
-         for i in 2:length(cdf)
-            cdf[i] = cdf[i-1] + func[i-1] / n
-        end
-        # Transform step function integral into CDF.
-        func_int = cdf[n+1]
-        if func_int ≈ 0f0
-             for i in 2:n+1
-                cdf[i] = i / n
-            end
-        else
-             for i in 2:n+1
-                cdf[i] /= func_int
-            end
-        end
-
-        new{typeof(func)}(func, cdf, func_int)
-    end
+    Distribution1D{typeof(func)}(func, cdf, func_int)
 end
 
 function sample_discrete(d::Distribution1D, u::Float32)
@@ -53,14 +48,12 @@ Returns index in [1, n] where n = length(cdf).
     n = length(cdf)
     lo = Int32(1)
     hi = u_int32(n)
-    # Binary search for last index where cdf[i] ≤ u
-    while lo < hi
+    # Fully unrolled branchless binary search (20 iterations enough for 2^20 elements)
+    Base.Cartesian.@nexprs 20 _ -> begin
         mid = (lo + hi + Int32(1)) ÷ Int32(2)
-        if  cdf[mid] ≤ u
-            lo = mid
-        else
-            hi = mid - Int32(1)
-        end
+        cond = cdf[mid] ≤ u
+        lo = ifelse(cond, mid, lo)
+        hi = ifelse(cond, hi, mid - Int32(1))
     end
     return lo
 end
@@ -100,75 +93,12 @@ Compute PDF for sampling a specific value from Distribution1D.
     d.func_int > 0f0 ? ( d.func[offset]) / d.func_int : 0f0
 end
 
-"""
-2D piecewise-constant distribution for importance sampling.
-Built from a 2D function (e.g., environment map luminance).
-"""
-struct Distribution2D{D<:Distribution1D, VD<:AbstractVector{D}}
-    """Conditional distributions p(v|u) for each row."""
-    p_conditional_v::VD
-    """Marginal distribution p(u) over rows."""
-    p_marginal::D
-
-    """Inner constructor for pre-computed distributions (used by to_gpu)."""
-    function Distribution2D(p_conditional_v::VD, p_marginal::D) where {D<:Distribution1D, VD<:AbstractVector{D}}
-        new{D, VD}(p_conditional_v, p_marginal)
-    end
-
-    function Distribution2D(func::Matrix{Float32})
-        nv, nu = size(func)  # nv = height (rows), nu = width (columns)
-
-        # Build conditional distributions for each row
-        p_conditional_v = Vector{Distribution1D{Vector{Float32}}}(undef, nv)
-        marginal_func = Vector{Float32}(undef, nv)
-
-        for v in 1:nv
-            # Extract row and create distribution
-            row = Float32[func[v, u] for u in 1:nu]
-            p_conditional_v[v] = Distribution1D(row)
-            # Marginal is the integral of each row
-            marginal_func[v] = p_conditional_v[v].func_int
-        end
-
-        p_marginal = Distribution1D(marginal_func)
-        new{Distribution1D{Vector{Float32}}, Vector{Distribution1D{Vector{Float32}}}}(p_conditional_v, p_marginal)
-    end
-end
-
-"""
-Sample a 2D point from the distribution.
-Returns (Point2f(u, v), pdf).
-"""
-@propagate_inbounds function sample_continuous(d::Distribution2D, u::Point2f)
-    # Sample v (row) from marginal distribution
-    v_sampled, pdf_v, v_offset = sample_continuous(d.p_marginal, u[2])
-
-    # Sample u (column) from conditional distribution for that row
-    u_sampled, pdf_u, _ = sample_continuous((d.p_conditional_v[v_offset]), u[1])
-
-    Point2f(u_sampled, v_sampled), pdf_u * pdf_v
-end
-
-"""
-Compute PDF for sampling a specific 2D point.
-"""
-@propagate_inbounds function pdf(d::Distribution2D, uv::Point2f)::Float32
-    nu = length((d.p_conditional_v[1]).func)
-    nv = length(d.p_marginal.func)
-
-    # Find indices
-    iu = clamp(floor_int32(uv[1] * nu) + Int32(1), Int32(1), u_int32(nu))
-    iv = clamp(floor_int32(uv[2] * nv) + Int32(1), Int32(1), u_int32(nv))
-
-    (d.p_conditional_v[iv]).func[iu] / d.p_marginal.func_int
-end
-
 # ============================================================================
-# FlatDistribution2D - GPU-compatible version without nested device arrays
+# Distribution2D - GPU-compatible 2D distribution with flat storage
 # ============================================================================
 
 """
-    FlatDistribution2D{V<:AbstractVector{Float32}, M<:AbstractMatrix{Float32}}
+    Distribution2D{V<:AbstractVector{Float32}, M<:AbstractMatrix{Float32}}
 
 GPU-compatible 2D distribution that stores all data in flat arrays/matrices.
 Avoids nested device arrays which cause SPIR-V validation errors on OpenCL.
@@ -179,7 +109,7 @@ represents one conditional distribution:
 - `conditional_cdf[i, v]` = cdf value at index i for row v
 - `conditional_func_int[v]` = func_int for row v
 """
-struct FlatDistribution2D{V<:AbstractVector{Float32}, M<:AbstractMatrix{Float32}}
+struct Distribution2D{V<:AbstractVector{Float32}, M<:AbstractMatrix{Float32}}
     # Conditional distribution data stored as matrices (nu x nv) and (nu+1 x nv)
     conditional_func::M      # (nu, nv) - func values for all rows
     conditional_cdf::M       # (nu+1, nv) - cdf values for all rows
@@ -196,31 +126,69 @@ struct FlatDistribution2D{V<:AbstractVector{Float32}, M<:AbstractMatrix{Float32}
 end
 
 """
-Convert a Distribution2D to FlatDistribution2D for GPU use.
+    Distribution2D(func::Matrix{Float32})
+
+Construct a GPU-friendly 2D distribution directly from a function matrix.
+The matrix has dimensions (nv, nu) where nv is height (rows) and nu is width (columns).
 """
-function FlatDistribution2D(d::Distribution2D)
-    nv = length(d.p_conditional_v)
-    nu = length(d.p_conditional_v[1].func)
+function Distribution2D(func::Matrix{Float32})
+    nv, nu = size(func)  # nv = height (rows), nu = width (columns)
 
     # Allocate flat arrays
     conditional_func = Matrix{Float32}(undef, nu, nv)
     conditional_cdf = Matrix{Float32}(undef, nu + 1, nv)
     conditional_func_int = Vector{Float32}(undef, nv)
 
-    # Copy conditional distribution data
+    # Build conditional distributions for each row
     for v in 1:nv
-        cond = d.p_conditional_v[v]
-        conditional_func[:, v] .= cond.func
-        conditional_cdf[:, v] .= cond.cdf
-        conditional_func_int[v] = cond.func_int
+        # Copy function values (transposed: row v -> column v)
+        for u in 1:nu
+            conditional_func[u, v] = func[v, u]
+        end
+
+        # Compute CDF
+        conditional_cdf[1, v] = 0f0
+        for u in 2:(nu + 1)
+            conditional_cdf[u, v] = conditional_cdf[u-1, v] + conditional_func[u-1, v] / nu
+        end
+
+        # func_int is the last CDF value (before normalization)
+        func_int = conditional_cdf[nu + 1, v]
+        conditional_func_int[v] = func_int
+
+        # Normalize CDF
+        if func_int ≈ 0f0
+            for u in 2:(nu + 1)
+                conditional_cdf[u, v] = Float32(u - 1) / nu
+            end
+        else
+            for u in 2:(nu + 1)
+                conditional_cdf[u, v] /= func_int
+            end
+        end
     end
 
-    # Copy marginal distribution data
-    marginal_func = copy(d.p_marginal.func)
-    marginal_cdf = copy(d.p_marginal.cdf)
-    marginal_func_int = d.p_marginal.func_int
+    # Build marginal distribution from row integrals
+    marginal_func = copy(conditional_func_int)
+    marginal_cdf = Vector{Float32}(undef, nv + 1)
+    marginal_cdf[1] = 0f0
+    for v in 2:(nv + 1)
+        marginal_cdf[v] = marginal_cdf[v-1] + marginal_func[v-1] / nv
+    end
+    marginal_func_int = marginal_cdf[nv + 1]
 
-    FlatDistribution2D(
+    # Normalize marginal CDF
+    if marginal_func_int ≈ 0f0
+        for v in 2:(nv + 1)
+            marginal_cdf[v] = Float32(v - 1) / nv
+        end
+    else
+        for v in 2:(nv + 1)
+            marginal_cdf[v] /= marginal_func_int
+        end
+    end
+
+    Distribution2D(
         conditional_func, conditional_cdf, conditional_func_int,
         marginal_func, marginal_cdf, marginal_func_int,
         Int32(nu), Int32(nv)
@@ -231,7 +199,7 @@ end
 Sample a 2D point from the flat distribution.
 Returns (Point2f(u, v), pdf).
 """
-@propagate_inbounds function sample_continuous(d::FlatDistribution2D, u::Point2f)
+@propagate_inbounds function sample_continuous(d::Distribution2D, u::Point2f)
     # Sample v (row) from marginal distribution
     v_offset = find_interval_binary_flat(d.marginal_cdf, u[2])
     v_offset = clamp(v_offset, Int32(1), d.nv)
@@ -274,32 +242,29 @@ Binary search in a column of a 2D array (for conditional CDF).
     n = size(cdf, 1)
     lo = Int32(1)
     hi = u_int32(n)
-    while lo < hi
+    # Fully unrolled branchless binary search (20 iterations)
+    Base.Cartesian.@nexprs 20 _ -> begin
         mid = (lo + hi + Int32(1)) ÷ Int32(2)
-        if  cdf[mid, col] ≤ u
-            lo = mid
-        else
-            hi = mid - Int32(1)
-        end
+        cond = cdf[mid, col] ≤ u
+        lo = ifelse(cond, mid, lo)
+        hi = ifelse(cond, hi, mid - Int32(1))
     end
     return lo
 end
 
 """
-Binary search in a flat vector (for marginal CDF).
-Same as find_interval_binary but named differently for clarity.
+GPU-compatible fully unrolled branchless binary search in a flat vector (for marginal CDF).
 """
 @propagate_inbounds function find_interval_binary_flat(cdf::AbstractVector{Float32}, u::Float32)
     n = length(cdf)
     lo = Int32(1)
     hi = u_int32(n)
-    while lo < hi
+    # Fully unrolled branchless binary search (20 iterations)
+    Base.Cartesian.@nexprs 20 _ -> begin
         mid = (lo + hi + Int32(1)) ÷ Int32(2)
-        if  cdf[mid] ≤ u
-            lo = mid
-        else
-            hi = mid - Int32(1)
-        end
+        cond = cdf[mid] ≤ u
+        lo = ifelse(cond, mid, lo)
+        hi = ifelse(cond, hi, mid - Int32(1))
     end
     return lo
 end
@@ -307,7 +272,7 @@ end
 """
 Compute PDF for sampling a specific 2D point from flat distribution.
 """
-@propagate_inbounds function pdf(d::FlatDistribution2D, uv::Point2f)::Float32
+@propagate_inbounds function pdf(d::Distribution2D, uv::Point2f)::Float32
     # Find indices
     iu = clamp(floor_int32(uv[1] * d.nu) + Int32(1), Int32(1), d.nu)
     iv = clamp(floor_int32(uv[2] * d.nv) + Int32(1), Int32(1), d.nv)

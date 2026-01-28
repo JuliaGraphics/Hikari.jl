@@ -46,21 +46,19 @@ function sample_discrete(d::Distribution1D, u::Float32)
 end
 
 """
-GPU-compatible binary search to find last index where cdf[i] ≤ u.
+GPU-compatible fully unrolled branchless binary search to find last index where cdf[i] ≤ u.
 Returns index in [1, n] where n = length(cdf).
 """
 @propagate_inbounds function find_interval_binary(cdf, u::Float32)
     n = length(cdf)
     lo = Int32(1)
     hi = u_int32(n)
-    # Binary search for last index where cdf[i] ≤ u
-    while lo < hi
+    # Fully unrolled branchless binary search (20 iterations enough for 2^20 elements)
+    Base.Cartesian.@nexprs 20 _ -> begin
         mid = (lo + hi + Int32(1)) ÷ Int32(2)
-        if  cdf[mid] ≤ u
-            lo = mid
-        else
-            hi = mid - Int32(1)
-        end
+        cond = cdf[mid] ≤ u
+        lo = ifelse(cond, mid, lo)
+        hi = ifelse(cond, hi, mid - Int32(1))
     end
     return lo
 end
@@ -268,38 +266,35 @@ Returns (Point2f(u, v), pdf).
 end
 
 """
-Binary search in a column of a 2D array (for conditional CDF).
+GPU-compatible fully unrolled branchless binary search in a column of a 2D array (for conditional CDF).
 """
 @propagate_inbounds function find_interval_binary_col(cdf::AbstractMatrix{Float32}, col::Int32, u::Float32)
     n = size(cdf, 1)
     lo = Int32(1)
     hi = u_int32(n)
-    while lo < hi
+    # Fully unrolled branchless binary search (20 iterations)
+    Base.Cartesian.@nexprs 20 _ -> begin
         mid = (lo + hi + Int32(1)) ÷ Int32(2)
-        if  cdf[mid, col] ≤ u
-            lo = mid
-        else
-            hi = mid - Int32(1)
-        end
+        cond = cdf[mid, col] ≤ u
+        lo = ifelse(cond, mid, lo)
+        hi = ifelse(cond, hi, mid - Int32(1))
     end
     return lo
 end
 
 """
-Binary search in a flat vector (for marginal CDF).
-Same as find_interval_binary but named differently for clarity.
+GPU-compatible fully unrolled branchless binary search in a flat vector (for marginal CDF).
 """
 @propagate_inbounds function find_interval_binary_flat(cdf::AbstractVector{Float32}, u::Float32)
     n = length(cdf)
     lo = Int32(1)
     hi = u_int32(n)
-    while lo < hi
+    # Fully unrolled branchless binary search (20 iterations)
+    Base.Cartesian.@nexprs 20 _ -> begin
         mid = (lo + hi + Int32(1)) ÷ Int32(2)
-        if  cdf[mid] ≤ u
-            lo = mid
-        else
-            hi = mid - Int32(1)
-        end
+        cond = cdf[mid] ≤ u
+        lo = ifelse(cond, mid, lo)
+        hi = ifelse(cond, hi, mid - Int32(1))
     end
     return lo
 end

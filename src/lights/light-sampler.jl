@@ -14,7 +14,7 @@
 # ============================================================================
 
 """
-    AliasTable
+    AliasTable{V1,V2}
 
 Walker's alias method for O(1) sampling from a discrete distribution.
 Each bin stores:
@@ -23,15 +23,26 @@ Each bin stores:
 - `alias`: The aliased index if u > q
 
 Following pbrt-v4's implementation in util/sampling.h
+
+Parameterized to work with both CPU (Vector) and GPU arrays (CLArray, etc.)
 """
-struct AliasTable
+struct AliasTable{V1<:AbstractVector{Float32}, V2<:AbstractVector{Int32}}
     # Packed bins: (p, q, alias) for each entry
     # p = actual PMF for this index
     # q = threshold for choosing this vs alias
     # alias = alternative index if u > q
-    p::Vector{Float32}
-    q::Vector{Float32}
-    alias::Vector{Int32}
+    p::V1
+    q::V1
+    alias::V2
+end
+
+# Adapt for GPU transfer
+function Adapt.adapt_structure(to, table::AliasTable)
+    AliasTable(
+        Adapt.adapt(to, table.p),
+        Adapt.adapt(to, table.q),
+        Adapt.adapt(to, table.alias)
+    )
 end
 
 """
@@ -176,7 +187,8 @@ struct UniformLightSampler <: LightSampler
     num_lights::Int32
 end
 
-UniformLightSampler(lights::Tuple) = UniformLightSampler(Int32(length(lights)))
+UniformLightSampler(lights::Raycore.MultiTypeVec) = UniformLightSampler(Int32(length(lights)))
+UniformLightSampler(lights::Raycore.StaticMultiTypeVec) = UniformLightSampler(Int32(length(lights)))
 UniformLightSampler(num_lights::Integer) = UniformLightSampler(Int32(num_lights))
 
 """
@@ -215,34 +227,37 @@ O(1) sampling with O(N) construction. Good for scenes with varying light intensi
 
 Following pbrt-v4's PowerLightSampler which uses light.Phi() to estimate power.
 """
-struct PowerLightSampler <: LightSampler
-    alias_table::AliasTable
+struct PowerLightSampler{AT<:AliasTable} <: LightSampler
+    alias_table::AT
 end
 
-"""
-    PowerLightSampler(lights::Tuple; scene_radius::Float32=10f0)
+# Adapt for GPU transfer
+function Adapt.adapt_structure(to, sampler::PowerLightSampler)
+    PowerLightSampler(Adapt.adapt(to, sampler.alias_table))
+end
 
-Construct a power-based light sampler from a tuple of lights.
-Estimates light power using luminance of the light's intensity/radiance.
-
-For infinite lights (DirectionalLight, EnvironmentLight), the scene_radius
-is needed to compute meaningful power estimates following pbrt-v4's approach.
-
-# Arguments
-- `lights::Tuple`: Tuple of light sources
-- `scene_radius::Float32`: Radius of the scene's bounding sphere (default: 10.0)
-"""
-function PowerLightSampler(lights::Tuple; scene_radius::Float32=10f0)
+# MultiTypeVec version - launches kernel to compute powers on GPU
+function PowerLightSampler(lights::Raycore.MultiTypeVec; scene_radius::Float32=10f0)
     n = length(lights)
     if n == 0
-        return PowerLightSampler(AliasTable(Float32[]))
+        return PowerLightSampler(AliasTable(Float32[], Float32[], Int32[]))
     end
 
-    # Compute power estimate for each light
-    powers = Vector{Float32}(undef, n)
-    for i in 1:n
-        powers[i] = estimate_light_power(lights[i], scene_radius)
-    end
+    backend = lights.backend
+
+    # Allocate GPU array for powers
+    powers_gpu = KA.allocate(backend, Float32, n)
+
+    # Get the GPU-ready StaticMultiTypeVec
+    lights_static = Raycore.get_static(lights)
+
+    # Launch kernel to compute powers
+    kernel = estimate_powers_kernel!(backend)
+    kernel(powers_gpu, lights_static, scene_radius; ndrange=n)
+    KA.synchronize(backend)
+
+    # Copy back to CPU for alias table construction (sequential algorithm)
+    powers = Array(powers_gpu)
 
     # If all powers are zero, fall back to uniform
     total_power = sum(powers)
@@ -250,7 +265,83 @@ function PowerLightSampler(lights::Tuple; scene_radius::Float32=10f0)
         fill!(powers, 1f0)
     end
 
-    return PowerLightSampler(AliasTable(powers))
+    # Build alias table on CPU, then upload to GPU
+    cpu_table = AliasTable(powers)
+    gpu_table = AliasTable(
+        Adapt.adapt(backend, cpu_table.p),
+        Adapt.adapt(backend, cpu_table.q),
+        Adapt.adapt(backend, cpu_table.alias)
+    )
+
+    return PowerLightSampler(gpu_table)
+end
+
+# ============================================================================
+# flat_to_light_index - Convert flat index to HeteroVecIndex
+# ============================================================================
+
+"""
+    flat_to_light_index(lights::StaticMultiTypeVec, flat_idx::Int32) -> LightIndex
+
+Convert a flat 1-based index to a LightIndex (HeteroVecIndex) for StaticMultiTypeVec.
+The flat index counts across all typed arrays in order.
+"""
+@propagate_inbounds @generated function flat_to_light_index(
+    lights::Raycore.StaticMultiTypeVec{Data, Textures}, flat_idx::Int32
+) where {Data<:Tuple, Textures}
+    N = length(Data.parameters)
+    if N == 0
+        return :(LightIndex())
+    end
+
+    # Build cumulative length checks
+    # For each type slot i, check if flat_idx <= cumsum[i]
+    branches = Expr[]
+    for i in 1:N
+        # Compute cumulative sum up to slot i
+        cumsum_expr = if i == 1
+            :(Int32(length(lights.data[1])))
+        else
+            foldl((a, j) -> :(Int32(length(lights.data[$j])) + $a),
+                  1:i, init=:(Int32(0)))
+        end
+
+        prev_cumsum = if i == 1
+            :(Int32(0))
+        else
+            foldl((a, j) -> :(Int32(length(lights.data[$j])) + $a),
+                  1:(i-1), init=:(Int32(0)))
+        end
+
+        push!(branches, quote
+            if flat_idx <= $cumsum_expr
+                vec_idx = UInt32(flat_idx - $prev_cumsum)
+                return LightIndex(UInt8($i), vec_idx)
+            end
+        end)
+    end
+
+    quote
+        $(branches...)
+        # Fallback - return last valid index
+        return LightIndex(UInt8($N), UInt32(length(lights.data[$N])))
+    end
+end
+
+# ============================================================================
+# Kernel to estimate light powers in parallel
+# ============================================================================
+
+@kernel function estimate_powers_kernel!(powers, @Const(lights), @Const(scene_radius::Float32))
+    idx = @index(Global)
+    light_idx = flat_to_light_index(lights, Int32(idx))
+    power = Raycore.with_index(_estimate_power_impl, lights, light_idx, scene_radius)
+    @inbounds powers[idx] = power
+end
+
+# Implementation function for with_index dispatch
+@inline function _estimate_power_impl(light, scene_radius::Float32)::Float32
+    estimate_light_power(light, scene_radius)
 end
 
 """
@@ -324,9 +415,8 @@ end
     4f0 * Float32(π) * luminance(light.i) * 0.1f0
 end
 
-# Helper to get total distribution integral (dispatch on distribution type)
-distribution_integral(d::Distribution2D) = d.p_marginal.func_int
-distribution_integral(d::FlatDistribution2D) = d.marginal_func_int
+# Helper to get total distribution integral
+distribution_integral(d::Distribution2D) = d.marginal_func_int
 
 @propagate_inbounds function estimate_light_power(light::EnvironmentLight, scene_radius::Float32)
     # pbrt-v4: 4 * Pi * Pi * Sqr(sceneRadius) * scale * sumL / (width * height)
@@ -366,11 +456,21 @@ end
 GPU-compatible light sampler data structure.
 Stores alias table as flat arrays that can be uploaded to GPU.
 """
-struct LightSamplerData
-    p::Vector{Float32}      # PMF values
-    q::Vector{Float32}      # Alias thresholds
-    alias::Vector{Int32}    # Alias indices
+struct LightSamplerData{V1<:AbstractVector{Float32}, V2<:AbstractVector{Int32}}
+    p::V1       # PMF values
+    q::V1       # Alias thresholds
+    alias::V2   # Alias indices
     num_lights::Int32
+end
+
+# Adapt for GPU transfer
+function Adapt.adapt_structure(to, data::LightSamplerData)
+    LightSamplerData(
+        Adapt.adapt(to, data.p),
+        Adapt.adapt(to, data.q),
+        Adapt.adapt(to, data.alias),
+        data.num_lights
+    )
 end
 
 function LightSamplerData(sampler::PowerLightSampler)
@@ -435,12 +535,12 @@ end
 # ============================================================================
 
 """
-    create_light_sampler(lights::Tuple; method::Symbol=:power, scene_radius::Float32=10f0) -> LightSampler
+    create_light_sampler(lights::MultiTypeVec; method::Symbol=:power, scene_radius::Float32=10f0) -> LightSampler
 
 Create a light sampler for the given lights.
 
 # Arguments
-- `lights::Tuple`: Tuple of light sources
+- `lights::MultiTypeVec`: Collection of light sources
 - `method::Symbol`: Sampling method (`:uniform` or `:power`)
 - `scene_radius::Float32`: Scene bounding sphere radius (for power-weighted sampling of infinite lights)
 
@@ -448,7 +548,7 @@ Create a light sampler for the given lights.
 - `:uniform`: Uniform random selection (baseline)
 - `:power`: Power-weighted selection (recommended for varying light intensities)
 """
-function create_light_sampler(lights::Tuple; method::Symbol=:power, scene_radius::Float32=10f0)
+function create_light_sampler(lights::Raycore.MultiTypeVec; method::Symbol=:power, scene_radius::Float32=10f0)
     if method == :uniform
         return UniformLightSampler(lights)
     elseif method == :power

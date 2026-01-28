@@ -98,7 +98,7 @@ function VolPathState(
     backend,
     width::Integer,
     height::Integer,
-    lights::Tuple;
+    lights::Raycore.MultiTypeVec;  # MultiTypeVec of lights (has backend for GPU allocation)
     max_depth::Integer = 8,
     queue_capacity::Integer = width * height,
     scene_radius::Float32 = 10f0,  # Scene bounding sphere radius for light power estimation
@@ -141,13 +141,14 @@ function VolPathState(
     cie_table = to_gpu(backend, CIEXYZTable())
 
     # Build light sampler (alias table for power-weighted sampling)
+    # PowerLightSampler(MultiTypeVec) computes powers on GPU and returns GPU arrays
     n_lights = length(lights)
     if n_lights > 0
         sampler = PowerLightSampler(lights; scene_radius=scene_radius)
-        sampler_data = LightSamplerData(sampler)
-        light_sampler_p = adapt(backend, sampler_data.p)
-        light_sampler_q = adapt(backend, sampler_data.q)
-        light_sampler_alias = adapt(backend, sampler_data.alias)
+        # Alias table already has GPU arrays from PowerLightSampler construction
+        light_sampler_p = sampler.alias_table.p
+        light_sampler_q = sampler.alias_table.q
+        light_sampler_alias = sampler.alias_table.alias
     else
         light_sampler_p = KA.allocate(backend, Float32, 1)
         light_sampler_q = KA.allocate(backend, Float32, 1)

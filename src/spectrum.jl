@@ -41,6 +41,11 @@ function Base.clamp(
     C(clamp.(c.c, low, high))
 end
 
+# Clamp RGB to [0,1] for reflectance values
+function Base.clamp(c::RGB{Float32})
+    RGB{Float32}(clamp(c.r, 0f0, 1f0), clamp(c.g, 0f0, 1f0), clamp(c.b, 0f0, 1f0))
+end
+
 function Base.isnan(c::C) where C<:Spectrum
     # Explicit checks to avoid tuple iteration (causes PHI node errors in SPIR-V)
     isnan(c.c[1]) || isnan(c.c[2]) || isnan(c.c[3])

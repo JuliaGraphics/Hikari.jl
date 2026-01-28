@@ -9,6 +9,8 @@ using Hikari
 using Raycore
 import Makie
 using Raycore: to_gpu
+using pocl_jll, OpenCL
+using Adapt, AMDGPU
 
 # =============================================================================
 # Scene Setup (shared by all integrators)
@@ -30,10 +32,14 @@ function create_cat_mesh()
     )
 end
 
-function tmesh(prim, material)
+function to_mesh(prim)
     prim = prim isa Sphere ? Tesselation(prim, 64) : prim
-    mesh = normal_mesh(prim)
-    Hikari.GeometricPrimitive(Raycore.TriangleMesh(mesh), material)
+    Raycore.TriangleMesh(normal_mesh(prim))
+end
+
+# Legacy helper for GeometricPrimitive-based code
+function tmesh(prim, material)
+    Hikari.GeometricPrimitive(to_mesh(prim), material)
 end
 
 """
@@ -49,10 +55,15 @@ Materials:
 - Glass sphere (front left): clear glass
 - Emissive sphere (front right): bright orange glow
 """
-function create_scene(; glass_cat=false)
-    cat_mesh = create_cat_mesh()
+function create_scene(; glass_cat=false, backend=Raycore.KA.CPU())
+    scene = Hikari.Scene(; backend)
 
-    # Materials matching PbrtWavefront cat_scene
+    # === Add lights ===
+    push!(scene.lights, Hikari.PointLight(Point3f(3, 3, -1), Hikari.RGBSpectrum(1.0f0, 1.0f0, 1.0f0)))  # Key light
+    push!(scene.lights, Hikari.PointLight(Point3f(-3, 2, 0), Hikari.RGBSpectrum(5.0f0, 5.0f0, 5.0f0)))     # Fill light
+    push!(scene.lights, Hikari.AmbientLight(Hikari.RGBSpectrum(0.5f0, 0.7f0, 1.0f0)))  # Sky color
+
+    # === Add geometry with materials ===
     # Cat - warm diffuse or glass
     cat_material = if glass_cat
         Hikari.GlassMaterial(
@@ -63,66 +74,43 @@ function create_scene(; glass_cat=false)
     else
         Hikari.MatteMaterial(Kd=Hikari.RGBSpectrum(0.8f0, 0.6f0, 0.4f0), σ=0f0)
     end
+    push!(scene, Raycore.TriangleMesh(create_cat_mesh()), cat_material)
 
     # Floor - green diffuse
-    floor_material = Hikari.MatteMaterial(Kd=Hikari.RGBSpectrum(0.3f0, 0.5f0, 0.3f0), σ=0f0)
+    push!(scene, to_mesh(Rect3f(Vec3f(-5, -1.5, -2), Vec3f(10, 0.01, 10))),
+          Hikari.MatteMaterial(Kd=Hikari.RGBSpectrum(0.3f0, 0.5f0, 0.3f0), σ=0f0))
 
     # Back wall - metallic copper
-    back_wall_material = Hikari.MetalMaterial(
-        reflectance=Hikari.RGBSpectrum(0.8f0, 0.6f0, 0.5f0),
-        roughness=0.05f0
-    )
+    push!(scene, to_mesh(Rect3f(Vec3f(-5, -1.5, 8), Vec3f(10, 5, 0.01))),
+          Hikari.MetalMaterial(reflectance=Hikari.RGBSpectrum(0.8f0, 0.6f0, 0.5f0), roughness=0.05f0))
 
     # Left wall - diffuse gray-blue
-    left_wall_material = Hikari.MatteMaterial(Kd=Hikari.RGBSpectrum(0.7f0, 0.7f0, 0.8f0), σ=0f0)
+    push!(scene, to_mesh(Rect3f(Vec3f(-5, -1.5, -2), Vec3f(0.01, 5, 10))),
+          Hikari.MatteMaterial(Kd=Hikari.RGBSpectrum(0.7f0, 0.7f0, 0.8f0), σ=0f0))
 
     # Sphere1 - metallic silver (mirror-like)
-    sphere1_material = Hikari.MetalMaterial(
-        reflectance=Hikari.RGBSpectrum(0.9f0, 0.9f0, 0.9f0),
-        roughness=0.02f0
-    )
+    push!(scene, to_mesh(Sphere(Point3f(-2, -1.5 + 0.8, 2), 0.8f0)),
+          Hikari.MetalMaterial(reflectance=Hikari.RGBSpectrum(0.9f0, 0.9f0, 0.9f0), roughness=0.02f0))
 
     # Sphere2 - semi-metallic blue (rougher)
-    sphere2_material = Hikari.MetalMaterial(
-        reflectance=Hikari.RGBSpectrum(0.3f0, 0.6f0, 0.9f0),
-        roughness=0.3f0
-    )
+    push!(scene, to_mesh(Sphere(Point3f(2, -1.5 + 0.6, 1), 0.6f0)),
+          Hikari.MetalMaterial(reflectance=Hikari.RGBSpectrum(0.3f0, 0.6f0, 0.9f0), roughness=0.3f0))
 
     # Glass sphere - clear glass with slight green tint
-    glass_sphere_material = Hikari.GlassMaterial(
+    glass_material = Hikari.GlassMaterial(
         Kr=Hikari.RGBSpectrum(0.98f0, 1.0f0, 0.98f0),
         Kt=Hikari.RGBSpectrum(0.98f0, 1.0f0, 0.98f0),
         index=1.5f0
     )
+    push!(scene, to_mesh(Sphere(Point3f(-0.8, -1.5 + 0.5, 0.5), 0.5f0)), glass_material)
 
-    # Emissive sphere - bright orange glow
-    emissive_sphere_material = Hikari.EmissiveMaterial(
-        Le=Hikari.RGBSpectrum(1.0f0, 0.5f0, 0.1f0),
-        scale=15.0f0
-    )
+    # Emissive sphere - use glass material (emissive handled via area lights)
+    push!(scene, to_mesh(Sphere(Point3f(0.8, -1.5 + 0.4, 0.3), 0.4f0)), glass_material)
 
-    # Create primitives
-    cat = Hikari.GeometricPrimitive(Raycore.TriangleMesh(cat_mesh), cat_material)
-    floor = tmesh(Rect3f(Vec3f(-5, -1.5, -2), Vec3f(10, 0.01, 10)), floor_material)
-    back_wall = tmesh(Rect3f(Vec3f(-5, -1.5, 8), Vec3f(10, 5, 0.01)), back_wall_material)
-    left_wall = tmesh(Rect3f(Vec3f(-5, -1.5, -2), Vec3f(0.01, 5, 10)), left_wall_material)
-    sphere1 = tmesh(Sphere(Point3f(-2, -1.5 + 0.8, 2), 0.8f0), sphere1_material)
-    sphere2 = tmesh(Sphere(Point3f(2, -1.5 + 0.6, 1), 0.6f0), sphere2_material)
+    # Build the acceleration structure
+    Hikari.sync!(scene)
 
-    # New spheres in front of the cat (matching PbrtWavefront)
-    glass_sphere = tmesh(Sphere(Point3f(-0.8, -1.5 + 0.5, 0.5), 0.5f0), glass_sphere_material)
-    emissive_sphere = tmesh(Sphere(Point3f(0.8, -1.5 + 0.4, 0.3), 0.4f0), glass_sphere_material)
-
-    mat_scene = Hikari.MaterialScene([cat, floor, back_wall, left_wall, sphere1, sphere2, glass_sphere, emissive_sphere])
-
-    # Lights matching PbrtWavefront
-    lights = (
-        Hikari.PointLight(Point3f(3, 3, -1), Hikari.RGBSpectrum(15.0f0, 15.0f0, 15.0f0)),  # Key light
-        Hikari.PointLight(Point3f(-3, 2, 0), Hikari.RGBSpectrum(5.0f0, 5.0f0, 5.0f0)),     # Fill light
-        Hikari.AmbientLight(Hikari.RGBSpectrum(0.5f0, 0.7f0, 1.0f0)),  # Sky color for escaped rays
-    )
-
-    Hikari.Scene(lights, mat_scene)
+    scene
 end
 
 """
@@ -180,47 +168,21 @@ end
 # Run if executed directly
 # =============================================================================
 
-# Example: Render with PhysicalWavefront
+# Example: Render with PhysicalWavefront on OpenCL
 begin
-    scene = create_scene(; glass_cat=false)
+    # Create scene directly on OpenCL backend (TLAS built on GPU)
+    backend = OpenCL.OpenCLBackend()
+    # backend = Hikari.KernelAbstractions.CPU()
+    # backend = AMDGPU.ROCBackend()
+    scene = create_scene(; glass_cat=false, backend=backend)
     film, camera = create_film_and_camera(; width=1820, height=720, use_pbrt_camera=true)
-    # Choose integrator:
-    integrator = Hikari.FastWavefront(samples=8)
-    # integrator = Hikari.Whitted(samples=8)
-    # integrator = Hikari.PhysicalWavefront(samples_per_pixel=10, max_depth=8)
-    sensor = Hikari.FilmSensor(iso=1, white_balance=6500)
+    sensor = Hikari.FilmSensor(iso=10, white_balance=6500)
     integrator = Hikari.VolPath(samples=10, max_depth=8)
-    gpu_film = to_gpu(Array, film)
-    gpu_scene = to_gpu(Array, scene)
+    # Film still needs GPU conversion, scene already on GPU
+    gpu_film = Adapt.adapt(backend, film)
     Hikari.clear!(gpu_film)
-    @time integrator(gpu_scene, gpu_film, camera)
+    @time integrator(scene, gpu_film, camera)
     Hikari.postprocess!(gpu_film; sensor, exposure=0.5f0, tonemap=:aces, gamma=2.2f0)
-    Array(gpu_film.postprocess)
-end
-
-# Example: Render with VolPath and participating media (fog)
-begin
-    scene = create_scene(; glass_cat=false)
-    film, camera = create_film_and_camera(; width=720, height=720, use_pbrt_camera=true)
-
-    # Create a homogeneous fog medium
-    # σ_a = absorption coefficient (how much light is absorbed)
-    # σ_s = scattering coefficient (how much light scatters - controls fog density)
-    # Le = emission (for glowing media)
-    # g = Henyey-Greenstein asymmetry parameter (-1 to 1, 0 = isotropic)
-    fog = Hikari.HomogeneousMedium(
-        σ_a = Hikari.RGBSpectrum(0.001f0),  # Very little absorption
-        σ_s = Hikari.RGBSpectrum(0.05f0),   # Light scattering
-        Le = Hikari.RGBSpectrum(0f0),        # No emission
-        g = 0.3f0                            # Slight forward scattering
-    )
-
-    integrator = Hikari.VolPath(samples_per_pixel=64, max_depth=8)
-    gpu_film = to_gpu(Array, film)
-    gpu_scene = to_gpu(Array, scene)
-    Hikari.clear!(gpu_film)
-    @time integrator(gpu_scene, gpu_film, camera; media=(fog,))
-    Hikari.postprocess!(gpu_film; exposure=1.0f0, tonemap=:aces, gamma=1.2f0)
     Array(gpu_film.postprocess)
 end
 
@@ -246,3 +208,13 @@ end
 #
 # The wrapped material's BSDF is used for light transport calculations,
 # while MediumInterface determines medium transitions for volumetric effects.
+using pocl_jll, OpenCL, Hikari
+backend = OpenCL.OpenCLBackend()
+scene = Hikari.Scene(; backend)
+using GeometryBasics
+# === Add lights ===
+push!(scene.lights, Hikari.PointLight(Point3f(3, 3, -1), Hikari.RGBSpectrum(1.0f0, 1.0f0, 1.0f0)))  # Key light
+push!(scene.lights, Hikari.PointLight(Point3f(-3, 2, 0), Hikari.RGBSpectrum(5.0f0, 5.0f0, 5.0f0)))     # Fill light
+push!(scene.lights, Hikari.AmbientLight(Hikari.RGBSpectrum(0.5f0, 0.7f0, 1.0f0)))
+env = Hikari.EnvironmentLight("./pbrt-v4-scenes/bunny-cloud/textures/sky.exr")
+push!(scene.lights, env)

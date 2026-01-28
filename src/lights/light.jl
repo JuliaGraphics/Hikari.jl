@@ -1,13 +1,10 @@
-@enum LightFlags::UInt8 begin
-    LightδPosition = 0b1
-    LightδDirection = 0b10
-    LightArea = 0b100
-    LightInfinite = 0b1000
-end
+# Type-based light classification via dispatch (no flags field needed)
 
-@propagate_inbounds function is_δ_light(flag::LightFlags)::Bool
-    flag == LightδPosition || flag == LightδDirection
-end
+# Delta lights emit from a single point or direction (cannot be hit by random rays)
+is_δ_light(::Light) = false
+
+# Infinite lights are at infinity (environment maps, sun, sky)
+is_infinite_light(::Light) = false
 
 struct VisibilityTester
     p0::Interaction

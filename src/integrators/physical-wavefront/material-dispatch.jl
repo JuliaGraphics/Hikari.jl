@@ -29,11 +29,6 @@ end
     return get_emission_spectral(table, mat, ctx, uv, lambda)
 end
 
-# is_emissive helper
-@propagate_inbounds _is_emissive_impl(mat) = is_emissive(mat)
-
-# is_pure_emissive helper
-@propagate_inbounds _is_pure_emissive_impl(mat) = is_pure_emissive(mat)
 
 # get_albedo_spectral helper
 @propagate_inbounds function _albedo_spectral_impl(mat, table, ctx, uv, lambda)
@@ -118,27 +113,27 @@ end
 # ============================================================================
 
 """
-    is_emissive_dispatch(materials::StaticMultiTypeVec, idx::MaterialIndex)
+    is_emissive(materials::StaticMultiTypeVec, idx::HeteroVecIndex)
 
-Type-stable dispatch for checking if a material is emissive.
-Returns Bool.
+Type-stable dispatch for checking if a material/medium is emissive.
+Returns Bool. Works for both materials and media via element-level dispatch.
 """
-@propagate_inbounds function is_emissive_dispatch(
-    materials::StaticMultiTypeVec, idx::MaterialIndex
+@propagate_inbounds function is_emissive(
+    collection::StaticMultiTypeVec, idx::HeteroVecIndex
 )::Bool
-    return with_index(_is_emissive_impl, materials, idx)
+    return with_index(is_emissive, collection, idx)
 end
 
 """
-    is_pure_emissive_dispatch(materials::StaticMultiTypeVec, idx::MaterialIndex)
+    is_pure_emissive(materials::StaticMultiTypeVec, idx::HeteroVecIndex)
 
 Type-stable dispatch for checking if a material is purely emissive (no BSDF).
 Returns Bool.
 """
-@propagate_inbounds function is_pure_emissive_dispatch(
-    materials::StaticMultiTypeVec, idx::MaterialIndex
+@propagate_inbounds function is_pure_emissive(
+    collection::StaticMultiTypeVec, idx::HeteroVecIndex
 )::Bool
-    return with_index(_is_pure_emissive_impl, materials, idx)
+    return with_index(is_pure_emissive, collection, idx)
 end
 
 # ============================================================================

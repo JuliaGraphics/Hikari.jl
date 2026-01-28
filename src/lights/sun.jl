@@ -5,11 +5,6 @@ Extends DirectionalLight with angular diameter and corona falloff parameters
 useful for rendering sun disks and atmospheric scattering in clouds.
 """
 struct SunLight{S<:Spectrum} <: Light
-    """
-    Since sun lights represent singularities that emit light
-    along a single direction, flag is set to `LightδDirection`.
-    """
-    flags::LightFlags
     light_to_world::Transformation
     world_to_light::Transformation
 
@@ -26,12 +21,17 @@ struct SunLight{S<:Spectrum} <: Light
         corona_falloff::Float32 = 8.0f0,
     ) where S<:Spectrum
         new{S}(
-            LightδDirection, light_to_world, inv(light_to_world),
+            light_to_world, inv(light_to_world),
             l, normalize(light_to_world(direction)),
             angular_diameter, corona_falloff,
         )
     end
 end
+
+# Sun lights are delta lights (emit along a single direction)
+is_δ_light(::SunLight) = true
+# Sun lights are infinite (at infinity)
+is_infinite_light(::SunLight) = true
 
 # Convenience constructor without transformation
 function SunLight(l::S, direction::Vec3f; kwargs...) where S<:Spectrum

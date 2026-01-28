@@ -1000,6 +1000,23 @@ end
 # Single medium case
 @inline get_template_grid_from_tuple(medium::Medium) = get_template_grid(medium)
 
+# StaticMultiTypeVec case - inspect element types of data arrays
+@generated function get_template_grid_from_tuple(media::Raycore.StaticMultiTypeVec{Data, Textures}) where {Data<:Tuple, Textures}
+    N = length(Data.parameters)
+
+    # Find first array whose element type is GridMedium or RGBGridMedium
+    for i in 1:N
+        ArrayT = Data.parameters[i]
+        ElemT = eltype(ArrayT)
+        if ElemT <: GridMedium || ElemT <: RGBGridMedium
+            return :(@inbounds get_template_grid(media.data[$i][1]))
+        end
+    end
+
+    # No GridMedium/RGBGridMedium found - return empty grid
+    return :(EmptyMajorantGrid())
+end
+
 # ============================================================================
 # RGB Grid Medium (Heterogeneous with per-voxel RGB coefficients)
 # Following pbrt-v4's RGBGridMedium implementation

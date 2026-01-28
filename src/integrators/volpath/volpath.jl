@@ -452,9 +452,11 @@ function render!(
 )
     img = film.framebuffer
     accel = scene.accel
-    materials = scene.materials.static  # StaticMultiTypeVec (contains textures)
-    media = scene.media.static  # StaticMultiTypeVec
-    lights = scene.lights
+    # Convert MultiTypeVec to StaticMultiTypeVec for kernel dispatch
+    # (get_static returns StaticMultiTypeVec, Tuple stays as Tuple)
+    materials = Raycore.get_static(scene.materials)
+    media = Raycore.get_static(scene.media)
+    lights = Raycore.get_static(scene.lights)
 
     height, width = size(img)
     backend = KA.get_backend(img)
@@ -466,8 +468,9 @@ function render!(
        vp.state.width != width ||
        vp.state.height != height ||
        vp.state.num_lights != n_lights
-        # Pass scene_radius for proper light power estimation (pbrt-v4 style)
-        vp.state = VolPathState(backend, width, height, lights;
+        # Pass scene.lights (MultiTypeVec) for PowerLightSampler construction
+        # (needs backend for GPU kernel and array allocation)
+        vp.state = VolPathState(backend, width, height, scene.lights;
                                 max_depth=vp.max_depth,
                                 scene_radius=scene.world_radius,
                                 samples_per_pixel=Int(vp.samples_per_pixel),
@@ -502,12 +505,8 @@ function render!(
     empty!(current_ray_queue(state))
 
     # Generate camera rays with filter sampling (pbrt-v4 style) and ZSobol sampler
-    # Adapt filter sampler data to GPU if needed
-    filter_sampler_data_gpu = if vp.filter_sampler_data !== nothing
-        adapt_filter_sampler_data(backend, vp.filter_sampler_data)
-    else
-        nothing
-    end
+    # Adapt filter sampler data to GPU (nothing passes through unchanged)
+    filter_sampler_data_gpu = Adapt.adapt(backend, vp.filter_sampler_data)
 
     kernel! = vp_generate_camera_rays_kernel!(backend)
     kernel!(

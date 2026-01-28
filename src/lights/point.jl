@@ -1,12 +1,5 @@
 struct PointLight{S<:Spectrum} <: Light
-    """
-    Since point lights represent singularities that only emit light
-    from a single position, flag is set to `LightδPosition`.
-    """
-    flags::LightFlags
-    """
-    Ligh-source is positioned at the origin of its light space.
-    """
+    """Light-source is positioned at the origin of its light space."""
     light_to_world::Transformation
     world_to_light::Transformation
 
@@ -16,18 +9,19 @@ struct PointLight{S<:Spectrum} <: Light
     In pbrt-v4, this is set to `1 / SpectrumToPhotometric(illuminant)`.
     """
     scale::Float32
-    """
-    Position in world space.
-    """
+    """Position in world space."""
     position::Point3f
 
     function PointLight(light_to_world::Transformation, i::S, scale::Float32=1f0) where S<:Spectrum
         new{S}(
-            LightδPosition, light_to_world, inv(light_to_world),
+            light_to_world, inv(light_to_world),
             i, scale, light_to_world(Point3f(0f0)),
         )
     end
 end
+
+# Point lights are delta lights (emit from a single point)
+is_δ_light(::PointLight) = true
 
 function PointLight(position, i::S, scale::Float32=1f0) where S<:Spectrum
     PointLight(translate(Vec3f(position)), i, scale)

@@ -298,32 +298,48 @@ end
 @propagate_inbounds pdf_li_spectral(::Light, ::Point3f, ::Vec3f) = 0f0
 
 # ============================================================================
-# Light Tuple Dispatch (GPU-Safe with Unrolled If-Branches)
+# Light StaticMultiTypeVec Dispatch (uses with_index for type-stable dispatch)
 # ============================================================================
 
-@propagate_inbounds @generated function sample_light_from_tuple(
-    table::RGBToSpectrumTable, lights::L, idx::Int32, p::Point3f, lambda::Wavelengths, u::Point2f
-) where {L <: Tuple}
-    N = length(L.parameters)
+# flat_to_light_index is defined in lights/light-sampler.jl (included earlier)
 
-    if N == 0
-        return :(PWLightSample())
-    end
+# Helper for argument reordering: with_index calls f(element, args...)
+# but sample_light_spectral expects (table, light, p, lambda, u)
+@propagate_inbounds _sample_light_spectral(light, table, p, lambda, u) =
+    sample_light_spectral(table, light, p, lambda, u)
 
-    # Build unrolled if-else chain - each branch calls sample_light_spectral directly
-    expr = :(@inbounds sample_light_spectral(table, lights[$N], p, lambda, u))
+"""
+    sample_light_spectral(table, lights::StaticMultiTypeVec, idx::LightIndex, p, lambda, u)
 
-    for i in (N-1):-1:1
-        expr = quote
-            if idx == Int32($i)
-                @inbounds sample_light_spectral(table, lights[$i], p, lambda, u)
-            else
-                $expr
-            end
-        end
-    end
+Sample a light from a StaticMultiTypeVec using type-stable dispatch via with_index.
+"""
+@propagate_inbounds function sample_light_spectral(
+    table::RGBToSpectrumTable,
+    lights::Raycore.StaticMultiTypeVec,
+    idx::LightIndex,
+    p::Point3f,
+    lambda::Wavelengths,
+    u::Point2f
+)
+    return with_index(_sample_light_spectral, lights, idx, table, p, lambda, u)
+end
 
-    return expr
+"""
+    sample_light_spectral(table, lights::StaticMultiTypeVec, flat_idx::Int32, p, lambda, u)
+
+Sample a light from a StaticMultiTypeVec using a flat 1-based index.
+Converts flat index to LightIndex internally.
+"""
+@propagate_inbounds function sample_light_spectral(
+    table::RGBToSpectrumTable,
+    lights::Raycore.StaticMultiTypeVec,
+    flat_idx::Int32,
+    p::Point3f,
+    lambda::Wavelengths,
+    u::Point2f
+)
+    idx = flat_to_light_index(lights, flat_idx)
+    return with_index(_sample_light_spectral, lights, idx, table, p, lambda, u)
 end
 # ============================================================================
 # Environment Light Evaluation (for escaped rays)
@@ -331,12 +347,12 @@ end
 # ============================================================================
 
 """
-    evaluate_environment_spectral(table, light::EnvironmentLight, ray_d::Vec3f, lambda::Wavelengths)
+    evaluate_environment_spectral(light::EnvironmentLight, table, ray_d::Vec3f, lambda::Wavelengths)
 
 Evaluate environment light for an escaped ray direction.
 """
 @propagate_inbounds function evaluate_environment_spectral(
-    table::RGBToSpectrumTable, light::EnvironmentLight, ray_d::Vec3f, lambda::Wavelengths
+    light::EnvironmentLight, table::RGBToSpectrumTable, ray_d::Vec3f, lambda::Wavelengths
 )::SpectralRadiance
     # Sample environment map by direction (env_map handles direction->UV internally)
     # Following pbrt-v4 ImageInfiniteLight::Le which passes direction directly
@@ -348,28 +364,27 @@ Evaluate environment light for an escaped ray direction.
 end
 
 """
-    evaluate_environment_spectral(table, light::SunSkyLight, ray_d::Vec3f, lambda::Wavelengths)
+    evaluate_environment_spectral(light::SunSkyLight, table, ray_d::Vec3f, lambda::Wavelengths)
 
 Evaluate sun/sky light for an escaped ray direction.
 """
 @propagate_inbounds function evaluate_environment_spectral(
-    table::RGBToSpectrumTable, light::SunSkyLight, ray_d::Vec3f, lambda::Wavelengths
+    light::SunSkyLight, table::RGBToSpectrumTable, ray_d::Vec3f, lambda::Wavelengths
 )::SpectralRadiance
     # Get sky + sun radiance for direction (same as le() function)
     Le_rgb = sky_radiance(light, ray_d) + sun_disk_radiance(light, ray_d)
-
     # Use illuminant uplift (matches pbrt's RGBIlluminantSpectrum)
     # This multiplies by D65 illuminant spectrum - critical for correct white reproduction
     return uplift_rgb_illuminant(table, Le_rgb, lambda)
 end
 
 """
-    evaluate_environment_spectral(table, light::AmbientLight, ray_d::Vec3f, lambda::Wavelengths)
+    evaluate_environment_spectral(light::AmbientLight, table, ray_d::Vec3f, lambda::Wavelengths)
 
 Evaluate ambient light for an escaped ray - provides constant radiance regardless of direction.
 """
 @propagate_inbounds function evaluate_environment_spectral(
-    table::RGBToSpectrumTable, light::AmbientLight, ray_d::Vec3f, lambda::Wavelengths
+    light::AmbientLight, table::RGBToSpectrumTable, ray_d::Vec3f, lambda::Wavelengths
 )::SpectralRadiance
     # Use illuminant uplift (matches pbrt's RGBIlluminantSpectrum)
     # This multiplies by D65 illuminant spectrum - critical for correct white reproduction
@@ -377,39 +392,17 @@ Evaluate ambient light for an escaped ray - provides constant radiance regardles
 end
 
 # Fallback - non-environment lights contribute nothing for escaped rays
-@propagate_inbounds evaluate_environment_spectral(::RGBToSpectrumTable, ::Light, ::Vec3f, ::Wavelengths) = SpectralRadiance(0f0)
+@propagate_inbounds evaluate_environment_spectral(::Light, ::RGBToSpectrumTable, ::Vec3f, ::Wavelengths) = SpectralRadiance(0f0)
 
 """
-    evaluate_escaped_ray_spectral(table, lights::Tuple, ray_d::Vec3f, lambda::Wavelengths)
+    evaluate_escaped_ray_spectral(table, lights::StaticMultiTypeVec, ray_d, lambda)
 
-Evaluate all environment-type lights for an escaped ray.
-Returns total spectral radiance from infinite lights.
+Evaluate all environment-type lights for an escaped ray using StaticMultiTypeVec.
 """
-@propagate_inbounds evaluate_escaped_ray_spectral(::RGBToSpectrumTable, ::Tuple{}, ::Vec3f, ::Wavelengths) = SpectralRadiance(0f0)
-
 @propagate_inbounds function evaluate_escaped_ray_spectral(
-    table::RGBToSpectrumTable, lights::Tuple, ray_d::Vec3f, lambda::Wavelengths
+    table::RGBToSpectrumTable, lights::Raycore.StaticMultiTypeVec, ray_d::Vec3f, lambda::Wavelengths
 )::SpectralRadiance
-    first_Le = evaluate_environment_spectral(table, first(lights), ray_d, lambda)
-    rest_Le = evaluate_escaped_ray_spectral(table, Base.tail(lights), ray_d, lambda)
-    return first_Le + rest_Le
-end
-
-"""
-    compute_env_light_pdf(lights::Tuple, ray_d::Vec3f)
-
-Compute PDF for sampling direction ray_d from environment-type lights.
-Used for MIS weighting in escaped ray handling.
-Following pbrt-v4: only environment/infinite lights contribute.
-"""
-@propagate_inbounds compute_env_light_pdf(::Tuple{}, ::Vec3f)::Float32 = 0f0
-
-@propagate_inbounds function compute_env_light_pdf(lights::Tuple, ray_d::Vec3f)::Float32
-    # PDF from first light (only environment lights contribute)
-    first_pdf = _env_light_pdf_single(first(lights), ray_d)
-    rest_pdf = compute_env_light_pdf(Base.tail(lights), ray_d)
-    # Sum PDFs - for MIS we typically have one dominant env light
-    return first_pdf + rest_pdf
+    return mapreduce(evaluate_environment_spectral, +, lights, table, ray_d, lambda; init=SpectralRadiance(0f0))
 end
 
 # Helper to compute PDF from a single light (only EnvironmentLight has non-zero PDF)
@@ -419,6 +412,15 @@ end
 
 # Other light types don't contribute to environment PDF
 @propagate_inbounds _env_light_pdf_single(::Light, ::Vec3f)::Float32 = 0f0
+
+"""
+    compute_env_light_pdf(lights::StaticMultiTypeVec, ray_d::Vec3f)
+
+Compute PDF for sampling direction from environment-type lights using StaticMultiTypeVec.
+"""
+@propagate_inbounds function compute_env_light_pdf(lights::Raycore.StaticMultiTypeVec, ray_d::Vec3f)::Float32
+    return mapreduce(_env_light_pdf_single, +, lights, ray_d; init=0f0)
+end
 
 # ============================================================================
 # Power Heuristic for MIS
