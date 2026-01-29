@@ -41,8 +41,8 @@ struct MixMaterial{M1<:Material, M2<:Material, AmountTex} <: Material
     material2::M2
     amount::AmountTex
     # Store material indices for use after resolution
-    material1_idx::MaterialIndex
-    material2_idx::MaterialIndex
+    material1_idx::SetKey
+    material2_idx::SetKey
 end
 
 # Constructor with material tuple indices
@@ -50,8 +50,8 @@ function MixMaterial(
     material1::M1,
     material2::M2,
     amount::Texture,
-    material1_idx::MaterialIndex,
-    material2_idx::MaterialIndex
+    material1_idx::SetKey,
+    material2_idx::SetKey
 ) where {M1<:Material, M2<:Material}
     MixMaterial{M1, M2, typeof(amount)}(material1, material2, amount, material1_idx, material2_idx)
 end
@@ -64,7 +64,7 @@ Create a MixMaterial with keyword arguments.
 # Arguments
 - `materials`: Tuple of two materials (material1, material2)
 - `amount`: Mixing amount (0-1 scalar, texture, or image path)
-- `material_indices`: Tuple of MaterialIndex for each material
+- `material_indices`: Tuple of SetKey for each material
 
 # Examples
 ```julia
@@ -86,7 +86,7 @@ MixMaterial(
 function MixMaterial(;
     materials::Tuple{<:Material, <:Material},
     amount=0.5f0,
-    material_indices::Tuple{MaterialIndex, MaterialIndex}
+    material_indices::Tuple{SetKey, SetKey}
 )
     MixMaterial(
         materials[1],
@@ -105,7 +105,7 @@ is_emissive(::MixMaterial) = false
 # ============================================================================
 
 """
-    mix_hash_float(p::Point3f, wo::Vec3f, idx1::MaterialIndex, idx2::MaterialIndex) -> Float32
+    mix_hash_float(p::Point3f, wo::Vec3f, idx1::SetKey, idx2::SetKey) -> Float32
 
 Generate a deterministic pseudo-random float in [0, 1) for material selection.
 Uses a simple but effective hash function based on pbrt-v4's HashFloat.
@@ -115,7 +115,7 @@ produce the same result, ensuring consistent rendering across samples.
 """
 @propagate_inbounds function mix_hash_float(
     p::Point3f, wo::Vec3f,
-    idx1::MaterialIndex, idx2::MaterialIndex
+    idx1::SetKey, idx2::SetKey
 )::Float32
     # MurmurHash-inspired mixing
     # We hash the position, direction, and material indices together
@@ -162,10 +162,10 @@ end
 # ============================================================================
 
 """
-    choose_material(mix::MixMaterial, textures, p::Point3f, wo::Vec3f, uv::Point2f) -> MaterialIndex
+    choose_material(mix::MixMaterial, textures, p::Point3f, wo::Vec3f, uv::Point2f) -> SetKey
 
 Choose which sub-material to use at the given hit point.
-Returns the MaterialIndex of the chosen material.
+Returns the SetKey of the chosen material.
 
 Following pbrt-v4's ChooseMaterial:
 1. Evaluate the amount texture at (uv)
@@ -176,9 +176,9 @@ Following pbrt-v4's ChooseMaterial:
 This function is called at intersection time, before material evaluation.
 """
 @propagate_inbounds function choose_material(
-    mix::MixMaterial, ctx::StaticMultiTypeVec,
+    mix::MixMaterial, ctx::StaticMultiTypeSet,
     p::Point3f, wo::Vec3f, uv::Point2f
-)::MaterialIndex
+)::SetKey
     amt = eval_tex(ctx, mix.amount, uv)
 
     # Early exit for boundary cases
@@ -206,43 +206,43 @@ is_mix_material(::Material) = false
 is_mix_material(::MixMaterial) = true
 
 """
-    is_mix_material_dispatch(materials, idx::MaterialIndex) -> Bool
+    is_mix_material_dispatch(materials, idx::SetKey) -> Bool
 
 Type-stable dispatch to check if a material is MixMaterial.
 """
 @propagate_inbounds function is_mix_material_dispatch(
-    materials::StaticMultiTypeVec, idx::MaterialIndex
+    materials::StaticMultiTypeSet, idx::SetKey
 )::Bool
     return with_index(is_mix_material, materials, idx)
 end
 
 """
-    choose_material_dispatch(materials::StaticMultiTypeVec, idx::MaterialIndex, p, wo, uv) -> MaterialIndex
+    choose_material_dispatch(materials::StaticMultiTypeSet, idx::SetKey, p, wo, uv) -> SetKey
 
 Type-stable dispatch for choosing material from MixMaterial.
 If the material is not MixMaterial, returns the input index unchanged.
 `materials` is used both for material lookup and texture evaluation.
 """
 @propagate_inbounds function choose_material_dispatch(
-    materials::StaticMultiTypeVec,
-    idx::MaterialIndex,
+    materials::StaticMultiTypeSet,
+    idx::SetKey,
     p::Point3f, wo::Vec3f, uv::Point2f
-)::MaterialIndex
+)::SetKey
     return with_index(_choose_material_impl, materials, idx, materials, p, wo, uv)
 end
 
 # Helper for choose_material_dispatch - called with concrete material type
 @propagate_inbounds function _choose_material_impl(mat, ctx, p, wo, uv)
-    return is_mix_material(mat) ? choose_material(mat, ctx, p, wo, uv) : MaterialIndex()
+    return is_mix_material(mat) ? choose_material(mat, ctx, p, wo, uv) : SetKey()
 end
 
 # Overload that preserves the index for non-mix materials
-@propagate_inbounds function _choose_material_impl(mat, ctx, p, wo, uv, idx::MaterialIndex)
+@propagate_inbounds function _choose_material_impl(mat, ctx, p, wo, uv, idx::SetKey)
     return is_mix_material(mat) ? choose_material(mat, ctx, p, wo, uv) : idx
 end
 
 """
-    resolve_mix_material(materials::StaticMultiTypeVec, idx::MaterialIndex, p, wo, uv) -> MaterialIndex
+    resolve_mix_material(materials::StaticMultiTypeSet, idx::SetKey, p, wo, uv) -> SetKey
 
 Resolve any MixMaterial chain to get the final material index.
 Handles nested MixMaterials by iterating until a non-mix material is found.
@@ -251,10 +251,10 @@ Handles nested MixMaterials by iterating until a non-mix material is found.
 This should be called at intersection time before creating material work items.
 """
 @propagate_inbounds function resolve_mix_material(
-    materials::StaticMultiTypeVec,
-    idx::MaterialIndex,
+    materials::StaticMultiTypeSet,
+    idx::SetKey,
     p::Point3f, wo::Vec3f, uv::Point2f
-)::MaterialIndex
+)::SetKey
     # Iterate to handle nested MixMaterials (up to 8 levels to prevent infinite loops)
     current_idx = idx
     for _ in 1:8

@@ -1,3 +1,70 @@
+# ============================================================================
+# Basic sampling primitives
+# ============================================================================
+
+@propagate_inbounds function concentric_sample_disk(u::Point2f)::Point2f
+    # Map uniform random numbers to [-1, 1].
+    offset_x = 2f0 * u[1] - 1f0
+    offset_y = 2f0 * u[2] - 1f0
+
+    # Compute r and θ - avoid zero check, just compute through
+    # (The zero case is extremely rare and the math will naturally produce ~0)
+    abs_x = abs(offset_x)
+    abs_y = abs(offset_y)
+
+    # Add tiny epsilon to avoid division by zero without branching
+    safe_offset_x = offset_x + 1.0f-10
+    safe_offset_y = offset_y + 1.0f-10
+
+    is_x_larger = abs_x > abs_y
+    r = ifelse(is_x_larger, offset_x, offset_y)
+    θ = ifelse(is_x_larger,
+               (offset_y / safe_offset_x) * π / 4f0,
+               π / 2f0 - (offset_x / safe_offset_y) * π / 4f0)
+
+    # Direct computation and return - no conditional selection
+    return Point2f(r * cos(θ), r * sin(θ))
+end
+
+function cosine_sample_hemisphere(u::Point2f)::Vec3f
+    d = concentric_sample_disk(u)
+    z = √max(0f0, 1f0 - d[1]^2 - d[2]^2)
+    Vec3f(d[1], d[2], z)
+end
+
+function uniform_sample_sphere(u::Point2f)::Vec3f
+    z = 1f0 - 2f0 * u[1]
+    r = √(max(0f0, 1f0 - z^2))
+    ϕ = 2f0 * π * u[2]
+    Vec3f(r * cos(ϕ), r * sin(ϕ), z)
+end
+
+function uniform_sample_cone(u::Point2f, cosθ_max::Float32)::Vec3f
+    cosθ = 1f0 - u[1] + u[1] * cosθ_max
+    sinθ = √(1f0 - cosθ^2)
+    ϕ = u[2] * 2f0 * π
+    Vec3f(cos(ϕ) * sinθ, sin(ϕ) * sinθ, cosθ)
+end
+
+function uniform_sample_cone(
+    u::Point2f, cosθ_max::Float32, x::Vec3f, y::Vec3f, z::Vec3f,
+)::Vec3f
+    cosθ = 1f0 - u[1] + u[1] * cosθ_max
+    sinθ = √(1f0 - cosθ^2)
+    ϕ = u[2] * 2f0 * π
+    x * cos(ϕ) * sinθ + y * sin(ϕ) * sinθ + z * cosθ
+end
+
+@propagate_inbounds uniform_sphere_pdf()::Float32  = 1f0 / (4f0 * π)
+
+@propagate_inbounds function uniform_cone_pdf(cosθ_max::Float32)::Float32
+    1f0 / (2f0 * π * (1f0 - cosθ_max))
+end
+
+# ============================================================================
+# Distributions
+# ============================================================================
+
 include("primes.jl")
 
 struct Distribution1D{V<:AbstractVector{Float32}}

@@ -750,22 +750,6 @@ MediumInteraction() = MediumInteraction(
     0f0
 )
 
-# ============================================================================
-# Medium Index Type
-# ============================================================================
-
-# MediumIndex and MediumInterface are defined in materials/medium-interface.jl
-# (included earlier to support spectral-eval.jl BSDF forwarding)
-
-# ============================================================================
-# Abstract Medium Type
-# ============================================================================
-
-abstract type Medium end
-
-# ============================================================================
-# Homogeneous Medium
-# ============================================================================
 
 """
     HomogeneousMedium
@@ -792,14 +776,9 @@ end
 """Check if medium has emission"""
 @propagate_inbounds is_emissive(m::HomogeneousMedium) = !is_black(m.Le)
 
-"""
-    sample_point(table, medium::HomogeneousMedium, p, λ) -> MediumProperties
-
-Sample medium properties at a point. For homogeneous media, this is constant.
-"""
 @propagate_inbounds function sample_point(
-    table::RGBToSpectrumTable,
     medium::HomogeneousMedium,
+    table::RGBToSpectrumTable,
     p::Point3f,
     λ::Wavelengths
 )::MediumProperties
@@ -810,14 +789,9 @@ Sample medium properties at a point. For homogeneous media, this is constant.
     return MediumProperties(σ_a, σ_s, Le, medium.g)
 end
 
-"""
-    get_majorant(table, medium::HomogeneousMedium, ray, t_min, t_max, λ) -> RayMajorantSegment
-
-Get majorant for ray segment. For homogeneous media, majorant = σ_t everywhere.
-"""
 @propagate_inbounds function get_majorant(
-    table::RGBToSpectrumTable,
     medium::HomogeneousMedium,
+    table::RGBToSpectrumTable,
     ray::Raycore.Ray,
     t_min::Float32,
     t_max::Float32,
@@ -830,18 +804,9 @@ Get majorant for ray segment. For homogeneous media, majorant = σ_t everywhere.
     return RayMajorantSegment(t_min, t_max, σ_maj)
 end
 
-"""
-    create_majorant_iterator(table, medium::HomogeneousMedium, ray, t_max, λ) -> RayMajorantIterator
-
-Create a majorant iterator for homogeneous medium (single segment).
-Returns unified RayMajorantIterator for GPU compatibility with mixed media.
-
-NOTE: This version uses EMPTY_MAJORANT_GRID which has Vector{Float32} storage.
-For mixed scenes with GridMedium on GPU, use the template_grid version instead.
-"""
 @propagate_inbounds function create_majorant_iterator(
-    table::RGBToSpectrumTable,
     medium::HomogeneousMedium,
+    table::RGBToSpectrumTable,
     ray::Raycore.Ray,
     t_max::Float32,
     λ::Wavelengths
@@ -852,15 +817,9 @@ For mixed scenes with GridMedium on GPU, use the template_grid version instead.
     return RayMajorantIterator_homogeneous(0f0, t_max, σ_maj)
 end
 
-"""
-    create_majorant_iterator(table, medium::HomogeneousMedium, ray, t_max, λ, template_grid) -> RayMajorantIterator
-
-Create a majorant iterator for homogeneous medium using the provided template grid for type consistency.
-This version should be used in mixed media scenes to ensure all iterators have the same type.
-"""
 @propagate_inbounds function create_majorant_iterator(
-    table::RGBToSpectrumTable,
     medium::HomogeneousMedium,
+    table::RGBToSpectrumTable,
     ray::Raycore.Ray,
     t_max::Float32,
     λ::Wavelengths,
@@ -1000,8 +959,8 @@ end
 # Single medium case
 @inline get_template_grid_from_tuple(medium::Medium) = get_template_grid(medium)
 
-# StaticMultiTypeVec case - inspect element types of data arrays
-@generated function get_template_grid_from_tuple(media::Raycore.StaticMultiTypeVec{Data, Textures}) where {Data<:Tuple, Textures}
+# StaticMultiTypeSet case - inspect element types of data arrays
+@generated function get_template_grid_from_tuple(media::Raycore.StaticMultiTypeSet{Data, Textures}) where {Data<:Tuple, Textures}
     N = length(Data.parameters)
 
     # Find first array whose element type is GridMedium or RGBGridMedium
@@ -1306,13 +1265,9 @@ p_norm is in [0,1]³ normalized coordinates within bounds.
     return c0 * (1f0 - fz) + c1 * fz
 end
 
-"""
-Sample medium properties at a point for RGBGridMedium.
-Following pbrt-v4's RGBGridMedium::SamplePoint exactly.
-"""
 @propagate_inbounds function sample_point(
-    table::RGBToSpectrumTable,
     medium::RGBGridMedium,
+    table::RGBToSpectrumTable,
     p::Point3f,
     λ::Wavelengths
 )::MediumProperties
@@ -1350,13 +1305,9 @@ Following pbrt-v4's RGBGridMedium::SamplePoint exactly.
     return MediumProperties(σ_a, σ_s, Le, medium.g)
 end
 
-"""
-Create majorant iterator for RGBGridMedium.
-Following pbrt-v4's RGBGridMedium::SampleRay.
-"""
 @propagate_inbounds function create_majorant_iterator(
-    table::RGBToSpectrumTable,
     medium::RGBGridMedium,
+    table::RGBToSpectrumTable,
     ray::Raycore.Ray,
     t_max::Float32,
     λ::Wavelengths
@@ -1406,25 +1357,19 @@ Following pbrt-v4's RGBGridMedium::SampleRay.
 end
 
 @propagate_inbounds function create_majorant_iterator(
-    table::RGBToSpectrumTable,
     medium::RGBGridMedium,
+    table::RGBToSpectrumTable,
     ray::Raycore.Ray,
     t_max::Float32,
     λ::Wavelengths,
     ::MajorantGrid
 )
-    return create_majorant_iterator(table, medium, ray, t_max, λ)
+    return create_majorant_iterator(medium, table, ray, t_max, λ)
 end
 
-"""
-    get_majorant(table, medium::RGBGridMedium, ray, t_min, t_max, λ) -> RayMajorantSegment
-
-Get majorant for ray segment using global maximum from majorant grid.
-For better performance, use create_majorant_iterator for DDA-based traversal.
-"""
 @propagate_inbounds function get_majorant(
-    table::RGBToSpectrumTable,
     medium::RGBGridMedium,
+    table::RGBToSpectrumTable,
     ray::Raycore.Ray,
     t_min::Float32,
     t_max::Float32,
@@ -1548,10 +1493,9 @@ Uses pbrt-v4's cell-centered interpretation:
     return d0 * (1f0 - fz) + d1 * fz
 end
 
-"""Sample medium properties at a point"""
 @propagate_inbounds function sample_point(
-    table::RGBToSpectrumTable,
     medium::GridMedium,
+    table::RGBToSpectrumTable,
     p::Point3f,
     λ::Wavelengths
 )::MediumProperties
@@ -1573,19 +1517,9 @@ end
     return MediumProperties(σ_a, σ_s, SpectralRadiance(0f0), medium.g)
 end
 
-"""
-    create_majorant_iterator(table, medium::GridMedium, ray, t_max, λ) -> RayMajorantIterator
-
-Create a DDA majorant iterator for traversing the medium along a ray.
-Following PBRT-v4's GridMedium::SampleRay pattern.
-Returns unified RayMajorantIterator for GPU compatibility with mixed media.
-
-The ray is transformed to medium space and intersected with the bounds
-to determine the valid segment for DDA traversal.
-"""
 @propagate_inbounds function create_majorant_iterator(
-    table::RGBToSpectrumTable,
     medium::GridMedium,
+    table::RGBToSpectrumTable,
     ray::Raycore.Ray,
     t_max::Float32,
     λ::Wavelengths
@@ -1645,22 +1579,15 @@ to determine the valid segment for DDA traversal.
     return RayMajorantIterator(dda_iter)
 end
 
-"""
-    create_majorant_iterator(table, medium::GridMedium, ray, t_max, λ, template_grid) -> RayMajorantIterator
-
-Version with template_grid parameter for API consistency with HomogeneousMedium.
-GridMedium ignores the template and uses its own majorant_grid.
-"""
 @propagate_inbounds function create_majorant_iterator(
-    table::RGBToSpectrumTable,
     medium::GridMedium,
+    table::RGBToSpectrumTable,
     ray::Raycore.Ray,
     t_max::Float32,
     λ::Wavelengths,
-    ::MajorantGrid  # Ignored - GridMedium uses its own grid
+    ::MajorantGrid
 )
-    # Just call the non-template version
-    return create_majorant_iterator(table, medium, ray, t_max, λ)
+    return create_majorant_iterator(medium, table, ray, t_max, λ)
 end
 
 """
@@ -1707,10 +1634,9 @@ Uses scalar operations for GPU compatibility.
     return (t_enter, t_exit)
 end
 
-"""Get majorant for ray segment (conservative, uses max density) - DEPRECATED for GridMedium"""
 @propagate_inbounds function get_majorant(
-    table::RGBToSpectrumTable,
     medium::GridMedium,
+    table::RGBToSpectrumTable,
     ray::Raycore.Ray,
     t_min::Float32,
     t_max::Float32,

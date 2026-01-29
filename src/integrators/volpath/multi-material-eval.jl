@@ -14,7 +14,7 @@
     MultiMaterialQueue{N}
 
 Container holding N separate work queues, one per material type.
-Items are routed to the correct queue based on MaterialIndex.material_type.
+Items are routed to the correct queue based on SetKey.material_type.
 
 Following pbrt-v4's MultiWorkQueue pattern where:
 - Push routes to correct sub-queue based on type
@@ -258,10 +258,8 @@ Uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
     return
 end
 
-# Medium helpers
+# Medium helper - returns current medium for regular materials
 _get_medium_for_type(mat, wi, n, current) = current
-_get_medium_for_type(mat::MediumInterfaceIdx, wi, n, current) =
-    dot(wi, n) > 0f0 ? mat.outside : mat.inside
 
 """
 DEBUG helper: Copy items from multi_queue to standard material_queue for testing.

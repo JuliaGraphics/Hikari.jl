@@ -187,8 +187,8 @@ struct UniformLightSampler <: LightSampler
     num_lights::Int32
 end
 
-UniformLightSampler(lights::Raycore.MultiTypeVec) = UniformLightSampler(Int32(length(lights)))
-UniformLightSampler(lights::Raycore.StaticMultiTypeVec) = UniformLightSampler(Int32(length(lights)))
+UniformLightSampler(lights::Raycore.MultiTypeSet) = UniformLightSampler(Int32(length(lights)))
+UniformLightSampler(lights::Raycore.StaticMultiTypeSet) = UniformLightSampler(Int32(length(lights)))
 UniformLightSampler(num_lights::Integer) = UniformLightSampler(Int32(num_lights))
 
 """
@@ -236,8 +236,8 @@ function Adapt.adapt_structure(to, sampler::PowerLightSampler)
     PowerLightSampler(Adapt.adapt(to, sampler.alias_table))
 end
 
-# MultiTypeVec version - launches kernel to compute powers on GPU
-function PowerLightSampler(lights::Raycore.MultiTypeVec; scene_radius::Float32=10f0)
+# MultiTypeSet version - launches kernel to compute powers on GPU
+function PowerLightSampler(lights::Raycore.MultiTypeSet; scene_radius::Float32=10f0)
     n = length(lights)
     if n == 0
         return PowerLightSampler(AliasTable(Float32[], Float32[], Int32[]))
@@ -248,7 +248,7 @@ function PowerLightSampler(lights::Raycore.MultiTypeVec; scene_radius::Float32=1
     # Allocate GPU array for powers
     powers_gpu = KA.allocate(backend, Float32, n)
 
-    # Get the GPU-ready StaticMultiTypeVec
+    # Get the GPU-ready StaticMultiTypeSet
     lights_static = Raycore.get_static(lights)
 
     # Launch kernel to compute powers
@@ -277,21 +277,21 @@ function PowerLightSampler(lights::Raycore.MultiTypeVec; scene_radius::Float32=1
 end
 
 # ============================================================================
-# flat_to_light_index - Convert flat index to HeteroVecIndex
+# flat_to_light_index - Convert flat index to SetKey
 # ============================================================================
 
 """
-    flat_to_light_index(lights::StaticMultiTypeVec, flat_idx::Int32) -> LightIndex
+    flat_to_light_index(lights::StaticMultiTypeSet, flat_idx::Int32) -> SetKey
 
-Convert a flat 1-based index to a LightIndex (HeteroVecIndex) for StaticMultiTypeVec.
+Convert a flat 1-based index to a SetKey (SetKey) for StaticMultiTypeSet.
 The flat index counts across all typed arrays in order.
 """
 @propagate_inbounds @generated function flat_to_light_index(
-    lights::Raycore.StaticMultiTypeVec{Data, Textures}, flat_idx::Int32
+    lights::Raycore.StaticMultiTypeSet{Data, Textures}, flat_idx::Int32
 ) where {Data<:Tuple, Textures}
     N = length(Data.parameters)
     if N == 0
-        return :(LightIndex())
+        return :(SetKey())
     end
 
     # Build cumulative length checks
@@ -316,7 +316,7 @@ The flat index counts across all typed arrays in order.
         push!(branches, quote
             if flat_idx <= $cumsum_expr
                 vec_idx = UInt32(flat_idx - $prev_cumsum)
-                return LightIndex(UInt8($i), vec_idx)
+                return SetKey(UInt8($i), vec_idx)
             end
         end)
     end
@@ -324,7 +324,7 @@ The flat index counts across all typed arrays in order.
     quote
         $(branches...)
         # Fallback - return last valid index
-        return LightIndex(UInt8($N), UInt32(length(lights.data[$N])))
+        return SetKey(UInt8($N), UInt32(length(lights.data[$N])))
     end
 end
 
@@ -535,12 +535,12 @@ end
 # ============================================================================
 
 """
-    create_light_sampler(lights::MultiTypeVec; method::Symbol=:power, scene_radius::Float32=10f0) -> LightSampler
+    create_light_sampler(lights::MultiTypeSet; method::Symbol=:power, scene_radius::Float32=10f0) -> LightSampler
 
 Create a light sampler for the given lights.
 
 # Arguments
-- `lights::MultiTypeVec`: Collection of light sources
+- `lights::MultiTypeSet`: Collection of light sources
 - `method::Symbol`: Sampling method (`:uniform` or `:power`)
 - `scene_radius::Float32`: Scene bounding sphere radius (for power-weighted sampling of infinite lights)
 
@@ -548,7 +548,7 @@ Create a light sampler for the given lights.
 - `:uniform`: Uniform random selection (baseline)
 - `:power`: Power-weighted selection (recommended for varying light intensities)
 """
-function create_light_sampler(lights::Raycore.MultiTypeVec; method::Symbol=:power, scene_radius::Float32=10f0)
+function create_light_sampler(lights::Raycore.MultiTypeSet; method::Symbol=:power, scene_radius::Float32=10f0)
     if method == :uniform
         return UniformLightSampler(lights)
     elseif method == :power

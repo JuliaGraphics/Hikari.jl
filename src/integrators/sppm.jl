@@ -236,6 +236,13 @@ end
     end
 end
 
+function get_progress_bar(n::Integer, desc::String="Progress")
+    Progress(
+        n, desc=desc, dt=1,
+        barglyphs=BarGlyphs("[=> ]"), barlen=50, color=:white,
+    )
+end
+
 function _generate_visible_sppm_points!(
         i::SPPM,
         pixels::AbstractMatrix{SPPMPixel}, vps::AbstractMatrix{VisiblePoint},
@@ -599,9 +606,7 @@ end
 
 # Note: power_heuristic is defined in materials/spectral-eval.jl
 
-@propagate_inbounds function compute_light_power_distribution(
-    scene::AbstractScene,
-)::Maybe{Distribution1D}
+@propagate_inbounds function compute_light_power_distribution(scene::AbstractScene)
     length(scene.lights) == 0 && return nothing
     # Use map_unrolled for GPU-safe iteration, then collect to vector for Distribution1D
     powers_tuple = map_unrolled(_get_light_power_y, scene.lights, scene)

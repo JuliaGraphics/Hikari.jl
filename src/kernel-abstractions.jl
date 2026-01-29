@@ -155,19 +155,6 @@ function Adapt.adapt_structure(to, light::Hikari.SunSkyLight)
     )
 end
 
-# Scene -> ImmutableScene
-# Mutable Scene is converted to immutable ImmutableScene for GPU kernels
-function Adapt.adapt_structure(to, scene::Hikari.Scene)
-    Hikari.ImmutableScene(
-        Adapt.adapt(to, scene.lights),
-        Adapt.adapt(to, scene.accel),
-        Adapt.adapt(to, scene.materials),
-        Adapt.adapt(to, scene.media),
-        scene.bound,
-        scene.world_center,
-        scene.world_radius
-    )
-end
 
 # Film - adapt pixel/tile arrays and framebuffers
 function Adapt.adapt_structure(to, film::Film)

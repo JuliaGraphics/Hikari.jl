@@ -48,14 +48,14 @@ struct VPRayWorkItem
     eta_scale::Float32              # Accumulated IOR ratio
     specular_bounce::Bool           # Was last bounce specular?
     any_non_specular_bounces::Bool  # Any non-specular bounces in path?
-    medium_idx::MediumIndex         # Current medium (0 = vacuum)
+    medium_idx::SetKey         # Current medium (0 = vacuum)
 end
 
 function VPRayWorkItem(
     ray::Raycore.Ray,
     lambda::Wavelengths,
     pixel_index::Int32;
-    medium_idx::MediumIndex = MediumIndex()
+    medium_idx::SetKey = SetKey()
 )
     VPRayWorkItem(
         ray,
@@ -107,7 +107,7 @@ struct VPMediumSampleWorkItem
     prev_intr_n::Vec3f
 
     # Current medium
-    medium_idx::MediumIndex
+    medium_idx::SetKey
 
     # Surface hit info (used if ray reaches t_max without medium event)
     # If t_max == Inf, these are invalid (ray escaped)
@@ -116,14 +116,16 @@ struct VPMediumSampleWorkItem
     hit_n::Vec3f
     hit_ns::Vec3f
     hit_uv::Point2f
-    hit_material_idx::MaterialIndex
+    hit_material_idx::SetKey
+    hit_interface::MediumInterfaceIdx  # For medium transitions at surface
 end
 
 # Constructor from VPRayWorkItem with surface hit
 function VPMediumSampleWorkItem(
     work::VPRayWorkItem,
     t_max::Float32,
-    pi::Point3f, n::Vec3f, ns::Vec3f, uv::Point2f, mat_idx::MaterialIndex
+    pi::Point3f, n::Vec3f, ns::Vec3f, uv::Point2f, mat_idx::SetKey,
+    interface::MediumInterfaceIdx
 )
     VPMediumSampleWorkItem(
         work.ray, work.depth, t_max,
@@ -132,7 +134,7 @@ function VPMediumSampleWorkItem(
         work.specular_bounce, work.any_non_specular_bounces,
         work.prev_intr_p, work.prev_intr_n,
         work.medium_idx,
-        true, pi, n, ns, uv, mat_idx
+        true, pi, n, ns, uv, mat_idx, interface
     )
 end
 
@@ -146,7 +148,7 @@ function VPMediumSampleWorkItem(work::VPRayWorkItem)
         work.prev_intr_p, work.prev_intr_n,
         work.medium_idx,
         false, Point3f(0f0), Vec3f(0f0, 0f0, 1f0), Vec3f(0f0, 0f0, 1f0),
-        Point2f(0f0, 0f0), MaterialIndex()
+        Point2f(0f0, 0f0), SetKey(), MediumInterfaceIdx(SetKey(), SetKey(), SetKey())
     )
 end
 
@@ -169,7 +171,7 @@ struct VPMediumScatterWorkItem
     beta::SpectralRadiance          # Path throughput at scatter point
     r_u::SpectralRadiance           # Rescaled PDF
     depth::Int32
-    medium_idx::MediumIndex         # Which medium we're in
+    medium_idx::SetKey         # Which medium we're in
     g::Float32                      # HG asymmetry at this point
 end
 
@@ -190,7 +192,8 @@ struct VPMaterialEvalWorkItem
     ns::Vec3f                       # Shading normal
     wo::Vec3f                       # Outgoing direction
     uv::Point2f                     # Texture coordinates
-    material_idx::MaterialIndex     # Material index
+    material_idx::SetKey            # Material index
+    interface::MediumInterfaceIdx   # For medium transitions
 
     # Path state
     lambda::Wavelengths
@@ -208,8 +211,7 @@ struct VPMaterialEvalWorkItem
     prev_intr_n::Vec3f
 
     # Medium transition info
-    current_medium::MediumIndex     # Medium ray was traveling through
-    # Note: After surface interaction, new medium depends on refraction/reflection
+    current_medium::SetKey     # Medium ray was traveling through
 end
 
 # Note: Constructor from VPHitSurfaceWorkItem is defined after VPHitSurfaceWorkItem struct
@@ -231,7 +233,7 @@ struct VPShadowRayWorkItem
     r_u::SpectralRadiance           # MIS weight numerator
     r_l::SpectralRadiance           # MIS weight denominator
     pixel_index::Int32
-    medium_idx::MediumIndex         # Medium the shadow ray travels through
+    medium_idx::SetKey         # Medium the shadow ray travels through
 end
 
 # ============================================================================
@@ -298,7 +300,8 @@ struct VPHitSurfaceWorkItem
     n::Vec3f
     ns::Vec3f
     uv::Point2f
-    material_idx::MaterialIndex
+    material_idx::SetKey
+    interface::MediumInterfaceIdx  # For medium transitions
 
     # Path state
     lambda::Wavelengths
@@ -314,7 +317,7 @@ struct VPHitSurfaceWorkItem
     prev_intr_n::Vec3f
 
     # Medium info
-    current_medium::MediumIndex
+    current_medium::SetKey
 
     # Distance traveled through medium (for transmittance)
     t_hit::Float32
@@ -323,12 +326,13 @@ end
 # Constructor from VPRayWorkItem with hit geometry
 function VPHitSurfaceWorkItem(
     work::VPRayWorkItem,
-    pi::Point3f, n::Vec3f, ns::Vec3f, uv::Point2f, mat_idx::MaterialIndex,
+    pi::Point3f, n::Vec3f, ns::Vec3f, uv::Point2f, mat_idx::SetKey,
+    interface::MediumInterfaceIdx,
     t_hit::Float32
 )
     VPHitSurfaceWorkItem(
         work.ray,
-        pi, n, ns, uv, mat_idx,
+        pi, n, ns, uv, mat_idx, interface,
         work.lambda, work.pixel_index,
         work.beta, work.r_u, work.r_l,
         work.depth, work.eta_scale,
@@ -345,7 +349,7 @@ function VPHitSurfaceWorkItem(
 )
     VPHitSurfaceWorkItem(
         work.ray,
-        work.hit_pi, work.hit_n, work.hit_ns, work.hit_uv, work.hit_material_idx,
+        work.hit_pi, work.hit_n, work.hit_ns, work.hit_uv, work.hit_material_idx, work.hit_interface,
         work.lambda, work.pixel_index,
         beta, r_u, r_l,
         work.depth, work.eta_scale,
@@ -357,9 +361,9 @@ end
 
 # Constructor for VPMaterialEvalWorkItem from VPHitSurfaceWorkItem
 # (wo and material_idx are computed externally, e.g. after MixMaterial resolution)
-function VPMaterialEvalWorkItem(work::VPHitSurfaceWorkItem, wo::Vec3f, material_idx::MaterialIndex)
+function VPMaterialEvalWorkItem(work::VPHitSurfaceWorkItem, wo::Vec3f, material_idx::SetKey)
     VPMaterialEvalWorkItem(
-        work.pi, work.n, work.ns, wo, work.uv, material_idx,
+        work.pi, work.n, work.ns, wo, work.uv, material_idx, work.interface,
         work.lambda, work.pixel_index,
         work.beta, work.r_u, work.r_l,
         work.depth, work.eta_scale,

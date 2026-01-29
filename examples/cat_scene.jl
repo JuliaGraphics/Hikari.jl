@@ -37,24 +37,6 @@ function to_mesh(prim)
     Raycore.TriangleMesh(normal_mesh(prim))
 end
 
-# Legacy helper for GeometricPrimitive-based code
-function tmesh(prim, material)
-    Hikari.GeometricPrimitive(to_mesh(prim), material)
-end
-
-"""
-Create scene matching PbrtWavefront/examples/cat_scene.jl for comparison.
-
-Materials:
-- Cat: warm diffuse (orange)
-- Floor: green diffuse
-- Back wall: metallic copper
-- Left wall: diffuse gray-blue
-- Sphere1 (left, big): metallic silver mirror
-- Sphere2 (right, small): semi-metallic blue
-- Glass sphere (front left): clear glass
-- Emissive sphere (front right): bright orange glow
-"""
 function create_scene(; glass_cat=false, backend=Raycore.KA.CPU())
     scene = Hikari.Scene(; backend)
 
@@ -74,7 +56,7 @@ function create_scene(; glass_cat=false, backend=Raycore.KA.CPU())
     else
         Hikari.MatteMaterial(Kd=Hikari.RGBSpectrum(0.8f0, 0.6f0, 0.4f0), σ=0f0)
     end
-    push!(scene, Raycore.TriangleMesh(create_cat_mesh()), cat_material)
+    push!(scene, create_cat_mesh(), cat_material)
 
     # Floor - green diffuse
     push!(scene, to_mesh(Rect3f(Vec3f(-5, -1.5, -2), Vec3f(10, 0.01, 10))),
@@ -149,22 +131,6 @@ function create_film_and_camera(; width=720, height=400, use_pbrt_camera=true)
 end
 
 # =============================================================================
-# Render Functions
-# =============================================================================
-
-function render_with_integrator(integrator; width=720, height=400, glass_cat=false, use_pbrt_camera=true)
-    scene = create_scene(; glass_cat=glass_cat)
-    film, camera = create_film_and_camera(; width=width, height=height, use_pbrt_camera=use_pbrt_camera)
-
-    Hikari.clear!(film)
-    @time integrator(scene, film, camera)
-
-    # Apply postprocessing
-    Hikari.postprocess!(film; exposure=1.0f0, tonemap=:aces, gamma=1.2f0)
-    film.postprocess
-end
-
-# =============================================================================
 # Run if executed directly
 # =============================================================================
 
@@ -185,36 +151,3 @@ begin
     Hikari.postprocess!(gpu_film; sensor, exposure=0.5f0, tonemap=:aces, gamma=2.2f0)
     Array(gpu_film.postprocess)
 end
-
-# Example: Using MediumInterface for surface-defined medium boundaries
-# This follows pbrt-v4's approach where surfaces define transitions between media.
-#
-# MediumInterface wraps a material and specifies which medium is on each side:
-# - inside: medium when entering the surface (ray going against geometric normal)
-# - outside: medium when exiting the surface (ray going with geometric normal)
-#
-# MediumIndex(0) = vacuum (no medium)
-# MediumIndex(1) = first medium in the media tuple, etc.
-#
-# Example usage:
-#   fog = Hikari.HomogeneousMedium(...)
-#   glass = Hikari.GlassMaterial(...)
-#
-#   # Glass object filled with fog (fog inside, vacuum outside)
-#   glass_with_fog = Hikari.MediumInterface(glass; inside=1, outside=0)
-#
-#   # Object embedded in global fog (same medium both sides)
-#   glass_in_fog = Hikari.MediumInterface(glass, 1)
-#
-# The wrapped material's BSDF is used for light transport calculations,
-# while MediumInterface determines medium transitions for volumetric effects.
-using pocl_jll, OpenCL, Hikari
-backend = OpenCL.OpenCLBackend()
-scene = Hikari.Scene(; backend)
-using GeometryBasics
-# === Add lights ===
-push!(scene.lights, Hikari.PointLight(Point3f(3, 3, -1), Hikari.RGBSpectrum(1.0f0, 1.0f0, 1.0f0)))  # Key light
-push!(scene.lights, Hikari.PointLight(Point3f(-3, 2, 0), Hikari.RGBSpectrum(5.0f0, 5.0f0, 5.0f0)))     # Fill light
-push!(scene.lights, Hikari.AmbientLight(Hikari.RGBSpectrum(0.5f0, 0.7f0, 1.0f0)))
-env = Hikari.EnvironmentLight("./pbrt-v4-scenes/bunny-cloud/textures/sky.exr")
-push!(scene.lights, env)

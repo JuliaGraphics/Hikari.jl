@@ -31,19 +31,6 @@ Uses MurmurHash64A on the byte representation of (dimension, seed).
 end
 
 # =============================================================================
-# Bit manipulation functions (matching pbrt-v4/src/pbrt/util/math.h)
-# =============================================================================
-
-"""
-    reverse_bits32(n::UInt32) -> UInt32
-
-Reverse the bits of a 32-bit unsigned integer.
-Uses Julia's built-in bitreverse which works on both CPU and GPU.
-Reference: pbrt-v4/src/pbrt/util/math.h ReverseBits32
-"""
-@inline reverse_bits32(n::UInt32)::UInt32 = bitreverse(n)
-
-# =============================================================================
 # Morton/Z-order encoding (matching pbrt-v4/src/pbrt/util/vecmath.h)
 # =============================================================================
 
@@ -83,13 +70,13 @@ Fast approximation of Owen scrambling for Sobol sequences.
 Reference: pbrt-v4/src/pbrt/util/lowdiscrepancy.h FastOwenScrambler (lines 220-237)
 """
 @inline function fast_owen_scramble(v::UInt32, seed::UInt32)::UInt32
-    v = reverse_bits32(v)
+    v = bitreverse(v)
     v ⊻= v * 0x3d20adea
     v += seed
     v *= (seed >> 16) | UInt32(1)
     v ⊻= v * 0x05526c56
     v ⊻= v * 0x53a22864
-    return reverse_bits32(v)
+    return bitreverse(v)
 end
 
 """

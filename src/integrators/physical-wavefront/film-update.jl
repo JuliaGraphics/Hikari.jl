@@ -499,8 +499,8 @@ Kernel to update auxiliary buffers from depth=0 material queue items.
                 pixel_idx = work.pixel_index
 
                 # Get material albedo (spectral, convert to RGB)
-                albedo_spec = get_albedo_spectral_dispatch(
-                    rgb2spec_table, materials, work.material_idx, work.uv, work.lambda
+                albedo_spec = with_index(get_albedo_spectral, materials, work.material_idx,
+                    rgb2spec_table, materials, work.uv, work.lambda
                 )
                 # Simple average of spectral values as grayscale approximation
                 # Could use hero wavelength for better color, but this is for denoising

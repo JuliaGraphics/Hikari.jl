@@ -1,7 +1,7 @@
 # Material evaluation and direct lighting for PhysicalWavefront
 # Handles BSDF sampling, direct lighting with MIS, and path continuation
 #
-# NOTE: `materials` is a StaticMultiTypeVec containing both materials and textures.
+# NOTE: `materials` is a StaticMultiTypeSet containing both materials and textures.
 # Use eval_tex(materials, field, uv) to sample textures via TextureRef.
 
 # ============================================================================
@@ -39,15 +39,14 @@ and creates a shadow ray work item.
             light_idx = floor_int32(light_select * Float32(num_lights)) + Int32(1)
             light_idx = min(light_idx, num_lights)
 
-            # Sample the selected light (works with both Tuple and StaticMultiTypeVec)
+            # Sample the selected light (works with both Tuple and StaticMultiTypeSet)
             p = work.pi
             light_sample = sample_light_spectral(rgb2spec_table, lights, light_idx, p, work.lambda, u_light)
 
             if light_sample.pdf > 0f0 && !is_black(light_sample.Li)
                 # Evaluate BSDF for light direction
-                bsdf_f, bsdf_pdf = evaluate_spectral_material(
-                    rgb2spec_table, materials, work.material_idx,
-                    work.wo, light_sample.wi, work.ns, work.uv, work.lambda
+                bsdf_f, bsdf_pdf = with_index(evaluate_bsdf_spectral, materials, work.material_idx,
+                    rgb2spec_table, materials, work.wo, light_sample.wi, work.ns, work.uv, work.lambda
                 )
 
                 if !is_black(bsdf_f)
@@ -120,9 +119,8 @@ Evaluate materials for all work items:
             regularize = do_regularize && work.any_non_specular_bounces
 
             # Sample BSDF
-            sample = sample_spectral_material(
-                rgb2spec_table, materials, work.material_idx,
-                work.wo, work.ns, work.uv, work.lambda, u, rng, regularize
+            sample = with_index(sample_bsdf_spectral, materials, work.material_idx,
+                rgb2spec_table, materials, work.wo, work.ns, work.uv, work.lambda, u, rng, regularize
             )
 
             # Check if valid sample
@@ -268,8 +266,8 @@ Only processes depth=0 items (primary ray hits).
                 pixel_idx = work.pixel_index
 
                 # Get material albedo (spectral, then convert to RGB average)
-                albedo_spec = get_albedo_spectral_dispatch(
-                    rgb2spec_table, materials, work.material_idx, work.uv, work.lambda
+                albedo_spec = with_index(get_albedo_spectral, materials, work.material_idx,
+                    rgb2spec_table, materials, work.uv, work.lambda
                 )
                 # Use average of spectral values as RGB approximation
                 albedo_avg = average(albedo_spec)

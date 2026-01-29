@@ -103,12 +103,10 @@ function (i::SamplerIntegrator)(scene::AbstractScene, film, camera)
     backend = KA.get_backend(film.tiles.contrib_sum)
     kernel! = whitten_kernel!(backend, (8, 8))
     s_filter_table = Mat{size(filter_table)...}(filter_table)
-    # Convert to ImmutableScene for GPU kernels (immutable, bitstype-compatible)
-    iscene = ImmutableScene(scene)
     kernel!(
         film.pixels, film.crop_bounds, sample_bounds,
         tiles, tile_size,
-        max_depth, iscene, sampler,
+        max_depth, scene, sampler,
         camera, s_filter_table, filter_radius;
         ndrange=film.ntiles
     )
@@ -192,9 +190,9 @@ end
 end
 
 # Type-stable material dispatch for li computation
-# Uses with_index for type-stable dispatch over StaticMultiTypeVec
+# Uses with_index for type-stable dispatch over StaticMultiTypeSet
 @propagate_inbounds function li_material(
-    materials::StaticMultiTypeVec, idx::MaterialIndex,
+    materials::StaticMultiTypeSet, idx::SetKey,
     sampler, max_depth, ray::RayDifferentials, si::SurfaceInteraction,
     scene::S, lights, wo, depth::Int32
 ) where {S<:AbstractScene}
@@ -402,7 +400,7 @@ end
         # Handle volume materials specially - they use shade() directly
         if is_volume
             # Volume materials handle their own ray marching and continuation rays
-            vol_radiance = shade_material(materials, idx, ray, si, scene, throughput, depth, max_depth)
+            vol_radiance = Raycore.with_index(shade, materials, idx, ray, si, scene, throughput, depth, max_depth)
             if !isnan(vol_radiance)
                 L += vol_radiance
             end
@@ -464,7 +462,7 @@ end
 end
 
 # Helper to check if a material type is a volume (CloudVolume)
-# Returns true for volume materials that need special handling via shade_material
+# Returns true for volume materials that need special handling via with_index(shade, ...)
 @propagate_inbounds is_volume_material(::Material) = false
 @propagate_inbounds is_volume_material(::CloudVolume) = true
 
@@ -477,9 +475,9 @@ end
 
 # Helper to compute BSDF for a material index - returns (valid::Bool, is_volume::Bool, bsdf::BSDF)
 # Returns a tuple to avoid Union{Nothing, BSDF} type instability
-# For volume materials, is_volume=true indicates caller should use shade_material instead of BSDF
+# For volume materials, is_volume=true indicates caller should use with_index(shade, ...) instead of BSDF
 @propagate_inbounds function compute_bsdf_for_material(
-    materials::StaticMultiTypeVec, idx::MaterialIndex, si::SurfaceInteraction
+    materials::StaticMultiTypeSet, idx::SetKey, si::SurfaceInteraction
 )
     return with_index(_compute_bsdf_impl, materials, idx, materials, si)
 end

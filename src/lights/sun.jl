@@ -45,7 +45,7 @@ function sample_li(
     # s.direction is the direction light TRAVELS (away from light source)
     # wi should be the direction TO the light source (opposite of s.direction)
     wi = -s.direction
-    outside_point = ref.p .+ wi .* (2 * scene.world_radius)
+    outside_point = ref.p .+ wi .* (2 * world_radius(scene))
     tester = VisibilityTester(
         ref, Interaction(outside_point, ref.time, Vec3f(0f0), Normal3f(0f0)),
     )
@@ -53,5 +53,5 @@ function sample_li(
 end
 
 @propagate_inbounds function power(s::SunLight{S}, scene::AbstractScene)::S where S<:Spectrum
-    s.i * π * scene.world_radius^2
+    s.i * π * world_radius(scene)^2
 end

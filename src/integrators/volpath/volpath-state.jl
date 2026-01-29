@@ -98,7 +98,7 @@ function VolPathState(
     backend,
     width::Integer,
     height::Integer,
-    lights::Raycore.MultiTypeVec;  # MultiTypeVec of lights (has backend for GPU allocation)
+    lights::Raycore.MultiTypeSet;  # MultiTypeSet of lights (has backend for GPU allocation)
     max_depth::Integer = 8,
     queue_capacity::Integer = width * height,
     scene_radius::Float32 = 10f0,  # Scene bounding sphere radius for light power estimation
@@ -141,7 +141,7 @@ function VolPathState(
     cie_table = to_gpu(backend, CIEXYZTable())
 
     # Build light sampler (alias table for power-weighted sampling)
-    # PowerLightSampler(MultiTypeVec) computes powers on GPU and returns GPU arrays
+    # PowerLightSampler(MultiTypeSet) computes powers on GPU and returns GPU arrays
     n_lights = length(lights)
     if n_lights > 0
         sampler = PowerLightSampler(lights; scene_radius=scene_radius)

@@ -43,7 +43,7 @@ Now uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style
         return
     end
 
-    # Sample the light (works with both Tuple and StaticMultiTypeVec)
+    # Sample the light (works with both Tuple and StaticMultiTypeSet)
     light_sample = sample_light_spectral(
         rgb2spec_table, lights, light_idx, work.p, work.lambda, u_light
     )

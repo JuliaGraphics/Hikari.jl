@@ -356,8 +356,8 @@ inside or in front of the volume are properly rendered with correct transmittanc
     if transmittance > 0.001f0 && depth < max_depth
         if has_scene_hit_in_volume
             # Hit an object inside/before the volume exit - shade it
-            background = shade_material(
-                scene.materials, scene_primitive.metadata,
+            background = Raycore.with_index(
+                shade, scene.materials, scene_primitive.metadata,
                 volume_ray, scene_si, scene, RGBSpectrum(1f0), depth + Int32(1), max_depth
             )
         else
@@ -374,8 +374,8 @@ inside or in front of the volume are properly rendered with correct transmittanc
 
             if hit_found
                 # Hit something behind the volume - shade it
-                background = shade_material(
-                    scene.materials, primitive.metadata,
+                background = Raycore.with_index(
+                    shade, scene.materials, primitive.metadata,
                     continuation_ray, cont_si, scene, RGBSpectrum(1f0), depth + Int32(1), max_depth
                 )
             else

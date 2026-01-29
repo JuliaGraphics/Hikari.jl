@@ -1,6 +1,6 @@
 # Work item structures for PhysicalWavefront path tracing
 # These are the data structures that flow between GPU kernels
-# Adapted from PbrtWavefront to use Hikari's MaterialIndex
+# Adapted from PbrtWavefront to use Hikari's SetKey
 
 # ============================================================================
 # Supporting Structures
@@ -150,7 +150,7 @@ struct PWHitAreaLightWorkItem
     pixel_index::Int32
 
     # Material reference (for EmissiveMaterial lookup)
-    material_idx::MaterialIndex
+    material_idx::SetKey
 end
 
 """
@@ -197,8 +197,8 @@ struct PWMaterialEvalWorkItem
     r_u::SpectralRadiance
     eta_scale::Float32
 
-    # Material reference - uses Hikari's MaterialIndex for type-stable dispatch
-    material_idx::MaterialIndex
+    # Material reference - uses Hikari's SetKey for type-stable dispatch
+    material_idx::SetKey
 end
 
 # ============================================================================

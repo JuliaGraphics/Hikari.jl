@@ -43,7 +43,7 @@ This kernel does NOT generate shadow rays - that happens in direct lighting.
                 push!(escaped_queue, escaped_item)
             else
                 # Got a hit - extract surface info
-                raw_mat_idx = primitive.metadata::MaterialIndex
+                raw_mat_idx = primitive.metadata::SetKey
 
                 # Compute intersection point
                 pi = Point3f(work.ray.o + work.ray.d * t_hit)
@@ -372,13 +372,14 @@ end
 # ============================================================================
 
 """
-    pw_handle_hit_area_lights_kernel!(pixel_L, hit_light_queue, materials, max_queued)
+    pw_handle_hit_area_lights_kernel!(pixel_L, hit_light_queue, rgb2spec_table, materials, max_queued)
 
 Handle rays that hit emissive surfaces.
 """
 @kernel inbounds=true function pw_handle_hit_area_lights_kernel!(
     pixel_L,
     @Const(hit_light_queue),
+    @Const(rgb2spec_table),
     @Const(materials),
     @Const(max_queued::Int32)
 )
@@ -390,9 +391,8 @@ Handle rays that hit emissive surfaces.
             work = hit_light_queue.items[idx]
 
             # Get emission from material
-            Le = get_emission_spectral_dispatch(
-                materials, work.material_idx,
-                work.wo, work.n, work.uv, work.lambda
+            Le = with_index(get_emission_spectral, materials, work.material_idx,
+                rgb2spec_table, materials, work.wo, work.n, work.uv, work.lambda
             )
 
             # Apply path throughput
@@ -509,7 +509,7 @@ function pw_handle_escaped_rays!(
 end
 
 """
-    pw_handle_hit_area_lights!(backend, pixel_L, hit_light_queue, materials)
+    pw_handle_hit_area_lights!(backend, pixel_L, hit_light_queue, rgb2spec_table, materials)
 
 Evaluate emission for rays that hit area lights.
 """
@@ -517,13 +517,14 @@ function pw_handle_hit_area_lights!(
     backend,
     pixel_L::AbstractVector{Float32},
     hit_light_queue::WorkQueue{PWHitAreaLightWorkItem},
+    rgb2spec_table,
     materials
 )
     n = length(hit_light_queue)
     n == 0 && return nothing
 
     kernel! = pw_handle_hit_area_lights_kernel!(backend)
-    kernel!(pixel_L, hit_light_queue, materials, hit_light_queue.capacity; ndrange=Int(hit_light_queue.capacity))
+    kernel!(pixel_L, hit_light_queue, rgb2spec_table, materials, hit_light_queue.capacity; ndrange=Int(hit_light_queue.capacity))
 
     KernelAbstractions.synchronize(backend)
     return nothing

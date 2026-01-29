@@ -298,7 +298,7 @@ end
 @propagate_inbounds pdf_li_spectral(::Light, ::Point3f, ::Vec3f) = 0f0
 
 # ============================================================================
-# Light StaticMultiTypeVec Dispatch (uses with_index for type-stable dispatch)
+# Light StaticMultiTypeSet Dispatch (uses with_index for type-stable dispatch)
 # ============================================================================
 
 # flat_to_light_index is defined in lights/light-sampler.jl (included earlier)
@@ -309,14 +309,14 @@ end
     sample_light_spectral(table, light, p, lambda, u)
 
 """
-    sample_light_spectral(table, lights::StaticMultiTypeVec, idx::LightIndex, p, lambda, u)
+    sample_light_spectral(table, lights::StaticMultiTypeSet, idx::SetKey, p, lambda, u)
 
-Sample a light from a StaticMultiTypeVec using type-stable dispatch via with_index.
+Sample a light from a StaticMultiTypeSet using type-stable dispatch via with_index.
 """
 @propagate_inbounds function sample_light_spectral(
     table::RGBToSpectrumTable,
-    lights::Raycore.StaticMultiTypeVec,
-    idx::LightIndex,
+    lights::Raycore.StaticMultiTypeSet,
+    idx::SetKey,
     p::Point3f,
     lambda::Wavelengths,
     u::Point2f
@@ -325,14 +325,14 @@ Sample a light from a StaticMultiTypeVec using type-stable dispatch via with_ind
 end
 
 """
-    sample_light_spectral(table, lights::StaticMultiTypeVec, flat_idx::Int32, p, lambda, u)
+    sample_light_spectral(table, lights::StaticMultiTypeSet, flat_idx::Int32, p, lambda, u)
 
-Sample a light from a StaticMultiTypeVec using a flat 1-based index.
-Converts flat index to LightIndex internally.
+Sample a light from a StaticMultiTypeSet using a flat 1-based index.
+Converts flat index to SetKey internally.
 """
 @propagate_inbounds function sample_light_spectral(
     table::RGBToSpectrumTable,
-    lights::Raycore.StaticMultiTypeVec,
+    lights::Raycore.StaticMultiTypeSet,
     flat_idx::Int32,
     p::Point3f,
     lambda::Wavelengths,
@@ -395,12 +395,12 @@ end
 @propagate_inbounds evaluate_environment_spectral(::Light, ::RGBToSpectrumTable, ::Vec3f, ::Wavelengths) = SpectralRadiance(0f0)
 
 """
-    evaluate_escaped_ray_spectral(table, lights::StaticMultiTypeVec, ray_d, lambda)
+    evaluate_escaped_ray_spectral(table, lights::StaticMultiTypeSet, ray_d, lambda)
 
-Evaluate all environment-type lights for an escaped ray using StaticMultiTypeVec.
+Evaluate all environment-type lights for an escaped ray using StaticMultiTypeSet.
 """
 @propagate_inbounds function evaluate_escaped_ray_spectral(
-    table::RGBToSpectrumTable, lights::Raycore.StaticMultiTypeVec, ray_d::Vec3f, lambda::Wavelengths
+    table::RGBToSpectrumTable, lights::Raycore.StaticMultiTypeSet, ray_d::Vec3f, lambda::Wavelengths
 )::SpectralRadiance
     return mapreduce(evaluate_environment_spectral, +, lights, table, ray_d, lambda; init=SpectralRadiance(0f0))
 end
@@ -414,11 +414,11 @@ end
 @propagate_inbounds _env_light_pdf_single(::Light, ::Vec3f)::Float32 = 0f0
 
 """
-    compute_env_light_pdf(lights::StaticMultiTypeVec, ray_d::Vec3f)
+    compute_env_light_pdf(lights::StaticMultiTypeSet, ray_d::Vec3f)
 
-Compute PDF for sampling direction from environment-type lights using StaticMultiTypeVec.
+Compute PDF for sampling direction from environment-type lights using StaticMultiTypeSet.
 """
-@propagate_inbounds function compute_env_light_pdf(lights::Raycore.StaticMultiTypeVec, ray_d::Vec3f)::Float32
+@propagate_inbounds function compute_env_light_pdf(lights::Raycore.StaticMultiTypeSet, ray_d::Vec3f)::Float32
     return mapreduce(_env_light_pdf_single, +, lights, ray_d; init=0f0)
 end
 

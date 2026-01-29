@@ -452,10 +452,11 @@ function render!(
 )
     img = film.framebuffer
     accel = scene.accel
-    # Convert MultiTypeVec to StaticMultiTypeVec for kernel dispatch
-    # (get_static returns StaticMultiTypeVec, Tuple stays as Tuple)
+    # Convert MultiTypeSet to StaticMultiTypeSet for kernel dispatch
+    # (get_static returns StaticMultiTypeSet, Tuple stays as Tuple)
     materials = Raycore.get_static(scene.materials)
     media = Raycore.get_static(scene.media)
+    media_interfaces = scene.media_interfaces
     lights = Raycore.get_static(scene.lights)
 
     height, width = size(img)
@@ -468,11 +469,11 @@ function render!(
        vp.state.width != width ||
        vp.state.height != height ||
        vp.state.num_lights != n_lights
-        # Pass scene.lights (MultiTypeVec) for PowerLightSampler construction
+        # Pass scene.lights (MultiTypeSet) for PowerLightSampler construction
         # (needs backend for GPU kernel and array allocation)
         vp.state = VolPathState(backend, width, height, scene.lights;
                                 max_depth=vp.max_depth,
-                                scene_radius=scene.world_radius,
+                                scene_radius=world_radius(scene),
                                 samples_per_pixel=Int(vp.samples_per_pixel),
                                 sampler_seed=UInt32(0))
     end
@@ -495,7 +496,7 @@ function render!(
     filter_weight_per_pixel = state.filter_weight_per_pixel
 
     # Initial medium (vacuum unless camera is inside medium)
-    initial_medium = MediumIndex()
+    initial_medium = SetKey()
 
     # Clear spectral buffer (pixel_L) for this sample iteration
     # This is per-sample, not per-render - pixel_rgb accumulates across all samples
@@ -539,7 +540,7 @@ function render!(
         vp_generate_ray_samples!(backend, state, sample_idx, Int32(depth), sobol_rng)
 
         reset_iteration_queues!(state)
-        vp_trace_rays!(state, accel)
+        vp_trace_rays!(state, accel, media_interfaces)
 
         if !isempty(media)
             n_medium = length(state.medium_sample_queue)
@@ -577,7 +578,7 @@ function render!(
 
                 # Shadow rays still need size check since it's a different queue
                 # But we can batch this with other checks later
-                vp_trace_shadow_rays!(state, accel, materials, media)
+                vp_trace_shadow_rays!(state, accel, media_interfaces, media)
 
                 vp_evaluate_materials_coherent!(state, multi_queue, materials, vp.regularize)
             else
@@ -590,7 +591,7 @@ function render!(
 
                 n_shadow = length(state.shadow_queue)
                 if n_shadow > 0
-                    vp_trace_shadow_rays!(state, accel, materials, media)
+                    vp_trace_shadow_rays!(state, accel, media_interfaces, media)
                 end
 
                 if n_material > 0

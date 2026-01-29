@@ -416,7 +416,7 @@ the sampled sky direction, no contribution is added.
     radiance = sky_radiance(light, wi) + sun_disk_radiance(light, wi)
 
     # Create visibility tester to sky (at infinity in sampled direction)
-    outside_point = ref.p .+ wi .* (2f0 * scene.world_radius)
+    outside_point = ref.p .+ wi .* (2f0 * world_radius(scene))
     tester = VisibilityTester(
         ref, Interaction(outside_point, ref.time, Vec3f(0f0), Normal3f(0f0)),
     )
@@ -469,7 +469,7 @@ end
 Approximate power - not accurate but needed for interface.
 """
 @propagate_inbounds function power(light::SunSkyLight{S}, scene::AbstractScene)::S where S<:Spectrum
-    light.sun_intensity * Float32(π) * scene.world_radius^2
+    light.sun_intensity * Float32(π) * world_radius(scene)^2
 end
 
 # ============================================================================

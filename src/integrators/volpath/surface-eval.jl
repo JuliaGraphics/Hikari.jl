@@ -1,7 +1,7 @@
 # Surface material evaluation for VolPath
 # Handles BSDF sampling, direct lighting, and path continuation at surface hits
 #
-# NOTE: `materials` is a StaticMultiTypeVec containing both materials and textures.
+# NOTE: `materials` is a StaticMultiTypeSet containing both materials and textures.
 # Use eval_tex(materials, field, uv) to sample textures via TextureRef.
 
 # ============================================================================
@@ -115,7 +115,7 @@ Now uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style
         return
     end
 
-    # Sample the light (works with both Tuple and StaticMultiTypeVec)
+    # Sample the light (works with both Tuple and StaticMultiTypeSet)
     light_sample = sample_light_spectral(
         rgb2spec_table, lights, light_idx, work.pi, work.lambda, u_light
     )
@@ -273,16 +273,16 @@ Now uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style
         )
 
         if should_continue
-            # Determine medium for continuation ray
+            # Determine medium for continuation ray using MediumInterfaceIdx
             # Following pbrt-v4: use ray direction relative to surface normal
             # to determine which medium the ray enters
-            new_medium = if has_medium_interface_dispatch(materials, work.material_idx)
-                # Material has MediumInterface - get medium based on ray direction
+            new_medium = if is_medium_transition(work.interface)
+                # Surface defines a medium boundary - get medium based on ray direction
                 # If wi · n > 0, ray goes "outside" the surface
                 # If wi · n < 0, ray goes "inside" the surface
-                get_medium_index_for_direction_dispatch(materials, work.material_idx, sample.wi, work.n)
+                get_medium_index(work.interface, sample.wi, work.n)
             else
-                # No MediumInterface on this material
+                # No medium transition at this surface
                 # Stay in current medium (reflection or transmission through regular material)
                 work.current_medium
             end
@@ -370,7 +370,7 @@ end
 
 Check if material is purely emissive (no BSDF).
 """
-@propagate_inbounds function is_pure_emissive_dispatch(materials, mat_idx::MaterialIndex)
+@propagate_inbounds function is_pure_emissive_dispatch(materials, mat_idx::SetKey)
     # Default: assume materials with emission also have BSDF
     # Override for EmissiveMaterial which has no BSDF
     return is_emissive(materials, mat_idx) &&
@@ -382,7 +382,7 @@ end
 
 Check if material has a BSDF component.
 """
-@propagate_inbounds function has_bsdf_dispatch(materials, mat_idx::MaterialIndex)
+@propagate_inbounds function has_bsdf_dispatch(materials, mat_idx::SetKey)
     # Most materials have BSDF
     # EmissiveMaterial does not
     type_idx = mat_idx.type_idx

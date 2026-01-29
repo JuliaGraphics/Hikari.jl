@@ -34,7 +34,7 @@ is_infinite_light(::DirectionalLight) = true
     # wi should be the direction TO the light source (opposite of d.direction)
     wi = -d.direction
     # outside_point should be in the direction the light COMES FROM
-    outside_point = ref.p .+ wi .* (2 * scene.world_radius)
+    outside_point = ref.p .+ wi .* (2 * world_radius(scene))
     tester = VisibilityTester(
         ref, Interaction(outside_point, ref.time, Vec3f(0f0), Normal3f(0f0)),
     )
@@ -47,5 +47,5 @@ spatial extent of the scene and equals the amount of power arriving at the
 inscribed by bounding sphere disk: `I * π * r^2`.
 """
 @propagate_inbounds function power(d::DirectionalLight{S}, scene::AbstractScene)::S where S<:Spectrum
-    d.i * π * scene.world_radius^2
+    d.i * π * world_radius(scene)^2
 end

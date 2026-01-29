@@ -178,8 +178,8 @@ Compute specular reflection or transmission contribution by tracing a bounce ray
     end
 
     # Recursively shade the hit point
-    return shade_material(
-        scene.materials, primitive.metadata,
+    return Raycore.with_index(
+        shade, scene.materials, primitive.metadata,
         bounce_ray, bounce_si, scene, bounce_beta, depth + Int32(1), max_depth
     )
 end

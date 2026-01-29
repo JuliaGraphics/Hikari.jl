@@ -75,7 +75,8 @@ end
     medium_sample_queue,
     escaped_queue,
     hit_surface_queue,
-    accel
+    accel,
+    media_interfaces
 )
     # Trace ray to find closest intersection
     hit, primitive, t_hit, barycentric = Raycore.closest_hit(accel, work.ray)
@@ -87,13 +88,17 @@ end
 
         if hit
             # Have surface hit info for when ray survives delta tracking
-            mat_idx = primitive.metadata::MaterialIndex
+            # primitive.metadata is UInt32 index into media_interfaces
+            mi_idx = primitive.metadata::UInt32
+            mi = media_interfaces[mi_idx]
+            mat_idx = mi.material  # SetKey into materials
+
             pi = Point3f(work.ray.o + work.ray.d * t_hit)
             n = vp_compute_geometric_normal(primitive)
             uv = vp_compute_uv_barycentric(primitive, barycentric)
             ns = vp_compute_shading_normal(primitive, barycentric, n)
 
-            push!(medium_sample_queue, VPMediumSampleWorkItem(work, t_hit, pi, n, ns, uv, mat_idx))
+            push!(medium_sample_queue, VPMediumSampleWorkItem(work, t_hit, pi, n, ns, uv, mat_idx, mi))
         else
             # Ray in medium but escaped scene - t_max = Infinity
             push!(medium_sample_queue, VPMediumSampleWorkItem(work))
@@ -105,18 +110,22 @@ end
             push!(escaped_queue, VPEscapedRayWorkItem(work))
         else
             # Hit surface - extract geometry
-            mat_idx = primitive.metadata::MaterialIndex
+            # primitive.metadata is UInt32 index into media_interfaces
+            mi_idx = primitive.metadata::UInt32
+            mi = media_interfaces[mi_idx]
+            mat_idx = mi.material  # SetKey into materials
+
             pi = Point3f(work.ray.o + work.ray.d * t_hit)
             n = vp_compute_geometric_normal(primitive)
             uv = vp_compute_uv_barycentric(primitive, barycentric)
             ns = vp_compute_shading_normal(primitive, barycentric, n)
 
-            push!(hit_surface_queue, VPHitSurfaceWorkItem(work, pi, n, ns, uv, mat_idx, t_hit))
+            push!(hit_surface_queue, VPHitSurfaceWorkItem(work, pi, n, ns, uv, mat_idx, mi, t_hit))
         end
     end
 end
 
-function vp_trace_rays!(state::VolPathState, accel)
+function vp_trace_rays!(state::VolPathState, accel, media_interfaces)
     input_queue = current_ray_queue(state)
     foreach(vp_trace_rays_kernel!,
         input_queue,
@@ -124,6 +133,7 @@ function vp_trace_rays!(state::VolPathState, accel)
         state.escaped_queue,
         state.hit_surface_queue,
         accel,
+        media_interfaces,
     )
     return nothing
 end
@@ -132,24 +142,8 @@ end
 # Shadow Ray Tracing Kernel (with medium transmittance)
 # ============================================================================
 
-
-# ============================================================================
-# Helper functions for with_material dispatch (no variable capture)
-# ============================================================================
-
 """
-Get the medium index when crossing a material boundary.
-Used with with_material for GPU-safe dispatch.
-Returns (is_transmissive, new_medium_idx).
-"""
-@propagate_inbounds function _get_crossing_info(material, entering::Bool)
-    is_trans = is_medium_interface_idx(material)
-    new_medium = get_crossing_medium(material, entering)
-    return (is_trans, new_medium)
-end
-
-"""
-    trace_shadow_transmittance(accel, materials, media, rgb2spec_table, origin, dir, t_max, lambda, medium_idx)
+    trace_shadow_transmittance(accel, media_interfaces, media, rgb2spec_table, origin, dir, t_max, lambda, medium_idx)
 
 Trace a shadow ray computing transmittance through media and transmissive boundaries.
 Returns (T_ray, r_u, r_l, visible) where:
@@ -162,8 +156,8 @@ while opaque surfaces block it. The final contribution is computed as:
     Ld * T_ray / average(path_r_u * r_u + path_r_l * r_l)
 """
 @propagate_inbounds function trace_shadow_transmittance(
-    accel, materials, media, rgb2spec_table,
-    origin::Point3f, dir::Vec3f, t_max::Float32, lambda::Wavelengths, medium_idx::MediumIndex
+    accel, media_interfaces, media, rgb2spec_table,
+    origin::Point3f, dir::Vec3f, t_max::Float32, lambda::Wavelengths, medium_idx::SetKey
 )
     # Transmittance and MIS weights following pbrt-v4
     T_ray = SpectralRadiance(1f0)
@@ -198,14 +192,14 @@ while opaque surfaces block it. The final contribution is computed as:
             return (T_ray, r_u, r_l, true)  # Visible
         end
 
-        # Hit a surface - check if it's transmissive using with_material for type stability
-        mat_idx = primitive.metadata::MaterialIndex
-
-        # Use with_material to get crossing info with concrete material type
-        # This avoids union type issues on GPU by calling helper with concrete type
+        # Hit a surface - look up MediumInterfaceIdx
+        mi_idx = primitive.metadata::UInt32
+        mi = media_interfaces[mi_idx]
         n = vp_compute_geometric_normal(primitive)
         entering = dot(dir, n) < 0f0
-        is_transmissive, new_medium = with_material(_get_crossing_info, materials, mat_idx, entering)
+
+        # Check if surface is a medium transition (transmissive boundary)
+        is_transmissive = is_medium_transition(mi)
 
         if !is_transmissive
             # Opaque surface blocks the ray
@@ -227,8 +221,8 @@ while opaque surfaces block it. The final contribution is computed as:
             return (T_ray, r_u, r_l, true)  # Transmittance is zero, no point continuing
         end
 
-        # Update medium based on crossing direction (already computed above)
-        current_medium = new_medium
+        # Update medium based on crossing direction
+        current_medium = get_crossing_medium(mi, entering)
 
         # Move past this surface
         ray_o = Point3f(ray_o + dir * (t_hit + 1f-4))  # Small offset to avoid self-intersection
@@ -253,12 +247,12 @@ Returns (T_ray, r_u, r_l) where:
 - r_u, r_l: MIS weight accumulators for combining with path weights
 """
 @propagate_inbounds function compute_transmittance_ratio_tracking(
-    rgb2spec_table, media, medium_idx::MediumIndex,
+    rgb2spec_table, media, medium_idx::SetKey,
     origin::Point3f, dir::Vec3f, t_max::Float32, lambda::Wavelengths
 )
     # Get majorant for this ray segment
     ray = Raycore.Ray(o=origin, d=dir)
-    majorant = get_majorant_dispatch(rgb2spec_table, media, medium_idx, ray, 0f0, t_max, lambda)
+    majorant = Raycore.with_index(get_majorant, media, medium_idx, rgb2spec_table, ray, 0f0, t_max, lambda)
 
     σ_maj_0 = majorant.σ_maj[1]  # First wavelength for sampling
 
@@ -300,7 +294,7 @@ Returns (T_ray, r_u, r_l) where:
 
         # Sample medium properties at this point
         p = Point3f(origin + dir * t_sample)
-        mp = sample_point_dispatch(rgb2spec_table, media, medium_idx, p, lambda)
+        mp = Raycore.with_index(sample_point, media, medium_idx, rgb2spec_table, p, lambda)
 
         # Compute null-scattering coefficient
         σ_n = majorant.σ_maj - mp.σ_a - mp.σ_s
@@ -351,7 +345,7 @@ end
 Simple wrapper that returns only the transmittance (for compatibility).
 """
 @propagate_inbounds function compute_transmittance_simple(
-    rgb2spec_table, media, medium_idx::MediumIndex,
+    rgb2spec_table, media, medium_idx::SetKey,
     origin::Point3f, dir::Vec3f, t_max::Float32, lambda::Wavelengths
 )
     T_ray, _, _ = compute_transmittance_ratio_tracking(rgb2spec_table, media, medium_idx, origin, dir, t_max, lambda)
@@ -371,13 +365,13 @@ Handles transmissive boundaries (MediumInterface) by tracing through them.
         pixel_L,
         rgb2spec_table,
         accel,
-        materials,
+        media_interfaces,
         media,
     )
     # Trace shadow ray, handling transmissive boundaries
     # Returns (T_ray, tr_r_u, tr_r_l, visible) following pbrt-v4's TraceTransmittance
     T_ray, tr_r_u, tr_r_l, visible = trace_shadow_transmittance(
-        accel, materials, media, rgb2spec_table,
+        accel, media_interfaces, media, rgb2spec_table,
         work.ray.o, work.ray.d, work.t_max, work.lambda, work.medium_idx
     )
 
@@ -405,14 +399,14 @@ end
 function vp_trace_shadow_rays!(
         state::VolPathState,
         accel,
-        materials,
+        media_interfaces,
         media
     )
     foreach(vp_trace_shadow_rays_kernel!,
         state.shadow_queue,
         state.pixel_L,
         state.rgb2spec_table,
-        accel, materials, media,
+        accel, media_interfaces, media,
     )
     return nothing
 end

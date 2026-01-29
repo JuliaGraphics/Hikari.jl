@@ -427,7 +427,7 @@ end
 Generate a 1D Sobol sample for the given pixel and dimension.
 """
 @inline function sample_1d(rng::SobolRNG, px::Int32, py::Int32, sample_idx::Int32, dim::Int32)::Float32
-    zsobol_sample_1d(px, py, sample_idx, dim, rng.log2_spp, rng.n_base4_digits, rng.seed, rng.matrices)
+    @inline zsobol_sample_1d(px, py, sample_idx, dim, rng.log2_spp, rng.n_base4_digits, rng.seed, rng.matrices)
 end
 
 """

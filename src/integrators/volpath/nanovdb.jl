@@ -468,10 +468,9 @@ end
 
 @propagate_inbounds is_emissive(::NanoVDBMedium) = false
 
-"""Sample medium properties at a point"""
 @propagate_inbounds function sample_point(
-    table::RGBToSpectrumTable,
     medium::NanoVDBMedium,
+    table::RGBToSpectrumTable,
     p::Point3f,
     λ::Wavelengths
 )::MediumProperties
@@ -485,15 +484,9 @@ end
     return MediumProperties(σ_a, σ_s, SpectralRadiance(0f0), medium.g)
 end
 
-"""
-    get_majorant(table, medium::NanoVDBMedium, ray, t_min, t_max, λ) -> RayMajorantSegment
-
-Get majorant for ray segment. Uses global max density as conservative bound.
-For better performance, use create_majorant_iterator for DDA-based traversal.
-"""
 @propagate_inbounds function get_majorant(
-    table::RGBToSpectrumTable,
     medium::NanoVDBMedium,
+    table::RGBToSpectrumTable,
     ray::Raycore.Ray,
     t_min::Float32,
     t_max::Float32,
@@ -506,16 +499,9 @@ For better performance, use create_majorant_iterator for DDA-based traversal.
     return RayMajorantSegment(t_min, t_max, σ_maj)
 end
 
-"""
-    create_majorant_iterator(table, medium::NanoVDBMedium, ray, t_max, λ) -> RayMajorantIterator
-
-Create a DDA majorant iterator for traversing the medium along a ray.
-Uses the precomputed majorant grid (same as GridMedium).
-Returns a RayMajorantIterator wrapping the DDA iterator.
-"""
 @propagate_inbounds function create_majorant_iterator(
-    table::RGBToSpectrumTable,
     medium::NanoVDBMedium,
+    table::RGBToSpectrumTable,
     ray::Raycore.Ray,
     t_max::Float32,
     λ::Wavelengths
@@ -549,16 +535,15 @@ Returns a RayMajorantIterator wrapping the DDA iterator.
     return RayMajorantIterator(dda_iter)
 end
 
-# 6-argument version that forwards to 5-argument version (for uniform interface)
 @propagate_inbounds function create_majorant_iterator(
-    table::RGBToSpectrumTable,
     medium::NanoVDBMedium,
+    table::RGBToSpectrumTable,
     ray::Raycore.Ray,
     t_max::Float32,
     λ::Wavelengths,
     ::MajorantGrid
 )
-    return create_majorant_iterator(table, medium, ray, t_max, λ)
+    return create_majorant_iterator(medium, table, ray, t_max, λ)
 end
 
 # ============================================================================

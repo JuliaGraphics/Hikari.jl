@@ -1,6 +1,6 @@
 using GeometryBasics
 using Hikari
-using Hikari: RGBSpectrum, MaterialIndex, shade_material, reconstruct_surface_interaction, intersect_ray_inner
+using Hikari: RGBSpectrum, SetKey, shade_material, reconstruct_surface_interaction, intersect_ray_inner
 using Raycore: RayDifferentials
 using LinearAlgebra
 

@@ -62,7 +62,7 @@ Tuple of (radiance, incident direction, pdf, visibility tester)
 
     # Create visibility tester - the light is at "infinity"
     # Use 2x scene_radius to ensure we're far enough away
-    p_light = i.p + wi * (2f0 * scene.world_radius)
+    p_light = i.p + wi * (2f0 * world_radius(scene))
     visibility = VisibilityTester(
         i,
         Interaction(p_light, i.time, wi, Normal3f(0f0))
@@ -108,17 +108,17 @@ function sample_le(
 
     # Sample point on disk centered at scene_center, perpendicular to ray direction
     d = concentric_sample_disk(u2)
-    p_disk = scene.world_center + scene.world_radius * (d[1] * u_axis + d[2] * v)
+    p_disk = world_center(scene) + world_radius(scene) * (d[1] * u_axis + d[2] * v)
 
     # Ray origin: start from disk point, go outward by scene_radius, then shoot inward
-    origin = p_disk + scene.world_radius * w
+    origin = p_disk + world_radius(scene) * w
 
     ray = Ray(o=origin, d=ray_dir)
     # Light normal points outward (toward environment)
     light_normal = Normal3f(wi)
 
     # PDF for position on disk
-    pdf_pos = 1f0 / (Float32(π) * scene.world_radius^2)
+    pdf_pos = 1f0 / (Float32(π) * world_radius(scene)^2)
 
     # Sample radiance in the direction wi (the direction light comes FROM)
     radiance = e.scale * e.env_map(wi)
@@ -159,5 +159,5 @@ the surface area of the bounding sphere.
 @propagate_inbounds function power(e::EnvironmentLight{S}, scene::Scene)::S where {S<:Spectrum}
     # Approximate power as average radiance * 4π * r²
     # This is a rough approximation - more accurate would integrate over the map
-    e.scale * S(4f0 * π * scene.world_radius^2)
+    e.scale * S(4f0 * π * world_radius(scene)^2)
 end

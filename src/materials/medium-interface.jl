@@ -1,4 +1,4 @@
-# MediumIndex and MediumInterface types
+# SetKey and MediumInterface types
 # Extracted to allow inclusion before spectral-eval.jl
 # which needs MediumInterface for BSDF forwarding
 
@@ -6,21 +6,8 @@
 # Medium Index Type (internal - used at runtime for GPU dispatch)
 # ============================================================================
 
-"""
-    MediumIndex
-
-Index into media MultiTypeVec for runtime dispatch.
-Alias for `HeteroVecIndex` from Raycore.
-- `type_idx`: Which type slot (1-based), 0 = vacuum/no medium
-- `vec_idx`: Index within that type's array
-
-This is an internal type - users should use `MediumInterface` with actual
-medium objects, which gets converted to indices during scene building.
-"""
-const MediumIndex = Raycore.HeteroVecIndex
-
-@propagate_inbounds is_vacuum(idx::MediumIndex) = Raycore.is_invalid(idx)
-@propagate_inbounds has_medium(idx::MediumIndex) = Raycore.is_valid(idx)
+@propagate_inbounds is_vacuum(idx::SetKey) = Raycore.is_invalid(idx)
+@propagate_inbounds has_medium(idx::SetKey) = Raycore.is_valid(idx)
 
 # ============================================================================
 # User-facing MediumInterface (stores actual Medium objects)
@@ -68,23 +55,24 @@ end
 end
 
 # ============================================================================
-# Internal MediumInterfaceIdx (stores MediumIndex for GPU dispatch)
+# Internal MediumInterfaceIdx (stores SetKey for GPU dispatch)
 # ============================================================================
 
 """
-    MediumInterfaceIdx{M<:Material}
+    MediumInterfaceIdx
 
-Internal material wrapper with medium indices for GPU-compatible dispatch.
+Internal index wrapper with material and medium indices for GPU-compatible dispatch.
 Created during scene building from `MediumInterface`.
 
-- `material`: The underlying BSDF material
-- `inside`: MediumIndex for inside medium (0 = vacuum)
-- `outside`: MediumIndex for outside medium (0 = vacuum)
+All fields are SetKey indices:
+- `material`: SetKey into materials container
+- `inside`: SetKey for inside medium (invalid = vacuum)
+- `outside`: SetKey for outside medium (invalid = vacuum)
 """
-struct MediumInterfaceIdx{M<:Material} <: Material
-    material::M
-    inside::MediumIndex
-    outside::MediumIndex
+struct MediumInterfaceIdx
+    material::SetKey
+    inside::SetKey
+    outside::SetKey
 end
 
 """Check if this interface represents a medium transition"""
@@ -93,22 +81,12 @@ end
     mi.inside.type_idx != mi.outside.type_idx || mi.inside.vec_idx != mi.outside.vec_idx
 end
 
-# Trait functions for GPU-compatible type checking (avoids `isa` runtime dispatch)
-"""Check if a material is a MediumInterfaceIdx (GPU-compatible, no runtime type introspection)"""
-@propagate_inbounds is_medium_interface_idx(::MediumInterfaceIdx) = true
-@propagate_inbounds is_medium_interface_idx(::Material) = false
-
-# GPU-safe accessors for medium indices (return vacuum for non-interface materials)
-"""Get the inside medium index from a material (vacuum if not a MediumInterfaceIdx)"""
+# Accessors for medium indices
 @propagate_inbounds get_inside_medium(mi::MediumInterfaceIdx) = mi.inside
-@propagate_inbounds get_inside_medium(::Material) = MediumIndex()
-
-"""Get the outside medium index from a material (vacuum if not a MediumInterfaceIdx)"""
 @propagate_inbounds get_outside_medium(mi::MediumInterfaceIdx) = mi.outside
-@propagate_inbounds get_outside_medium(::Material) = MediumIndex()
 
 """
-    get_medium_index(mi::MediumInterfaceIdx, wi::Vec3f, n::Vec3f) -> MediumIndex
+    get_medium_index(mi::MediumInterfaceIdx, wi::Vec3f, n::Vec3f) -> SetKey
 
 Determine which medium a ray enters based on direction and surface normal.
 - If dot(wi, n) > 0: ray going in direction of normal -> outside medium
@@ -122,34 +100,6 @@ Determine which medium a ray enters based on direction and surface normal.
     end
 end
 
-# GPU-safe version that works with any material type
-"""Get medium index based on direction for any material (vacuum for non-interface)"""
-@propagate_inbounds function get_crossing_medium(material, entering::Bool)
-    if entering
-        get_inside_medium(material)
-    else
-        get_outside_medium(material)
-    end
+@propagate_inbounds function get_crossing_medium(mi::MediumInterfaceIdx, entering::Bool)
+    entering ? mi.inside : mi.outside
 end
-
-# Backwards compatibility alias
-@propagate_inbounds get_medium(mi::MediumInterfaceIdx, wi::Vec3f, n::Vec3f) = get_medium_index(mi, wi, n)
-
-# ============================================================================
-# Conversion: MediumInterface -> MediumInterfaceIdx
-# ============================================================================
-
-"""
-    to_indexed(mi::MediumInterface, medium_to_index::Dict) -> MediumInterfaceIdx
-
-Convert a user-facing MediumInterface to an indexed version for GPU dispatch.
-`medium_to_index` maps medium objects to their HeteroVecIndex from push!(media_mtv, medium).
-"""
-function to_indexed(mi::MediumInterface, medium_to_index::Dict)
-    inside_idx = mi.inside === nothing ? MediumIndex() : medium_to_index[mi.inside]
-    outside_idx = mi.outside === nothing ? MediumIndex() : medium_to_index[mi.outside]
-    MediumInterfaceIdx(mi.material, inside_idx, outside_idx)
-end
-
-# Non-MediumInterface materials pass through unchanged
-to_indexed(mat::Material, ::Dict) = mat

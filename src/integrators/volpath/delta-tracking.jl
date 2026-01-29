@@ -122,7 +122,7 @@ significantly reducing null scattering events in sparse heterogeneous media.
     pixel_L,
     work::VPMediumSampleWorkItem,
     media,
-    medium_idx::MediumIndex,
+    medium_idx::SetKey,
     max_depth::Int32,
     max_queued::Int32,
     template_grid::MajorantGrid
@@ -236,7 +236,7 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
     pixel_L,
     work::VPMediumSampleWorkItem,
     media,
-    medium_idx::MediumIndex,
+    medium_idx::SetKey,
     rgb2spec_table,
     max_depth::Int32,
     max_queued::Int32
@@ -298,7 +298,7 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
     pixel_L,
     work::VPMediumSampleWorkItem,
     media,
-    medium_idx::MediumIndex,
+    medium_idx::SetKey,
     rgb2spec_table,
     max_depth::Int32,
     max_queued::Int32
@@ -347,7 +347,7 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
 
         # Sample medium properties at interaction point
         p = Point3f(work.ray.o + work.ray.d * t_sample)
-        mp = sample_point_dispatch(rgb2spec_table, media, medium_idx, p, work.lambda)
+        mp = Raycore.with_index(sample_point, media, medium_idx, rgb2spec_table, p, work.lambda)
 
         # Add emission if present
         if !is_black(mp.Le) && work.depth < max_depth
