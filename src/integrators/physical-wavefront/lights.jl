@@ -32,12 +32,12 @@ end
 # ============================================================================
 
 """
-    sample_light_spectral(table, light::PointLight, p::Point3f, lambda::Wavelengths, u::Point2f)
+    sample_light_spectral(table, lights, light::PointLight, p::Point3f, lambda::Wavelengths, u::Point2f)
 
 Sample a point light spectrally.
 """
 @propagate_inbounds function sample_light_spectral(
-    table::RGBToSpectrumTable, light::PointLight, p::Point3f, lambda::Wavelengths, ::Point2f
+    table::RGBToSpectrumTable, lights, light::PointLight, p::Point3f, lambda::Wavelengths, ::Point2f
 )::PWLightSample
     # Direction and distance to light
     to_light = light.position - p
@@ -59,12 +59,12 @@ Sample a point light spectrally.
 end
 
 """
-    sample_light_spectral(table, light::SpotLight, p::Point3f, lambda::Wavelengths, u::Point2f)
+    sample_light_spectral(table, lights, light::SpotLight, p::Point3f, lambda::Wavelengths, u::Point2f)
 
 Sample a spotlight spectrally.
 """
 @propagate_inbounds function sample_light_spectral(
-    table::RGBToSpectrumTable, light::SpotLight, p::Point3f, lambda::Wavelengths, ::Point2f
+    table::RGBToSpectrumTable, lights, light::SpotLight, p::Point3f, lambda::Wavelengths, ::Point2f
 )::PWLightSample
     # Direction and distance to light
     to_light = light.position - p
@@ -105,12 +105,12 @@ Sample a spotlight spectrally.
 end
 
 """
-    sample_light_spectral(table, light::DirectionalLight, p::Point3f, lambda::Wavelengths, u::Point2f)
+    sample_light_spectral(table, lights, light::DirectionalLight, p::Point3f, lambda::Wavelengths, u::Point2f)
 
 Sample a directional light spectrally.
 """
 @propagate_inbounds function sample_light_spectral(
-    table::RGBToSpectrumTable, light::DirectionalLight, p::Point3f, lambda::Wavelengths, ::Point2f
+    table::RGBToSpectrumTable, lights, light::DirectionalLight, p::Point3f, lambda::Wavelengths, ::Point2f
 )::PWLightSample
     # Direction is opposite to light's travel direction
     wi = -light.direction
@@ -127,12 +127,12 @@ Sample a directional light spectrally.
 end
 
 """
-    sample_light_spectral(table, light::SunLight, p::Point3f, lambda::Wavelengths, u::Point2f)
+    sample_light_spectral(table, lights, light::SunLight, p::Point3f, lambda::Wavelengths, u::Point2f)
 
 Sample a sun light spectrally.
 """
 @propagate_inbounds function sample_light_spectral(
-    table::RGBToSpectrumTable, light::SunLight, p::Point3f, lambda::Wavelengths, ::Point2f
+    table::RGBToSpectrumTable, lights, light::SunLight, p::Point3f, lambda::Wavelengths, ::Point2f
 )::PWLightSample
     # Direction is opposite to light's travel direction
     wi = -light.direction
@@ -148,12 +148,12 @@ Sample a sun light spectrally.
 end
 
 """
-    sample_light_spectral(table, light::SunSkyLight, p::Point3f, lambda::Wavelengths, u::Point2f)
+    sample_light_spectral(table, lights, light::SunSkyLight, p::Point3f, lambda::Wavelengths, u::Point2f)
 
 Sample sun direction from SunSkyLight spectrally.
 """
 @propagate_inbounds function sample_light_spectral(
-    table::RGBToSpectrumTable, light::SunSkyLight, p::Point3f, lambda::Wavelengths, ::Point2f
+    table::RGBToSpectrumTable, lights, light::SunSkyLight, p::Point3f, lambda::Wavelengths, ::Point2f
 )::PWLightSample
     # Direction TO the sun
     wi = light.sun_direction
@@ -170,15 +170,16 @@ Sample sun direction from SunSkyLight spectrally.
 end
 
 """
-    sample_light_spectral(table, light::EnvironmentLight, p::Point3f, lambda::Wavelengths, u::Point2f)
+    sample_light_spectral(table, lights, light::EnvironmentLight, p::Point3f, lambda::Wavelengths, u::Point2f)
 
 Sample environment light spectrally with importance sampling.
 """
 @propagate_inbounds function sample_light_spectral(
-    table::RGBToSpectrumTable, light::EnvironmentLight, p::Point3f, lambda::Wavelengths, u::Point2f
+    table::RGBToSpectrumTable, lights, light::EnvironmentLight, p::Point3f, lambda::Wavelengths, u::Point2f
 )::PWLightSample
     # Importance sample the environment map based on luminance
-    uv, map_pdf = sample_continuous(light.env_map.distribution, u)
+    # Pass lights for deref of TextureRef fields in Distribution2D
+    uv, map_pdf = sample_continuous(light.env_map.distribution, u, lights)
 
     # Convert UV to direction using equal-area mapping
     wi = uv_to_direction(uv, light.env_map.rotation)
@@ -206,7 +207,7 @@ Sample environment light spectrally with importance sampling.
 end
 
 """
-    sample_light_spectral(table, light::AmbientLight, p::Point3f, lambda::Wavelengths, u::Point2f)
+    sample_light_spectral(table, lights, light::AmbientLight, p::Point3f, lambda::Wavelengths, u::Point2f)
 
 Sample ambient light spectrally (uniform sphere).
 NOTE: Ambient light represents uniform illumination from all directions.
@@ -214,7 +215,7 @@ We sample the full sphere uniformly - the BSDF evaluation will naturally
 give zero for directions below the surface, and cos_theta weighting handles the rest.
 """
 @propagate_inbounds function sample_light_spectral(
-    table::RGBToSpectrumTable, light::AmbientLight, p::Point3f, lambda::Wavelengths, u::Point2f
+    table::RGBToSpectrumTable, lights, light::AmbientLight, p::Point3f, lambda::Wavelengths, u::Point2f
 )::PWLightSample
     # Ambient lights provide constant illumination from all directions
     # Sample uniform sphere - BSDF evaluation filters invalid directions
@@ -239,7 +240,7 @@ end
 
 # Fallback for unknown light types
 @propagate_inbounds function sample_light_spectral(
-    ::RGBToSpectrumTable, ::Light, ::Point3f, ::Wavelengths, ::Point2f
+    ::RGBToSpectrumTable, lights, ::Light, ::Point3f, ::Wavelengths, ::Point2f
 )::PWLightSample
     return PWLightSample()
 end
@@ -277,16 +278,16 @@ PDF for sampling direction wi from spotlight (always delta).
 @propagate_inbounds pdf_li_spectral(::SpotLight, ::Point3f, ::Vec3f) = 0f0
 
 """
-    pdf_li_spectral(light::EnvironmentLight, p::Point3f, wi::Vec3f)
+    pdf_li_spectral(lights, light::EnvironmentLight, p::Point3f, wi::Vec3f)
 
 PDF for sampling direction wi from environment light.
 """
-@propagate_inbounds function pdf_li_spectral(light::EnvironmentLight, ::Point3f, wi::Vec3f)
+@propagate_inbounds function pdf_li_spectral(lights, light::EnvironmentLight, ::Point3f, wi::Vec3f)
     # Convert direction to UV using equal-area mapping
     uv = direction_to_uv(wi, light.env_map.rotation)
 
-    # Get PDF from distribution
-    map_pdf = pdf(light.env_map.distribution, uv)
+    # Get PDF from distribution (pass lights for deref of TextureRef fields)
+    map_pdf = pdf(light.env_map.distribution, uv, lights)
 
     # Convert from image space to solid angle
     # For equal-area mapping: pdf_solidangle = pdf_image / (4π)
@@ -304,9 +305,10 @@ end
 # flat_to_light_index is defined in lights/light-sampler.jl (included earlier)
 
 # Helper for argument reordering: with_index calls f(element, args...)
-# but sample_light_spectral expects (table, light, p, lambda, u)
-@propagate_inbounds _sample_light_spectral(light, table, p, lambda, u) =
-    sample_light_spectral(table, light, p, lambda, u)
+# but sample_light_spectral expects (table, lights, light, p, lambda, u)
+# We pass lights through so EnvironmentLight can deref TextureRef fields
+@propagate_inbounds _sample_light_spectral(light, lights, table, p, lambda, u) =
+    sample_light_spectral(table, lights, light, p, lambda, u)
 
 """
     sample_light_spectral(table, lights::StaticMultiTypeSet, idx::SetKey, p, lambda, u)
@@ -321,7 +323,7 @@ Sample a light from a StaticMultiTypeSet using type-stable dispatch via with_ind
     lambda::Wavelengths,
     u::Point2f
 )
-    return with_index(_sample_light_spectral, lights, idx, table, p, lambda, u)
+    return with_index(_sample_light_spectral, lights, idx, lights, table, p, lambda, u)
 end
 
 """
@@ -339,7 +341,7 @@ Converts flat index to SetKey internally.
     u::Point2f
 )
     idx = flat_to_light_index(lights, flat_idx)
-    return with_index(_sample_light_spectral, lights, idx, table, p, lambda, u)
+    return with_index(_sample_light_spectral, lights, idx, lights, table, p, lambda, u)
 end
 # ============================================================================
 # Environment Light Evaluation (for escaped rays)
@@ -406,12 +408,13 @@ Evaluate all environment-type lights for an escaped ray using StaticMultiTypeSet
 end
 
 # Helper to compute PDF from a single light (only EnvironmentLight has non-zero PDF)
-@propagate_inbounds function _env_light_pdf_single(light::EnvironmentLight, wi::Vec3f)::Float32
-    return pdf_li_spectral(light, Point3f(0f0, 0f0, 0f0), wi)
+# Takes lights container for deref of TextureRef fields in Distribution2D
+@propagate_inbounds function _env_light_pdf_single(light::EnvironmentLight, lights, wi::Vec3f)::Float32
+    return pdf_li_spectral(lights, light, Point3f(0f0, 0f0, 0f0), wi)
 end
 
 # Other light types don't contribute to environment PDF
-@propagate_inbounds _env_light_pdf_single(::Light, ::Vec3f)::Float32 = 0f0
+@propagate_inbounds _env_light_pdf_single(::Light, lights, ::Vec3f)::Float32 = 0f0
 
 """
     compute_env_light_pdf(lights::StaticMultiTypeSet, ray_d::Vec3f)
@@ -419,7 +422,7 @@ end
 Compute PDF for sampling direction from environment-type lights using StaticMultiTypeSet.
 """
 @propagate_inbounds function compute_env_light_pdf(lights::Raycore.StaticMultiTypeSet, ray_d::Vec3f)::Float32
-    return mapreduce(_env_light_pdf_single, +, lights, ray_d; init=0f0)
+    return mapreduce(_env_light_pdf_single, +, lights, lights, ray_d; init=0f0)
 end
 
 # ============================================================================

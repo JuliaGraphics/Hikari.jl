@@ -573,20 +573,20 @@ function render!(
                 # Following pbrt-v4: launch kernels unconditionally, let them check size internally
                 # This avoids expensive GPU→CPU sync from length() / total_size() calls
                 if length(lights) > 0
-                    vp_sample_direct_lighting_coherent!(state, multi_queue, materials, lights)
+                    vp_sample_direct_lighting_coherent!(state, multi_queue, materials, lights, camera, Int32(vp.samples_per_pixel))
                 end
 
                 # Shadow rays still need size check since it's a different queue
                 # But we can batch this with other checks later
                 vp_trace_shadow_rays!(state, accel, media_interfaces, media)
 
-                vp_evaluate_materials_coherent!(state, multi_queue, materials, vp.regularize)
+                vp_evaluate_materials_coherent!(state, multi_queue, materials, camera, Int32(vp.samples_per_pixel), vp.regularize)
             else
                 vp_process_surface_hits!(state, materials)
 
                 n_material = length(state.material_queue)
                 if n_material > 0 && length(lights) > 0
-                    vp_sample_surface_direct_lighting!(state, materials, lights)
+                    vp_sample_surface_direct_lighting!(state, materials, lights, camera, Int32(vp.samples_per_pixel))
                 end
 
                 n_shadow = length(state.shadow_queue)
@@ -596,9 +596,9 @@ function render!(
 
                 if n_material > 0
                     if vp.material_coherence == :sorted
-                        vp_evaluate_materials_sorted!(state, materials, vp.regularize)
+                        vp_evaluate_materials_sorted!(state, materials, camera, Int32(vp.samples_per_pixel), vp.regularize)
                     else
-                        vp_evaluate_materials!(state, materials, vp.regularize)
+                        vp_evaluate_materials!(state, materials, camera, Int32(vp.samples_per_pixel), vp.regularize)
                     end
                 end
             end

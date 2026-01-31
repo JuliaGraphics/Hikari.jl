@@ -388,9 +388,10 @@ end
 # Accelerator intersection
 # ============================================================================
 
-# Intersect TLAS - returns hit info, primitive, and SurfaceInteraction
+# Intersect StaticTLAS - returns hit info, primitive, and SurfaceInteraction
 # The primitive (triangle) contains material_type and material_idx for dispatch
-@propagate_inbounds function intersect!(accel::TLAS, ray::AbstractRay)
+# Note: Only StaticTLAS is used in kernels (adapt converts TLAS → StaticTLAS)
+@propagate_inbounds function intersect!(accel::Raycore.StaticTLAS, ray::AbstractRay)
     hit_found, triangle, distance, bary_coords, instance_id = closest_hit(accel, ray)
 
     if !hit_found

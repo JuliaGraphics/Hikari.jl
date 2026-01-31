@@ -169,6 +169,7 @@ function Adapt.adapt_structure(to, film::Film)
         film.filter_table,
         film.filter_table_width,
         film.filter_radius,
+        film.filter_params,  # GPUFilterParams is already bitstype
         film.scale,
         Adapt.adapt(to, film.framebuffer),
         Adapt.adapt(to, film.albedo),

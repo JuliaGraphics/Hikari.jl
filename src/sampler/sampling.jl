@@ -265,39 +265,47 @@ end
 """
 Sample a 2D point from the flat distribution.
 Returns (Point2f(u, v), pdf).
+The `textures` parameter is used to deref TextureRef fields when Distribution2D is stored in a MultiTypeSet.
 """
-@propagate_inbounds function sample_continuous(d::Distribution2D, u::Point2f)
+@propagate_inbounds function sample_continuous(d::Distribution2D, u::Point2f, textures)
+    # Deref arrays from TextureRef (no-op if already arrays)
+    marginal_cdf = Raycore.deref(textures, d.marginal_cdf)
+    marginal_func = Raycore.deref(textures, d.marginal_func)
+    conditional_cdf = Raycore.deref(textures, d.conditional_cdf)
+    conditional_func = Raycore.deref(textures, d.conditional_func)
+    conditional_func_int = Raycore.deref(textures, d.conditional_func_int)
+
     # Sample v (row) from marginal distribution
-    v_offset = find_interval_binary_flat(d.marginal_cdf, u[2])
+    v_offset = find_interval_binary_flat(marginal_cdf, u[2])
     v_offset = clamp(v_offset, Int32(1), d.nv)
 
     # Compute v_sampled
-    du_v = u[2] -  d.marginal_cdf[v_offset]
-    denom_v =  d.marginal_cdf[v_offset + 1] - d.marginal_cdf[v_offset]
+    du_v = u[2] - marginal_cdf[v_offset]
+    denom_v = marginal_cdf[v_offset + 1] - marginal_cdf[v_offset]
     if denom_v > 0f0
         du_v /= denom_v
     end
     v_sampled = (v_offset - Int32(1) + du_v) / d.nv
 
     # PDF for v
-    pdf_v = d.marginal_func_int > 0f0 ? ( d.marginal_func[v_offset]) / d.marginal_func_int : 0f0
+    pdf_v = d.marginal_func_int > 0f0 ? marginal_func[v_offset] / d.marginal_func_int : 0f0
 
     # Sample u (column) from conditional distribution for row v_offset
     # Binary search in the v_offset column of conditional_cdf
-    u_offset = find_interval_binary_col(d.conditional_cdf, v_offset, u[1])
+    u_offset = find_interval_binary_col(conditional_cdf, v_offset, u[1])
     u_offset = clamp(u_offset, Int32(1), d.nu)
 
     # Compute u_sampled
-    du_u = u[1] -  d.conditional_cdf[u_offset, v_offset]
-    denom_u =  d.conditional_cdf[u_offset + 1, v_offset] - d.conditional_cdf[u_offset, v_offset]
+    du_u = u[1] - conditional_cdf[u_offset, v_offset]
+    denom_u = conditional_cdf[u_offset + 1, v_offset] - conditional_cdf[u_offset, v_offset]
     if denom_u > 0f0
         du_u /= denom_u
     end
     u_sampled = (u_offset - Int32(1) + du_u) / d.nu
 
     # PDF for u
-    func_int_v =  d.conditional_func_int[v_offset]
-    pdf_u = func_int_v > 0f0 ? ( d.conditional_func[u_offset, v_offset]) / func_int_v : 0f0
+    func_int_v = conditional_func_int[v_offset]
+    pdf_u = func_int_v > 0f0 ? conditional_func[u_offset, v_offset] / func_int_v : 0f0
 
     Point2f(u_sampled, v_sampled), pdf_u * pdf_v
 end
@@ -338,13 +346,17 @@ end
 
 """
 Compute PDF for sampling a specific 2D point from flat distribution.
+The `textures` parameter is used to deref TextureRef fields when Distribution2D is stored in a MultiTypeSet.
 """
-@propagate_inbounds function pdf(d::Distribution2D, uv::Point2f)::Float32
+@propagate_inbounds function pdf(d::Distribution2D, uv::Point2f, textures)::Float32
+    # Deref array from TextureRef (no-op if already array)
+    conditional_func = Raycore.deref(textures, d.conditional_func)
+
     # Find indices
     iu = clamp(floor_int32(uv[1] * d.nu) + Int32(1), Int32(1), d.nu)
     iv = clamp(floor_int32(uv[2] * d.nv) + Int32(1), Int32(1), d.nv)
 
-    (d.conditional_func[iu, iv]) / d.marginal_func_int
+    conditional_func[iu, iv] / d.marginal_func_int
 end
 
 function radical_inverse(base_index::Int64, a::UInt64)::Float32

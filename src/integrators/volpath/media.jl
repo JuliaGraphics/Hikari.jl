@@ -192,10 +192,12 @@ function MajorantGrid(res::Vec3i, alloc=Vector{Float32})
     MajorantGrid(Vec{3, Int32}(Int32(res[1]), Int32(res[2]), Int32(res[3])), alloc)
 end
 
-@propagate_inbounds function majorant_lookup(grid::MajorantGrid, x::Integer, y::Integer, z::Integer)::Float32
+@propagate_inbounds function majorant_lookup(grid::MajorantGrid, media, x::Integer, y::Integer, z::Integer)::Float32
      # Use Int32 arithmetic for GPU compatibility
      idx = Int32(x) + grid.res[1] * (Int32(y) + grid.res[2] * Int32(z)) + Int32(1)
-     grid.voxels[idx]
+     # Deref voxels TextureRef to get actual array
+     voxels = Raycore.deref(media, grid.voxels)
+     voxels[idx]
 end
 
 @propagate_inbounds function majorant_set!(grid::MajorantGrid, x::Int, y::Int, z::Int, v::Float32)
@@ -389,7 +391,7 @@ Following PBRT-v4's DDAMajorantIterator constructor.
 end
 
 """
-    dda_next(iter::DDAMajorantIterator) -> (RayMajorantSegment, DDAMajorantIterator, Bool)
+    dda_next(iter::DDAMajorantIterator, media) -> (RayMajorantSegment, DDAMajorantIterator, Bool)
 
 Advance the DDA iterator and return the next majorant segment.
 Returns (seg, new_iter, true) if valid, (invalid_seg, exhausted_iter, false) if exhausted.
@@ -399,7 +401,7 @@ The Bool indicates validity: true = has segment, false = exhausted.
 Since structs are immutable in Julia, this returns a new iterator with updated state.
 Following PBRT-v4's DDAMajorantIterator::Next().
 """
-@inline @propagate_inbounds function dda_next(iter::DDAMajorantIterator{M}) where M
+@inline @propagate_inbounds function dda_next(iter::DDAMajorantIterator{M}, media) where M
     t_min = iter.t_min
     t_max = iter.t_max
 
@@ -446,7 +448,7 @@ Following PBRT-v4's DDAMajorantIterator::Next().
     t_voxel_exit = min(t_max, next_crossing_t[step_axis])
 
     # Lookup majorant density for current voxel
-    max_density = majorant_lookup(iter.grid, voxel[1], voxel[2], voxel[3])
+    max_density = majorant_lookup(iter.grid, media, voxel[1], voxel[2], voxel[3])
     σ_maj = iter.σ_t * max_density
 
     # Create segment
@@ -614,13 +616,13 @@ end
 end
 
 """
-    ray_majorant_next(iter::RayMajorantIterator) -> (RayMajorantSegment, RayMajorantIterator, Bool)
+    ray_majorant_next(iter::RayMajorantIterator, media) -> (RayMajorantSegment, RayMajorantIterator, Bool)
 
 Advance the unified iterator and return the next majorant segment.
 Dispatches internally based on mode (homogeneous vs DDA).
 Returns (segment, new_iter, valid) where valid=false means exhausted.
 """
-@inline @propagate_inbounds function ray_majorant_next(iter::RayMajorantIterator{M}) where {M}
+@inline @propagate_inbounds function ray_majorant_next(iter::RayMajorantIterator{M}, media) where {M}
     if iter.mode == Int32(0)
         # Invalid/exhausted
         return (RayMajorantSegment(), iter, false)
@@ -645,12 +647,12 @@ Returns (segment, new_iter, valid) where valid=false means exhausted.
 
     else
         # DDA mode - voxel traversal
-        return _ray_majorant_next_dda(iter)
+        return _ray_majorant_next_dda(iter, media)
     end
 end
 
 """DDA next implementation (separated for clarity)"""
-@inline @propagate_inbounds function _ray_majorant_next_dda(iter::RayMajorantIterator{M}) where {M}
+@inline @propagate_inbounds function _ray_majorant_next_dda(iter::RayMajorantIterator{M}, media) where {M}
     t_min = iter.t_min
     t_max = iter.t_max
 
@@ -684,7 +686,7 @@ end
     end
 
     # Get majorant for current voxel
-    ρ = majorant_lookup(iter.grid, voxel_x, voxel_y, voxel_z)
+    ρ = majorant_lookup(iter.grid, media, voxel_x, voxel_y, voxel_z)
     σ_maj = iter.σ_t * ρ
     seg = RayMajorantSegment(t_min, seg_t_max, σ_maj)
 
@@ -778,6 +780,7 @@ end
 
 @propagate_inbounds function sample_point(
     medium::HomogeneousMedium,
+    media,  # StaticMultiTypeSet (unused for homogeneous)
     table::RGBToSpectrumTable,
     p::Point3f,
     λ::Wavelengths
@@ -1189,27 +1192,27 @@ end
 Sample σ_a at a point using trilinear interpolation.
 Returns default RGBSpectrum(1.0) if σ_a_grid is nothing.
 """
-@propagate_inbounds function sample_σ_a(medium::RGBGridMedium, p_norm::Point3f)::RGBSpectrum
-    isnothing(medium.σ_a_grid) && return RGBSpectrum(1f0)
-    return _sample_rgb_grid(medium.σ_a_grid, medium.grid_res, p_norm)
+@propagate_inbounds function sample_σ_a(σ_a_grid, medium::RGBGridMedium, p_norm::Point3f)::RGBSpectrum
+    isnothing(σ_a_grid) && return RGBSpectrum(1f0)
+    return _sample_rgb_grid(σ_a_grid, medium.grid_res, p_norm)
 end
 
 """
 Sample σ_s at a point using trilinear interpolation.
 Returns default RGBSpectrum(1.0) if σ_s_grid is nothing.
 """
-@propagate_inbounds function sample_σ_s(medium::RGBGridMedium, p_norm::Point3f)::RGBSpectrum
-    isnothing(medium.σ_s_grid) && return RGBSpectrum(1f0)
-    return _sample_rgb_grid(medium.σ_s_grid, medium.grid_res, p_norm)
+@propagate_inbounds function sample_σ_s(σ_s_grid, medium::RGBGridMedium, p_norm::Point3f)::RGBSpectrum
+    isnothing(σ_s_grid) && return RGBSpectrum(1f0)
+    return _sample_rgb_grid(σ_s_grid, medium.grid_res, p_norm)
 end
 
 """
 Sample Le at a point using trilinear interpolation.
 Returns RGBSpectrum(0.0) if Le_grid is nothing.
 """
-@propagate_inbounds function sample_Le(medium::RGBGridMedium, p_norm::Point3f)::RGBSpectrum
-    isnothing(medium.Le_grid) && return RGBSpectrum(0f0)
-    return _sample_rgb_grid(medium.Le_grid, medium.grid_res, p_norm)
+@propagate_inbounds function sample_Le(Le_grid, medium::RGBGridMedium, p_norm::Point3f)::RGBSpectrum
+    isnothing(Le_grid) && return RGBSpectrum(0f0)
+    return _sample_rgb_grid(Le_grid, medium.grid_res, p_norm)
 end
 
 """
@@ -1267,6 +1270,7 @@ end
 
 @propagate_inbounds function sample_point(
     medium::RGBGridMedium,
+    media,  # StaticMultiTypeSet for dereferencing TextureRefs
     table::RGBToSpectrumTable,
     p::Point3f,
     λ::Wavelengths
@@ -1281,9 +1285,14 @@ end
     # Normalize to [0,1] within bounds (following pbrt-v4: bounds.Offset(p))
     p_norm = (p_medium - medium.bounds.p_min) ./ (medium.bounds.p_max - medium.bounds.p_min)
 
+    # Deref grids from TextureRefs
+    σ_a_grid = isnothing(medium.σ_a_grid) ? nothing : Raycore.deref(media, medium.σ_a_grid)
+    σ_s_grid = isnothing(medium.σ_s_grid) ? nothing : Raycore.deref(media, medium.σ_s_grid)
+    Le_grid = isnothing(medium.Le_grid) ? nothing : Raycore.deref(media, medium.Le_grid)
+
     # Compute σ_a and σ_s for RGBGridMedium (following pbrt-v4)
-    σ_a_rgb = sample_σ_a(medium, p_norm)
-    σ_s_rgb = sample_σ_s(medium, p_norm)
+    σ_a_rgb = sample_σ_a(σ_a_grid, medium, p_norm)
+    σ_s_rgb = sample_σ_s(σ_s_grid, medium, p_norm)
 
     # Convert to spectral and apply sigma_scale
     # Following pbrt-v4: sigma_a = sigmaScale * (sigma_aGrid ? sigma_aGrid->Lookup(...) : 1.0)
@@ -1296,8 +1305,8 @@ end
     #     Le = LeScale * LeGrid->Lookup(p, convert);
     # }
     Le = SpectralRadiance(0f0)
-    if !isnothing(medium.Le_grid) && medium.Le_scale > 0f0
-        Le_rgb = sample_Le(medium, p_norm)
+    if !isnothing(Le_grid) && medium.Le_scale > 0f0
+        Le_rgb = sample_Le(Le_grid, medium, p_norm)
         # Note: pbrt-v4 uses RGBIlluminantSpectrum for Le, we use unbounded for simplicity
         Le = uplift_rgb_unbounded(table, Le_rgb, λ) * medium.Le_scale
     end
@@ -1440,7 +1449,7 @@ Uses pbrt-v4's cell-centered interpretation:
 - Voxel i is centered at (i - 0.5) / n in normalized space
 - Interpolation uses 8 neighboring voxels with proper clamping at boundaries
 """
-@propagate_inbounds function sample_density(medium::GridMedium, p_medium::Point3f)::Float32
+@propagate_inbounds function sample_density(density, medium::GridMedium, p_medium::Point3f)::Float32
     # Normalize to [0,1] within bounds
     p_norm = (p_medium - medium.bounds.p_min) ./ (medium.bounds.p_max - medium.bounds.p_min)
 
@@ -1471,14 +1480,14 @@ Uses pbrt-v4's cell-centered interpretation:
     fz = clamp(gz - Float32(iz), 0f0, 1f0)
 
     # Trilinear interpolation (use Int32(1) to avoid promotion to Int64)
-    d000 = medium.density[ix, iy, iz]
-    d100 = medium.density[ix+Int32(1), iy, iz]
-    d010 = medium.density[ix, iy+Int32(1), iz]
-    d110 = medium.density[ix+Int32(1), iy+Int32(1), iz]
-    d001 = medium.density[ix, iy, iz+Int32(1)]
-    d101 = medium.density[ix+Int32(1), iy, iz+Int32(1)]
-    d011 = medium.density[ix, iy+Int32(1), iz+Int32(1)]
-    d111 = medium.density[ix+Int32(1), iy+Int32(1), iz+Int32(1)]
+    d000 = density[ix, iy, iz]
+    d100 = density[ix+Int32(1), iy, iz]
+    d010 = density[ix, iy+Int32(1), iz]
+    d110 = density[ix+Int32(1), iy+Int32(1), iz]
+    d001 = density[ix, iy, iz+Int32(1)]
+    d101 = density[ix+Int32(1), iy, iz+Int32(1)]
+    d011 = density[ix, iy+Int32(1), iz+Int32(1)]
+    d111 = density[ix+Int32(1), iy+Int32(1), iz+Int32(1)]
 
     fx1 = 1f0 - fx
     d00 = d000 * fx1 + d100 * fx
@@ -1495,6 +1504,7 @@ end
 
 @propagate_inbounds function sample_point(
     medium::GridMedium,
+    media,  # StaticMultiTypeSet for dereferencing TextureRefs
     table::RGBToSpectrumTable,
     p::Point3f,
     λ::Wavelengths
@@ -1506,8 +1516,11 @@ end
     p_z = M[3,1] * p[1] + M[3,2] * p[2] + M[3,3] * p[3] + M[3,4]
     p_medium = Point3f(p_x, p_y, p_z)
 
+    # Deref density TextureRef to get actual array
+    density = Raycore.deref(media, medium.density)
+
     # Sample density
-    d = sample_density(medium, p_medium)
+    d = sample_density(density, medium, p_medium)
 
     # Scale coefficients by density
     # Use unbounded uplift for scattering/absorption coefficients (can be > 1.0)

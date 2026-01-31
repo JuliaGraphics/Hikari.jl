@@ -47,7 +47,7 @@ end
     end
 end
 
-@kernel inbounds=true function whitten_kernel!(pixels, crop_bounds, sample_bounds, tiles, tile_size, max_depth, scene, sampler, camera, filter_table, filter_radius)
+@kernel inbounds=true function whitten_kernel!(pixels, crop_bounds, sample_bounds, tiles, tile_size, max_depth, scene, sampler, camera, filter_params)
     _tile_xy = @index(Global, Cartesian)
     linear_idx = @index(Global)
 
@@ -80,7 +80,7 @@ end
             sample_kernel_inner!(
                 tiles, tile_bounds, tile_column, resolution,
                 max_depth, scene, sampler, camera,
-                pixel, spp_sqr, filter_table, filter_radius
+                pixel, spp_sqr, filter_params
             )
             px += Int32(1)
         end
@@ -95,19 +95,16 @@ Render scene using KernelAbstractions.
 function (i::SamplerIntegrator)(scene::AbstractScene, film, camera)
     sample_bounds = get_sample_bounds(film)
     tile_size = film.tile_size
-    filter_radius = film.filter_radius
-    filter_table = film.filter_table
     tiles = film.tiles
     sampler = i.sampler
     max_depth = Int32(i.max_depth)
     backend = KA.get_backend(film.tiles.contrib_sum)
     kernel! = whitten_kernel!(backend, (8, 8))
-    s_filter_table = Mat{size(filter_table)...}(filter_table)
     kernel!(
         film.pixels, film.crop_bounds, sample_bounds,
         tiles, tile_size,
         max_depth, scene, sampler,
-        camera, s_filter_table, filter_radius;
+        camera, film.filter_params;
         ndrange=film.ntiles
     )
     KA.synchronize(backend)
@@ -148,6 +145,32 @@ end
         $(light_exprs...)
         return l
     end
+end
+
+# StaticMultiTypeSet versions using mapreduce for GPU compatibility
+@propagate_inbounds function only_light(lights::Raycore.StaticMultiTypeSet, ray)
+    return mapreduce(le, +, lights, ray; init=RGBSpectrum(0f0))
+end
+
+# Helper for light_contribution with StaticMultiTypeSet
+@propagate_inbounds function _sample_light_contribution(light, wo, scene, bsdf, u, si_core, si_shading_n)
+    sampled_li, wi, pdf, tester = sample_li(light, si_core, u, scene)
+    if is_black(sampled_li) || pdf ≈ 0.0f0
+        return RGBSpectrum(0f0)
+    end
+    f = bsdf(wo, wi)
+    if is_black(f) || !unoccluded(tester, scene)
+        return RGBSpectrum(0f0)
+    end
+    return f * sampled_li * abs(wi ⋅ si_shading_n) / pdf
+end
+
+@propagate_inbounds function light_contribution(
+    l::RGBSpectrum, lights::Raycore.StaticMultiTypeSet, wo, scene::S, bsdf, sampler, si
+) where {S<:AbstractScene}
+    u = get_2d(sampler)
+    contrib = mapreduce(_sample_light_contribution, +, lights, wo, scene, bsdf, u, si.core, si.shading.n; init=RGBSpectrum(0f0))
+    return l + contrib
 end
 
 function li(

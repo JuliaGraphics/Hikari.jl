@@ -114,7 +114,11 @@ struct VPMediumSampleWorkItem
     has_surface_hit::Bool
     hit_pi::Point3f
     hit_n::Vec3f
+    hit_dpdu::Vec3f                 # Geometric position derivative w.r.t. u
+    hit_dpdv::Vec3f                 # Geometric position derivative w.r.t. v
     hit_ns::Vec3f
+    hit_dpdus::Vec3f                # Shading position derivative w.r.t. u
+    hit_dpdvs::Vec3f                # Shading position derivative w.r.t. v
     hit_uv::Point2f
     hit_material_idx::SetKey
     hit_interface::MediumInterfaceIdx  # For medium transitions at surface
@@ -124,7 +128,9 @@ end
 function VPMediumSampleWorkItem(
     work::VPRayWorkItem,
     t_max::Float32,
-    pi::Point3f, n::Vec3f, ns::Vec3f, uv::Point2f, mat_idx::SetKey,
+    pi::Point3f, n::Vec3f, dpdu::Vec3f, dpdv::Vec3f,
+    ns::Vec3f, dpdus::Vec3f, dpdvs::Vec3f,
+    uv::Point2f, mat_idx::SetKey,
     interface::MediumInterfaceIdx
 )
     VPMediumSampleWorkItem(
@@ -134,7 +140,7 @@ function VPMediumSampleWorkItem(
         work.specular_bounce, work.any_non_specular_bounces,
         work.prev_intr_p, work.prev_intr_n,
         work.medium_idx,
-        true, pi, n, ns, uv, mat_idx, interface
+        true, pi, n, dpdu, dpdv, ns, dpdus, dpdvs, uv, mat_idx, interface
     )
 end
 
@@ -147,7 +153,8 @@ function VPMediumSampleWorkItem(work::VPRayWorkItem)
         work.specular_bounce, work.any_non_specular_bounces,
         work.prev_intr_p, work.prev_intr_n,
         work.medium_idx,
-        false, Point3f(0f0), Vec3f(0f0, 0f0, 1f0), Vec3f(0f0, 0f0, 1f0),
+        false, Point3f(0f0), Vec3f(0f0, 0f0, 1f0), Vec3f(0f0), Vec3f(0f0),
+        Vec3f(0f0, 0f0, 1f0), Vec3f(0f0), Vec3f(0f0),
         Point2f(0f0, 0f0), SetKey(), MediumInterfaceIdx(SetKey(), SetKey(), SetKey())
     )
 end
@@ -184,14 +191,24 @@ end
 
 Surface interaction work item for VolPath.
 Similar to PWMaterialEvalWorkItem but includes medium transition info.
+
+Following pbrt-v4's MaterialEvalWorkItem, stores surface partial derivatives
+for texture filtering. Screen-space derivatives (dudx, dudy, dvdx, dvdy) are
+computed on-the-fly during material evaluation using camera.Approximate_dp_dxy().
 """
 struct VPMaterialEvalWorkItem
-    # Surface interaction data
+    # Surface interaction data (matching pbrt-v4 MaterialEvalWorkItem order)
     pi::Point3f                     # Intersection point
     n::Vec3f                        # Geometric normal
+    dpdu::Vec3f                     # Geometric position derivative w.r.t. u
+    dpdv::Vec3f                     # Geometric position derivative w.r.t. v
+    time::Float32                   # Intersection time (for motion blur)
     ns::Vec3f                       # Shading normal
-    wo::Vec3f                       # Outgoing direction
+    dpdus::Vec3f                    # Shading position derivative w.r.t. u
+    dpdvs::Vec3f                    # Shading position derivative w.r.t. v
     uv::Point2f                     # Texture coordinates
+
+    wo::Vec3f                       # Outgoing direction
     material_idx::SetKey            # Material index
     interface::MediumInterfaceIdx   # For medium transitions
 
@@ -290,18 +307,23 @@ end
 
 Intermediate work item when ray hits a surface.
 Used to separate intersection from material evaluation.
+Stores surface partial derivatives for texture filtering (pbrt-v4 style).
 """
 struct VPHitSurfaceWorkItem
     # Ray that hit
     ray::Raycore.Ray
 
-    # Hit info
-    pi::Point3f
-    n::Vec3f
-    ns::Vec3f
-    uv::Point2f
+    # Hit geometry (matching pbrt-v4 SurfaceInteraction decomposition)
+    pi::Point3f                     # Intersection point
+    n::Vec3f                        # Geometric normal
+    dpdu::Vec3f                     # Geometric position derivative w.r.t. u
+    dpdv::Vec3f                     # Geometric position derivative w.r.t. v
+    ns::Vec3f                       # Shading normal
+    dpdus::Vec3f                    # Shading position derivative w.r.t. u
+    dpdvs::Vec3f                    # Shading position derivative w.r.t. v
+    uv::Point2f                     # Texture coordinates
     material_idx::SetKey
-    interface::MediumInterfaceIdx  # For medium transitions
+    interface::MediumInterfaceIdx   # For medium transitions
 
     # Path state
     lambda::Wavelengths
@@ -326,13 +348,15 @@ end
 # Constructor from VPRayWorkItem with hit geometry
 function VPHitSurfaceWorkItem(
     work::VPRayWorkItem,
-    pi::Point3f, n::Vec3f, ns::Vec3f, uv::Point2f, mat_idx::SetKey,
+    pi::Point3f, n::Vec3f, dpdu::Vec3f, dpdv::Vec3f,
+    ns::Vec3f, dpdus::Vec3f, dpdvs::Vec3f,
+    uv::Point2f, mat_idx::SetKey,
     interface::MediumInterfaceIdx,
     t_hit::Float32
 )
     VPHitSurfaceWorkItem(
         work.ray,
-        pi, n, ns, uv, mat_idx, interface,
+        pi, n, dpdu, dpdv, ns, dpdus, dpdvs, uv, mat_idx, interface,
         work.lambda, work.pixel_index,
         work.beta, work.r_u, work.r_l,
         work.depth, work.eta_scale,
@@ -349,7 +373,9 @@ function VPHitSurfaceWorkItem(
 )
     VPHitSurfaceWorkItem(
         work.ray,
-        work.hit_pi, work.hit_n, work.hit_ns, work.hit_uv, work.hit_material_idx, work.hit_interface,
+        work.hit_pi, work.hit_n, work.hit_dpdu, work.hit_dpdv,
+        work.hit_ns, work.hit_dpdus, work.hit_dpdvs,
+        work.hit_uv, work.hit_material_idx, work.hit_interface,
         work.lambda, work.pixel_index,
         beta, r_u, r_l,
         work.depth, work.eta_scale,
@@ -363,7 +389,9 @@ end
 # (wo and material_idx are computed externally, e.g. after MixMaterial resolution)
 function VPMaterialEvalWorkItem(work::VPHitSurfaceWorkItem, wo::Vec3f, material_idx::SetKey)
     VPMaterialEvalWorkItem(
-        work.pi, work.n, work.ns, wo, work.uv, material_idx, work.interface,
+        work.pi, work.n, work.dpdu, work.dpdv, work.ray.time,
+        work.ns, work.dpdus, work.dpdvs, work.uv,
+        wo, material_idx, work.interface,
         work.lambda, work.pixel_index,
         work.beta, work.r_u, work.r_l,
         work.depth, work.eta_scale,

@@ -87,6 +87,7 @@ struct Film{
     filter_table::Matrix{Float32}
     filter_table_width::Int32
     filter_radius::Point2f
+    filter_params::GPUFilterParams
     scale::Float32
 
     # Raw rendered output (HDR)
@@ -170,6 +171,7 @@ function Film(
         filter_table,
         Int32(filter_table_width),
         filter.radius,
+        GPUFilterParams(filter),
         scale,
         framebuffer,
         albedo,

@@ -128,7 +128,7 @@ significantly reducing null scattering events in sparse heterogeneous media.
     template_grid::MajorantGrid
 )
     # Create iterator using template grid for type consistency across all media
-    iter = create_majorant_iterator(table, medium, ray, t_max, λ, template_grid)
+    iter = create_majorant_iterator(medium, table, ray, t_max, λ, template_grid)
 
     # Call type-stable iteration (dispatches on iter type)
     return sample_T_maj_loop!(
@@ -171,8 +171,8 @@ end
     # This ensures all RayMajorantIterator instances have the same type parameter
     template_grid = get_template_grid_from_tuple(media)
 
-    # Use with_medium pattern to avoid Union types (GPU-safe)
-    result = with_medium(
+    # Use with_index pattern to avoid Union types (GPU-safe)
+    result = Raycore.with_index(
         _sample_with_iterator_helper,
         media, medium_idx,
         rgb2spec_table, work.ray, t_max, work.lambda,
@@ -248,7 +248,7 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
     current_iter = iter
     current_rng = rng_state
     for _ in Int32(1):max_segments
-        seg, new_iter, valid = ray_majorant_next(current_iter)
+        seg, new_iter, valid = ray_majorant_next(current_iter, media)
         if !valid
             # No more segments - ray survived
             break
@@ -347,7 +347,7 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
 
         # Sample medium properties at interaction point
         p = Point3f(work.ray.o + work.ray.d * t_sample)
-        mp = Raycore.with_index(sample_point, media, medium_idx, rgb2spec_table, p, work.lambda)
+        mp = Raycore.with_index(sample_point, media, medium_idx, media, rgb2spec_table, p, work.lambda)
 
         # Add emission if present
         if !is_black(mp.Le) && work.depth < max_depth

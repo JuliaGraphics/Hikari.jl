@@ -5,6 +5,144 @@
 # Use eval_tex(materials, field, uv) to sample textures via TextureRef.
 
 # ============================================================================
+# Texture Filtering Derivatives (pbrt-v4 style)
+# ============================================================================
+
+"""
+    approximate_dp_dxy(pi, n, camera, samples_per_pixel) -> (dpdx, dpdy)
+
+Approximate screen-space position derivatives at intersection point.
+Following pbrt-v4's Camera::Approximate_dp_dxy method.
+
+This estimates how much the surface position changes per pixel, which is used
+for texture filtering (mipmap level selection). The approximation assumes the
+surface is locally planar near the intersection point.
+
+For a perspective camera, this is approximately:
+    dp/dscreen ≈ distance * tan(fov/2) / (resolution/2)
+
+Arguments:
+- `pi`: Intersection point in world space
+- `n`: Surface normal at intersection
+- `camera`: Camera with dx_camera, dy_camera precomputed
+- `samples_per_pixel`: Number of samples per pixel (for scaling)
+
+Returns (dpdx, dpdy) - approximate change in position per screen pixel.
+"""
+@propagate_inbounds function approximate_dp_dxy(
+    pi::Point3f, n::Vec3f, camera, samples_per_pixel::Int32
+)
+    # Transform intersection point to camera space
+    # camera.core.core.camera_to_world is world->camera transform (inverted from usual)
+    # We need camera->world inverse = world->camera
+    camera_to_world = camera.core.core.camera_to_world
+
+    # For perspective camera, approximate dpdx/dpdy based on distance and fov
+    # The camera has precomputed dx_camera and dy_camera (change per pixel in camera space)
+
+    # Get camera position (world space origin)
+    camera_pos = camera_to_world(Point3f(0f0))
+
+    # Distance from camera to intersection point
+    to_point = Vec3f(pi - camera_pos)
+    dist = sqrt(dot(to_point, to_point))
+
+    # Scale factor based on distance and samples per pixel
+    # Following pbrt-v4: scale by sqrt(samples) for antialiasing
+    scale = dist / sqrt(Float32(max(1, samples_per_pixel)))
+
+    # Transform dx_camera and dy_camera to world space
+    # These represent how the ray direction changes per pixel
+    dx_world = camera_to_world(camera.dx_camera)
+    dy_world = camera_to_world(camera.dy_camera)
+
+    # Project onto the tangent plane at the intersection
+    # dpdx ≈ scale * (dx_world - n * dot(n, dx_world))
+    dpdx = scale * (dx_world - n * dot(n, dx_world))
+    dpdy = scale * (dy_world - n * dot(n, dy_world))
+
+    return dpdx, dpdy
+end
+
+"""
+    compute_uv_derivatives(dpdu, dpdv, dpdx, dpdy) -> (dudx, dudy, dvdx, dvdy)
+
+Compute UV derivatives from position derivatives using least-squares solve.
+Following pbrt-v4's SurfaceInteraction::ComputeDifferentials.
+
+Given:
+- dpdu, dpdv: How position changes with UV (∂p/∂u, ∂p/∂v)
+- dpdx, dpdy: How position changes with screen pixel (∂p/∂x, ∂p/∂y)
+
+Solve for:
+- dudx, dudy: How u changes with screen pixel (∂u/∂x, ∂u/∂y)
+- dvdx, dvdy: How v changes with screen pixel (∂v/∂x, ∂v/∂y)
+
+Uses the normal equations: (A^T A) [du/dx; dv/dx]^T = A^T [dpdx]
+where A = [dpdu | dpdv] is a 3x2 matrix.
+"""
+@propagate_inbounds function compute_uv_derivatives(
+    dpdu::Vec3f, dpdv::Vec3f, dpdx::Vec3f, dpdy::Vec3f
+)
+    # Compute A^T A (2x2 matrix)
+    ata00 = dot(dpdu, dpdu)
+    ata01 = dot(dpdu, dpdv)
+    ata11 = dot(dpdv, dpdv)
+
+    # Compute determinant and check for degeneracy
+    det = ata00 * ata11 - ata01 * ata01
+    if abs(det) < 1f-10
+        return (0f0, 0f0, 0f0, 0f0)
+    end
+    inv_det = 1f0 / det
+
+    # Compute A^T b for x direction
+    atb0x = dot(dpdu, dpdx)
+    atb1x = dot(dpdv, dpdx)
+
+    # Compute A^T b for y direction
+    atb0y = dot(dpdu, dpdy)
+    atb1y = dot(dpdv, dpdy)
+
+    # Solve using Cramer's rule (2x2 system)
+    # [dudx]   [ata11  -ata01] [atb0x]
+    # [dvdx] = [-ata01  ata00] [atb1x] * inv_det
+    dudx = (ata11 * atb0x - ata01 * atb1x) * inv_det
+    dvdx = (ata00 * atb1x - ata01 * atb0x) * inv_det
+    dudy = (ata11 * atb0y - ata01 * atb1y) * inv_det
+    dvdy = (ata00 * atb1y - ata01 * atb0y) * inv_det
+
+    # Clamp to reasonable values (following pbrt-v4)
+    clamp_val = 1f8
+    dudx = clamp(dudx, -clamp_val, clamp_val)
+    dvdx = clamp(dvdx, -clamp_val, clamp_val)
+    dudy = clamp(dudy, -clamp_val, clamp_val)
+    dvdy = clamp(dvdy, -clamp_val, clamp_val)
+
+    return (dudx, dudy, dvdx, dvdy)
+end
+
+# TextureFilterContext is defined in textures/texture-ref.jl
+
+"""
+    compute_texture_filter_context(work, camera, samples_per_pixel) -> TextureFilterContext
+
+Compute texture filtering context from material evaluation work item.
+Uses approximate screen-space derivatives for proper mipmap selection.
+"""
+@propagate_inbounds function compute_texture_filter_context(
+    work::VPMaterialEvalWorkItem, camera, samples_per_pixel::Int32
+)
+    # Compute screen-space position derivatives
+    dpdx, dpdy = approximate_dp_dxy(work.pi, work.n, camera, samples_per_pixel)
+
+    # Compute UV derivatives from position derivatives
+    dudx, dudy, dvdx, dvdy = compute_uv_derivatives(work.dpdu, work.dpdv, dpdx, dpdy)
+
+    return TextureFilterContext(work.uv, dudx, dudy, dvdx, dvdy)
+end
+
+# ============================================================================
 # Process Surface Hits - Emission and Material Queue Setup
 # ============================================================================
 
@@ -27,10 +165,11 @@
 
     # Check if surface is emissive
     if is_emissive(materials, material_idx)
-        # Get emission
+        # Get emission (use simple TextureFilterContext for emission - no derivatives needed)
+        tfc = TextureFilterContext(work.uv)
         Le = get_emission_spectral_dispatch(
             rgb2spec_table, materials, material_idx,
-            wo, work.n, work.uv, work.lambda
+            wo, work.n, tfc, work.lambda
         )
 
         if !is_black(Le)
@@ -94,7 +233,10 @@ Now uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style
     num_lights::Int32,
     # Pre-computed Sobol samples (SOA layout)
     pixel_samples_direct_uc,
-    pixel_samples_direct_u
+    pixel_samples_direct_u,
+    # Camera for texture filtering (pbrt-v4 style)
+    camera,
+    samples_per_pixel::Int32
 )
     # Skip if no lights
     num_lights < Int32(1) && return
@@ -121,10 +263,13 @@ Now uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style
     )
 
     if light_sample.pdf > 0f0 && !is_black(light_sample.Li)
+        # Compute texture filter context with proper screen-space derivatives (pbrt-v4 style)
+        tfc = compute_texture_filter_context(work, camera, samples_per_pixel)
+
         # Evaluate BSDF for light direction
         bsdf_f, bsdf_pdf = evaluate_spectral_material(
             rgb2spec_table, materials, work.material_idx,
-            work.wo, light_sample.wi, work.ns, work.uv, work.lambda
+            work.wo, light_sample.wi, work.ns, tfc, work.lambda
         )
 
         if !is_black(bsdf_f)
@@ -179,18 +324,20 @@ end
     rgb2spec_table,
     light_sampler_p, light_sampler_q, light_sampler_alias,
     num_lights::Int32,
-    pixel_samples_direct_uc, pixel_samples_direct_u
+    pixel_samples_direct_uc, pixel_samples_direct_u,
+    camera, samples_per_pixel::Int32
 )
     surface_direct_lighting_inner!(
         shadow_queue,
         work, materials, lights, rgb2spec_table,
         light_sampler_p, light_sampler_q, light_sampler_alias,
         num_lights,
-        pixel_samples_direct_uc, pixel_samples_direct_u
+        pixel_samples_direct_uc, pixel_samples_direct_u,
+        camera, samples_per_pixel
     )
 end
 
-function vp_sample_surface_direct_lighting!(state::VolPathState, materials, lights)
+function vp_sample_surface_direct_lighting!(state::VolPathState, materials, lights, camera, samples_per_pixel::Int32)
     pixel_samples = state.pixel_samples
     foreach(vp_sample_surface_direct_lighting_kernel!,
         state.material_queue,
@@ -201,6 +348,7 @@ function vp_sample_surface_direct_lighting!(state::VolPathState, materials, ligh
         state.light_sampler_p, state.light_sampler_q, state.light_sampler_alias,
         state.num_lights,
         pixel_samples.direct_uc, pixel_samples.direct_u,
+        camera, samples_per_pixel,
     )
     return nothing
 end
@@ -223,7 +371,10 @@ Now uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style
     # Pre-computed Sobol samples (SOA layout)
     pixel_samples_indirect_uc,
     pixel_samples_indirect_u,
-    pixel_samples_indirect_rr
+    pixel_samples_indirect_rr,
+    # Camera for texture filtering (pbrt-v4 style)
+    camera,
+    samples_per_pixel::Int32
 )
     # Check depth limit
     new_depth = work.depth + Int32(1)
@@ -241,10 +392,13 @@ Now uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style
     # (pbrt-v4: regularize && anyNonSpecularBounces)
     regularize = do_regularize && work.any_non_specular_bounces
 
+    # Compute texture filter context with proper screen-space derivatives (pbrt-v4 style)
+    tfc = compute_texture_filter_context(work, camera, samples_per_pixel)
+
     # Sample BSDF
     sample = sample_spectral_material(
         rgb2spec_table, materials, work.material_idx,
-        work.wo, work.ns, work.uv, work.lambda, u, rng, regularize
+        work.wo, work.ns, tfc, work.lambda, u, rng, regularize
     )
 
     # Check if valid sample
@@ -336,17 +490,19 @@ end
     rgb2spec_table,
     max_depth::Int32,
     do_regularize::Bool,
-    pixel_samples_indirect_uc, pixel_samples_indirect_u, pixel_samples_indirect_rr
+    pixel_samples_indirect_uc, pixel_samples_indirect_u, pixel_samples_indirect_rr,
+    camera, samples_per_pixel::Int32
 )
     evaluate_material_inner!(
         next_ray_queue,
         work, materials, rgb2spec_table, max_depth,
         do_regularize,
-        pixel_samples_indirect_uc, pixel_samples_indirect_u, pixel_samples_indirect_rr
+        pixel_samples_indirect_uc, pixel_samples_indirect_u, pixel_samples_indirect_rr,
+        camera, samples_per_pixel
     )
 end
 
-function vp_evaluate_materials!(state::VolPathState, materials, regularize::Bool = true)
+function vp_evaluate_materials!(state::VolPathState, materials, camera, samples_per_pixel::Int32, regularize::Bool = true)
     output_queue = next_ray_queue(state)
     pixel_samples = state.pixel_samples
     foreach(vp_evaluate_materials_kernel!,
@@ -357,6 +513,7 @@ function vp_evaluate_materials!(state::VolPathState, materials, regularize::Bool
         state.max_depth,
         regularize,
         pixel_samples.indirect_uc, pixel_samples.indirect_u, pixel_samples.indirect_rr,
+        camera, samples_per_pixel,
     )
     return nothing
 end

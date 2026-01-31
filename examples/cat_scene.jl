@@ -137,8 +137,8 @@ end
 # Example: Render with PhysicalWavefront on OpenCL
 begin
     # Create scene directly on OpenCL backend (TLAS built on GPU)
-    backend = OpenCL.OpenCLBackend()
-    # backend = Hikari.KernelAbstractions.CPU()
+    # backend = OpenCL.OpenCLBackend()
+    backend = Hikari.KernelAbstractions.CPU()
     # backend = AMDGPU.ROCBackend()
     scene = create_scene(; glass_cat=false, backend=backend)
     film, camera = create_film_and_camera(; width=1820, height=720, use_pbrt_camera=true)

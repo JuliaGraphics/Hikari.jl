@@ -76,10 +76,11 @@ end
 
     # Check emission
     if is_emissive(materials, material_idx)
-        # Get emission - pass wo and n like the standard version
+        # Get emission - use simple TextureFilterContext (no derivatives needed for emission)
+        tfc = TextureFilterContext(work.uv)
         Le = get_emission_spectral_dispatch(
             rgb2spec_table, materials, material_idx,
-            wo, work.n, work.uv, work.lambda
+            wo, work.n, tfc, work.lambda
         )
 
         if !is_black(Le)
@@ -153,19 +154,22 @@ end
     work,
     next_ray_queue,
     mat_array,
+    materials,  # Full materials context for texture evaluation
     rgb2spec_table,
     max_depth::Int32,
     do_regularize::Bool,
-    pixel_samples_indirect_uc, pixel_samples_indirect_u, pixel_samples_indirect_rr
+    pixel_samples_indirect_uc, pixel_samples_indirect_u, pixel_samples_indirect_rr,
+    camera, samples_per_pixel::Int32
 )
     # Direct lookup - all items have same type, so mat_array is correct
     mat = mat_array[work.material_idx.vec_idx]
 
     _evaluate_typed_material!(
         next_ray_queue,
-        work, mat, rgb2spec_table,
+        work, mat, materials, rgb2spec_table,
         max_depth, do_regularize,
-        pixel_samples_indirect_uc, pixel_samples_indirect_u, pixel_samples_indirect_rr
+        pixel_samples_indirect_uc, pixel_samples_indirect_u, pixel_samples_indirect_rr,
+        camera, samples_per_pixel
     )
 end
 
@@ -178,13 +182,17 @@ Uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
     next_ray_queue,
     work::VPMaterialEvalWorkItem,
     mat,  # Concrete material type (known at compile time)
+    materials,  # Full materials context (StaticMultiTypeSet) for texture evaluation
     rgb2spec_table,
     max_depth::Int32,
     do_regularize::Bool,
     # Pre-computed Sobol samples (SOA layout)
     pixel_samples_indirect_uc,
     pixel_samples_indirect_u,
-    pixel_samples_indirect_rr
+    pixel_samples_indirect_rr,
+    # Camera for texture filtering (pbrt-v4 style)
+    camera,
+    samples_per_pixel::Int32
 )
     new_depth = work.depth + Int32(1)
     new_depth >= max_depth && return
@@ -197,10 +205,13 @@ Uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
 
     regularize = do_regularize && work.any_non_specular_bounces
 
-    # Direct BSDF sample - no dispatch
+    # Compute texture filter context with proper screen-space derivatives (pbrt-v4 style)
+    tfc = compute_texture_filter_context(work, camera, samples_per_pixel)
+
+    # Direct BSDF sample - no dispatch, but use correct signature
     sample = sample_bsdf_spectral(
-        rgb2spec_table, mat,
-        work.wo, work.ns, work.uv, work.lambda, u, rng, regularize
+        mat, rgb2spec_table, materials,
+        work.wo, work.ns, tfc, work.lambda, u, rng, regularize
     )
 
     if sample.pdf > 0f0 && !is_black(sample.f)
@@ -330,7 +341,9 @@ end
 function vp_evaluate_materials_coherent!(
     state::VolPathState,
     multi_queue::MultiMaterialQueue{N},
-    materials::NTuple{N, Any},
+    materials,  # StaticMultiTypeSet (also used as textures context)
+    camera,
+    samples_per_pixel::Int32,
     regularize::Bool = true
 ) where {N}
     output_queue = next_ray_queue(state)
@@ -345,10 +358,12 @@ function vp_evaluate_materials_coherent!(
             type_queue,
             output_queue,
             mat_array,
-                    state.rgb2spec_table,
+            materials,  # Pass full context for texture evaluation
+            state.rgb2spec_table,
             state.max_depth,
             regularize,
             pixel_samples.indirect_uc, pixel_samples.indirect_u, pixel_samples.indirect_rr,
+            camera, samples_per_pixel,
         )
     end
 end
@@ -370,12 +385,14 @@ function vp_sample_direct_lighting_coherent!(
     state::VolPathState,
     multi_queue::MultiMaterialQueue{N},
     materials::NTuple{N, Any},
-    lights
+    lights,
+    camera,
+    samples_per_pixel::Int32
 ) where {N}
     # Process each per-type queue for direct lighting
     for type_idx in 1:N
         type_queue = multi_queue.queues[type_idx]
-        vp_sample_direct_lighting_from_queue!(state, type_queue, materials, lights)
+        vp_sample_direct_lighting_from_queue!(state, type_queue, materials, lights, camera, samples_per_pixel)
     end
 end
 
@@ -383,18 +400,21 @@ function vp_sample_direct_lighting_from_queue!(
     state::VolPathState,
     mat_queue::WorkQueue{VPMaterialEvalWorkItem},
     materials,
-    lights
+    lights,
+    camera,
+    samples_per_pixel::Int32
 )
     pixel_samples = state.pixel_samples
     foreach(vp_sample_surface_direct_lighting_kernel!,
         mat_queue,
         state.shadow_queue,
         materials,
-            lights,
+        lights,
         state.rgb2spec_table,
         state.light_sampler_p, state.light_sampler_q, state.light_sampler_alias,
         state.num_lights,
         pixel_samples.direct_uc, pixel_samples.direct_u,
+        camera, samples_per_pixel,
     )
     return nothing
 end
@@ -405,15 +425,19 @@ end
 
 function vp_evaluate_materials_sorted!(
     state::VolPathState,
-    materials::NTuple{N, Any},
+    materials,  # StaticMultiTypeSet
+    camera,
+    samples_per_pixel::Int32,
     regularize::Bool = true
-) where {N}
+)
     n_total = length(state.material_queue)
     n_total == 0 && return nothing
 
+    N = length(materials)
+
     # For small queues, sorting overhead isn't worth it
     if n_total < 512 || N == 1
-        vp_evaluate_materials!(state, materials, regularize)
+        vp_evaluate_materials!(state, materials, camera, samples_per_pixel, regularize)
         return nothing
     end
 
@@ -425,7 +449,7 @@ function vp_evaluate_materials_sorted!(
     # Check if sorting is beneficial
     max_count = maximum(type_counts)
     if max_count >= n_total * 0.9
-        vp_evaluate_materials!(state, materials, regularize)
+        vp_evaluate_materials!(state, materials, camera, samples_per_pixel, regularize)
         return nothing
     end
 
@@ -446,9 +470,10 @@ function vp_evaluate_materials_sorted!(
         output_queue,
         sorted_items, Int32(n_total),
         materials,
-            state.rgb2spec_table,
+        state.rgb2spec_table,
         state.max_depth, regularize,
-        pixel_samples.indirect_uc, pixel_samples.indirect_u, pixel_samples.indirect_rr;
+        pixel_samples.indirect_uc, pixel_samples.indirect_u, pixel_samples.indirect_rr,
+        camera, samples_per_pixel;
         ndrange=Int(n_total)
     )
     return nothing
@@ -506,7 +531,8 @@ end
     @Const(rgb2spec_table),
     @Const(max_depth::Int32),
     @Const(do_regularize::Bool),
-    @Const(pixel_samples_indirect_uc), @Const(pixel_samples_indirect_u), @Const(pixel_samples_indirect_rr)
+    @Const(pixel_samples_indirect_uc), @Const(pixel_samples_indirect_u), @Const(pixel_samples_indirect_rr),
+    @Const(camera), @Const(samples_per_pixel::Int32)
 )
     idx = @index(Global)
 
@@ -516,7 +542,8 @@ end
             next_ray_queue,
             work, materials, rgb2spec_table, max_depth,
             do_regularize,
-            pixel_samples_indirect_uc, pixel_samples_indirect_u, pixel_samples_indirect_rr
+            pixel_samples_indirect_uc, pixel_samples_indirect_u, pixel_samples_indirect_rr,
+            camera, samples_per_pixel
         )
     end
 end

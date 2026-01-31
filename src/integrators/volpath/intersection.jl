@@ -37,6 +37,91 @@ Compute UV coordinates using barycentric coordinates from ray intersection.
 end
 
 """
+    vp_compute_partial_derivatives(primitive) -> (dpdu, dpdv)
+
+Compute position partial derivatives (∂p/∂u, ∂p/∂v) from triangle vertices and UVs.
+These are used for texture filtering and tangent space construction.
+Following pbrt-v4's Triangle::InteractionFromIntersection.
+"""
+@propagate_inbounds function vp_compute_partial_derivatives(primitive)
+    v0 = primitive.vertices[1]
+    v1 = primitive.vertices[2]
+    v2 = primitive.vertices[3]
+    uv0 = primitive.uv[1]
+    uv1 = primitive.uv[2]
+    uv2 = primitive.uv[3]
+
+    # Compute deltas for partial derivative matrix
+    δuv_10 = uv1 - uv0
+    δuv_20 = uv2 - uv0
+    δp_10 = Vec3f(v1 - v0)
+    δp_20 = Vec3f(v2 - v0)
+
+    # Solve for dpdu, dpdv using Cramer's rule
+    det = δuv_10[1] * δuv_20[2] - δuv_10[2] * δuv_20[1]
+
+    if abs(det) < 1f-8
+        # Degenerate UV mapping - create orthonormal basis from edge
+        e1 = normalize(δp_10)
+        n = normalize(cross(δp_10, δp_20))
+        e2 = cross(n, e1)
+        return e1, e2
+    end
+
+    inv_det = 1f0 / det
+    dpdu = Vec3f(δuv_20[2] * δp_10 - δuv_10[2] * δp_20) * inv_det
+    dpdv = Vec3f(-δuv_20[1] * δp_10 + δuv_10[1] * δp_20) * inv_det
+    return dpdu, dpdv
+end
+
+"""
+    vp_compute_shading_tangents(primitive, barycentric, ns, dpdu, dpdv) -> (dpdus, dpdvs)
+
+Compute shading tangent vectors from vertex tangents or geometric derivatives.
+Following pbrt-v4's approach: use vertex tangents if available, otherwise
+orthonormalize geometric dpdu/dpdv to the shading normal.
+"""
+@propagate_inbounds function vp_compute_shading_tangents(primitive, barycentric, ns::Vec3f, dpdu::Vec3f, dpdv::Vec3f)
+    # Try to get vertex tangents
+    t0 = primitive.tangents[1]
+    t1 = primitive.tangents[2]
+    t2 = primitive.tangents[3]
+
+    # Check if tangents are valid (not NaN)
+    has_tangents = !isnan(t0[1]) && !isnan(t1[1]) && !isnan(t2[1])
+
+    if has_tangents
+        # Interpolate vertex tangents
+        w, u, v = barycentric[1], barycentric[2], barycentric[3]
+        dpdus = Vec3f(
+            w * t0[1] + u * t1[1] + v * t2[1],
+            w * t0[2] + u * t1[2] + v * t2[2],
+            w * t0[3] + u * t1[3] + v * t2[3]
+        )
+        dpdus = normalize(dpdus)
+    else
+        # Use geometric dpdu, projected onto shading tangent plane
+        dpdus = dpdu - ns * dot(ns, dpdu)
+        len_sq = dot(dpdus, dpdus)
+        if len_sq > 1f-10
+            dpdus = dpdus / sqrt(len_sq)
+        else
+            # Fallback: create orthonormal basis from shading normal
+            if abs(ns[1]) > abs(ns[2])
+                dpdus = Vec3f(-ns[3], 0f0, ns[1]) / sqrt(ns[1]*ns[1] + ns[3]*ns[3])
+            else
+                dpdus = Vec3f(0f0, ns[3], -ns[2]) / sqrt(ns[2]*ns[2] + ns[3]*ns[3])
+            end
+        end
+    end
+
+    # Compute dpdvs perpendicular to both ns and dpdus
+    dpdvs = cross(ns, dpdus)
+
+    return dpdus, dpdvs
+end
+
+"""
     vp_compute_shading_normal(primitive, barycentric, geometric_normal) -> Vec3f
 
 Compute interpolated shading normal from vertex normals.
@@ -66,6 +151,34 @@ Compute interpolated shading normal from vertex normals.
     end
 end
 
+"""
+    vp_compute_surface_geometry(primitive, barycentric, ray) -> NamedTuple
+
+Compute all surface geometry needed for material evaluation.
+Returns (pi, n, dpdu, dpdv, ns, dpdus, dpdvs, uv).
+"""
+@propagate_inbounds function vp_compute_surface_geometry(primitive, barycentric, ray_o, ray_d, t_hit)
+    # Intersection point
+    pi = Point3f(ray_o + ray_d * t_hit)
+
+    # Geometric normal
+    n = vp_compute_geometric_normal(primitive)
+
+    # UV coordinates
+    uv = vp_compute_uv_barycentric(primitive, barycentric)
+
+    # Position partial derivatives (for texture filtering)
+    dpdu, dpdv = vp_compute_partial_derivatives(primitive)
+
+    # Shading normal
+    ns = vp_compute_shading_normal(primitive, barycentric, n)
+
+    # Shading tangent vectors
+    dpdus, dpdvs = vp_compute_shading_tangents(primitive, barycentric, ns, dpdu, dpdv)
+
+    return (pi=pi, n=n, dpdu=dpdu, dpdv=dpdv, ns=ns, dpdus=dpdus, dpdvs=dpdvs, uv=uv)
+end
+
 # ============================================================================
 # Primary Ray Intersection Kernel
 # ============================================================================
@@ -93,12 +206,15 @@ end
             mi = media_interfaces[mi_idx]
             mat_idx = mi.material  # SetKey into materials
 
-            pi = Point3f(work.ray.o + work.ray.d * t_hit)
-            n = vp_compute_geometric_normal(primitive)
-            uv = vp_compute_uv_barycentric(primitive, barycentric)
-            ns = vp_compute_shading_normal(primitive, barycentric, n)
+            # Compute full surface geometry including derivatives for texture filtering
+            geom = vp_compute_surface_geometry(primitive, barycentric, work.ray.o, work.ray.d, t_hit)
 
-            push!(medium_sample_queue, VPMediumSampleWorkItem(work, t_hit, pi, n, ns, uv, mat_idx, mi))
+            push!(medium_sample_queue, VPMediumSampleWorkItem(
+                work, t_hit,
+                geom.pi, geom.n, geom.dpdu, geom.dpdv,
+                geom.ns, geom.dpdus, geom.dpdvs,
+                geom.uv, mat_idx, mi
+            ))
         else
             # Ray in medium but escaped scene - t_max = Infinity
             push!(medium_sample_queue, VPMediumSampleWorkItem(work))
@@ -115,12 +231,15 @@ end
             mi = media_interfaces[mi_idx]
             mat_idx = mi.material  # SetKey into materials
 
-            pi = Point3f(work.ray.o + work.ray.d * t_hit)
-            n = vp_compute_geometric_normal(primitive)
-            uv = vp_compute_uv_barycentric(primitive, barycentric)
-            ns = vp_compute_shading_normal(primitive, barycentric, n)
+            # Compute full surface geometry including derivatives for texture filtering
+            geom = vp_compute_surface_geometry(primitive, barycentric, work.ray.o, work.ray.d, t_hit)
 
-            push!(hit_surface_queue, VPHitSurfaceWorkItem(work, pi, n, ns, uv, mat_idx, mi, t_hit))
+            push!(hit_surface_queue, VPHitSurfaceWorkItem(
+                work,
+                geom.pi, geom.n, geom.dpdu, geom.dpdv,
+                geom.ns, geom.dpdus, geom.dpdvs,
+                geom.uv, mat_idx, mi, t_hit
+            ))
         end
     end
 end
@@ -294,7 +413,7 @@ Returns (T_ray, r_u, r_l) where:
 
         # Sample medium properties at this point
         p = Point3f(origin + dir * t_sample)
-        mp = Raycore.with_index(sample_point, media, medium_idx, rgb2spec_table, p, lambda)
+        mp = Raycore.with_index(sample_point, media, medium_idx, media, rgb2spec_table, p, lambda)
 
         # Compute null-scattering coefficient
         σ_n = majorant.σ_maj - mp.σ_a - mp.σ_s

@@ -7,13 +7,13 @@ abstract type AbstractScene end
 # Materials and media use MultiTypeSet (or StaticMultiTypeSet for GPU/kernels).
 # Textures are stored within the materials MultiTypeSet (materials have TextureRef fields).
 # LightVec can be Tuple (for type-stable iteration) or AbstractVector.
-struct Scene{Accel,LightVec,MatVec<:AbstractVector,MedVec<:AbstractVector, MI<:AbstractVector} <: AbstractScene
+struct Scene{Accel,LightVec,MatVec<:AbstractVector,MedVec<:AbstractVector, MI<:AbstractVector, Bounds} <: AbstractScene
     lights::LightVec
     accel::Accel  # BVH, TLAS, or any accelerator supporting closest_hit/any_hit
     materials::MatVec  # MultiTypeSet
     media::MedVec  # MultiTypeSet
     media_interfaces::MI  # MultiTypeSet
-    bounds::Base.RefValue{Tuple{Bounds3, Sphere{Float32}}}
+    bounds::Bounds  # RefValue{Tuple} - adapted to device RefValue for GPU
 end
 
 # Accessors for scene bounds (dereference the RefValue)
@@ -126,12 +126,12 @@ end
 # Adapt Scene for GPU kernels - converts arrays to device arrays
 function Adapt.adapt_structure(to, scene::Scene)
     Scene(
-        scene.lights,  # Tuple of lights, already bitstype
+        Adapt.adapt(to, scene.lights),  # Convert MultiTypeSet → StaticMultiTypeSet if needed
         Adapt.adapt(to, scene.accel),
         Adapt.adapt(to, scene.materials),
         Adapt.adapt(to, scene.media),
         Adapt.adapt(to, scene.media_interfaces),
-        scene.bounds  # RefValue is preserved (points to same data)
+        Adapt.adapt(to, scene.bounds)  # RefValue → device RefValue
     )
 end
 

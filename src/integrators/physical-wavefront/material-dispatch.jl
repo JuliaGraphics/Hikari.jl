@@ -10,21 +10,24 @@
 # ============================================================================
 
 """
-    sample_spectral_material(table, materials::StaticMultiTypeSet, idx, wo, ns, uv, lambda, u, rng, regularize=false)
+    sample_spectral_material(table, materials::StaticMultiTypeSet, idx, wo, ns, tfc, lambda, u, rng, regularize=false)
 
 Type-stable dispatch for spectral BSDF sampling.
 Returns SpectralBSDFSample from the appropriate material type.
 
 When `regularize=true`, near-specular BSDFs will be roughened to reduce fireflies.
+
+Arguments:
+- `tfc::TextureFilterContext`: Contains UV coordinates and screen-space derivatives for texture filtering.
 """
 @propagate_inbounds function sample_spectral_material(
     table::RGBToSpectrumTable, materials::StaticMultiTypeSet,
     idx::SetKey,
-    wo::Vec3f, ns::Vec3f, uv::Point2f,
+    wo::Vec3f, ns::Vec3f, tfc::TextureFilterContext,
     lambda::Wavelengths, u::Point2f, rng::Float32,
     regularize::Bool = false
 )
-    return with_index(sample_bsdf_spectral, materials, idx, table, materials, wo, ns, uv, lambda, u, rng, regularize)
+    return with_index(sample_bsdf_spectral, materials, idx, table, materials, wo, ns, tfc, lambda, u, rng, regularize)
 end
 
 # ============================================================================
@@ -32,18 +35,21 @@ end
 # ============================================================================
 
 """
-    evaluate_spectral_material(table, materials::StaticMultiTypeSet, idx, wo, wi, ns, uv, lambda)
+    evaluate_spectral_material(table, materials::StaticMultiTypeSet, idx, wo, wi, ns, tfc, lambda)
 
 Type-stable dispatch for spectral BSDF evaluation.
 Returns (f::SpectralRadiance, pdf::Float32).
+
+Arguments:
+- `tfc::TextureFilterContext`: Contains UV coordinates and screen-space derivatives for texture filtering.
 """
 @propagate_inbounds function evaluate_spectral_material(
     table::RGBToSpectrumTable, materials::StaticMultiTypeSet,
     idx::SetKey,
-    wo::Vec3f, wi::Vec3f, ns::Vec3f, uv::Point2f,
+    wo::Vec3f, wi::Vec3f, ns::Vec3f, tfc::TextureFilterContext,
     lambda::Wavelengths
 )
-    return with_index(evaluate_bsdf_spectral, materials, idx, table, materials, wo, wi, ns, uv, lambda)
+    return with_index(evaluate_bsdf_spectral, materials, idx, table, materials, wo, wi, ns, tfc, lambda)
 end
 
 # ============================================================================
@@ -51,31 +57,37 @@ end
 # ============================================================================
 
 """
-    get_emission_spectral_dispatch(table, materials::StaticMultiTypeSet, idx, wo, n, uv, lambda)
+    get_emission_spectral_dispatch(table, materials::StaticMultiTypeSet, idx, wo, n, tfc, lambda)
 
 Type-stable dispatch for getting spectral emission from materials.
 Returns SpectralRadiance (zero for non-emissive materials).
+
+Arguments:
+- `tfc::TextureFilterContext`: Contains UV coordinates and screen-space derivatives for texture filtering.
 """
 @propagate_inbounds function get_emission_spectral_dispatch(
     table::RGBToSpectrumTable, materials::StaticMultiTypeSet,
     idx::SetKey,
-    wo::Vec3f, n::Vec3f, uv::Point2f, lambda::Wavelengths
+    wo::Vec3f, n::Vec3f, tfc::TextureFilterContext, lambda::Wavelengths
 )
-    return with_index(get_emission_spectral, materials, idx, table, materials, wo, n, uv, lambda)
+    return with_index(get_emission_spectral, materials, idx, table, materials, wo, n, tfc, lambda)
 end
 
 """
-    get_emission_spectral_uv_dispatch(table, materials::StaticMultiTypeSet, idx, uv, lambda)
+    get_emission_spectral_uv_dispatch(table, materials::StaticMultiTypeSet, idx, tfc, lambda)
 
 Type-stable dispatch for getting spectral emission without directional check.
 Returns SpectralRadiance (zero for non-emissive materials).
+
+Arguments:
+- `tfc::TextureFilterContext`: Contains UV coordinates and screen-space derivatives for texture filtering.
 """
 @propagate_inbounds function get_emission_spectral_uv_dispatch(
     table::RGBToSpectrumTable, materials::StaticMultiTypeSet,
     idx::SetKey,
-    uv::Point2f, lambda::Wavelengths
+    tfc::TextureFilterContext, lambda::Wavelengths
 )
-    return with_index(get_emission_spectral, materials, idx, table, materials, uv, lambda)
+    return with_index(get_emission_spectral, materials, idx, table, materials, tfc, lambda)
 end
 
 # ============================================================================
@@ -111,17 +123,20 @@ end
 # ============================================================================
 
 """
-    get_albedo_spectral_dispatch(table, materials::StaticMultiTypeSet, idx, uv, lambda)
+    get_albedo_spectral_dispatch(table, materials::StaticMultiTypeSet, idx, tfc, lambda)
 
 Type-stable dispatch for getting material albedo for denoising.
 Returns SpectralRadiance.
+
+Arguments:
+- `tfc::TextureFilterContext`: Contains UV coordinates and screen-space derivatives for texture filtering.
 """
 @propagate_inbounds function get_albedo_spectral_dispatch(
     table::RGBToSpectrumTable, materials::StaticMultiTypeSet,
     idx::SetKey,
-    uv::Point2f, lambda::Wavelengths
+    tfc::TextureFilterContext, lambda::Wavelengths
 )
-    return with_index(get_albedo_spectral, materials, idx, table, materials, uv, lambda)
+    return with_index(get_albedo_spectral, materials, idx, table, materials, tfc, lambda)
 end
 
 # ============================================================================
@@ -153,21 +168,24 @@ end
 end
 
 """
-    evaluate_material_complete(mat, table, ctx, wo, ns, n, uv, lambda, u, rng, regularize=false)
+    evaluate_material_complete(mat, table, ctx, wo, ns, n, tfc, lambda, u, rng, regularize=false)
 
 Complete material evaluation for wavefront pipeline.
 Returns PWMaterialEvalResult with BSDF sample and emission.
 
 When `regularize=true`, near-specular BSDFs will be roughened to reduce fireflies.
+
+Arguments:
+- `tfc::TextureFilterContext`: Contains UV coordinates and screen-space derivatives for texture filtering.
 """
 @propagate_inbounds function evaluate_material_complete(
     mat, table::RGBToSpectrumTable, ctx,
-    wo::Vec3f, ns::Vec3f, n::Vec3f, uv::Point2f,
+    wo::Vec3f, ns::Vec3f, n::Vec3f, tfc::TextureFilterContext,
     lambda::Wavelengths, u::Point2f, rng::Float32,
     regularize::Bool = false
 )
-    sample = sample_bsdf_spectral(mat, table, ctx, wo, ns, uv, lambda, u, rng, regularize)
-    Le = get_emission_spectral(mat, table, ctx, wo, n, uv, lambda)
+    sample = sample_bsdf_spectral(mat, table, ctx, wo, ns, tfc, lambda, u, rng, regularize)
+    Le = get_emission_spectral(mat, table, ctx, wo, n, tfc, lambda)
     is_em = is_emissive(mat)
     return PWMaterialEvalResult(sample, Le, is_em)
 end

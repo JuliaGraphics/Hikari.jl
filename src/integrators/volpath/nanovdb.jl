@@ -470,6 +470,7 @@ end
 
 @propagate_inbounds function sample_point(
     medium::NanoVDBMedium,
+    media,  # StaticMultiTypeSet (unused for NanoVDB)
     table::RGBToSpectrumTable,
     p::Point3f,
     λ::Wavelengths
