@@ -187,6 +187,8 @@ end
 # MultiTypeSet Integration
 # ============================================================================
 
+
+# TODO remove the below function, Raycores conversion should work correctly without it
 """
     Raycore.maybe_convert_field(dhv::MultiTypeSet, tex::Texture)
 
