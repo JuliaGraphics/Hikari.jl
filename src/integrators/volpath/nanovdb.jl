@@ -303,16 +303,20 @@ end
 # ============================================================================
 
 """
-    nanovdb_get_value(medium::NanoVDBMedium, ijk::NTuple{3, Int32}) -> Float32
+    nanovdb_get_value(medium::NanoVDBMedium, media, ijk::NTuple{3, Int32}) -> Float32
 
 Get the voxel value at integer index coordinates using full tree traversal.
 Matches pbrt-v4/NanoVDB's Tree::getValue exactly.
 
+The `media` parameter is used to deref TextureRef fields when NanoVDBMedium is stored in a MultiTypeSet.
+
 Uses pointer(buffer) with as_pointer for type conversion - works on both CPU and GPU.
 """
-@inline @propagate_inbounds function nanovdb_get_value(medium::NanoVDBMedium, ijk::NTuple{3, Int32})::Float32
+@inline @propagate_inbounds function nanovdb_get_value(medium::NanoVDBMedium, media, ijk::NTuple{3, Int32})::Float32
+    # Deref buffer from TextureRef (no-op if already array)
+    buffer = Raycore.deref(media, medium.buffer)
     # Get pointer to buffer - works for both CPU Vector and GPU CLArray
-    ptr = pointer(medium.buffer)
+    ptr = pointer(buffer)
     root_offset = medium.root_offset
 
     # 1. Root node lookup (linear search through tiles)
@@ -412,12 +416,14 @@ end
 # ============================================================================
 
 """
-    sample_nanovdb_density(medium::NanoVDBMedium, p_world::Point3f) -> Float32
+    sample_nanovdb_density(medium::NanoVDBMedium, media, p_world::Point3f) -> Float32
 
 Sample the density at a world-space point using trilinear interpolation.
 Matches pbrt-v4's SampleFromVoxels<TreeT, 1, false> sampler.
+
+The `media` parameter is used to deref TextureRef fields when NanoVDBMedium is stored in a MultiTypeSet.
 """
-@inline @propagate_inbounds function sample_nanovdb_density(medium::NanoVDBMedium, p_world::Point3f)::Float32
+@inline @propagate_inbounds function sample_nanovdb_density(medium::NanoVDBMedium, media, p_world::Point3f)::Float32
     # Transform to index space
     p_idx = world_to_index_f(medium, p_world)
 
@@ -433,14 +439,14 @@ Matches pbrt-v4's SampleFromVoxels<TreeT, 1, false> sampler.
 
     # Sample 8 corners (matching C++ TrilinearSampler::stencil order)
     # v[i][j][k] where i=x+di, j=y+dj, k=z+dk
-    v000 = nanovdb_get_value(medium, (ix, iy, iz))
-    v001 = nanovdb_get_value(medium, (ix, iy, iz + Int32(1)))
-    v010 = nanovdb_get_value(medium, (ix, iy + Int32(1), iz))
-    v011 = nanovdb_get_value(medium, (ix, iy + Int32(1), iz + Int32(1)))
-    v100 = nanovdb_get_value(medium, (ix + Int32(1), iy, iz))
-    v101 = nanovdb_get_value(medium, (ix + Int32(1), iy, iz + Int32(1)))
-    v110 = nanovdb_get_value(medium, (ix + Int32(1), iy + Int32(1), iz))
-    v111 = nanovdb_get_value(medium, (ix + Int32(1), iy + Int32(1), iz + Int32(1)))
+    v000 = nanovdb_get_value(medium, media, (ix, iy, iz))
+    v001 = nanovdb_get_value(medium, media, (ix, iy, iz + Int32(1)))
+    v010 = nanovdb_get_value(medium, media, (ix, iy + Int32(1), iz))
+    v011 = nanovdb_get_value(medium, media, (ix, iy + Int32(1), iz + Int32(1)))
+    v100 = nanovdb_get_value(medium, media, (ix + Int32(1), iy, iz))
+    v101 = nanovdb_get_value(medium, media, (ix + Int32(1), iy, iz + Int32(1)))
+    v110 = nanovdb_get_value(medium, media, (ix + Int32(1), iy + Int32(1), iz))
+    v111 = nanovdb_get_value(medium, media, (ix + Int32(1), iy + Int32(1), iz + Int32(1)))
 
     # Trilinear interpolation (matching C++ TrilinearSampler::sample)
     # lerp(a, b, t) = a + t * (b - a)
@@ -470,13 +476,13 @@ end
 
 @propagate_inbounds function sample_point(
     medium::NanoVDBMedium,
-    media,  # StaticMultiTypeSet (unused for NanoVDB)
+    media,  # StaticMultiTypeSet for deref of TextureRef fields
     table::RGBToSpectrumTable,
     p::Point3f,
     λ::Wavelengths
 )::MediumProperties
     # Sample density using trilinear interpolation
-    d = sample_nanovdb_density(medium, p)
+    d = sample_nanovdb_density(medium, media, p)
 
     # Scale coefficients by density
     σ_a = uplift_rgb_unbounded(table, medium.σ_a, λ) * d

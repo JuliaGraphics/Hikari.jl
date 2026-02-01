@@ -194,7 +194,8 @@ Sample environment light spectrally with importance sampling.
     end
 
     # Sample environment map color at UV (using lookup_uv like pbrt-v4's ImageLe)
-    Li_rgb = lookup_uv(light.env_map, uv) * light.scale
+    # Pass lights for deref of TextureRef fields in EnvironmentMap
+    Li_rgb = lookup_uv(light.env_map, uv, lights) * light.scale
 
     # p_light at infinity
     p_light = Point3f(p + 1f6 * wi)
@@ -349,16 +350,18 @@ end
 # ============================================================================
 
 """
-    evaluate_environment_spectral(light::EnvironmentLight, table, ray_d::Vec3f, lambda::Wavelengths)
+    evaluate_environment_spectral(light::EnvironmentLight, lights, table, ray_d::Vec3f, lambda::Wavelengths)
 
 Evaluate environment light for an escaped ray direction.
+The `lights` parameter is used to deref TextureRef fields in EnvironmentMap.
 """
 @propagate_inbounds function evaluate_environment_spectral(
-    light::EnvironmentLight, table::RGBToSpectrumTable, ray_d::Vec3f, lambda::Wavelengths
+    light::EnvironmentLight, lights, table::RGBToSpectrumTable, ray_d::Vec3f, lambda::Wavelengths
 )::SpectralRadiance
     # Sample environment map by direction (env_map handles direction->UV internally)
     # Following pbrt-v4 ImageInfiniteLight::Le which passes direction directly
-    Le_rgb = light.env_map(ray_d) * light.scale
+    # Pass lights for deref of TextureRef fields in EnvironmentMap
+    Le_rgb = light.env_map(ray_d, lights) * light.scale
 
     # Use illuminant uplift for environment lights (matches pbrt's RGBIlluminantSpectrum)
     # This multiplies by D65 illuminant spectrum - critical for correct white reproduction
@@ -366,12 +369,12 @@ Evaluate environment light for an escaped ray direction.
 end
 
 """
-    evaluate_environment_spectral(light::SunSkyLight, table, ray_d::Vec3f, lambda::Wavelengths)
+    evaluate_environment_spectral(light::SunSkyLight, lights, table, ray_d::Vec3f, lambda::Wavelengths)
 
 Evaluate sun/sky light for an escaped ray direction.
 """
 @propagate_inbounds function evaluate_environment_spectral(
-    light::SunSkyLight, table::RGBToSpectrumTable, ray_d::Vec3f, lambda::Wavelengths
+    light::SunSkyLight, lights, table::RGBToSpectrumTable, ray_d::Vec3f, lambda::Wavelengths
 )::SpectralRadiance
     # Get sky + sun radiance for direction (same as le() function)
     Le_rgb = sky_radiance(light, ray_d) + sun_disk_radiance(light, ray_d)
@@ -381,12 +384,12 @@ Evaluate sun/sky light for an escaped ray direction.
 end
 
 """
-    evaluate_environment_spectral(light::AmbientLight, table, ray_d::Vec3f, lambda::Wavelengths)
+    evaluate_environment_spectral(light::AmbientLight, lights, table, ray_d::Vec3f, lambda::Wavelengths)
 
 Evaluate ambient light for an escaped ray - provides constant radiance regardless of direction.
 """
 @propagate_inbounds function evaluate_environment_spectral(
-    light::AmbientLight, table::RGBToSpectrumTable, ray_d::Vec3f, lambda::Wavelengths
+    light::AmbientLight, lights, table::RGBToSpectrumTable, ray_d::Vec3f, lambda::Wavelengths
 )::SpectralRadiance
     # Use illuminant uplift (matches pbrt's RGBIlluminantSpectrum)
     # This multiplies by D65 illuminant spectrum - critical for correct white reproduction
@@ -394,7 +397,7 @@ Evaluate ambient light for an escaped ray - provides constant radiance regardles
 end
 
 # Fallback - non-environment lights contribute nothing for escaped rays
-@propagate_inbounds evaluate_environment_spectral(::Light, ::RGBToSpectrumTable, ::Vec3f, ::Wavelengths) = SpectralRadiance(0f0)
+@propagate_inbounds evaluate_environment_spectral(::Light, lights, ::RGBToSpectrumTable, ::Vec3f, ::Wavelengths) = SpectralRadiance(0f0)
 
 """
     evaluate_escaped_ray_spectral(table, lights::StaticMultiTypeSet, ray_d, lambda)
@@ -404,7 +407,8 @@ Evaluate all environment-type lights for an escaped ray using StaticMultiTypeSet
 @propagate_inbounds function evaluate_escaped_ray_spectral(
     table::RGBToSpectrumTable, lights::Raycore.StaticMultiTypeSet, ray_d::Vec3f, lambda::Wavelengths
 )::SpectralRadiance
-    return mapreduce(evaluate_environment_spectral, +, lights, table, ray_d, lambda; init=SpectralRadiance(0f0))
+    # Pass lights twice: first as collection to iterate, second as arg for deref
+    return mapreduce(evaluate_environment_spectral, +, lights, lights, table, ray_d, lambda; init=SpectralRadiance(0f0))
 end
 
 # Helper to compute PDF from a single light (only EnvironmentLight has non-zero PDF)

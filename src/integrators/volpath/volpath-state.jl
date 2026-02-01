@@ -56,10 +56,10 @@ mutable struct VolPathState{Backend}
     pixel_L::AbstractVector{Float32}
 
     # Accumulators for progressive rendering (moved from main loop)
-    # NOTE: Using Float64 to match pbrt-v4's double precision accumulators (film.h:304-305)
-    # This is critical for proper variance reduction at high sample counts
-    pixel_rgb::AbstractVector{Float64}  # n_pixels * 3 (RGB accumulator)
-    pixel_weight_sum::AbstractVector{Float64}  # n_pixels (filter weight accumulator)
+    # NOTE: Default Float64 matches pbrt-v4's double precision accumulators (film.h:304-305)
+    # Use Float32 for OpenCL backends that don't support double precision atomics
+    pixel_rgb::AbstractVector  # n_pixels * 3 (RGB accumulator)
+    pixel_weight_sum::AbstractVector  # n_pixels (filter weight accumulator)
     wavelengths_per_pixel::AbstractVector{Float32}  # n_pixels * 4 (wavelength samples)
     pdf_per_pixel::AbstractVector{Float32}  # n_pixels * 4 (wavelength PDFs)
     filter_weight_per_pixel::AbstractVector{Float32}  # n_pixels (filter weight per sample)
@@ -103,7 +103,8 @@ function VolPathState(
     queue_capacity::Integer = width * height,
     scene_radius::Float32 = 10f0,  # Scene bounding sphere radius for light power estimation
     samples_per_pixel::Integer = 1,  # For SobolRNG parameter computation
-    sampler_seed::UInt32 = UInt32(0)  # Scrambling seed for Sobol
+    sampler_seed::UInt32 = UInt32(0),  # Scrambling seed for Sobol
+    accumulation_eltype::DataType = Float32  # Element type for accumulators (Float32 for OpenCL)
 )
     n_pixels = width * height
 
@@ -121,11 +122,11 @@ function VolPathState(
     pixel_L = KA.allocate(backend, Float32, n_pixels * 4)
     KA.fill!(pixel_L, 0f0)
 
-    # Accumulators for progressive rendering (Float64 to match pbrt-v4)
-    pixel_rgb = KA.allocate(backend, Float64, n_pixels * 3)
-    KA.fill!(pixel_rgb, 0.0)
-    pixel_weight_sum = KA.allocate(backend, Float64, n_pixels)
-    KA.fill!(pixel_weight_sum, 0.0)
+    # Accumulators for progressive rendering (configurable eltype for OpenCL compatibility)
+    pixel_rgb = KA.allocate(backend, accumulation_eltype, n_pixels * 3)
+    KA.fill!(pixel_rgb, zero(accumulation_eltype))
+    pixel_weight_sum = KA.allocate(backend, accumulation_eltype, n_pixels)
+    KA.fill!(pixel_weight_sum, zero(accumulation_eltype))
     wavelengths_per_pixel = KA.allocate(backend, Float32, n_pixels * 4)
     KA.fill!(wavelengths_per_pixel, 0f0)
     pdf_per_pixel = KA.allocate(backend, Float32, n_pixels * 4)

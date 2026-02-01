@@ -285,12 +285,16 @@ end
 
 """
 Sample the environment map by direction vector.
+The `textures` parameter is used to deref TextureRef fields when EnvironmentMap is stored in a MultiTypeSet.
 """
-@propagate_inbounds function (env::EnvironmentMap{S, T, D})(dir::Vec3f)::S where {S<:Spectrum, T, D}
+@propagate_inbounds function (env::EnvironmentMap{S, T, D})(dir::Vec3f, textures)::S where {S<:Spectrum, T, D}
     uv = direction_to_uv(dir, env.rotation)
 
+    # Deref data from TextureRef (no-op if already array)
+    data = Raycore.deref(textures, env.data)
+
     # Bilinear interpolation
-    h, w = size(env.data)
+    h, w = size(data)
 
     # Convert to pixel coordinates
     x = uv[1] * (w - 1) + 1
@@ -318,10 +322,10 @@ Sample the environment map by direction vector.
     fy = y - Float32(floor_int32(y))
 
     # Bilinear interpolation
-    c00 = env.data[y0, x0]
-    c10 = env.data[y0, x1]
-    c01 = env.data[y1, x0]
-    c11 = env.data[y1, x1]
+    c00 = data[y0, x0]
+    c10 = data[y0, x1]
+    c01 = data[y1, x0]
+    c11 = data[y1, x1]
 
     c0 = c00 * (1f0 - fx) + c10 * fx
     c1 = c01 * (1f0 - fx) + c11 * fx
@@ -332,29 +336,38 @@ end
 """
 Sample method alias for compatibility.
 """
-@propagate_inbounds sample(env::EnvironmentMap, dir::Vec3f) = env(dir)
+@propagate_inbounds sample(env::EnvironmentMap, dir::Vec3f, textures) = env(dir, textures)
+
+# Convenience overload for CPU code that doesn't use MultiTypeSet (data is already an array)
+@propagate_inbounds (env::EnvironmentMap)(dir::Vec3f) = env(dir, nothing)
+@propagate_inbounds sample(env::EnvironmentMap, dir::Vec3f) = env(dir, nothing)
 
 """
-    lookup_uv(env::EnvironmentMap, uv::Point2f) -> Spectrum
+    lookup_uv(env::EnvironmentMap, uv::Point2f, textures) -> Spectrum
 
 Look up environment map directly by UV coordinates.
 This is the equivalent of pbrt-v4's ImageLe(uv, lambda) for ImageInfiniteLight.
 Used when UV is already known (e.g., from importance sampling the distribution).
 
+The `textures` parameter is used to deref TextureRef fields when EnvironmentMap is stored in a MultiTypeSet.
+
 IMPORTANT: Uses nearest-neighbor lookup to match the discrete PDF from importance sampling.
 Bilinear interpolation would cause bias because the PDF is computed for discrete pixels,
 not interpolated values. This matches pbrt-v4's LookupNearestChannel in ImageLe.
 """
-@propagate_inbounds function lookup_uv(env::EnvironmentMap{S, T, D}, uv::Point2f)::S where {S<:Spectrum, T, D}
+@propagate_inbounds function lookup_uv(env::EnvironmentMap{S, T, D}, uv::Point2f, textures)::S where {S<:Spectrum, T, D}
+    # Deref data from TextureRef (no-op if already array)
+    data = Raycore.deref(textures, env.data)
+
     # Nearest-neighbor lookup to match discrete PDF (like pbrt-v4's LookupNearestChannel)
-    h, w = size(env.data)
+    h, w = size(data)
 
     # Convert UV to pixel indices (nearest neighbor)
     # UV [0,1] maps to pixel centers at (0.5/w, 1.5/w, ..., (w-0.5)/w)
     u_idx = clamp(floor_int32(uv[1] * w) + Int32(1), Int32(1), u_int32(w))
     v_idx = clamp(floor_int32(uv[2] * h) + Int32(1), Int32(1), u_int32(h))
 
-    @inbounds env.data[v_idx, u_idx]
+    @inbounds data[v_idx, u_idx]
 end
 
 """

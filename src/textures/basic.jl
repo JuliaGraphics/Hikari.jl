@@ -38,3 +38,9 @@ end
     tex.isconst && return tex.constval
     return _sample_texture_data(tex.data, uv)
 end
+
+# Prevent Texture from being recursed into by MultiTypeSet conversion.
+# Texture is a wrapper type that manages its own array access - we don't want
+# its inner data array converted to TextureRef, as that would change the material's
+# type signature and break type-based dispatch.
+Raycore.maybe_convert_field(::Raycore.MultiTypeSet, tex::Texture) = tex
