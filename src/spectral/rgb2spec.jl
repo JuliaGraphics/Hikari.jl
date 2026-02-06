@@ -355,6 +355,7 @@ end
 
 """
     rgb_illuminant_spectrum(table::RGBToSpectrumTable, r, g, b) -> RGBIlluminantSpectrum
+    rgb_illuminant_spectrum(table::RGBToSpectrumTable, rgb::RGB) -> RGBIlluminantSpectrum
 
 Create an illuminant spectrum from RGB values, matching pbrt-v4's RGBIlluminantSpectrum constructor.
 """
@@ -372,6 +373,12 @@ function rgb_illuminant_spectrum(table::RGBToSpectrumTable, r::Float32, g::Float
 
     return RGBIlluminantSpectrum(poly, scale)
 end
+
+# Convenience overload accepting RGB type directly
+rgb_illuminant_spectrum(table::RGBToSpectrumTable, rgb::RGB{Float32}) =
+    rgb_illuminant_spectrum(table, rgb.r, rgb.g, rgb.b)
+rgb_illuminant_spectrum(table::RGBToSpectrumTable, rgb::RGB) =
+    rgb_illuminant_spectrum(table, Float32(rgb.r), Float32(rgb.g), Float32(rgb.b))
 
 # ============================================================================
 # Table Loading

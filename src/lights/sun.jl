@@ -9,6 +9,11 @@ struct SunLight{S<:Spectrum} <: Light
     world_to_light::Transformation
 
     i::S
+    """
+    Scale factor for light intensity (used for photometric normalization).
+    In pbrt-v4, this is set to `1 / SpectrumToPhotometric(illuminant)`.
+    """
+    scale::Float32
     direction::Vec3f
 
     # Cloud rendering parameters
@@ -16,13 +21,13 @@ struct SunLight{S<:Spectrum} <: Light
     corona_falloff::Float32    # How quickly corona fades around sun disk
 
     function SunLight(
-        light_to_world::Transformation, l::S, direction::Vec3f;
+        light_to_world::Transformation, l::S, direction::Vec3f, scale::Float32=1f0;
         angular_diameter::Float32 = 0.00933f0,
         corona_falloff::Float32 = 8.0f0,
     ) where S<:Spectrum
         new{S}(
             light_to_world, inv(light_to_world),
-            l, normalize(light_to_world(direction)),
+            l, scale, normalize(light_to_world(direction)),
             angular_diameter, corona_falloff,
         )
     end
@@ -33,9 +38,39 @@ is_δ_light(::SunLight) = true
 # Sun lights are infinite (at infinity)
 is_infinite_light(::SunLight) = true
 
-# Convenience constructor without transformation
-function SunLight(l::S, direction::Vec3f; kwargs...) where S<:Spectrum
-    SunLight(Transformation(Mat4f(I)), l, direction; kwargs...)
+# Convenience constructor without transformation (for direct spectrum input)
+function SunLight(l::S, direction::Vec3f, scale::Float32=1f0; kwargs...) where S<:Spectrum
+    SunLight(Transformation(Mat4f(I)), l, direction, scale; kwargs...)
+end
+
+"""
+    SunLight(rgb::RGB{Float32}, direction; angular_diameter=0.00933f0, corona_falloff=8f0)
+
+Create a SunLight from RGB color with automatic spectral conversion and photometric
+normalization, matching pbrt-v4's light creation pattern.
+
+# Arguments
+- `rgb`: RGB color (intensity encoded in color values)
+- `direction`: Direction the light travels (away from source)
+- `angular_diameter`: Angular size of sun disk in radians (default ~0.53°, real sun)
+- `corona_falloff`: How quickly corona fades around sun disk
+
+# Example
+```julia
+# Sun light traveling in -Y direction (sunlight from above)
+light = SunLight(RGB{Float32}(1f0, 1f0, 0.9f0), Vec3f(0, -1, 0))
+```
+"""
+function SunLight(rgb::RGB{Float32}, direction::Vec3f; kwargs...)
+    table = get_srgb_table()
+    spectrum = rgb_illuminant_spectrum(table, rgb)
+    scale = 1f0 / spectrum_to_photometric(spectrum)
+    SunLight(Transformation(Mat4f(I)), spectrum, direction, scale; kwargs...)
+end
+
+# Accept any RGB type (e.g., RGBf from Makie/Colors)
+function SunLight(rgb::RGB, direction::Vec3f; kwargs...)
+    SunLight(RGB{Float32}(rgb.r, rgb.g, rgb.b), direction; kwargs...)
 end
 
 function sample_li(
@@ -49,9 +84,9 @@ function sample_li(
     tester = VisibilityTester(
         ref, Interaction(outside_point, ref.time, Vec3f(0f0), Normal3f(0f0)),
     )
-    s.i, wi, 1f0, tester
+    s.scale * s.i, wi, 1f0, tester
 end
 
 @propagate_inbounds function power(s::SunLight{S}, scene::AbstractScene)::S where S<:Spectrum
-    s.i * π * world_radius(scene)^2
+    s.scale * s.i * π * world_radius(scene)^2
 end

@@ -28,31 +28,50 @@ function PointLight(position, i::S, scale::Float32=1f0) where S<:Spectrum
 end
 
 """
-    PointLight(i::RGBSpectrum, position)
-    PointLight(i::RGB{Float32}, position)
+    PointLight(rgb::RGB{Float32}, position; power=nothing)
+    PointLight(rgb::RGB, position; power=nothing)
 
-Create a PointLight with automatic photometric normalization matching pbrt-v4.
+Create a PointLight from RGB color with automatic spectral conversion and photometric
+normalization, matching pbrt-v4's light creation pattern.
 
-The intensity spectrum `i` is treated as an RGB illuminant (like pbrt's "rgb I" parameter).
-The scale is automatically computed as `1 / D65_PHOTOMETRIC` to normalize to photometric units.
+Converts RGB to RGBIlluminantSpectrum and applies photometric normalization:
+`scale = 1 / SpectrumToPhotometric(spectrum)` where SpectrumToPhotometric extracts
+the D65 illuminant component.
+
+# Arguments
+- `rgb`: RGB color (intensity encoded in color values, e.g., RGB(50,50,50) for bright white)
+- `position`: World-space position of the light
+- `power`: Optional radiant power in Watts. If specified, overrides the RGB intensity.
 
 # Example
 ```julia
 # Equivalent to pbrt-v4's: LightSource "point" "rgb I" [50 50 50]
+light = PointLight(RGB{Float32}(50f0, 50f0, 50f0), Vec3f(10, 10, 10))
+
+# Or with Makie's RGBf:
 light = PointLight(RGBf(50, 50, 50), Vec3f(10, 10, 10))
 ```
 """
-function PointLight(i::RGBSpectrum, position)
-    # Apply photometric normalization matching pbrt-v4:
-    # scale = 1 / SpectrumToPhotometric(D65_illuminant)
-    # For RGBIlluminantSpectrum, PBRT extracts just the D65 illuminant for normalization
-    scale = 1f0 / D65_PHOTOMETRIC
-    PointLight(translate(Vec3f(position)), i, scale)
+function PointLight(rgb::RGB{Float32}, position; power::Union{Nothing,Float32}=nothing)
+    table = get_srgb_table()
+    spectrum = rgb_illuminant_spectrum(table, rgb)
+    scale = 1f0 / spectrum_to_photometric(spectrum)
+    if !isnothing(power)
+        k_e = 4f0 * Float32(π)  # Sphere solid angle
+        scale *= power / k_e
+    end
+    PointLight(translate(Vec3f(position)), spectrum, scale)
 end
 
-# Convenience constructor for Colors.jl RGB type
-function PointLight(i::RGB{Float32}, position)
-    PointLight(RGBSpectrum(i.r, i.g, i.b), position)
+# Accept any RGB type (e.g., RGBf from Makie/Colors)
+function PointLight(rgb::RGB, position; kwargs...)
+    PointLight(RGB{Float32}(rgb.r, rgb.g, rgb.b), position; kwargs...)
+end
+
+# Legacy: RGBSpectrum constructor (for direct spectral specification without conversion)
+function PointLight(i::RGBSpectrum, position)
+    scale = 1f0 / D65_PHOTOMETRIC
+    PointLight(translate(Vec3f(position)), i, scale)
 end
 
 """

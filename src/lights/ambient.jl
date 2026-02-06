@@ -6,6 +6,29 @@ end
 is_infinite_light(::AmbientLight) = true
 
 """
+    AmbientLight(rgb::RGB{Float32})
+
+Create an AmbientLight from RGB color with automatic spectral conversion.
+
+Note: AmbientLight does not apply photometric normalization since it represents
+a constant ambient illumination level rather than a physical light source.
+
+# Example
+```julia
+# Dim ambient light
+light = AmbientLight(RGB{Float32}(0.1f0, 0.1f0, 0.1f0))
+```
+"""
+function AmbientLight(rgb::RGB{Float32})
+    table = get_srgb_table()
+    spectrum = rgb_illuminant_spectrum(table, rgb)
+    AmbientLight(spectrum)
+end
+
+# Accept any RGB type (e.g., RGBf from Makie/Colors)
+AmbientLight(rgb::RGB) = AmbientLight(RGB{Float32}(rgb.r, rgb.g, rgb.b))
+
+"""
 Compute radiance arriving at `ref.p` interaction point at `ref.time` time
 due to the ambient light.
 

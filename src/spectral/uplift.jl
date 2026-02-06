@@ -539,6 +539,7 @@ end
 
 """
     uplift_rgb_illuminant(table::RGBToSpectrumTable, rgb::RGBSpectrum, lambda::Wavelengths) -> SpectralRadiance
+    uplift_rgb_illuminant(table::RGBToSpectrumTable, s::RGBIlluminantSpectrum, lambda::Wavelengths) -> SpectralRadiance
 
 Convert RGB to spectral radiance for illuminants (light sources, environment maps).
 Following pbrt-v4's RGBIlluminantSpectrum which multiplies by the D65 illuminant spectrum.
@@ -555,6 +556,13 @@ Do NOT use for:
     table::RGBToSpectrumTable, rgb::RGBSpectrum, lambda::Wavelengths
 )::SpectralRadiance
     @inbounds return rgb_to_spectral_sigmoid_illuminant(table, rgb.c[1], rgb.c[2], rgb.c[3], lambda)
+end
+
+# RGBIlluminantSpectrum already has the polynomial baked in, just sample it
+@propagate_inbounds function uplift_rgb_illuminant(
+    ::RGBToSpectrumTable, s::RGBIlluminantSpectrum, lambda::Wavelengths
+)::SpectralRadiance
+    return Sample(s, lambda)
 end
 
 """
@@ -581,3 +589,21 @@ The table argument is ignored since the polynomial is already baked in.
 )::SpectralRadiance
     return Sample(s, lambda)
 end
+
+# ============================================================================
+# Spectrum to Photometric (SpectrumToPhotometric from pbrt-v4)
+# ============================================================================
+
+"""
+    spectrum_to_photometric(s::Spectrum) -> Float32
+
+Compute photometric luminance of a spectrum, matching pbrt-v4's SpectrumToPhotometric.
+
+For RGBIlluminantSpectrum, this extracts only the D65 illuminant component (ignoring
+the RGB multiplier), matching pbrt-v4's behavior where SpectrumToPhotometric extracts
+s.Illuminant() first.
+
+This is used for light normalization: `scale = 1 / spectrum_to_photometric(spectrum)`
+"""
+spectrum_to_photometric(s::RGBSpectrum)::Float32 = to_Y(s)
+spectrum_to_photometric(s::RGBIlluminantSpectrum)::Float32 = D65_PHOTOMETRIC

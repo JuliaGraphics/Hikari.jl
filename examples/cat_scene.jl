@@ -9,7 +9,6 @@ using Hikari
 using Raycore
 import Makie
 using Raycore: to_gpu
-using pocl_jll, OpenCL
 using Adapt, AMDGPU
 
 # =============================================================================
@@ -41,9 +40,9 @@ function create_scene(; glass_cat=false, backend=Raycore.KA.CPU())
     scene = Hikari.Scene(; backend)
 
     # === Add lights ===
-    push!(scene.lights, Hikari.PointLight(Point3f(3, 3, -1), Hikari.RGBSpectrum(1.0f0, 1.0f0, 1.0f0)))  # Key light
-    push!(scene.lights, Hikari.PointLight(Point3f(-3, 2, 0), Hikari.RGBSpectrum(5.0f0, 5.0f0, 5.0f0)))     # Fill light
-    push!(scene.lights, Hikari.AmbientLight(Hikari.RGBSpectrum(0.5f0, 0.7f0, 1.0f0)))  # Sky color
+    push!(scene.lights, Hikari.PointLight(RGB{Float32}(1f0, 1f0, 1f0), Point3f(3, 3, -1)))  # Key light
+    push!(scene.lights, Hikari.PointLight(RGB{Float32}(5f0, 5f0, 5f0), Point3f(-3, 2, 0)))  # Fill light
+    push!(scene.lights, Hikari.AmbientLight(RGB{Float32}(0.5f0, 0.7f0, 1f0)))  # Sky color
 
     # === Add geometry with materials ===
     # Cat - warm diffuse or glass
@@ -139,7 +138,7 @@ begin
     # Create scene directly on OpenCL backend (TLAS built on GPU)
     # backend = OpenCL.OpenCLBackend()
     backend = Hikari.KernelAbstractions.CPU()
-    # backend = AMDGPU.ROCBackend()
+    backend = AMDGPU.ROCBackend()
     scene = create_scene(; glass_cat=false, backend=backend)
     film, camera = create_film_and_camera(; width=1820, height=720, use_pbrt_camera=true)
     sensor = Hikari.FilmSensor(iso=10, white_balance=6500)
@@ -149,5 +148,6 @@ begin
     Hikari.clear!(gpu_film)
     @time integrator(scene, gpu_film, camera)
     Hikari.postprocess!(gpu_film; sensor, exposure=0.5f0, tonemap=:aces, gamma=2.2f0)
-    Array(gpu_film.postprocess)
+
+
 end
