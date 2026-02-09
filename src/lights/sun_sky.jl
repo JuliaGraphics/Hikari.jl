@@ -473,6 +473,96 @@ Approximate power - not accurate but needed for interface.
 end
 
 # ============================================================================
+# Pre-bake sky to EnvironmentLight (pbrt-v4 approach)
+# ============================================================================
+
+"""
+    sunsky_to_envlight(; direction, intensity=1f0, turbidity=2.5f0, ...) -> (EnvironmentLight, SunLight)
+
+Pre-bake the Preetham sky model into an equal-area EnvironmentMap and create a separate
+SunLight for the sun disk. This matches pbrt-v4's approach of using a pre-baked HDR sky
+image as an environment light, combined with a delta directional light for the sun.
+
+Separating sun and sky avoids aliasing issues (the sun disk is smaller than a pixel at
+typical resolutions) and gives low-variance results:
+- `EnvironmentLight` importance-samples the sky dome correctly
+- `SunLight` samples the exact sun direction with PDF=1 (delta distribution)
+- MIS naturally weights between the two
+
+The EnvironmentLight uses D65 illuminant uplift with photometric normalization
+(`scale = 1/D65_PHOTOMETRIC`), which is the standard spectral rendering pipeline.
+
+# Arguments
+- `direction::Vec3f`: Direction TO the sun (normalized internally)
+- `intensity::Float32 = 1f0`: Sun brightness multiplier
+- `turbidity::Float32 = 2.5f0`: Atmospheric turbidity (2=clear, 10=hazy)
+- `ground_albedo::RGBSpectrum = RGBSpectrum(0.3f0)`: Ground color below horizon
+- `ground_enabled::Bool = true`: Whether to show ground below horizon
+- `resolution::Int = 512`: Resolution of equal-area square map (must be square for pbrt-v4 mapping)
+
+# Returns
+A tuple of `(EnvironmentLight, SunLight)` to be added to the scene.
+"""
+function sunsky_to_envlight(;
+    direction::Vec3f,
+    intensity::Float32 = 1f0,
+    turbidity::Float32 = 2.5f0,
+    ground_albedo::RGBSpectrum = RGBSpectrum(0.3f0),
+    ground_enabled::Bool = true,
+    resolution::Int = 512,
+)
+    dir = normalize(direction)
+    theta_s = acos(clamp(dir[3], -1f0, 1f0))
+
+    # Compute Preetham sky model coefficients
+    perez_Y, perez_x, perez_y = compute_perez_coefficients(turbidity)
+    zenith_Y, zenith_x, zenith_y = compute_zenith_values(turbidity, theta_s)
+
+    # Bake sky (WITHOUT sun disk) to equal-area octahedral map (square, matching pbrt-v4)
+    sky_data = Matrix{RGBSpectrum}(undef, resolution, resolution)
+
+    for v_idx in 1:resolution
+        for u_idx in 1:resolution
+            # UV at pixel center
+            uv = Point2f((u_idx - 0.5f0) / resolution, (v_idx - 0.5f0) / resolution)
+
+            # Convert to world direction via equal-area mapping (Z-up, matching scene)
+            wi = equal_area_square_to_sphere(uv)
+
+            # Sky radiance from Preetham model (uses Y * 0.04 scaling, no sun disk)
+            sky_rgb = _compute_sky_radiance(
+                wi, dir, perez_Y, perez_x, perez_y,
+                zenith_Y, zenith_x, zenith_y, ground_albedo, ground_enabled,
+            )
+
+            sky_data[v_idx, u_idx] = sky_rgb
+        end
+    end
+
+    # Build EnvironmentMap with luminance-weighted importance sampling distribution
+    env_map = EnvironmentMap(sky_data)
+
+    # Photometric normalization: scale = 1/D65_PHOTOMETRIC ensures that the D65
+    # illuminant uplift in the spectral path roundtrips correctly:
+    # pixel_rgb → (pixel_rgb / D65_PHOTOMETRIC) → uplift_rgb_illuminant → integrate → ≈ pixel_rgb
+    env_light = EnvironmentLight(env_map, RGBSpectrum(1f0 / D65_PHOTOMETRIC))
+
+    # Sun as separate delta directional light.
+    # SunLight(RGB{Float32}, direction) creates an RGBIlluminantSpectrum with
+    # automatic photometric normalization (scale = 1/D65_PHOTOMETRIC).
+    # SunLight direction = direction light TRAVELS (away from sun), so negate.
+    #
+    # Scale sun by 10x to get realistic sun:sky illumination ratio (~10:1).
+    # Sky hemisphere integral gives ~0.66 irradiance, sun at 10x gives ~8 irradiance
+    # on a surface perpendicular to sun direction, yielding ~12:1 ratio.
+    sun_scale = 10f0 * intensity
+    sun_rgb = RGB{Float32}(sun_scale, sun_scale * 0.95f0, sun_scale * 0.85f0)
+    sun_light = SunLight(sun_rgb, -dir)
+
+    return env_light, sun_light
+end
+
+# ============================================================================
 # Helper function to create separated sun + sky lights for low-variance rendering
 # ============================================================================
 

@@ -76,13 +76,17 @@ end
 # PlasticMaterial compute_bsdf removed - PlasticMaterial is now an alias for CoatedDiffuseMaterial
 # which uses the LayeredBxDF implementation in spectral-eval.jl
 
+# Convert IOR values that may be PiecewiseLinearSpectrum to RGBSpectrum for Whitted path
+@inline _to_rgb_ior(val::RGBSpectrum) = val
+@inline _to_rgb_ior(val::PiecewiseLinearSpectrum) = to_rgb(val)
+
 """
-Compute BSDF for MetalMaterial - conductor with Fresnel reflectance.
+Compute BSDF for ConductorMaterial - conductor with Fresnel reflectance.
 """
-@propagate_inbounds function compute_bsdf(m::MetalMaterial, textures, si::SurfaceInteraction, ::Bool, transport)
-    # Get material parameters
-    eta = clamp(eval_tex(textures, m.eta, si.uv))
-    k_val = clamp(eval_tex(textures, m.k, si.uv))
+@propagate_inbounds function compute_bsdf(m::ConductorMaterial, textures, si::SurfaceInteraction, ::Bool, transport)
+    # Get material parameters (convert spectral IOR to RGB for Whitted path)
+    eta = clamp(_to_rgb_ior(eval_tex(textures, m.eta, si.uv)))
+    k_val = clamp(_to_rgb_ior(eval_tex(textures, m.k, si.uv)))
     rough = eval_tex(textures, m.roughness, si.uv)
     # Reflectance is a color tint that multiplies the Fresnel result
     r = clamp(eval_tex(textures, m.reflectance, si.uv))

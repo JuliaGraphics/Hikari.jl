@@ -199,8 +199,17 @@ end
 # PlasticMaterial spectral functions removed - PlasticMaterial is now an alias for CoatedDiffuseMaterial
 # which uses the full LayeredBxDF implementation (see sample_bsdf_spectral for CoatedDiffuseMaterial below)
 
+# Helper for evaluating IOR values that may be PiecewiseLinearSpectrum or RGB textures.
+# When eta/k is a PiecewiseLinearSpectrum, sample it directly at the wavelengths.
+# When it's an RGB value (from texture), uplift via the sigmoid polynomial table.
+@inline eval_ior_spectral(table, textures, spec::PiecewiseLinearSpectrum, tfc, lambda) = sample(spec, lambda)
+@inline function eval_ior_spectral(table, textures, tex, tfc, lambda)
+    rgb = eval_tex(textures, tex, tfc)
+    return uplift_rgb_unbounded(table, rgb, lambda)
+end
+
 """
-    sample_bsdf_spectral(table, mat::MetalMaterial, textures, wo, n, uv, lambda, sample_u, rng, regularize=false) -> SpectralBSDFSample
+    sample_bsdf_spectral(table, mat::ConductorMaterial, textures, wo, n, uv, lambda, sample_u, rng, regularize=false) -> SpectralBSDFSample
 
 Sample metal BSDF with conductor Fresnel.
 Matches pbrt-v4's ConductorBxDF::Sample_f exactly.
@@ -211,7 +220,7 @@ When `regularize=true`, the microfacet alpha is increased to reduce fireflies
 from near-specular paths (matches pbrt-v4 BSDF::Regularize).
 """
 @propagate_inbounds function sample_bsdf_spectral(
-    mat::MetalMaterial, table::RGBToSpectrumTable, textures,
+    mat::ConductorMaterial, table::RGBToSpectrumTable, textures,
     wo_world::Vec3f, n::Vec3f, tfc::TextureFilterContext,
     lambda::Wavelengths, sample_u::Point2f, rng::Float32,
     regularize::Bool = false
@@ -228,8 +237,6 @@ from near-specular paths (matches pbrt-v4 BSDF::Regularize).
     end
 
     # Get material properties
-    eta_rgb = eval_tex(textures, mat.eta, tfc)
-    k_rgb = eval_tex(textures, mat.k, tfc)
     roughness = eval_tex(textures, mat.roughness, tfc)
 
     # Compute alpha values (matches pbrt-v4's roughness remapping)
@@ -248,9 +255,9 @@ from near-specular paths (matches pbrt-v4 BSDF::Regularize).
         alpha_y = max(alpha_y, 1f-4)
     end
 
-    # Uplift eta and k to spectral
-    eta_spectral = uplift_rgb_unbounded(table, eta_rgb, lambda)
-    k_spectral = uplift_rgb_unbounded(table, k_rgb, lambda)
+    # Evaluate eta and k spectrally (dispatches on PiecewiseLinearSpectrum vs RGB texture)
+    eta_spectral = eval_ior_spectral(table, textures, mat.eta, tfc, lambda)
+    k_spectral = eval_ior_spectral(table, textures, mat.k, tfc, lambda)
 
     if trowbridge_reitz_effectively_smooth(alpha_x, alpha_y)
         # Sample perfect specular conductor BRDF (matches pbrt-v4 line 301-305)
@@ -416,13 +423,13 @@ end
 end
 
 """
-    evaluate_bsdf_spectral(table, mat::MetalMaterial, ...) -> (f, pdf)
+    evaluate_bsdf_spectral(table, mat::ConductorMaterial, ...) -> (f, pdf)
 
 Evaluate metal BSDF for given directions.
 Matches pbrt-v4's ConductorBxDF::f and ConductorBxDF::PDF exactly.
 """
 @propagate_inbounds function evaluate_bsdf_spectral(
-    mat::MetalMaterial, table::RGBToSpectrumTable, textures,
+    mat::ConductorMaterial, table::RGBToSpectrumTable, textures,
     wo_world::Vec3f, wi_world::Vec3f, n::Vec3f, tfc::TextureFilterContext, lambda::Wavelengths
 )
     # Build local coordinate frame
@@ -438,8 +445,6 @@ Matches pbrt-v4's ConductorBxDF::f and ConductorBxDF::PDF exactly.
     end
 
     # Get material properties
-    eta_rgb = eval_tex(textures, mat.eta, tfc)
-    k_rgb = eval_tex(textures, mat.k, tfc)
     roughness = eval_tex(textures, mat.roughness, tfc)
 
     # Compute alpha values
@@ -471,9 +476,9 @@ Matches pbrt-v4's ConductorBxDF::f and ConductorBxDF::PDF exactly.
     end
     wm = normalize(wm)
 
-    # Uplift eta and k to spectral
-    eta_spectral = uplift_rgb_unbounded(table, eta_rgb, lambda)
-    k_spectral = uplift_rgb_unbounded(table, k_rgb, lambda)
+    # Evaluate eta and k spectrally (dispatches on PiecewiseLinearSpectrum vs RGB texture)
+    eta_spectral = eval_ior_spectral(table, textures, mat.eta, tfc, lambda)
+    k_spectral = eval_ior_spectral(table, textures, mat.k, tfc, lambda)
 
     # Evaluate Fresnel factor F (matches pbrt-v4 line 347)
     F = fr_complex_spectral(abs(dot(wo, wm)), eta_spectral, k_spectral)
@@ -580,7 +585,7 @@ end
     return uplift_rgb(table, avg, lambda)
 end
 
-@propagate_inbounds function get_albedo_spectral(mat::MetalMaterial, table::RGBToSpectrumTable, textures, tfc::TextureFilterContext, lambda::Wavelengths)
+@propagate_inbounds function get_albedo_spectral(mat::ConductorMaterial, table::RGBToSpectrumTable, textures, tfc::TextureFilterContext, lambda::Wavelengths)
     return uplift_rgb(table, eval_tex(textures, mat.reflectance, tfc), lambda)
 end
 
@@ -2344,10 +2349,8 @@ to reduce fireflies from near-specular paths (matches pbrt-v4 BSDF::Regularize).
     local ck_spectral::SpectralRadiance
 
     if mat.use_eta_k
-        ce_rgb = eval_tex(textures, mat.conductor_eta, tfc)
-        ck_rgb = eval_tex(textures, mat.conductor_k, tfc)
-        ce_spectral = uplift_rgb_unbounded(table, ce_rgb, lambda)
-        ck_spectral = uplift_rgb_unbounded(table, ck_rgb, lambda)
+        ce_spectral = eval_ior_spectral(table, textures, mat.conductor_eta, tfc, lambda)
+        ck_spectral = eval_ior_spectral(table, textures, mat.conductor_k, tfc, lambda)
     else
         # Reflectance mode: eta = 1, k = 2 * sqrt(r) / sqrt(1 - r)
         refl_rgb = eval_tex(textures, mat.reflectance, tfc)
@@ -2710,10 +2713,8 @@ Evaluate CoatedConductor BSDF for given directions.
     local ck_spectral::SpectralRadiance
 
     if mat.use_eta_k
-        ce_rgb = eval_tex(textures, mat.conductor_eta, tfc)
-        ck_rgb = eval_tex(textures, mat.conductor_k, tfc)
-        ce_spectral = uplift_rgb_unbounded(table, ce_rgb, lambda)
-        ck_spectral = uplift_rgb_unbounded(table, ck_rgb, lambda)
+        ce_spectral = eval_ior_spectral(table, textures, mat.conductor_eta, tfc, lambda)
+        ck_spectral = eval_ior_spectral(table, textures, mat.conductor_k, tfc, lambda)
     else
         refl_rgb = eval_tex(textures, mat.reflectance, tfc)
         refl_rgb = RGBSpectrum(
@@ -2866,14 +2867,13 @@ end
 """
 @propagate_inbounds function get_albedo_spectral(mat::CoatedConductorMaterial, table::RGBToSpectrumTable, textures, tfc::TextureFilterContext, lambda::Wavelengths)
     if mat.use_eta_k
-        # For eta/k mode, compute approximate reflectance
-        ce_rgb = eval_tex(textures, mat.conductor_eta, tfc)
-        ck_rgb = eval_tex(textures, mat.conductor_k, tfc)
+        # For eta/k mode, compute approximate reflectance spectrally
+        ce_spectral = eval_ior_spectral(table, textures, mat.conductor_eta, tfc, lambda)
+        ck_spectral = eval_ior_spectral(table, textures, mat.conductor_k, tfc, lambda)
         # Approximate normal incidence reflectance: ((n-1)² + k²) / ((n+1)² + k²)
-        n = ce_rgb.c[1]
-        k = ck_rgb.c[1]
-        r = ((n - 1f0)^2 + k^2) / ((n + 1f0)^2 + k^2)
-        return SpectralRadiance(r)
+        nm1 = ce_spectral - SpectralRadiance(1f0)
+        np1 = ce_spectral + SpectralRadiance(1f0)
+        return safe_div(nm1 * nm1 + ck_spectral * ck_spectral, np1 * np1 + ck_spectral * ck_spectral)
     else
         return uplift_rgb(table, eval_tex(textures, mat.reflectance, tfc), lambda)
     end

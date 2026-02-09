@@ -17,10 +17,8 @@ end
         tiles, tile, tile_column::Int32, resolution::Point2f, max_depth::Int32,
         scene, sampler, camera, pixel, spp_sqr, filter_params::GPUFilterParams
     )
-    # resolution is (height, width) from size(pixels) in Julia convention
     # pixel is (px, py) where px=x (column), py=y (row)
     # Camera expects raster coords with y increasing downward, so flip y
-    # Use height (resolution[1]) for y-flip
     campix = Point2f(pixel[1], resolution[1] - pixel[2])
 
     # Use while loop to avoid iterate() protocol (causes PHI node errors in SPIR-V)
@@ -64,7 +62,6 @@ end
     tile_bounds = Bounds2(tb_min, tb_max)
     spp_sqr = 1.0f0 / √Float32(sampler.samples_per_pixel)
 
-    # Explicit loop instead of iterating over Bounds2 to avoid GPU allocation issues
     # size(pixels) returns (rows, cols) = (height, width) in Julia convention
     resolution = Point2f(size(pixels)...)
 
@@ -413,7 +410,10 @@ end
         L += throughput * le(si, wo)
 
         # Get material and compute BSDF (or detect volume)
-        idx = primitive.metadata
+        # primitive.metadata is UInt32 index into media_interfaces
+        mi_idx = primitive.metadata::UInt32
+        mi = scene.media_interfaces[mi_idx]
+        idx = mi.material  # SetKey into materials
         valid, is_volume, bsdf = compute_bsdf_for_material(materials, idx, si)
 
         if !valid

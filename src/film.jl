@@ -485,11 +485,11 @@ end
 # ============================================================================
 
 """
-    cleanup!(film::Film)
+    free!(film::Film)
 
-Release GPU memory held by the film by calling finalize on all arrays.
+Release GPU memory held by the film by triggering finalizers on all arrays.
 """
-function cleanup!(film::Film)
+function free!(film::Film)
     finalize(film.pixels)
     finalize(film.tiles)
     finalize(film.filter_table)

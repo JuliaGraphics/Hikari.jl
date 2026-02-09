@@ -355,84 +355,74 @@ function PlasticMaterial(;
 end
 
 # ============================================================================
-# Metal Material - Conductor with Fresnel reflectance and microfacet roughness
+# Conductor Material - Conductor with Fresnel reflectance and microfacet roughness
 # ============================================================================
 
 """
-    MetalMaterial{EtaTex, KTex, RoughTex, ReflTex}
+    ConductorMaterial{EtaTex, KTex, RoughTex, ReflTex}
 
 A metal/conductor material with wavelength-dependent complex index of refraction.
 
 Metals reflect light based on Fresnel equations for conductors, characterized by:
-- η (eta): Real part of complex IOR
+- η (eta): Real part of complex IOR (PiecewiseLinearSpectrum for presets, or RGB texture)
 - k: Imaginary part (extinction coefficient)
 - roughness: Surface roughness for microfacet model
 
 # Fields
-* `eta`: Real part of complex index of refraction (wavelength-dependent)
-* `k`: Extinction coefficient (wavelength-dependent)
+* `eta`: Real part of complex index of refraction (PiecewiseLinearSpectrum or texture)
+* `k`: Extinction coefficient (PiecewiseLinearSpectrum or texture)
 * `roughness`: Surface roughness
 * `reflectance`: Color multiplier for Fresnel reflectance (for tinting)
 * `remap_roughness`: Whether to remap roughness to alpha
 """
-struct MetalMaterial{EtaTex, KTex, RoughTex, ReflTex} <: Material
-    eta::EtaTex             # Texture, Raycore.TextureRef, or raw RGBSpectrum
-    k::KTex                 # Texture, Raycore.TextureRef, or raw RGBSpectrum
+struct ConductorMaterial{EtaTex, KTex, RoughTex, ReflTex} <: Material
+    eta::EtaTex             # PiecewiseLinearSpectrum, Texture, Raycore.TextureRef, or raw RGBSpectrum
+    k::KTex                 # PiecewiseLinearSpectrum, Texture, Raycore.TextureRef, or raw RGBSpectrum
     roughness::RoughTex     # Texture, Raycore.TextureRef, or raw Float32
     reflectance::ReflTex    # Texture, Raycore.TextureRef, or raw RGBSpectrum
     remap_roughness::Bool
 end
 
-# Backwards-compatible constructor without reflectance (defaults to white = no tint)
-function MetalMaterial(
-    eta, k, roughness, remap_roughness::Bool
-)
-    reflectance = RGBSpectrum(1f0)
-    MetalMaterial{typeof(eta), typeof(k), typeof(roughness), typeof(reflectance)}(
-        eta, k, roughness, reflectance, remap_roughness
-    )
-end
+# Identity passthrough for PiecewiseLinearSpectrum (not a texture, stored directly)
+_to_texture(s::PiecewiseLinearSpectrum) = s
 
-# Common metal presets (approximate values at 550nm)
+# Common metal presets as RGB (for custom metals via keyword constructors)
 const METAL_COPPER = (eta=(0.27, 0.68, 1.22), k=(3.61, 2.63, 2.29))
 const METAL_GOLD = (eta=(0.14, 0.38, 1.44), k=(3.98, 2.75, 1.95))
 const METAL_SILVER = (eta=(0.16, 0.14, 0.13), k=(4.03, 3.59, 2.62))
 const METAL_ALUMINUM = (eta=(1.35, 0.97, 0.60), k=(7.47, 6.40, 5.30))
-const METAL_IRON = (eta=(2.95, 2.93, 2.59), k=(3.10, 2.99, 2.74))
 
 """
-    MetalMaterial(; eta=(0.2, 0.2, 0.2), k=(3.9, 3.9, 3.9), roughness=0.1, remap_roughness=true)
+    ConductorMaterial(; eta=(0.2, 0.2, 0.2), k=(3.9, 3.9, 3.9), roughness=0.1, remap_roughness=true)
 
 Create a metal/conductor material with Fresnel reflectance.
 
 # Arguments
-- `eta`: Real part of complex IOR - (r,g,b) tuple, RGBSpectrum, or Texture
-- `k`: Extinction coefficient - (r,g,b) tuple, RGBSpectrum, or Texture
+- `eta`: Real part of complex IOR - PiecewiseLinearSpectrum, (r,g,b) tuple, RGBSpectrum, or Texture
+- `k`: Extinction coefficient - PiecewiseLinearSpectrum, (r,g,b) tuple, RGBSpectrum, or Texture
 - `roughness`: Surface roughness (0 = mirror-like, higher = more diffuse)
 - `reflectance`: Color multiplier for tinting the metal (default white = no tint)
 - `remap_roughness`: Whether to remap roughness to microfacet alpha
 
 # Presets
 Use the provided metal constants for realistic materials:
-- `METAL_COPPER`, `METAL_GOLD`, `METAL_SILVER`, `METAL_ALUMINUM`, `METAL_IRON`
+- `METAL_COPPER`, `METAL_GOLD`, `METAL_SILVER`, `METAL_ALUMINUM`
 
 # Examples
 ```julia
-MetalMaterial()                                        # Generic metal
-MetalMaterial(; METAL_COPPER..., roughness=0.05)      # Polished copper
-MetalMaterial(; METAL_GOLD..., roughness=0.1)         # Brushed gold
-MetalMaterial(eta=(0.2, 0.8, 0.2), k=(3, 3, 3))       # Custom green-tinted metal
-MetalMaterial(; METAL_GOLD..., reflectance=(1, 0.5, 0.5))  # Gold tinted red
+ConductorMaterial()                                        # Generic metal
+ConductorMaterial(; METAL_COPPER..., roughness=0.05)      # Polished copper
+ConductorMaterial(eta=(0.2, 0.8, 0.2), k=(3, 3, 3))       # Custom green-tinted metal
 ```
 """
-function MetalMaterial(;
+function ConductorMaterial(;
     eta=(0.2f0, 0.2f0, 0.2f0),
     k=(3.9f0, 3.9f0, 3.9f0),
     roughness=0.1f0,
     reflectance=(1f0, 1f0, 1f0),
     remap_roughness=true
 )
-    MetalMaterial(_to_texture(eta), _to_texture(k), _to_texture(roughness), _to_texture(reflectance), remap_roughness)
+    ConductorMaterial(_to_texture(eta), _to_texture(k), _to_texture(roughness), _to_texture(reflectance), remap_roughness)
 end
 
 # ============================================================================
@@ -451,34 +441,23 @@ const Dielectric = GlassMaterial
 """Type alias: `Plastic` is the same as `PlasticMaterial`"""
 const Plastic = PlasticMaterial
 
-"""Type alias: `Conductor` is the same as `MetalMaterial`"""
-const Conductor = MetalMaterial
+"""Type alias: `Conductor` is the same as `ConductorMaterial`"""
+const Conductor = ConductorMaterial
+
+"""Type alias: `Metal` is the same as `ConductorMaterial` (legacy alias)"""
+const Metal = ConductorMaterial
+
+"""Type alias: `MetalMaterial` is the same as `ConductorMaterial` (legacy alias)"""
+const MetalMaterial = ConductorMaterial
 
 # ============================================================================
-# Metal Preset Constructors - convenient ways to create common metals
+# Conductor Preset Constructors - using measured spectral data from pbrt-v4
 # ============================================================================
-
-# Metal optical constants (approximate values at 550nm from pbrt-v4)
-# These are the complex index of refraction values: n + ik
-const _COPPER_ETA = (0.27f0, 0.68f0, 1.22f0)
-const _COPPER_K = (3.61f0, 2.63f0, 2.29f0)
-
-const _GOLD_ETA = (0.14f0, 0.38f0, 1.44f0)
-const _GOLD_K = (3.98f0, 2.75f0, 1.95f0)
-
-const _SILVER_ETA = (0.16f0, 0.14f0, 0.13f0)
-const _SILVER_K = (4.03f0, 3.59f0, 2.62f0)
-
-const _ALUMINUM_ETA = (1.35f0, 0.97f0, 0.60f0)
-const _ALUMINUM_K = (7.47f0, 6.40f0, 5.30f0)
-
-const _IRON_ETA = (2.95f0, 2.93f0, 2.59f0)
-const _IRON_K = (3.10f0, 2.99f0, 2.74f0)
 
 """
     Gold(; roughness=0.0, reflectance=(1,1,1), remap_roughness=true)
 
-Create a gold conductor material with realistic optical constants.
+Create a gold conductor material with measured spectral IOR data.
 
 # Examples
 ```julia
@@ -488,12 +467,12 @@ Gold(roughness=0.3)             # Matte gold
 ```
 """
 Gold(; roughness=0f0, reflectance=(1f0, 1f0, 1f0), remap_roughness=true) =
-    Conductor(eta=_GOLD_ETA, k=_GOLD_K, roughness=roughness, reflectance=reflectance, remap_roughness=remap_roughness)
+    ConductorMaterial(AU_ETA_SPECTRUM, AU_K_SPECTRUM, _to_texture(roughness), _to_texture(reflectance), remap_roughness)
 
 """
     Silver(; roughness=0.0, reflectance=(1,1,1), remap_roughness=true)
 
-Create a silver conductor material with realistic optical constants.
+Create a silver conductor material with measured spectral IOR data.
 
 # Examples
 ```julia
@@ -502,12 +481,12 @@ Silver(roughness=0.05)          # Slightly brushed
 ```
 """
 Silver(; roughness=0f0, reflectance=(1f0, 1f0, 1f0), remap_roughness=true) =
-    Conductor(eta=_SILVER_ETA, k=_SILVER_K, roughness=roughness, reflectance=reflectance, remap_roughness=remap_roughness)
+    ConductorMaterial(AG_ETA_SPECTRUM, AG_K_SPECTRUM, _to_texture(roughness), _to_texture(reflectance), remap_roughness)
 
 """
     Copper(; roughness=0.0, reflectance=(1,1,1), remap_roughness=true)
 
-Create a copper conductor material with realistic optical constants.
+Create a copper conductor material with measured spectral IOR data.
 
 # Examples
 ```julia
@@ -516,12 +495,12 @@ Copper(roughness=0.2)           # Weathered copper
 ```
 """
 Copper(; roughness=0f0, reflectance=(1f0, 1f0, 1f0), remap_roughness=true) =
-    Conductor(eta=_COPPER_ETA, k=_COPPER_K, roughness=roughness, reflectance=reflectance, remap_roughness=remap_roughness)
+    ConductorMaterial(CU_ETA_SPECTRUM, CU_K_SPECTRUM, _to_texture(roughness), _to_texture(reflectance), remap_roughness)
 
 """
     Aluminum(; roughness=0.0, reflectance=(1,1,1), remap_roughness=true)
 
-Create an aluminum conductor material with realistic optical constants.
+Create an aluminum conductor material with measured spectral IOR data.
 
 # Examples
 ```julia
@@ -530,18 +509,18 @@ Aluminum(roughness=0.1)         # Brushed aluminum
 ```
 """
 Aluminum(; roughness=0f0, reflectance=(1f0, 1f0, 1f0), remap_roughness=true) =
-    Conductor(eta=_ALUMINUM_ETA, k=_ALUMINUM_K, roughness=roughness, reflectance=reflectance, remap_roughness=remap_roughness)
+    ConductorMaterial(AL_ETA_SPECTRUM, AL_K_SPECTRUM, _to_texture(roughness), _to_texture(reflectance), remap_roughness)
 
 """
-    Iron(; roughness=0.0, reflectance=(1,1,1), remap_roughness=true)
+    Brass(; roughness=0.0, reflectance=(1,1,1), remap_roughness=true)
 
-Create an iron conductor material with realistic optical constants.
+Create a brass (CuZn) conductor material with measured spectral IOR data.
 
 # Examples
 ```julia
-Iron()                          # Polished iron
-Iron(roughness=0.3)             # Rough cast iron
+Brass()                         # Polished brass
+Brass(roughness=0.15)           # Brushed brass
 ```
 """
-Iron(; roughness=0f0, reflectance=(1f0, 1f0, 1f0), remap_roughness=true) =
-    Conductor(eta=_IRON_ETA, k=_IRON_K, roughness=roughness, reflectance=reflectance, remap_roughness=remap_roughness)
+Brass(; roughness=0f0, reflectance=(1f0, 1f0, 1f0), remap_roughness=true) =
+    ConductorMaterial(CUZN_ETA_SPECTRUM, CUZN_K_SPECTRUM, _to_texture(roughness), _to_texture(reflectance), remap_roughness)

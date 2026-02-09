@@ -91,7 +91,7 @@ end
     FastMaterialProps(Vec3f(kr.c[1], kr.c[2], kr.c[3]), 0.8f0, roughness)
 end
 
-@propagate_inbounds function extract_fast_props(mat::MetalMaterial, uv::Point2f)
+@propagate_inbounds function extract_fast_props(mat::ConductorMaterial, uv::Point2f)
     refl = eval_tex((), mat.reflectance, uv)
     roughness = eval_tex((), mat.roughness, uv)
     FastMaterialProps(Vec3f(refl.c[1], refl.c[2], refl.c[3]), 1f0, roughness)
@@ -786,7 +786,7 @@ Extract sky color from scene lights. Returns RGB for background rays.
 If SunSkyLight is present, samples sky at zenith direction.
 """
 function extract_sky_color(lights)::RGB{Float32}
-    # Use reduce_unrolled for GPU-safe iteration
+    # reduce_unrolled supports Tuple, StaticMultiTypeSet, and MultiTypeSet
     reduce_unrolled(_extract_sky_from_light, lights, RGB{Float32}(0f0, 0f0, 0f0))
 end
 
@@ -795,7 +795,9 @@ Convert SunSkyLight to DirectionalLight for shadow ray calculations.
 Returns a new lights tuple with SunSkyLight replaced by DirectionalLight.
 """
 function convert_lights_for_fast_wavefront(lights, world_radius::Float32)
-    converted = map(lights) do light
+    # Ensure we have a Tuple (to_tuple handles MultiTypeSet/StaticMultiTypeSet/Tuple)
+    lights_tuple = Raycore.to_tuple(lights)
+    converted = map(lights_tuple) do light
         if light isa SunSkyLight
             # Convert to DirectionalLight using sun direction and intensity
             # DirectionalLight expects direction light TRAVELS (opposite of sun_direction)

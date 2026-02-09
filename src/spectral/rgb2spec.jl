@@ -333,6 +333,15 @@ struct RGBIlluminantSpectrum <: Spectrum
     scale::Float32
 end
 
+# RGBIlluminantSpectrum doesn't have a .c field like other Spectrum subtypes,
+# so we need to override generic Spectrum arithmetic that assumes .c.
+# Scaling adjusts the scale factor; is_black checks if scale is zero.
+Base.:*(f::Number, s::RGBIlluminantSpectrum) = RGBIlluminantSpectrum(s.poly, s.scale * Float32(f))
+Base.:*(s::RGBIlluminantSpectrum, f::Number) = RGBIlluminantSpectrum(s.poly, s.scale * Float32(f))
+Base.:/(s::RGBIlluminantSpectrum, f::Number) = RGBIlluminantSpectrum(s.poly, s.scale / Float32(f))
+is_black(s::RGBIlluminantSpectrum) = s.scale == 0f0
+Base.isnan(s::RGBIlluminantSpectrum) = isnan(s.scale)
+
 # Single wavelength evaluation (matches pbrt-v4's operator())
 @propagate_inbounds function (s::RGBIlluminantSpectrum)(lambda::Float32)::Float32
     # Note: sample_d65 is defined in uplift.jl, must be available at runtime

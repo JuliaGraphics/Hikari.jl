@@ -401,7 +401,7 @@ end
 
 @propagate_inbounds function estimate_light_power(light::SunLight, scene_radius::Float32)
     # Similar to directional light
-    Float32(π) * scene_radius^2 * luminance(light.l)
+    Float32(π) * scene_radius^2 * light.scale * luminance(light.i)
 end
 
 @propagate_inbounds function estimate_light_power(light::SunSkyLight, scene_radius::Float32)

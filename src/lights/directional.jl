@@ -63,6 +63,12 @@ function DirectionalLight(rgb::RGB, direction::Vec3f; kwargs...)
     DirectionalLight(RGB{Float32}(rgb.r, rgb.g, rgb.b), direction; kwargs...)
 end
 
+# RGBSpectrum constructor (direct spectral specification without illuminant conversion)
+function DirectionalLight(i::RGBSpectrum, direction::Vec3f)
+    scale = 1f0 / D65_PHOTOMETRIC
+    DirectionalLight(Transformation(Mat4f(I)), i, direction, scale)
+end
+
 @propagate_inbounds function sample_li(
         d::DirectionalLight{S}, ref::Interaction, u::Point2f, scene::AbstractScene,
     )::Tuple{S,Vec3f,Float32,VisibilityTester} where S<:Spectrum

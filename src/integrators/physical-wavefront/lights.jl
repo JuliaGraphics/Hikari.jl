@@ -121,7 +121,8 @@ Sample a directional light spectrally.
 
     # Use illuminant uplift (matches pbrt's RGBIlluminantSpectrum)
     # This multiplies by D65 illuminant spectrum - critical for correct white reproduction
-    Li = uplift_rgb_illuminant(table, light.i, lambda)
+    # Apply light.scale for photometric normalization
+    Li = light.scale * uplift_rgb_illuminant(table, light.i, lambda)
 
     return PWLightSample(Li, wi, 1f0, p_light, true)
 end
@@ -142,7 +143,8 @@ Sample a sun light spectrally.
 
     # Use illuminant uplift (matches pbrt's RGBIlluminantSpectrum)
     # This multiplies by D65 illuminant spectrum - critical for correct white reproduction
-    Li = uplift_rgb_illuminant(table, light.l, lambda)
+    # Apply light.scale for photometric normalization (1/D65_PHOTOMETRIC for RGB-constructed lights)
+    Li = light.scale * uplift_rgb_illuminant(table, light.i, lambda)
 
     return PWLightSample(Li, wi, 1f0, p_light, true)
 end
@@ -150,23 +152,37 @@ end
 """
     sample_light_spectral(table, lights, light::SunSkyLight, p::Point3f, lambda::Wavelengths, u::Point2f)
 
-Sample sun direction from SunSkyLight spectrally.
+Importance-sample the sky hemisphere from SunSkyLight spectrally.
+Uses the pre-computed Distribution2D to sample directions proportional to sky+sun radiance,
+matching the SunSkyLight's sample_li method.
 """
 @propagate_inbounds function sample_light_spectral(
-    table::RGBToSpectrumTable, lights, light::SunSkyLight, p::Point3f, lambda::Wavelengths, ::Point2f
+    table::RGBToSpectrumTable, lights, light::SunSkyLight, p::Point3f, lambda::Wavelengths, u::Point2f
 )::PWLightSample
-    # Direction TO the sun
-    wi = light.sun_direction
+    # Importance sample direction from pre-computed distribution (matches sample_li)
+    uv, map_pdf = sample_continuous(light.distribution, u, lights)
+    wi = hemisphere_uv_to_direction(uv)
 
-    # Delta distribution for sun disk
+    # Convert PDF from image space to solid angle
+    θ = uv[2] * Float32(π) / 2f0
+    sin_θ = sin(θ)
+    pdf_val = sin_θ > 0f0 ? map_pdf / (Float32(π) * Float32(π) * sin_θ) : 0f0
+
+    if pdf_val <= 0f0
+        return PWLightSample(SpectralRadiance(0f0), wi, 0f0, Point3f(0f0), false)
+    end
+
+    # Get sky + sun radiance for this direction
+    Le_rgb = sky_radiance(light, wi) + sun_disk_radiance(light, wi)
+
+    # Unbounded uplift: sky model outputs RGB radiance (Preetham with 0.04 scale),
+    # NOT illuminant quantities. D65 illuminant uplift would multiply by ~100x.
+    Li = uplift_rgb_unbounded(table, Le_rgb, lambda)
+
+    # Light at infinity
     p_light = Point3f(p + 1f6 * wi)
 
-    # Sun radiance (field is sun_intensity)
-    # Use illuminant uplift (matches pbrt's RGBIlluminantSpectrum)
-    # This multiplies by D65 illuminant spectrum - critical for correct white reproduction
-    Li = uplift_rgb_illuminant(table, light.sun_intensity, lambda)
-
-    return PWLightSample(Li, wi, 1f0, p_light, true)
+    return PWLightSample(Li, wi, pdf_val, p_light, false)
 end
 
 """
@@ -232,9 +248,9 @@ give zero for directions below the surface, and cos_theta weighting handles the 
 
     p_light = Point3f(p + 1f6 * wi)
 
-    # Use illuminant uplift (matches pbrt's RGBIlluminantSpectrum)
-    # This multiplies by D65 illuminant spectrum - critical for correct white reproduction
-    Li = uplift_rgb_illuminant(table, light.i, lambda)
+    # Matches pbrt-v4's UniformInfiniteLight::SampleLi:
+    # Li = scale * Lemit->Sample(lambda)
+    Li = light.scale * Sample(table, light.i, lambda)
 
     return PWLightSample(Li, wi, pdf, p_light, false)
 end
@@ -378,9 +394,9 @@ Evaluate sun/sky light for an escaped ray direction.
 )::SpectralRadiance
     # Get sky + sun radiance for direction (same as le() function)
     Le_rgb = sky_radiance(light, ray_d) + sun_disk_radiance(light, ray_d)
-    # Use illuminant uplift (matches pbrt's RGBIlluminantSpectrum)
-    # This multiplies by D65 illuminant spectrum - critical for correct white reproduction
-    return uplift_rgb_illuminant(table, Le_rgb, lambda)
+    # Unbounded uplift: sky model outputs RGB radiance (Preetham with scaling),
+    # NOT illuminant quantities that need D65 normalization.
+    return uplift_rgb_unbounded(table, Le_rgb, lambda)
 end
 
 """
@@ -391,9 +407,9 @@ Evaluate ambient light for an escaped ray - provides constant radiance regardles
 @propagate_inbounds function evaluate_environment_spectral(
     light::AmbientLight, lights, table::RGBToSpectrumTable, ray_d::Vec3f, lambda::Wavelengths
 )::SpectralRadiance
-    # Use illuminant uplift (matches pbrt's RGBIlluminantSpectrum)
-    # This multiplies by D65 illuminant spectrum - critical for correct white reproduction
-    return uplift_rgb_illuminant(table, light.i, lambda)
+    # Matches pbrt-v4's UniformInfiniteLight::Le:
+    # return scale * Lemit->Sample(lambda)
+    return light.scale * Sample(table, light.i, lambda)
 end
 
 # Fallback - non-environment lights contribute nothing for escaped rays
@@ -415,6 +431,19 @@ end
 # Takes lights container for deref of TextureRef fields in Distribution2D
 @propagate_inbounds function _env_light_pdf_single(light::EnvironmentLight, lights, wi::Vec3f)::Float32
     return pdf_li_spectral(lights, light, Point3f(0f0, 0f0, 0f0), wi)
+end
+
+# SunSkyLight contributes to environment PDF via hemisphere importance sampling
+@propagate_inbounds function _env_light_pdf_single(light::SunSkyLight, lights, wi::Vec3f)::Float32
+    # Below horizon has zero probability
+    if wi[3] <= 0f0
+        return 0f0
+    end
+    uv = hemisphere_direction_to_uv(wi)
+    map_pdf = pdf(light.distribution, uv, lights)
+    θ = uv[2] * Float32(π) / 2f0
+    sin_θ = sin(θ)
+    return sin_θ > 0f0 ? map_pdf / (Float32(π) * Float32(π) * sin_θ) : 0f0
 end
 
 # Other light types don't contribute to environment PDF

@@ -1,5 +1,6 @@
 struct AmbientLight{S<:Spectrum} <: Light
     i::S
+    scale::Float32
 end
 
 # Ambient lights are infinite (emit from all directions)
@@ -8,25 +9,28 @@ is_infinite_light(::AmbientLight) = true
 """
     AmbientLight(rgb::RGB{Float32})
 
-Create an AmbientLight from RGB color with automatic spectral conversion.
-
-Note: AmbientLight does not apply photometric normalization since it represents
-a constant ambient illumination level rather than a physical light source.
+Create an AmbientLight from RGB color with automatic spectral conversion and
+photometric normalization, matching pbrt-v4's UniformInfiniteLight creation:
+`scale = 1 / SpectrumToPhotometric(spectrum)`.
 
 # Example
 ```julia
-# Dim ambient light
 light = AmbientLight(RGB{Float32}(0.1f0, 0.1f0, 0.1f0))
 ```
 """
 function AmbientLight(rgb::RGB{Float32})
     table = get_srgb_table()
     spectrum = rgb_illuminant_spectrum(table, rgb)
-    AmbientLight(spectrum)
+    # Matches pbrt-v4: scale /= SpectrumToPhotometric(L[0])
+    scale = 1f0 / spectrum_to_photometric(spectrum)
+    AmbientLight(spectrum, scale)
 end
 
 # Accept any RGB type (e.g., RGBf from Makie/Colors)
 AmbientLight(rgb::RGB) = AmbientLight(RGB{Float32}(rgb.r, rgb.g, rgb.b))
+
+# Legacy: direct spectrum constructor without normalization
+AmbientLight(s::S) where {S<:Spectrum} = AmbientLight{S}(s, 1f0)
 
 """
 Compute radiance arriving at `ref.p` interaction point at `ref.time` time
@@ -53,7 +57,7 @@ due to the ambient light.
 """
 function sample_li(a::AmbientLight, i::Interaction, ::Point2f, ::AbstractScene)
     pdf = 1.0f0
-    radiance = a.i
+    radiance = a.scale * a.i
     inew = Interaction()
     radiance, Vec3f(normalize(i.p)), pdf, VisibilityTester(inew, inew)
 end
@@ -66,9 +70,9 @@ function sample_le(
     light_normal = Normal3f(ray.d)
     pdf_pos = 1.0f0
     pdf_dir = uniform_sphere_pdf()
-    return a.i, ray, light_normal, pdf_pos, pdf_dir
+    return a.scale * a.i, ray, light_normal, pdf_pos, pdf_dir
 end
 
 @propagate_inbounds function power(p::AmbientLight)
-    p.i
+    4f0 * π * π * p.scale * p.i
 end

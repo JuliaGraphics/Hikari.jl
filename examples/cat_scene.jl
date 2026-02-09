@@ -147,7 +147,6 @@ begin
     gpu_film = Adapt.adapt(backend, film)
     Hikari.clear!(gpu_film)
     @time integrator(scene, gpu_film, camera)
-    Hikari.postprocess!(gpu_film; sensor, exposure=0.5f0, tonemap=:aces, gamma=2.2f0)
-
-
+    img = Hikari.postprocess!(gpu_film; sensor, exposure=0.5f0, tonemap=:aces, gamma=2.2f0)
+    Array(img)
 end

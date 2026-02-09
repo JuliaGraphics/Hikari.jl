@@ -76,6 +76,10 @@ end
     return val
 end
 
+# PiecewiseLinearSpectrum passthrough (not a texture, stored directly in material)
+@propagate_inbounds eval_tex(::Raycore.StaticMultiTypeSet, val::PiecewiseLinearSpectrum, ::Point2f) = val
+@propagate_inbounds eval_tex(::Raycore.StaticMultiTypeSet, val::PiecewiseLinearSpectrum, ::TextureFilterContext) = val
+
 # ============================================================================
 # Filtered Texture Evaluation (with UV derivatives for mipmap selection)
 # ============================================================================

@@ -142,7 +142,7 @@ function VolPathState(
     cie_table = to_gpu(backend, CIEXYZTable())
 
     # Build light sampler (alias table for power-weighted sampling)
-    # PowerLightSampler(MultiTypeSet) computes powers on GPU and returns GPU arrays
+    # PowerLightSampler computes powers on GPU and returns GPU arrays
     n_lights = length(lights)
     if n_lights > 0
         sampler = PowerLightSampler(lights; scene_radius=scene_radius)

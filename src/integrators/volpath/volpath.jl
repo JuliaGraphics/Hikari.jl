@@ -458,16 +458,16 @@ function render!(
     camera::Camera
 )
     img = film.framebuffer
-    accel = scene.accel
-    # Convert MultiTypeSet to StaticMultiTypeSet for kernel dispatch
-    # (get_static returns StaticMultiTypeSet, Tuple stays as Tuple)
-    materials = Raycore.get_static(scene.materials)
-    media = Raycore.get_static(scene.media)
-    media_interfaces = scene.media_interfaces
-    lights = Raycore.get_static(scene.lights)
-
     height, width = size(img)
     backend = KA.get_backend(img)
+
+    # Adapt scene for kernel dispatch (TLAS → StaticTLAS, MultiTypeSet → StaticMultiTypeSet)
+    adapted = Adapt.adapt(backend, scene)
+    accel = adapted.accel
+    materials = adapted.materials
+    media = adapted.media
+    media_interfaces = adapted.media_interfaces
+    lights = adapted.lights
 
     # Allocate or validate state
     # Note: Rebuild state if lights changed (num_lights mismatch) to update light sampler
@@ -476,8 +476,7 @@ function render!(
        vp.state.width != width ||
        vp.state.height != height ||
        vp.state.num_lights != n_lights
-        # Pass scene.lights (MultiTypeSet) for PowerLightSampler construction
-        # (needs backend for GPU kernel and array allocation)
+        # Use original scene.lights (MultiTypeSet) for PowerLightSampler (needs .backend)
         vp.state = VolPathState(backend, width, height, scene.lights;
                                 max_depth=vp.max_depth,
                                 scene_radius=world_radius(scene),

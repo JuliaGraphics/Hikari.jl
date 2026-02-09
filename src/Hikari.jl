@@ -62,6 +62,12 @@ macro real_assert(expr, msg="")
 end
 
 include("spectrum.jl")
+# PiecewiseLinearSpectrum needs SampledSpectrum/Wavelengths from spectral.jl,
+# and must be available before texture-ref.jl and uber-material.jl
+include("spectral/spectral.jl")
+include("spectral/piecewise-linear.jl")
+include("spectral/metal-spectra.jl")
+
 include("random.jl")
 include("surface_interaction.jl")
 include("materials/medium-interface.jl")
@@ -90,7 +96,7 @@ include("materials/diffuse-transmission.jl")
 include("materials/coated-conductor.jl")
 
 # Spectral rendering support (for PhysicalWavefront)
-include("spectral/spectral.jl")
+# spectral.jl, piecewise-linear.jl, metal-spectra.jl included above (before textures)
 include("spectral/color.jl")
 include("spectral/uplift.jl")
 include("materials/spectral-eval.jl")
