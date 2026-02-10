@@ -137,12 +137,11 @@ end
 begin
     # Create scene directly on OpenCL backend (TLAS built on GPU)
     # backend = OpenCL.OpenCLBackend()
-    backend = Hikari.KernelAbstractions.CPU()
     backend = AMDGPU.ROCBackend()
     scene = create_scene(; glass_cat=false, backend=backend)
     film, camera = create_film_and_camera(; width=1820, height=720, use_pbrt_camera=true)
-    sensor = Hikari.FilmSensor(iso=10, white_balance=6500)
-    integrator = Hikari.VolPath(samples=10, max_depth=8)
+    sensor = Hikari.FilmSensor(iso=100, white_balance=6500)
+    integrator = Hikari.VolPath(samples=100, max_depth=8)
     # Film still needs GPU conversion, scene already on GPU
     gpu_film = Adapt.adapt(backend, film)
     Hikari.clear!(gpu_film)

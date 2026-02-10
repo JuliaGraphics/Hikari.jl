@@ -356,10 +356,10 @@ end
     compute_transmittance_ratio_tracking(table, media, medium_idx, origin, dir, t_max, lambda)
 
 Compute transmittance through heterogeneous medium using ratio tracking.
-Following pbrt-v4's TraceTransmittance implementation.
+Following pbrt-v4's TraceTransmittance / SampleT_maj implementation.
 
-Ratio tracking uses delta tracking but only considers null-scattering events,
-providing an unbiased estimate of transmittance through heterogeneous media.
+Uses DDA-based per-voxel majorant bounds (via RayMajorantIterator) for tight
+bounds in sparse heterogeneous media, matching the primary path's delta tracking.
 
 Returns (T_ray, r_u, r_l) where:
 - T_ray: spectral transmittance estimate
@@ -369,90 +369,120 @@ Returns (T_ray, r_u, r_l) where:
     rgb2spec_table, media, medium_idx::SetKey,
     origin::Point3f, dir::Vec3f, t_max::Float32, lambda::Wavelengths
 )
-    # Get majorant for this ray segment
+    template_grid = get_template_grid_from_tuple(media)
     ray = Raycore.Ray(o=origin, d=dir)
-    majorant = Raycore.with_index(get_majorant, media, medium_idx, rgb2spec_table, ray, 0f0, t_max, lambda)
+    return Raycore.with_index(
+        _transmittance_dda_helper,
+        media, medium_idx,
+        rgb2spec_table, ray, t_max, lambda, origin, dir, media, medium_idx, template_grid
+    )
+end
 
-    σ_maj_0 = majorant.σ_maj[1]  # First wavelength for sampling
+"""Helper dispatched via with_index to get concrete medium type for DDA iterator."""
+@propagate_inbounds function _transmittance_dda_helper(
+    medium, rgb2spec_table, ray, t_max, lambda, origin, dir, media, medium_idx, template_grid
+)
+    iter = create_majorant_iterator(medium, rgb2spec_table, ray, t_max, lambda, template_grid)
+    return _ratio_tracking_dda(iter, origin, dir, media, medium_idx, rgb2spec_table, lambda)
+end
 
-    # Handle zero majorant (empty medium)
-    if σ_maj_0 < 1f-10
-        return (SpectralRadiance(1f0), SpectralRadiance(1f0), SpectralRadiance(1f0))
-    end
-
-    # Initialize PCG32 RNG seeded with ray origin and direction (matching pbrt-v4)
-    # See pbrt-v4/src/pbrt/wavefront/intersect.h: RNG rng(Hash(ray.o), Hash(ray.d))
-    rng = pcg32_init(pbrt_hash(origin), pbrt_hash(dir))
-
-    # Ratio tracking state
+"""
+Ratio tracking using DDA majorant iterator segments.
+Iterates over per-voxel majorant bounds, doing ratio tracking within each segment.
+"""
+@propagate_inbounds function _ratio_tracking_dda(
+    iter::RayMajorantIterator,
+    origin::Point3f, dir::Vec3f,
+    media, medium_idx::SetKey, rgb2spec_table, lambda::Wavelengths
+)
     T_ray = SpectralRadiance(1f0)
     r_u = SpectralRadiance(1f0)
     r_l = SpectralRadiance(1f0)
-    t = 0f0
 
-    # Step through medium using ratio tracking
-    max_iterations = Int32(256)
-    for _ in 1:max_iterations
-        # Sample exponential distance using PCG32
-        u, rng = pcg32_uniform_f32(rng)
-        dt = -log(max(1f-10, 1f0 - u)) / σ_maj_0
-        t_sample = t + dt
+    rng = pcg32_init(pbrt_hash(origin), pbrt_hash(dir))
 
-        if t_sample >= t_max
-            # Reached end of segment - apply remaining transmittance
-            dt_remain = t_max - t
-            T_maj = exp(-dt_remain * majorant.σ_maj)
-            T_maj_0 = T_maj[1]
-            if T_maj_0 > 1f-10
-                T_ray = T_ray * T_maj / T_maj_0
-                r_l = r_l * T_maj / T_maj_0
-                r_u = r_u * T_maj / T_maj_0
-            end
+    current_iter = iter
+    for _ in Int32(1):Int32(256)  # max DDA segments
+        seg, new_iter, valid = ray_majorant_next(current_iter, media)
+        if !valid
             break
         end
+        current_iter = new_iter
 
-        # Sample medium properties at this point
-        p = Point3f(origin + dir * t_sample)
-        mp = Raycore.with_index(sample_point, media, medium_idx, media, rgb2spec_table, p, lambda)
+        σ_maj = seg.σ_maj
+        σ_maj_0 = σ_maj[1]
 
-        # Compute null-scattering coefficient
-        σ_n = majorant.σ_maj - mp.σ_a - mp.σ_s
-        # Clamp negative values
-        σ_n = SpectralRadiance(max(σ_n[1], 0f0), max(σ_n[2], 0f0), max(σ_n[3], 0f0), max(σ_n[4], 0f0))
-
-        # Compute transmittance for this segment
-        T_maj = exp(-dt * majorant.σ_maj)
-
-        # Ratio tracking update (only null-scattering for transmittance)
-        # Following pbrt-v4: T_ray *= T_maj * sigma_n / pr
-        pr = T_maj[1] * σ_maj_0
-        if pr > 1f-10
-            T_ray = T_ray * T_maj * σ_n / pr
-            r_l = r_l * T_maj * majorant.σ_maj / pr
-            r_u = r_u * T_maj * σ_n / pr
-        else
-            T_ray = SpectralRadiance(0f0)
-            break
+        # Empty voxel — transmittance is 1, skip
+        if σ_maj_0 < 1f-10
+            continue
         end
 
-        # Russian roulette termination (following pbrt-v4)
-        Tr_estimate = T_ray / max(1f-10, average(r_l + r_u))
-        if max_component(Tr_estimate) < 0.05f0
-            q = 0.75f0
-            rr_sample, rng = pcg32_uniform_f32(rng)
-            if rr_sample < q
-                T_ray = SpectralRadiance(0f0)
+        t = seg.t_min
+        t_max_seg = seg.t_max
+
+        # Ratio tracking within this DDA segment
+        for _ in Int32(1):Int32(100)
+            u, rng = pcg32_uniform_f32(rng)
+            dt = -log(max(1f-10, 1f0 - u)) / σ_maj_0
+            t_sample = t + dt
+
+            if t_sample >= t_max_seg
+                # Past segment end — apply remaining transmittance
+                dt_remain = t_max_seg - t
+                T_maj = exp(-dt_remain * σ_maj)
+                T_maj_0 = T_maj[1]
+                if T_maj_0 > 1f-10
+                    T_ray = T_ray * T_maj / T_maj_0
+                    r_l = r_l * T_maj / T_maj_0
+                    r_u = r_u * T_maj / T_maj_0
+                end
                 break
-            else
-                T_ray = T_ray / (1f0 - q)
             end
+
+            # Sample medium properties at interaction point
+            p = Point3f(origin + dir * t_sample)
+            mp = Raycore.with_index(sample_point, media, medium_idx, media, rgb2spec_table, p, lambda)
+
+            # Null-scattering coefficient (clamped non-negative)
+            σ_n = σ_maj - mp.σ_a - mp.σ_s
+            σ_n = SpectralRadiance(max(σ_n[1], 0f0), max(σ_n[2], 0f0), max(σ_n[3], 0f0), max(σ_n[4], 0f0))
+
+            T_maj = exp(-dt * σ_maj)
+
+            # Ratio tracking update (null-scattering only for transmittance)
+            pr = T_maj[1] * σ_maj_0
+            if pr > 1f-10
+                T_ray = T_ray * T_maj * σ_n / pr
+                r_l = r_l * T_maj * σ_maj / pr
+                r_u = r_u * T_maj * σ_n / pr
+            else
+                T_ray = SpectralRadiance(0f0)
+                return (T_ray, r_u, r_l)
+            end
+
+            # Russian roulette termination (following pbrt-v4)
+            Tr_estimate = T_ray / max(1f-10, average(r_l + r_u))
+            if max_component(Tr_estimate) < 0.05f0
+                q = 0.75f0
+                rr_sample, rng = pcg32_uniform_f32(rng)
+                if rr_sample < q
+                    T_ray = SpectralRadiance(0f0)
+                    return (T_ray, r_u, r_l)
+                else
+                    T_ray = T_ray / (1f0 - q)
+                end
+            end
+
+            if is_black(T_ray)
+                return (T_ray, r_u, r_l)
+            end
+
+            t = t_sample
         end
 
         if is_black(T_ray)
             break
         end
-
-        t = t_sample
     end
 
     return (T_ray, r_u, r_l)

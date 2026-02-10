@@ -1182,6 +1182,63 @@ function build_rgb_majorant_grid(
     return grid
 end
 
+"""In-place majorant grid rebuild for RGBGridMedium density updates."""
+function build_rgb_majorant_grid!(
+    grid::MajorantGrid,
+    σ_a_grid::Union{Nothing, AbstractArray{RGBSpectrum,3}},
+    σ_s_grid::Union{Nothing, AbstractArray{RGBSpectrum,3}},
+    sigma_scale::Float32,
+    grid_size::Tuple{Int,Int,Int}
+)
+    res = grid.res
+    nx, ny, nz = grid_size
+
+    for iz in 0:res[3]-1
+        z_start_f = iz * nz / res[3]
+        z_end_f = (iz + 1) * nz / res[3]
+        z_start = max(1, floor(Int, z_start_f) + 1)
+        z_end = min(nz, ceil(Int, z_end_f))
+
+        for iy in 0:res[2]-1
+            y_start_f = iy * ny / res[2]
+            y_end_f = (iy + 1) * ny / res[2]
+            y_start = max(1, floor(Int, y_start_f) + 1)
+            y_end = min(ny, ceil(Int, y_end_f))
+
+            for ix in 0:res[1]-1
+                x_start_f = ix * nx / res[1]
+                x_end_f = (ix + 1) * nx / res[1]
+                x_start = max(1, floor(Int, x_start_f) + 1)
+                x_end = min(nx, ceil(Int, x_end_f))
+
+                max_σ_a = 0f0
+                max_σ_s = 0f0
+
+                for z in z_start:z_end, y in y_start:y_end, x in x_start:x_end
+                    if !isnothing(σ_a_grid)
+                        rgb = σ_a_grid[x, y, z]
+                        max_σ_a = max(max_σ_a, max(rgb.c[1], rgb.c[2], rgb.c[3]))
+                    end
+                    if !isnothing(σ_s_grid)
+                        rgb = σ_s_grid[x, y, z]
+                        max_σ_s = max(max_σ_s, max(rgb.c[1], rgb.c[2], rgb.c[3]))
+                    end
+                end
+
+                if isnothing(σ_a_grid)
+                    max_σ_a = 1f0
+                end
+                if isnothing(σ_s_grid)
+                    max_σ_s = 1f0
+                end
+
+                majorant_set!(grid, ix, iy, iz, sigma_scale * (max_σ_a + max_σ_s))
+            end
+        end
+    end
+    return grid
+end
+
 # Template grid extraction for RGBGridMedium
 @inline get_template_grid(medium::RGBGridMedium) = medium.majorant_grid
 
@@ -1435,6 +1492,41 @@ function build_majorant_grid(density::AbstractArray{Float32,3}, res::Vec3i)
         end
     end
 
+    return grid
+end
+
+"""In-place majorant grid rebuild for GridMedium density updates."""
+function build_majorant_grid!(grid::MajorantGrid, density::AbstractArray{Float32,3})
+    res = grid.res
+    nx, ny, nz = size(density)
+
+    for iz in 0:res[3]-1
+        z_start_f = iz * nz / res[3]
+        z_end_f = (iz + 1) * nz / res[3]
+        z_start = max(1, floor(Int, z_start_f) + 1)
+        z_end = min(nz, ceil(Int, z_end_f))
+
+        for iy in 0:res[2]-1
+            y_start_f = iy * ny / res[2]
+            y_end_f = (iy + 1) * ny / res[2]
+            y_start = max(1, floor(Int, y_start_f) + 1)
+            y_end = min(ny, ceil(Int, y_end_f))
+
+            for ix in 0:res[1]-1
+                x_start_f = ix * nx / res[1]
+                x_end_f = (ix + 1) * nx / res[1]
+                x_start = max(1, floor(Int, x_start_f) + 1)
+                x_end = min(nx, ceil(Int, x_end_f))
+
+                max_val = 0f0
+                for z in z_start:z_end, y in y_start:y_end, x in x_start:x_end
+                    max_val = max(max_val, density[x, y, z])
+                end
+
+                majorant_set!(grid, ix, iy, iz, max_val)
+            end
+        end
+    end
     return grid
 end
 

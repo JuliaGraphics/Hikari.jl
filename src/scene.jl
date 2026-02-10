@@ -90,6 +90,16 @@ function Base.push!(scene::Scene, medium::MediumInterface)
     return UInt32(idx)
 end
 
+function update_material!(scene::Scene, idx::UInt32, new_medium::Medium)
+    mi = @allowscalar scene.media_interfaces[idx]
+    Raycore.update!(scene.media, mi.inside, new_medium)
+end
+
+function update_material!(scene::Scene, idx::UInt32, new_material::Material)
+    mi = @allowscalar scene.media_interfaces[idx]
+    Raycore.update!(scene.materials, mi.material, new_material)
+end
+
 struct SceneHandle
     scene::Scene
     interface::UInt32 # Index into  scene.media_interfaces
