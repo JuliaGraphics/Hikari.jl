@@ -96,11 +96,14 @@ function (i::SamplerIntegrator)(scene::AbstractScene, film, camera)
     sampler = i.sampler
     max_depth = Int32(i.max_depth)
     backend = KA.get_backend(film.tiles.contrib_sum)
+    # Adapt scene for kernel traversal (TLAS → StaticTLAS, etc.)
+    # GPU backends do this automatically in KA kernel launch, but CPU does not.
+    adapted_scene = Adapt.adapt(backend, scene)
     kernel! = whitten_kernel!(backend, (8, 8))
     kernel!(
         film.pixels, film.crop_bounds, sample_bounds,
         tiles, tile_size,
-        max_depth, scene, sampler,
+        max_depth, adapted_scene, sampler,
         camera, film.filter_params;
         ndrange=film.ntiles
     )

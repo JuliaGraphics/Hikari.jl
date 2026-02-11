@@ -106,7 +106,8 @@ end
         # Sample points on lens.
         p_lens = camera.core.lens_radius * concentric_sample_disk(sample.lens)
         # Compute point on plane of focus.
-        t = camera.core.focal_distance / d[3]
+        # Camera looks in -z, so d[3] < 0; negate to get positive t.
+        t = -camera.core.focal_distance / d[3]
         p_focus = o .+ d * t
         # Update ray for effects of lens.
         o = Point3f(p_lens[1], p_lens[2], 0f0)
