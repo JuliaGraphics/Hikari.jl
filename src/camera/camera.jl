@@ -75,3 +75,10 @@ function generate_ray_differential(
 end
 
 include("perspective.jl")
+include("matrix.jl")
+
+# Generic accessor for camera_to_world transform (handles different nesting depths)
+# PerspectiveCamera: camera.core (ProjectiveCamera) .core (CameraCore) .camera_to_world
+# MatrixCamera: camera.core (CameraCore) .camera_to_world
+get_camera_to_world(camera::PerspectiveCamera) = camera.core.core.camera_to_world
+get_camera_to_world(camera::MatrixCamera) = camera.core.camera_to_world

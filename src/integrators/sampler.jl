@@ -18,7 +18,8 @@ end
         scene, sampler, camera, pixel, spp_sqr, filter_params::GPUFilterParams
     )
     # pixel is (px, py) where px=x (column), py=y (row)
-    # Camera expects raster coords with y increasing downward, so flip y
+    # Camera raster coords have y=0 at bottom (screen_window.p_min.y), so flip y
+    # to map Julia row 1 (top) → raster y=height (screen top)
     campix = Point2f(pixel[1], resolution[1] - pixel[2])
 
     # Use while loop to avoid iterate() protocol (causes PHI node errors in SPIR-V)
@@ -36,9 +37,13 @@ end
         if isnan(l)
             l = RGBSpectrum(0.0f0)
         end
-        # Use camera_sample.film (the actual jittered position) and filter_weight
+        # Reverse Y flip for film deposition: camera_sample.film is in flipped-Y
+        # raster space, but tiles/pixels use unflipped (px, py) coordinates.
+        # This matches how SPPM/FastWavefront/VolPath separate camera coords
+        # from deposit coords.
+        film_pos = Point2f(camera_sample.film[1], resolution[1] - camera_sample.film[2])
         add_sample!(
-            tiles, tile, tile_column, camera_sample.film, l,
+            tiles, tile, tile_column, film_pos, l,
             camera_sample.filter_weight, ω,
         )
         sample_idx += Int32(1)

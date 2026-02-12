@@ -477,10 +477,15 @@ function render!(
        vp.state.height != height ||
        vp.state.num_lights != n_lights
         # Use original scene.lights (MultiTypeSet) for PowerLightSampler (needs .backend)
+        # Ensure SobolRNG has enough bits for progressive rendering:
+        # When samples_per_pixel=1 (interactive mode), log2_spp=0 causes sample_idx
+        # bits to collide with pixel morton code bits, making every sample identical.
+        # Use at least 4096 so log2_spp=12, supporting up to 4096 progressive samples.
+        sobol_spp = max(Int(vp.samples_per_pixel), 4096)
         vp.state = VolPathState(backend, width, height, scene.lights;
                                 max_depth=vp.max_depth,
                                 scene_radius=world_radius(scene),
-                                samples_per_pixel=Int(vp.samples_per_pixel),
+                                samples_per_pixel=sobol_spp,
                                 sampler_seed=UInt32(0),
                                 accumulation_eltype=vp.accumulation_eltype)
     end

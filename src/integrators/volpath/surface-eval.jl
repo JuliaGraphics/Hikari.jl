@@ -32,10 +32,8 @@ Returns (dpdx, dpdy) - approximate change in position per screen pixel.
 @propagate_inbounds function approximate_dp_dxy(
     pi::Point3f, n::Vec3f, camera, samples_per_pixel::Int32
 )
-    # Transform intersection point to camera space
-    # camera.core.core.camera_to_world is world->camera transform (inverted from usual)
-    # We need camera->world inverse = world->camera
-    camera_to_world = camera.core.core.camera_to_world
+    # Get camera_to_world transform (generic accessor handles different camera types)
+    camera_to_world = get_camera_to_world(camera)
 
     # For perspective camera, approximate dpdx/dpdy based on distance and fov
     # The camera has precomputed dx_camera and dy_camera (change per pixel in camera space)
