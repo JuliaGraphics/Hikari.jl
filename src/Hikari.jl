@@ -94,6 +94,7 @@ include("materials/mix-material.jl")
 include("materials/thin-dielectric.jl")
 include("materials/diffuse-transmission.jl")
 include("materials/coated-conductor.jl")
+include("materials/coated-diffuse-transmission.jl")
 
 # Spectral rendering support (for PhysicalWavefront)
 # spectral.jl, piecewise-linear.jl, metal-spectra.jl included above (before textures)

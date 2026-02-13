@@ -184,42 +184,64 @@ const TONEMAP_FILMIC = UInt8(5)
     end
 end
 
-@kernel inbounds=true function postprocess_kernel!(dst, @Const(src), exposure::Float32, tonemap_mode::UInt8,
+@kernel inbounds=true function postprocess_kernel!(dst, @Const(src), @Const(depth),
+                                      exposure::Float32, tonemap_mode::UInt8,
                                       inv_gamma::Float32, apply_gamma::Bool, white_point::Float32,
                                       imaging_ratio::Float32, apply_wb::Bool,
                                       wb11::Float32, wb12::Float32, wb13::Float32,
                                       wb21::Float32, wb22::Float32, wb23::Float32,
-                                      wb31::Float32, wb32::Float32, wb33::Float32)
+                                      wb31::Float32, wb32::Float32, wb33::Float32,
+                                      mask_escaped::Bool,
+                                      bg_r::Float32, bg_g::Float32, bg_b::Float32,
+                                      depth_h::Int32, depth_w::Int32)
     i = @index(Global, Linear)
     begin
+        # Always compute tonemapped color
         c = src[i]
-
-        # Apply exposure
         r = c.r * exposure
         g = c.g * exposure
         b = c.b * exposure
-
-        # Apply white balance (Bradford chromatic adaptation)
         if apply_wb
             r, g, b = apply_white_balance(r, g, b,
                                           wb11, wb12, wb13,
                                           wb21, wb22, wb23,
                                           wb31, wb32, wb33)
         end
-
-        # Apply imaging ratio (pbrt-v4: exposure_time * iso / 100)
         r = r * imaging_ratio
         g = g * imaging_ratio
         b = b * imaging_ratio
-
-        # Apply tonemapping
         r, g, b = _apply_tonemap(r, g, b, tonemap_mode, white_point)
-
-        # Apply gamma correction
         if apply_gamma
             r = r^inv_gamma
             g = g^inv_gamma
             b = b^inv_gamma
+        end
+
+        # AA depth mask: sample 3x3 neighborhood, blend by escaped fraction
+        if mask_escaped
+            row = Int32(((i - 1) % depth_h) + 1)
+            col = Int32(((i - 1) ÷ depth_h) + 1)
+            d_row = depth_h - row + Int32(1)  # Y-flip
+
+            escaped = Int32(0)
+            total = Int32(0)
+            for dr in Int32(-1):Int32(1)
+                for dc in Int32(-1):Int32(1)
+                    nr = d_row + dr
+                    nc = col + dc
+                    inside = (nr >= Int32(1)) & (nr <= depth_h) & (nc >= Int32(1)) & (nc <= depth_w)
+                    if inside
+                        didx = (nc - Int32(1)) * depth_h + nr
+                        escaped += Int32(isinf(depth[didx]))
+                        total += Int32(1)
+                    end
+                end
+            end
+
+            alpha = Float32(escaped) / Float32(total)
+            r = r * (1f0 - alpha) + bg_r * alpha
+            g = g * (1f0 - alpha) + bg_g * alpha
+            b = b * (1f0 - alpha) + bg_b * alpha
         end
 
         dst[i] = RGB{Float32}(r, g, b)
@@ -249,6 +271,8 @@ Works on both CPU and GPU arrays via KernelAbstractions.
 - `gamma`: Gamma correction value (default: 2.2, use `nothing` to skip)
 - `white_point`: White point for extended Reinhard (default: 4.0)
 - `sensor`: FilmSensor for pbrt-style sensor simulation (ISO, white balance)
+- `background`: When set to an `RGB{Float32}`, pixels where `film.depth` is `Inf` (escaped rays)
+  are replaced with this color instead of being tonemapped. Useful for compositing.
 
 # Example
 ```julia
@@ -272,6 +296,7 @@ function postprocess!(film::Film;
     gamma::Union{Real, Nothing} = 2.2,
     white_point::Real = 4.0,
     sensor::Union{FilmSensor, Nothing} = nothing,
+    background::Union{RGB{Float32}, Nothing} = nothing,
 )
     src = film.framebuffer
     dst = film.postprocess
@@ -310,14 +335,21 @@ function postprocess!(film::Film;
         TONEMAP_NONE
     end
 
+    # Escaped ray masking
+    mask_escaped = !isnothing(background)
+    bg_r = mask_escaped ? background.r : 0f0
+    bg_g = mask_escaped ? background.g : 0f0
+    bg_b = mask_escaped ? background.b : 0f0
+
     # Get backend from array type and launch kernel
     backend = KernelAbstractions.get_backend(src)
     kernel! = postprocess_kernel!(backend)
-    kernel!(dst, src, exp_f32, tonemap_mode, inv_gamma, apply_gamma, wp_f32,
+    kernel!(dst, src, film.depth, exp_f32, tonemap_mode, inv_gamma, apply_gamma, wp_f32,
             imaging_ratio, apply_wb,
             wb_matrix[1,1], wb_matrix[1,2], wb_matrix[1,3],
             wb_matrix[2,1], wb_matrix[2,2], wb_matrix[2,3],
-            wb_matrix[3,1], wb_matrix[3,2], wb_matrix[3,3];
+            wb_matrix[3,1], wb_matrix[3,2], wb_matrix[3,3],
+            mask_escaped, bg_r, bg_g, bg_b, Int32(size(src, 1)), Int32(size(src, 2));
             ndrange=length(src))
     KernelAbstractions.synchronize(backend)
 

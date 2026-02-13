@@ -5,6 +5,7 @@ end
 
 # Ambient lights are infinite (emit from all directions)
 is_infinite_light(::AmbientLight) = true
+is_infinite_light(::Type{<:AmbientLight}) = true
 
 """
     AmbientLight(rgb::RGB{Float32})

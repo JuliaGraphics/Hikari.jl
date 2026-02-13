@@ -30,6 +30,7 @@ end
 is_δ_light(::DirectionalLight) = true
 # Directional lights are infinite (at infinity)
 is_infinite_light(::DirectionalLight) = true
+is_infinite_light(::Type{<:DirectionalLight}) = true
 
 """
     DirectionalLight(rgb::RGB{Float32}, direction; illuminance=nothing)

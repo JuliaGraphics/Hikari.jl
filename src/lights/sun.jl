@@ -37,6 +37,7 @@ end
 is_δ_light(::SunLight) = true
 # Sun lights are infinite (at infinity)
 is_infinite_light(::SunLight) = true
+is_infinite_light(::Type{<:SunLight}) = true
 
 # Convenience constructor without transformation (for direct spectrum input)
 function SunLight(l::S, direction::Vec3f, scale::Float32=1f0; kwargs...) where S<:Spectrum

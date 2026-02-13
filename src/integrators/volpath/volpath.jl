@@ -177,7 +177,7 @@ Following pbrt-v4's GetCameraSample: samples the filter, computes offset and wei
             Float32(height) - Float32(y) + 1f0 + 0.5f0 + fs.p[2]
         )
 
-        camera_sample = CameraSample(p_film, Point2f(0.5f0, 0.5f0), 0f0)
+        camera_sample = CameraSample(p_film, Point2f(pixel_sample.lens_u, pixel_sample.lens_v), pixel_sample.time)
         ray, weight = generate_ray(camera, camera_sample)
 
         if weight > 0f0

@@ -5,6 +5,7 @@ is_δ_light(::Light) = false
 
 # Infinite lights are at infinity (environment maps, sun, sky)
 is_infinite_light(::Light) = false
+is_infinite_light(::Type{<:Light}) = false
 
 struct VisibilityTester
     p0::Interaction

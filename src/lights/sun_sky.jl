@@ -132,6 +132,7 @@ end
 
 # SunSky lights are infinite (provide background sky)
 is_infinite_light(::SunSkyLight) = true
+is_infinite_light(::Type{<:SunSkyLight}) = true
 
 """
 Internal function to compute sky radiance without light struct.

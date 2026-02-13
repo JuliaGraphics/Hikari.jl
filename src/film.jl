@@ -407,26 +407,30 @@ This traces one ray per pixel (center of pixel) and stores first-hit data.
 Should be called before or after main rendering - the auxiliary buffers
 are used for denoising in postprocess!.
 """
-function fill_aux_buffers!(film::Film, scene, camera)
+function fill_aux_buffers!(film::Film, scene, camera; has_infinite_lights::Bool=false)
     albedo = film.albedo
     normal = film.normal
     depth = film.depth
     resolution = film.resolution
     crop_bounds = film.crop_bounds
 
+    # Depth for rays that miss geometry: Inf32 means "escaped" (masked in postprocess),
+    # a large finite value means "hit infinite light" (not masked).
+    miss_depth = has_infinite_lights ? Float32(1e30) : Inf32
+
     backend = KA.get_backend(albedo)
     kernel! = aux_buffer_kernel!(backend)
     kernel!(
         albedo, normal, depth,
         resolution, crop_bounds,
-        scene, camera;
+        scene, camera, miss_depth;
         ndrange = length(albedo)
     )
     KA.synchronize(backend)
     return film
 end
 
-@kernel inbounds=true function aux_buffer_kernel!(albedo, normal, depth, resolution, crop_bounds, scene, camera)
+@kernel inbounds=true function aux_buffer_kernel!(albedo, normal, depth, resolution, crop_bounds, scene, camera, miss_depth::Float32)
     idx = @index(Global)
 
     # Convert linear index to 2D pixel coordinates
@@ -461,9 +465,9 @@ end
             # Use white as default, material-specific albedo requires material dispatch
             albedo[idx] = RGB{Float32}(0.8f0, 0.8f0, 0.8f0)
         else
-            # No hit - background
+            # No geometry hit — miss_depth is Inf32 (escaped) or 1e30 (infinite light)
             normal[idx] = Vec3f(0f0, 0f0, 0f0)
-            depth[idx] = Inf32
+            depth[idx] = miss_depth
             albedo[idx] = RGB{Float32}(0f0, 0f0, 0f0)
         end
     else
