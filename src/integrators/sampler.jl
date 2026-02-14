@@ -118,7 +118,7 @@ end
 
 # Get material from MaterialScene using triangle's metadata
 function get_material(ms::MaterialScene, shape::Triangle)
-    return get_material(ms.materials, shape.metadata)
+    return get_material(ms.materials, shape.metadata[1])
 end
 
 # Non-allocating sum over lights for tuples (recursive for type stability)
@@ -198,7 +198,7 @@ function li(
     # Compute emitted light if ray hit an area light source.
     l += le(si, wo)
     # Use type-stable dispatch for material-dependent computation
-    l += li_material(scene.materials, primitive.metadata,
+    l += li_material(scene.materials, primitive.metadata[1],
                      sampler, max_depth, ray, si, scene, lights, wo, depth)
     l
 end
@@ -419,7 +419,7 @@ end
 
         # Get material and compute BSDF (or detect volume)
         # primitive.metadata is UInt32 index into media_interfaces
-        mi_idx = primitive.metadata::UInt32
+        mi_idx = primitive.metadata[1]::UInt32
         mi = scene.media_interfaces[mi_idx]
         idx = mi.material  # SetKey into materials
         valid, is_volume, bsdf = compute_bsdf_for_material(materials, idx, si)

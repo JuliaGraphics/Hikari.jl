@@ -24,10 +24,13 @@ struct TextureFilterContext
     dudy::Float32
     dvdx::Float32
     dvdy::Float32
+    face_idx::UInt32              # Triangle face index (for vertex colors)
+    bary::SVector{3, Float32}     # Barycentric coordinates (for vertex colors)
 end
 
 # Default context with no filtering (derivatives = 0)
-TextureFilterContext(uv::Point2f) = TextureFilterContext(uv, 0f0, 0f0, 0f0, 0f0)
+TextureFilterContext(uv::Point2f) = TextureFilterContext(uv, 0f0, 0f0, 0f0, 0f0, UInt32(0), SVector{3,Float32}(0f0, 0f0, 0f0))
+TextureFilterContext(uv::Point2f, dudx, dudy, dvdx, dvdy) = TextureFilterContext(uv, dudx, dudy, dvdx, dvdy, UInt32(0), SVector{3,Float32}(0f0, 0f0, 0f0))
 
 # ============================================================================
 # Unified Texture Evaluation - Same code path for CPU and GPU
@@ -205,6 +208,44 @@ function Raycore.maybe_convert_field(dhv::Raycore.MultiTypeSet, tex::Texture)
     tex.isconst && return tex.constval
     return Raycore.store_texture(dhv, tex.data)
 end
+
+# ============================================================================
+# VertexColorTexture MultiTypeSet conversion
+# ============================================================================
+
+function Raycore.maybe_convert_field(dhv::Raycore.MultiTypeSet, vtex::VertexColorTexture)
+    vtex.face_colors isa AbstractArray || return vtex
+    ref = Raycore.store_texture(dhv, vtex.face_colors)
+    return VertexColorTexture(ref, vtex.n_faces)
+end
+
+# ============================================================================
+# SurfaceInteraction-based Texture Evaluation
+# ============================================================================
+
+# Regular textures: extract UV from SI
+@propagate_inbounds eval_tex(ctx::Raycore.StaticMultiTypeSet, tref::Raycore.TextureRef, si::SurfaceInteraction) = eval_tex(ctx, tref, si.uv)
+@propagate_inbounds eval_tex(::Raycore.StaticMultiTypeSet, val::T, ::SurfaceInteraction) where T<:Union{Float32, RGB{Float32}, Spectrum} = val
+@propagate_inbounds eval_tex(::Raycore.StaticMultiTypeSet, val::PiecewiseLinearSpectrum, ::SurfaceInteraction) = val
+
+# VertexColorTexture: barycentric interpolation using face_idx and bary from SI
+@propagate_inbounds function eval_tex(ctx::Raycore.StaticMultiTypeSet, vtex::VertexColorTexture, si::SurfaceInteraction)
+    data = Raycore.deref(ctx, vtex.face_colors)
+    fi = si.face_idx
+    b = si.bary
+    return data[1, fi] * b[1] + data[2, fi] * b[2] + data[3, fi] * b[3]
+end
+
+# VertexColorTexture: barycentric interpolation using face_idx and bary from TextureFilterContext
+@propagate_inbounds function eval_tex(ctx::Raycore.StaticMultiTypeSet, vtex::VertexColorTexture, tfc::TextureFilterContext)
+    data = Raycore.deref(ctx, vtex.face_colors)
+    fi = tfc.face_idx
+    b = tfc.bary
+    return data[1, fi] * b[1] + data[2, fi] * b[2] + data[3, fi] * b[3]
+end
+
+# VertexColorTexture fallback for UV-only paths (fast-wavefront) - gray placeholder
+@propagate_inbounds eval_tex(::Raycore.StaticMultiTypeSet, ::VertexColorTexture, ::Point2f) = RGBSpectrum(0.5f0)
 
 # Light skip methods are in lights/light-sampler.jl (after light types are defined)
 # Distribution types are now converted via the standard texture ref infrastructure

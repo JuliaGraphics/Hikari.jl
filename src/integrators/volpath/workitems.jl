@@ -122,6 +122,8 @@ struct VPMediumSampleWorkItem
     hit_uv::Point2f
     hit_material_idx::SetKey
     hit_interface::MediumInterfaceIdx  # For medium transitions at surface
+    hit_face_idx::UInt32              # Triangle face index (for vertex colors)
+    hit_bary::SVector{3, Float32}     # Barycentric coordinates (for vertex colors)
 end
 
 # Constructor from VPRayWorkItem with surface hit
@@ -131,7 +133,8 @@ function VPMediumSampleWorkItem(
     pi::Point3f, n::Vec3f, dpdu::Vec3f, dpdv::Vec3f,
     ns::Vec3f, dpdus::Vec3f, dpdvs::Vec3f,
     uv::Point2f, mat_idx::SetKey,
-    interface::MediumInterfaceIdx
+    interface::MediumInterfaceIdx,
+    face_idx::UInt32, bary::SVector{3, Float32}
 )
     VPMediumSampleWorkItem(
         work.ray, work.depth, t_max,
@@ -140,7 +143,8 @@ function VPMediumSampleWorkItem(
         work.specular_bounce, work.any_non_specular_bounces,
         work.prev_intr_p, work.prev_intr_n,
         work.medium_idx,
-        true, pi, n, dpdu, dpdv, ns, dpdus, dpdvs, uv, mat_idx, interface
+        true, pi, n, dpdu, dpdv, ns, dpdus, dpdvs, uv, mat_idx, interface,
+        face_idx, bary
     )
 end
 
@@ -155,7 +159,8 @@ function VPMediumSampleWorkItem(work::VPRayWorkItem)
         work.medium_idx,
         false, Point3f(0f0), Vec3f(0f0, 0f0, 1f0), Vec3f(0f0), Vec3f(0f0),
         Vec3f(0f0, 0f0, 1f0), Vec3f(0f0), Vec3f(0f0),
-        Point2f(0f0, 0f0), SetKey(), MediumInterfaceIdx(SetKey(), SetKey(), SetKey())
+        Point2f(0f0, 0f0), SetKey(), MediumInterfaceIdx(SetKey(), SetKey(), SetKey()),
+        UInt32(0), SVector{3, Float32}(0f0, 0f0, 0f0)
     )
 end
 
@@ -207,6 +212,10 @@ struct VPMaterialEvalWorkItem
     dpdus::Vec3f                    # Shading position derivative w.r.t. u
     dpdvs::Vec3f                    # Shading position derivative w.r.t. v
     uv::Point2f                     # Texture coordinates
+
+    # Per-vertex color support
+    face_idx::UInt32                # Triangle face index (for vertex colors)
+    bary::SVector{3, Float32}       # Barycentric coordinates (for vertex colors)
 
     wo::Vec3f                       # Outgoing direction
     material_idx::SetKey            # Material index
@@ -325,6 +334,10 @@ struct VPHitSurfaceWorkItem
     material_idx::SetKey
     interface::MediumInterfaceIdx   # For medium transitions
 
+    # Per-vertex color support
+    face_idx::UInt32                # Triangle face index (for vertex colors)
+    bary::SVector{3, Float32}       # Barycentric coordinates (for vertex colors)
+
     # Path state
     lambda::Wavelengths
     pixel_index::Int32
@@ -352,11 +365,13 @@ function VPHitSurfaceWorkItem(
     ns::Vec3f, dpdus::Vec3f, dpdvs::Vec3f,
     uv::Point2f, mat_idx::SetKey,
     interface::MediumInterfaceIdx,
+    face_idx::UInt32, bary::SVector{3, Float32},
     t_hit::Float32
 )
     VPHitSurfaceWorkItem(
         work.ray,
         pi, n, dpdu, dpdv, ns, dpdus, dpdvs, uv, mat_idx, interface,
+        face_idx, bary,
         work.lambda, work.pixel_index,
         work.beta, work.r_u, work.r_l,
         work.depth, work.eta_scale,
@@ -376,6 +391,7 @@ function VPHitSurfaceWorkItem(
         work.hit_pi, work.hit_n, work.hit_dpdu, work.hit_dpdv,
         work.hit_ns, work.hit_dpdus, work.hit_dpdvs,
         work.hit_uv, work.hit_material_idx, work.hit_interface,
+        work.hit_face_idx, work.hit_bary,
         work.lambda, work.pixel_index,
         beta, r_u, r_l,
         work.depth, work.eta_scale,
@@ -391,6 +407,7 @@ function VPMaterialEvalWorkItem(work::VPHitSurfaceWorkItem, wo::Vec3f, material_
     VPMaterialEvalWorkItem(
         work.pi, work.n, work.dpdu, work.dpdv, work.ray.time,
         work.ns, work.dpdus, work.dpdvs, work.uv,
+        work.face_idx, work.bary,
         wo, material_idx, work.interface,
         work.lambda, work.pixel_index,
         work.beta, work.r_u, work.r_l,

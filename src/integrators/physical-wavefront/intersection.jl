@@ -43,7 +43,7 @@ This kernel does NOT generate shadow rays - that happens in direct lighting.
                 push!(escaped_queue, escaped_item)
             else
                 # Got a hit - extract surface info
-                raw_mat_idx = primitive.metadata::SetKey
+                raw_mat_idx = primitive.metadata[1]::SetKey
 
                 # Compute intersection point
                 pi = Point3f(work.ray.o + work.ray.d * t_hit)

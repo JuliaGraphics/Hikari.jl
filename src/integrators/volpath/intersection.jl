@@ -202,7 +202,7 @@ end
         if hit
             # Have surface hit info for when ray survives delta tracking
             # primitive.metadata is UInt32 index into media_interfaces
-            mi_idx = primitive.metadata::UInt32
+            mi_idx = primitive.metadata[1]::UInt32
             mi = media_interfaces[mi_idx]
             mat_idx = mi.material  # SetKey into materials
 
@@ -213,7 +213,8 @@ end
                 work, t_hit,
                 geom.pi, geom.n, geom.dpdu, geom.dpdv,
                 geom.ns, geom.dpdus, geom.dpdvs,
-                geom.uv, mat_idx, mi
+                geom.uv, mat_idx, mi,
+                primitive.metadata[2], SVector{3,Float32}(barycentric)
             ))
         else
             # Ray in medium but escaped scene - t_max = Infinity
@@ -227,7 +228,7 @@ end
         else
             # Hit surface - extract geometry
             # primitive.metadata is UInt32 index into media_interfaces
-            mi_idx = primitive.metadata::UInt32
+            mi_idx = primitive.metadata[1]::UInt32
             mi = media_interfaces[mi_idx]
             mat_idx = mi.material  # SetKey into materials
 
@@ -238,7 +239,9 @@ end
                 work,
                 geom.pi, geom.n, geom.dpdu, geom.dpdv,
                 geom.ns, geom.dpdus, geom.dpdvs,
-                geom.uv, mat_idx, mi, t_hit
+                geom.uv, mat_idx, mi,
+                primitive.metadata[2], SVector{3,Float32}(barycentric),
+                t_hit
             ))
         end
     end
@@ -312,7 +315,7 @@ while opaque surfaces block it. The final contribution is computed as:
         end
 
         # Hit a surface - look up MediumInterfaceIdx
-        mi_idx = primitive.metadata::UInt32
+        mi_idx = primitive.metadata[1]::UInt32
         mi = media_interfaces[mi_idx]
         n = vp_compute_geometric_normal(primitive)
         entering = dot(dir, n) < 0f0

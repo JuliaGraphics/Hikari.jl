@@ -9,9 +9,9 @@
 Compute BSDF for MatteMaterial.
 """
 @propagate_inbounds function compute_bsdf(m::MatteMaterial, textures, si::SurfaceInteraction, ::Bool, transport)
-    r = clamp(eval_tex(textures, m.Kd, si.uv))
+    r = clamp(eval_tex(textures, m.Kd, si))
     is_black(r) && return BSDF(si)
-    σ = clamp(eval_tex(textures, m.σ, si.uv), 0f0, 90f0)
+    σ = clamp(eval_tex(textures, m.σ, si), 0f0, 90f0)
     lambertian = (σ ≈ 0.0f0)
     return BSDF(si, LambertianReflection(lambertian, r), OrenNayar(!lambertian, r, σ))
 end
@@ -20,7 +20,7 @@ end
 Compute BSDF for MirrorMaterial.
 """
 @propagate_inbounds function compute_bsdf(m::MirrorMaterial, textures, si::SurfaceInteraction, ::Bool, transport)
-    r = clamp(eval_tex(textures, m.Kr, si.uv))
+    r = clamp(eval_tex(textures, m.Kr, si))
     return BSDF(si, SpecularReflection(!is_black(r), r, FresnelNoOp()))
 end
 
@@ -28,15 +28,15 @@ end
 Compute BSDF for GlassMaterial.
 """
 @propagate_inbounds function compute_bsdf(g::GlassMaterial, textures, si::SurfaceInteraction, allow_multiple_lobes::Bool, transport)
-    η = eval_tex(textures, g.index, si.uv)
+    η = eval_tex(textures, g.index, si)
     # Handle edge case where eta is 0 (e.g., wavelength beyond stored spectrum range)
     # This matches pbrt-v4 DielectricMaterial::GetBxDF behavior
     η == 0f0 && (η = 1f0)
-    u_roughness = eval_tex(textures, g.u_roughness, si.uv)
-    v_roughness = eval_tex(textures, g.v_roughness, si.uv)
+    u_roughness = eval_tex(textures, g.u_roughness, si)
+    v_roughness = eval_tex(textures, g.v_roughness, si)
 
-    r = clamp(eval_tex(textures, g.Kr, si.uv))
-    t = clamp(eval_tex(textures, g.Kt, si.uv))
+    r = clamp(eval_tex(textures, g.Kr, si))
+    t = clamp(eval_tex(textures, g.Kt, si))
     r_black = is_black(r)
     t_black = is_black(t)
     r_black && t_black && return BSDF(si, η)
@@ -85,11 +85,11 @@ Compute BSDF for ConductorMaterial - conductor with Fresnel reflectance.
 """
 @propagate_inbounds function compute_bsdf(m::ConductorMaterial, textures, si::SurfaceInteraction, ::Bool, transport)
     # Get material parameters (convert spectral IOR to RGB for Whitted path)
-    eta = clamp(_to_rgb_ior(eval_tex(textures, m.eta, si.uv)))
-    k_val = clamp(_to_rgb_ior(eval_tex(textures, m.k, si.uv)))
-    rough = eval_tex(textures, m.roughness, si.uv)
+    eta = clamp(_to_rgb_ior(eval_tex(textures, m.eta, si)))
+    k_val = clamp(_to_rgb_ior(eval_tex(textures, m.k, si)))
+    rough = eval_tex(textures, m.roughness, si)
     # Reflectance is a color tint that multiplies the Fresnel result
-    r = clamp(eval_tex(textures, m.reflectance, si.uv))
+    r = clamp(eval_tex(textures, m.reflectance, si))
 
     # Create Fresnel conductor (ni=1 for air, nt=eta, k=k_val)
     fresnel = FresnelConductor(RGBSpectrum(1f0), eta, k_val)
@@ -183,7 +183,7 @@ Compute specular reflection or transmission contribution by tracing a bounce ray
 
     # Recursively shade the hit point
     return Raycore.with_index(
-        shade, scene.materials, primitive.metadata,
+        shade, scene.materials, primitive.metadata[1],
         bounce_ray, bounce_si, scene, bounce_beta, depth + Int32(1), max_depth
     )
 end

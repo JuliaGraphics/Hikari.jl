@@ -77,7 +77,7 @@ end
     # Check emission
     if is_emissive(materials, material_idx)
         # Get emission - use simple TextureFilterContext (no derivatives needed for emission)
-        tfc = TextureFilterContext(work.uv)
+        tfc = TextureFilterContext(work.uv, 0f0, 0f0, 0f0, 0f0, work.face_idx, work.bary)
         Le = get_emission_spectral_dispatch(
             rgb2spec_table, materials, material_idx,
             wo, work.n, tfc, work.lambda

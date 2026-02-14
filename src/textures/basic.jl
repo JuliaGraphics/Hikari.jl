@@ -39,3 +39,9 @@ end
     return _sample_texture_data(tex.data, uv)
 end
 
+# Per-face vertex color texture: stores 3 colors per face for barycentric interpolation
+struct VertexColorTexture{T}
+    face_colors::T   # (3, n_faces) matrix of RGBSpectrum, becomes TextureRef via MultiTypeSet
+    n_faces::Int32
+end
+

@@ -137,7 +137,7 @@ Uses approximate screen-space derivatives for proper mipmap selection.
     # Compute UV derivatives from position derivatives
     dudx, dudy, dvdx, dvdy = compute_uv_derivatives(work.dpdu, work.dpdv, dpdx, dpdy)
 
-    return TextureFilterContext(work.uv, dudx, dudy, dvdx, dvdy)
+    return TextureFilterContext(work.uv, dudx, dudy, dvdx, dvdy, work.face_idx, work.bary)
 end
 
 # ============================================================================
@@ -164,7 +164,7 @@ end
     # Check if surface is emissive
     if is_emissive(materials, material_idx)
         # Get emission (use simple TextureFilterContext for emission - no derivatives needed)
-        tfc = TextureFilterContext(work.uv)
+        tfc = TextureFilterContext(work.uv, 0f0, 0f0, 0f0, 0f0, work.face_idx, work.bary)
         Le = get_emission_spectral_dispatch(
             rgb2spec_table, materials, material_idx,
             wo, work.n, tfc, work.lambda

@@ -45,6 +45,10 @@ struct SurfaceInteraction
     ∂p∂x::Vec3f
     ∂p∂y::Vec3f
 
+    face_idx::UInt32
+    bary::SVector{3, Float32}
+    instance_id::UInt32
+
     SurfaceInteraction() = new()
 
     function SurfaceInteraction(
@@ -52,10 +56,12 @@ struct SurfaceInteraction
             ∂p∂u, ∂p∂v, ∂n∂u, ∂n∂v,
             ∂u∂x, ∂u∂y, ∂v∂x, ∂v∂y,
             ∂p∂x, ∂p∂y,
+            face_idx=UInt32(0), bary=SVector{3,Float32}(0,0,0), instance_id=UInt32(0),
         )
         new(
             core, shading, uv, ∂p∂u, ∂p∂v, ∂n∂u, ∂n∂v,
-            ∂u∂x, ∂u∂y, ∂v∂x, ∂v∂y, ∂p∂x, ∂p∂y
+            ∂u∂x, ∂u∂y, ∂v∂x, ∂v∂y, ∂p∂x, ∂p∂y,
+            face_idx, bary, instance_id
         )
     end
 end
@@ -114,10 +120,12 @@ is_surface_interaction(i::Interaction) = i.n != Normal3f(0)
         si::SurfaceInteraction;
         core=si.core , shading=si.shading, uv=si.uv, ∂p∂u=si.∂p∂u, ∂p∂v=si.∂p∂v,
         ∂n∂u=si.∂n∂u, ∂n∂v=si.∂n∂v, ∂u∂x=si.∂u∂x, ∂u∂y=si.∂u∂y,
-        ∂v∂x=si.∂v∂x, ∂v∂y=si.∂v∂y, ∂p∂x=si.∂p∂x, ∂p∂y=si.∂p∂y
+        ∂v∂x=si.∂v∂x, ∂v∂y=si.∂v∂y, ∂p∂x=si.∂p∂x, ∂p∂y=si.∂p∂y,
+        face_idx=si.face_idx, bary=si.bary, instance_id=si.instance_id
     )
     SurfaceInteraction(
-        core, shading, uv, ∂p∂u, ∂p∂v, ∂n∂u, ∂n∂v, ∂u∂x, ∂u∂y, ∂v∂x, ∂v∂y, ∂p∂x, ∂p∂y
+        core, shading, uv, ∂p∂u, ∂p∂v, ∂n∂u, ∂n∂v, ∂u∂x, ∂u∂y, ∂v∂x, ∂v∂y, ∂p∂x, ∂p∂y,
+        face_idx, bary, instance_id
     )
 end
 
@@ -216,7 +224,8 @@ end
     ∂p∂y = t(si.∂p∂y)
     return SurfaceInteraction(
         core, shading, si.uv, ∂p∂u, ∂p∂v, ∂n∂u, ∂n∂v,
-        si.∂u∂x, si.∂u∂y, si.∂v∂x, si.∂v∂y, ∂p∂x, ∂p∂y
+        si.∂u∂x, si.∂u∂y, si.∂v∂x, si.∂v∂y, ∂p∂x, ∂p∂y,
+        si.face_idx, si.bary, si.instance_id
     )
 end
 
@@ -347,7 +356,7 @@ end
     has_tangents = !all(x -> all(isnan, x), t_tangents)
 
     if !has_normals && !has_tangents
-        return surf_interact
+        return SurfaceInteraction(surf_interact; face_idx=triangle.metadata[2], bary=bary_coords)
     end
 
     # Initialize shading normal
@@ -374,7 +383,7 @@ end
         _, shading_tangent, shading_bitangent = coordinate_system(Vec3f(shading_normal))
     end
 
-    return set_shading_geometry(
+    surf_interact = set_shading_geometry(
         surf_interact,
         shading_tangent,
         shading_bitangent,
@@ -382,6 +391,7 @@ end
         Normal3f(0f0),
         true
     )
+    return SurfaceInteraction(surf_interact; face_idx=triangle.metadata[2], bary=bary_coords)
 end
 
 # ============================================================================
@@ -448,7 +458,8 @@ end
             core, shading, interaction.uv,
             world_dpdu, world_dpdv, interaction.∂n∂u, interaction.∂n∂v,
             interaction.∂u∂x, interaction.∂u∂y, interaction.∂v∂x, interaction.∂v∂y,
-            interaction.∂p∂x, interaction.∂p∂y
+            interaction.∂p∂x, interaction.∂p∂y,
+            interaction.face_idx, interaction.bary, UInt32(instance_id)
         )
     end
 
