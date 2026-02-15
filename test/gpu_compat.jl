@@ -184,7 +184,7 @@ function gen_gpu_test_scene()
     # Materials
     white_matte = Hikari.MatteMaterial(Kd=Hikari.RGBSpectrum(0.73f0))
     glass = Hikari.GlassMaterial(index=1.5f0)
-    emissive = Hikari.EmissiveMaterial(Le=Hikari.RGBSpectrum(10f0))
+    emissive = Hikari.MediumInterface(Hikari.EmissiveMaterial(Le=Hikari.RGBSpectrum(10f0)))
 
     # Media
     fog = Hikari.HomogeneousMedium(

@@ -552,7 +552,7 @@ function render!(
         vp_generate_ray_samples!(backend, state, sample_idx, Int32(depth), sobol_rng)
 
         reset_iteration_queues!(state)
-        vp_trace_rays!(state, accel, media_interfaces)
+        vp_trace_rays!(state, accel, media_interfaces, materials)
 
         if !isempty(media)
             n_medium = length(state.medium_sample_queue)
@@ -590,7 +590,7 @@ function render!(
 
                 # Shadow rays still need size check since it's a different queue
                 # But we can batch this with other checks later
-                vp_trace_shadow_rays!(state, accel, media_interfaces, media)
+                vp_trace_shadow_rays!(state, accel, media_interfaces, media, materials)
 
                 vp_evaluate_materials_coherent!(state, multi_queue, materials, camera, Int32(vp.samples_per_pixel), vp.regularize)
             else
@@ -603,7 +603,7 @@ function render!(
 
                 n_shadow = length(state.shadow_queue)
                 if n_shadow > 0
-                    vp_trace_shadow_rays!(state, accel, media_interfaces, media)
+                    vp_trace_shadow_rays!(state, accel, media_interfaces, media, materials)
                 end
 
                 if n_material > 0

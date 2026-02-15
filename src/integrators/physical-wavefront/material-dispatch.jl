@@ -287,6 +287,23 @@ Returns (should_continue::Bool, new_beta::SpectralRadiance).
 end
 
 # ============================================================================
+# Surface Alpha Dispatch (for shadow ray pass-through)
+# ============================================================================
+
+"""
+    get_surface_alpha_dispatch(materials::StaticMultiTypeSet, idx::SetKey, uv::Point2f) -> Float32
+
+Type-stable dispatch for evaluating surface alpha at a UV point.
+Returns alpha ∈ [0, 1] where 0 = fully transparent, 1 = fully opaque.
+Used by trace_shadow_transmittance for stochastic alpha pass-through.
+"""
+@propagate_inbounds function get_surface_alpha_dispatch(
+    materials::StaticMultiTypeSet, idx::SetKey, uv::Point2f
+)::Float32
+    return with_index(get_surface_alpha, materials, idx, materials, uv)
+end
+
+# ============================================================================
 # MediumInterface Dispatch Functions
 # ============================================================================
 

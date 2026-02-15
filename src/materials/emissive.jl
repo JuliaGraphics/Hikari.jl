@@ -1,5 +1,5 @@
-# EmissiveMaterial - Area light emitter for PhysicalWavefront
-# Enables geometry to act as light sources
+# EmissiveMaterial - Area light emission data
+# Used inside MediumInterface.arealight to add emission to any surface
 
 # ============================================================================
 # EmissiveMaterial Type
@@ -8,21 +8,24 @@
 """
     EmissiveMaterial{LeTex}
 
-Material that emits light, enabling geometry to act as an area light source.
-
-This is the primary way to create area lights in PhysicalWavefront rendering.
-Triangles with this material will contribute direct illumination when hit
-by shadow rays and indirect illumination when hit by camera/bounce rays.
+Emission data for area lights. Always used inside `MediumInterface.arealight`
+to add light emission to surfaces. A surface with an arealight both reflects
+light (via the MediumInterface's BSDF material) AND emits light.
 
 # Fields
 * `Le`: Emitted radiance (color/intensity texture or TextureRef)
 * `scale`: Intensity multiplier applied to Le
 * `two_sided`: If true, emits from both sides of the surface
 
-# Notes
-- EmissiveMaterial surfaces do not reflect light (they only emit)
-- For surfaces that both emit AND reflect, layer EmissiveMaterial with another material
-- The actual emitted radiance is `Le * scale`
+# Usage
+```julia
+# Surface that reflects AND glows:
+MediumInterface(MatteMaterial(Kd=diffuse_tex);
+    arealight=EmissiveMaterial(Le=glow_color, scale=10))
+
+# Pure emitter (no reflection):
+MediumInterface(EmissiveMaterial(Le=bright_tex, scale=50))
+```
 """
 struct EmissiveMaterial{LeTex} <: Material
     Le::LeTex  # Texture, Raycore.TextureRef, or raw RGBSpectrum
@@ -37,26 +40,16 @@ end
 """
     EmissiveMaterial(; Le=RGBSpectrum(1), scale=1.0, two_sided=false)
 
-Create an emissive (area light) material.
-
-# Arguments
-- `Le`: Emitted radiance color - can be RGBSpectrum, (r,g,b) tuple, or Texture
-- `scale`: Intensity multiplier (useful for adjusting brightness without changing color)
-- `two_sided`: Whether to emit from both sides of the surface
+Create emission data for use in `MediumInterface.arealight`.
 
 # Examples
 ```julia
-# Simple white area light
-EmissiveMaterial(Le=(10, 10, 10))
+# Diffuse surface with warm glow
+MediumInterface(MatteMaterial(Kd=wood_tex);
+    arealight=EmissiveMaterial(Le=RGBSpectrum(15, 12, 8), scale=5.0, two_sided=true))
 
-# Warm-colored light panel
-EmissiveMaterial(Le=RGBSpectrum(15, 12, 8), two_sided=true)
-
-# High-intensity spotlight
-EmissiveMaterial(Le=(1, 1, 1), scale=100.0)
-
-# Textured emission (e.g., neon sign)
-EmissiveMaterial(Le=neon_texture, scale=5.0)
+# Pure area light
+MediumInterface(EmissiveMaterial(Le=(1, 1, 1), scale=100.0))
 ```
 """
 function EmissiveMaterial(;

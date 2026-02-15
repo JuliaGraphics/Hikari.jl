@@ -189,24 +189,19 @@ end
     escaped_queue,
     hit_surface_queue,
     accel,
-    media_interfaces
+    media_interfaces,
+    materials
 )
-    # Trace ray to find closest intersection
-    hit, primitive, t_hit, barycentric = Raycore.closest_hit(accel, work.ray)
-
     # Check if ray is currently traveling through a medium
     if has_medium(work.medium_idx)
-        # Ray is in medium - route to medium_sample_queue with intersection info
-        # Delta tracking will use t_hit as t_max
+        # Medium case: trace once, push to medium_sample_queue (alpha not handled here yet)
+        hit, primitive, t_hit, barycentric = Raycore.closest_hit(accel, work.ray)
 
         if hit
-            # Have surface hit info for when ray survives delta tracking
-            # primitive.metadata is UInt32 index into media_interfaces
             mi_idx = primitive.metadata[1]::UInt32
             mi = media_interfaces[mi_idx]
-            mat_idx = mi.material  # SetKey into materials
+            mat_idx = mi.material
 
-            # Compute full surface geometry including derivatives for texture filtering
             geom = vp_compute_surface_geometry(primitive, barycentric, work.ray.o, work.ray.d, t_hit)
 
             push!(medium_sample_queue, VPMediumSampleWorkItem(
@@ -217,23 +212,43 @@ end
                 primitive.metadata[2], SVector{3,Float32}(barycentric)
             ))
         else
-            # Ray in medium but escaped scene - t_max = Infinity
             push!(medium_sample_queue, VPMediumSampleWorkItem(work))
         end
     else
-        # Ray NOT in medium - route directly
-        if !hit
-            # Ray escaped - push to escaped queue
-            push!(escaped_queue, VPEscapedRayWorkItem(work))
-        else
-            # Hit surface - extract geometry
-            # primitive.metadata is UInt32 index into media_interfaces
+        # Non-medium case: alpha testing loop at intersection level
+        # Following pbrt-v4: alpha-killed surfaces are skipped without consuming depth
+        ray = work.ray
+        for _ in 1:Int32(16)
+            hit, primitive, t_hit, barycentric = Raycore.closest_hit(accel, ray)
+
+            if !hit
+                push!(escaped_queue, VPEscapedRayWorkItem(work))
+                return
+            end
+
             mi_idx = primitive.metadata[1]::UInt32
             mi = media_interfaces[mi_idx]
-            mat_idx = mi.material  # SetKey into materials
+            mat_idx = mi.material
 
-            # Compute full surface geometry including derivatives for texture filtering
-            geom = vp_compute_surface_geometry(primitive, barycentric, work.ray.o, work.ray.d, t_hit)
+            # Stochastic alpha test (deterministic hash, same as shadow rays)
+            uv = vp_compute_uv_barycentric(primitive, barycentric)
+            alpha = get_surface_alpha_dispatch(materials, mat_idx, uv)
+
+            if alpha < 1f0
+                rng = pcg32_init(pbrt_hash(ray.o), pbrt_hash(ray.d))
+                alpha_u, _ = pcg32_uniform_f32(rng)
+                if alpha_u > alpha
+                    # Alpha pass-through: skip this surface, no depth consumed
+                    pi = Point3f(ray.o + ray.d * t_hit)
+                    n = vp_compute_geometric_normal(primitive)
+                    offset = if dot(ray.d, n) > 0f0; n else; -n end
+                    ray = Raycore.Ray(o=Point3f(pi + offset * 1f-4), d=ray.d)
+                    continue
+                end
+            end
+
+            # Valid surface hit - compute geometry and push to queue
+            geom = vp_compute_surface_geometry(primitive, barycentric, ray.o, ray.d, t_hit)
 
             push!(hit_surface_queue, VPHitSurfaceWorkItem(
                 work,
@@ -243,11 +258,13 @@ end
                 primitive.metadata[2], SVector{3,Float32}(barycentric),
                 t_hit
             ))
+            return
         end
+        # Max alpha bounces exceeded (extremely unlikely) - ray absorbed
     end
 end
 
-function vp_trace_rays!(state::VolPathState, accel, media_interfaces)
+function vp_trace_rays!(state::VolPathState, accel, media_interfaces, materials)
     input_queue = current_ray_queue(state)
     foreach(vp_trace_rays_kernel!,
         input_queue,
@@ -256,6 +273,7 @@ function vp_trace_rays!(state::VolPathState, accel, media_interfaces)
         state.hit_surface_queue,
         accel,
         media_interfaces,
+        materials,
     )
     return nothing
 end
@@ -278,7 +296,7 @@ while opaque surfaces block it. The final contribution is computed as:
     Ld * T_ray / average(path_r_u * r_u + path_r_l * r_l)
 """
 @propagate_inbounds function trace_shadow_transmittance(
-    accel, media_interfaces, media, rgb2spec_table,
+    accel, media_interfaces, media, materials, rgb2spec_table,
     origin::Point3f, dir::Vec3f, t_max::Float32, lambda::Wavelengths, medium_idx::SetKey
 )
     # Transmittance and MIS weights following pbrt-v4
@@ -290,7 +308,7 @@ while opaque surfaces block it. The final contribution is computed as:
     ray_o = origin
     t_remaining = t_max
 
-    # Trace through up to N transmissive boundaries
+    # Trace through up to N transmissive/alpha boundaries
     max_bounces = Int32(10)
     for _ in 1:max_bounces
         if t_remaining < 1f-6
@@ -324,6 +342,34 @@ while opaque surfaces block it. The final contribution is computed as:
         is_transmissive = is_medium_transition(mi)
 
         if !is_transmissive
+            # Check alpha for stochastic pass-through (e.g. GLTF BLEND mode foliage)
+            # Following pbrt-v4: use deterministic hash of ray origin+direction
+            uv = vp_compute_uv_barycentric(primitive, barycentric)
+            mat_idx = mi.material
+            alpha = get_surface_alpha_dispatch(materials, mat_idx, uv)
+
+            if alpha < 1f0
+                # Deterministic stochastic test (same ray always gets same decision)
+                rng = pcg32_init(pbrt_hash(ray_o), pbrt_hash(dir))
+                alpha_u, _ = pcg32_uniform_f32(rng)
+                if alpha_u > alpha
+                    # Alpha pass-through: compute medium transmittance up to surface, then continue
+                    if has_medium(current_medium)
+                        seg_T, seg_r_u, seg_r_l = compute_transmittance_ratio_tracking(
+                            rgb2spec_table, media, current_medium,
+                            ray_o, dir, t_hit, lambda
+                        )
+                        T_ray = T_ray * seg_T
+                        r_u = r_u * seg_r_u
+                        r_l = r_l * seg_r_l
+                    end
+                    # Move past this surface (medium unchanged — not a medium transition)
+                    ray_o = Point3f(ray_o + dir * (t_hit + 1f-4))
+                    t_remaining = t_remaining - t_hit - 1f-4
+                    continue
+                end
+            end
+
             # Opaque surface blocks the ray
             return (SpectralRadiance(0f0), SpectralRadiance(1f0), SpectralRadiance(1f0), false)
         end
@@ -519,11 +565,12 @@ Handles transmissive boundaries (MediumInterface) by tracing through them.
         accel,
         media_interfaces,
         media,
+        materials,
     )
-    # Trace shadow ray, handling transmissive boundaries
+    # Trace shadow ray, handling transmissive boundaries and alpha pass-through
     # Returns (T_ray, tr_r_u, tr_r_l, visible) following pbrt-v4's TraceTransmittance
     T_ray, tr_r_u, tr_r_l, visible = trace_shadow_transmittance(
-        accel, media_interfaces, media, rgb2spec_table,
+        accel, media_interfaces, media, materials, rgb2spec_table,
         work.ray.o, work.ray.d, work.t_max, work.lambda, work.medium_idx
     )
 
@@ -552,13 +599,14 @@ function vp_trace_shadow_rays!(
         state::VolPathState,
         accel,
         media_interfaces,
-        media
+        media,
+        materials
     )
     foreach(vp_trace_shadow_rays_kernel!,
         state.shadow_queue,
         state.pixel_L,
         state.rgb2spec_table,
-        accel, media_interfaces, media,
+        accel, media_interfaces, media, materials,
     )
     return nothing
 end

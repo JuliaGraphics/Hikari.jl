@@ -74,12 +74,20 @@ end
         work.pi, wo, work.uv
     )
 
-    # Check emission
-    if is_emissive(materials, material_idx)
+    # Check for emission: from arealight on MediumInterfaceIdx, or from inner material
+    emission_idx = if has_arealight(work.interface)
+        work.interface.arealight
+    elseif is_emissive(materials, material_idx)
+        material_idx
+    else
+        SetKey()
+    end
+
+    if Raycore.is_valid(emission_idx)
         # Get emission - use simple TextureFilterContext (no derivatives needed for emission)
         tfc = TextureFilterContext(work.uv, 0f0, 0f0, 0f0, 0f0, work.face_idx, work.bary)
         Le = get_emission_spectral_dispatch(
-            rgb2spec_table, materials, material_idx,
+            rgb2spec_table, materials, emission_idx,
             wo, work.n, tfc, work.lambda
         )
 

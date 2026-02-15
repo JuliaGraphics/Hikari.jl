@@ -159,7 +159,7 @@ function VPMediumSampleWorkItem(work::VPRayWorkItem)
         work.medium_idx,
         false, Point3f(0f0), Vec3f(0f0, 0f0, 1f0), Vec3f(0f0), Vec3f(0f0),
         Vec3f(0f0, 0f0, 1f0), Vec3f(0f0), Vec3f(0f0),
-        Point2f(0f0, 0f0), SetKey(), MediumInterfaceIdx(SetKey(), SetKey(), SetKey()),
+        Point2f(0f0, 0f0), SetKey(), MediumInterfaceIdx(SetKey(), SetKey(), SetKey(), SetKey()),
         UInt32(0), SVector{3, Float32}(0f0, 0f0, 0f0)
     )
 end

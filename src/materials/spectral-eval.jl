@@ -52,7 +52,8 @@ Uses pbrt-v4 convention: work in local shading space where n = (0,0,1).
         return SpectralBSDFSample()
     end
 
-    # Get material properties (rng unused for diffuse)
+    # Get material properties
+    # Alpha is handled at intersection level (vp_trace_rays_kernel!), not here.
     kd_rgb = eval_tex(textures, mat.Kd, tfc)
     σ = eval_tex(textures, mat.σ, tfc)
 
@@ -396,11 +397,13 @@ Returns the BSDF value and PDF.
         return (SpectralRadiance(), 0f0)
     end
 
+    # Alpha is handled at intersection level (vp_trace_rays_kernel!), not here.
     kd_rgb = eval_tex(textures, mat.Kd, tfc)
+
     # Clamp reflectance to [0,1] as per pbrt-v4
     kd_rgb = clamp(kd_rgb)
     kd_spectral = uplift_rgb(table, kd_rgb, lambda)
-    f = kd_spectral * (1f0 / Float32(π))
+    f = kd_spectral / Float32(π)
     pdf = cos_theta / Float32(π)
 
     return (f, pdf)
@@ -3523,20 +3526,23 @@ end
 end
 
 """
-    get_emission_spectral for MediumInterface - forwards to wrapped material.
+    get_emission_spectral for MediumInterface - checks arealight first, then wrapped material.
 """
 @propagate_inbounds function get_emission_spectral(
     mi::MediumInterface, table::RGBToSpectrumTable, textures,
     wo::Vec3f, n::Vec3f, tfc::TextureFilterContext, lambda::Wavelengths
 )
+    if has_arealight(mi)
+        return get_emission_spectral(mi.arealight, table, textures, wo, n, tfc, lambda)
+    end
     return get_emission_spectral(mi.material, table, textures, wo, n, tfc, lambda)
 end
 
 """
-    is_emissive for MediumInterface - forwards to wrapped material.
+    is_emissive for MediumInterface - true if arealight present or inner material is emissive.
 """
 @propagate_inbounds function is_emissive(mi::MediumInterface)
-    return is_emissive(mi.material)
+    return has_arealight(mi) || is_emissive(mi.material)
 end
 
 """
@@ -3917,3 +3923,18 @@ end
 Flip v to be in the same hemisphere as n (matches pbrt-v4's FaceForward).
 """
 @inline face_forward(v::Vec3f, n::Vec3f)::Vec3f = dot(v, n) < 0f0 ? -v : v
+
+# ============================================================================
+# Surface Alpha Evaluation (for shadow ray pass-through)
+# ============================================================================
+# Following pbrt-v4: alpha is evaluated at intersection time to determine
+# if a surface should be treated as transparent. Used by trace_shadow_transmittance
+# to allow light through alpha-masked geometry (e.g. GLTF BLEND mode foliage).
+
+@propagate_inbounds function get_surface_alpha(mat::MatteMaterial, textures, uv::Point2f)
+    kd_rgb = eval_tex(textures, mat.Kd, uv)
+    return get_alpha(kd_rgb)
+end
+
+# All other material types are fully opaque
+@propagate_inbounds get_surface_alpha(::Material, ::Any, ::Point2f) = 1f0

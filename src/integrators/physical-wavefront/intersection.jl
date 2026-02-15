@@ -80,8 +80,8 @@ This kernel does NOT generate shadow rays - that happens in direct lighting.
                     push!(hit_light_queue, hit_light_item)
                 end
 
-                # Always push to material queue for BSDF evaluation
-                # (emissive materials have no BSDF, but we check there)
+                # Push to material queue for BSDF evaluation
+                # Skip only pure emissive materials (no BSDF to evaluate)
                 if !is_em
                     mat_item = PWMaterialEvalWorkItem(
                         pi, n, dpdu, dpdv,

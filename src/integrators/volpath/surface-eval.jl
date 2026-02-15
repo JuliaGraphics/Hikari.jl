@@ -161,12 +161,20 @@ end
         work.pi, wo, work.uv
     )
 
-    # Check if surface is emissive
-    if is_emissive(materials, material_idx)
+    # Check for emission: from arealight on MediumInterfaceIdx, or from inner material
+    emission_idx = if has_arealight(work.interface)
+        work.interface.arealight
+    elseif is_emissive(materials, material_idx)
+        material_idx
+    else
+        SetKey()
+    end
+
+    if Raycore.is_valid(emission_idx)
         # Get emission (use simple TextureFilterContext for emission - no derivatives needed)
         tfc = TextureFilterContext(work.uv, 0f0, 0f0, 0f0, 0f0, work.face_idx, work.bary)
         Le = get_emission_spectral_dispatch(
-            rgb2spec_table, materials, material_idx,
+            rgb2spec_table, materials, emission_idx,
             wo, work.n, tfc, work.lambda
         )
 
@@ -190,8 +198,8 @@ end
         end
     end
 
-    # Create material evaluation work item (for non-emissive or mixed materials)
-    # Skip pure emissive materials (using resolved material_idx)
+    # Create material evaluation work item for BSDF evaluation
+    # Skip pure emissive materials (no BSDF to evaluate)
     if !is_pure_emissive_dispatch(materials, material_idx)
         push!(material_queue, VPMaterialEvalWorkItem(work, wo, material_idx))
     end
