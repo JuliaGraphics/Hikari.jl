@@ -858,6 +858,94 @@ function build_nanovdb_from_dense(
 end
 
 """
+    save_nanovdb(filepath, buffer, metadata)
+
+Save a NanoVDB buffer (from `build_nanovdb_from_dense`) to a `.nanovdb` file
+that can be loaded back with `NanoVDBMedium(filepath; ...)`.
+
+Prepends GridData (672 bytes) + TreeData (64 bytes) header, compresses with zlib.
+"""
+function save_nanovdb(filepath::String, buffer::Vector{UInt8}, metadata::NamedTuple)
+    header_size = NANOVDB_GRIDDATA_SIZE + TREEDATA_SIZE  # 672 + 64 = 736
+    full_buffer = zeros(UInt8, header_size + length(buffer))
+
+    # Copy node data after header
+    copyto!(full_buffer, header_size + 1, buffer, 1, length(buffer))
+
+    # ---- Write Map in GridData ----
+    inv_mat = metadata.inv_mat
+    for (i, v) in enumerate(inv_mat)
+        write_buf!(full_buffer, MAP_INVMATF_OFFSET + (i - 1) * 4, Float32(v))
+    end
+
+    # matF = inverse of invMatF (3x3 matrix inverse via cofactors)
+    m = inv_mat
+    cof = (m[5]*m[9] - m[6]*m[8], m[3]*m[8] - m[2]*m[9], m[2]*m[6] - m[3]*m[5],
+           m[6]*m[7] - m[4]*m[9], m[1]*m[9] - m[3]*m[7], m[3]*m[4] - m[1]*m[6],
+           m[4]*m[8] - m[5]*m[7], m[2]*m[7] - m[1]*m[8], m[1]*m[5] - m[2]*m[4])
+    det = m[1]*cof[1] + m[2]*cof[4] + m[3]*cof[7]
+    for (i, v) in enumerate(cof)
+        write_buf!(full_buffer, MAP_OFFSET + (i - 1) * 4, Float32(v / det))
+    end
+
+    # vecF
+    for (i, v) in enumerate(metadata.vec)
+        write_buf!(full_buffer, MAP_VECF_OFFSET + (i - 1) * 4, Float32(v))
+    end
+
+    # World bounding box (6 × Float64)
+    wmin, wmax = metadata.world_min, metadata.world_max
+    GC.@preserve full_buffer begin
+        ptr = pointer(full_buffer, WORLDBBOX_OFFSET)
+        unsafe_store!(reinterpret(Ptr{Float64}, ptr), Float64(wmin[1]), 1)
+        unsafe_store!(reinterpret(Ptr{Float64}, ptr), Float64(wmin[2]), 2)
+        unsafe_store!(reinterpret(Ptr{Float64}, ptr), Float64(wmin[3]), 3)
+        unsafe_store!(reinterpret(Ptr{Float64}, ptr), Float64(wmax[1]), 4)
+        unsafe_store!(reinterpret(Ptr{Float64}, ptr), Float64(wmax[2]), 5)
+        unsafe_store!(reinterpret(Ptr{Float64}, ptr), Float64(wmax[3]), 6)
+    end
+
+    # ---- Write TreeData ----
+    # mNodeOffset[4]: byte offsets from TreeData start to each node level
+    # extract_nanovdb_metadata computes: absolute = tree_data_start + mNodeOffset
+    # where tree_data_start = NANOVDB_GRIDDATA_SIZE + 1 = 673 (Julia 1-indexed)
+    # Nodes are at (header_size + orig_offset) in full buffer
+    # So: mNodeOffset = header_size + orig_offset - tree_data_start
+    #                 = 736 + orig_offset - 673 = orig_offset + 63
+    GC.@preserve full_buffer begin
+        ptr = pointer(full_buffer, TREEDATA_NODE_OFFSET_START)
+        unsafe_store!(reinterpret(Ptr{UInt64}, ptr), UInt64(metadata.leaf_offset + 63), 1)
+        unsafe_store!(reinterpret(Ptr{UInt64}, ptr), UInt64(metadata.lower_offset + 63), 2)
+        unsafe_store!(reinterpret(Ptr{UInt64}, ptr), UInt64(metadata.upper_offset + 63), 3)
+        unsafe_store!(reinterpret(Ptr{UInt64}, ptr), UInt64(metadata.root_offset + 63), 4)
+    end
+
+    # mNodeCount[3]: leaf, lower, upper
+    GC.@preserve full_buffer begin
+        ptr = pointer(full_buffer, TREEDATA_NODE_COUNT_START)
+        unsafe_store!(reinterpret(Ptr{UInt32}, ptr), UInt32(metadata.leaf_count), 1)
+        unsafe_store!(reinterpret(Ptr{UInt32}, ptr), UInt32(metadata.lower_count), 2)
+        unsafe_store!(reinterpret(Ptr{UInt32}, ptr), UInt32(metadata.upper_count), 3)
+    end
+
+    # Compress and write
+    compressed = compress_zlib(full_buffer)
+    write(filepath, compressed)
+
+    return nothing
+end
+
+"""
+    save_nanovdb(filepath, data::Array{Float32,3}, origin, extent)
+
+Build a NanoVDB tree from a dense 3D array and save to file.
+"""
+function save_nanovdb(filepath::String, data::Array{Float32,3}, origin, extent)
+    buffer, metadata = build_nanovdb_from_dense(data, Point3f(origin...), Vec3f(extent...))
+    save_nanovdb(filepath, buffer, metadata)
+end
+
+"""
     NanoVDBMedium(data::Array{Float32,3}; bounds, σ_a, σ_s, g, majorant_res, buffer_alloc)
 
 Construct a NanoVDBMedium from a dense 3D array by building a sparse NanoVDB tree.
@@ -945,7 +1033,28 @@ ZStream() = ZStream(
     0, 0, 0
 )
 
-"""Decompress zlib-compressed NanoVDB data"""
+
+function compress_zlib(data::Vector{UInt8})
+    out_buf = Vector{UInt8}(undef, length(data) + div(length(data), 100) + 1024)
+
+    z = Ref(ZStream())
+    z[].next_in = pointer(data)
+    z[].avail_in = length(data)
+    z[].next_out = pointer(out_buf)
+    z[].avail_out = length(out_buf)
+
+    ret = ccall((:deflateInit_, Zlib_jll.libz), Cint,
+        (Ref{ZStream}, Cint, Cstring, Cint), z, 6, "1.2.11", sizeof(ZStream))
+    ret != 0 && error("deflateInit failed: $ret")
+
+    ret = ccall((:deflate, Zlib_jll.libz), Cint, (Ref{ZStream}, Cint), z, 4)  # Z_FINISH=4
+    compressed_size = z[].total_out
+    ccall((:deflateEnd, Zlib_jll.libz), Cint, (Ref{ZStream},), z)
+
+    return out_buf[1:compressed_size]
+end
+
+
 function decompress_nanovdb(compressed_data::Vector{UInt8})
     # Use Zlib_jll for decompression
     output_buffer = Vector{UInt8}(undef, 200_000_000)  # 200MB should be enough
