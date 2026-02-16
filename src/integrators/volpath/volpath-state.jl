@@ -74,11 +74,12 @@ mutable struct VolPathState{Backend}
     # CIE XYZ color matching table
     cie_table::CIEXYZTable
 
-    # Light sampler data for power-weighted light selection
-    # Stored as flat arrays for GPU compatibility
-    light_sampler_p::AbstractVector{Float32}    # PMF values
-    light_sampler_q::AbstractVector{Float32}    # Alias thresholds
-    light_sampler_alias::AbstractVector{Int32}  # Alias indices
+    # BVH Light Sampler data (spatially-aware importance sampling)
+    bvh_nodes::AbstractVector{LightBVHNode}           # BVH node array (GPU)
+    light_to_bit_trail::AbstractVector{UInt32}         # Per-light bit trail (GPU)
+    infinite_light_indices::AbstractVector{Int32}       # Flat indices of infinite lights (GPU)
+    num_bvh_lights::Int32                               # Count of bounded lights in BVH
+    num_infinite_lights::Int32                          # Count of infinite lights
     num_lights::Int32
 
     # Render parameters
@@ -141,19 +142,22 @@ function VolPathState(
     rgb2spec_table = to_gpu(backend, get_srgb_table())
     cie_table = to_gpu(backend, CIEXYZTable())
 
-    # Build light sampler (alias table for power-weighted sampling)
-    # PowerLightSampler computes powers on GPU and returns GPU arrays
+    # Build BVH light sampler (spatially-aware importance sampling)
     n_lights = length(lights)
     if n_lights > 0
-        sampler = PowerLightSampler(lights; scene_radius=scene_radius)
-        # Alias table already has GPU arrays from PowerLightSampler construction
-        light_sampler_p = sampler.alias_table.p
-        light_sampler_q = sampler.alias_table.q
-        light_sampler_alias = sampler.alias_table.alias
+        bvh_sampler = BVHLightSampler(lights; scene_radius=scene_radius)
+        bvh_gpu = bvh_to_gpu(backend, bvh_sampler)
+        bvh_nodes = bvh_gpu.nodes
+        light_to_bit_trail = bvh_gpu.light_to_bit_trail
+        infinite_light_indices = bvh_gpu.infinite_light_indices
+        num_bvh_lights = bvh_gpu.num_bvh_lights
+        num_infinite_lights = bvh_gpu.num_infinite_lights
     else
-        light_sampler_p = KA.allocate(backend, Float32, 1)
-        light_sampler_q = KA.allocate(backend, Float32, 1)
-        light_sampler_alias = KA.allocate(backend, Int32, 1)
+        bvh_nodes = KA.allocate(backend, LightBVHNode, 1)
+        light_to_bit_trail = KA.allocate(backend, UInt32, 1)
+        infinite_light_indices = KA.allocate(backend, Int32, 1)
+        num_bvh_lights = Int32(0)
+        num_infinite_lights = Int32(0)
     end
 
     # Create SobolRNG (allocated once, reused across frames)
@@ -168,7 +172,8 @@ function VolPathState(
         wavelengths_per_pixel, pdf_per_pixel, filter_weight_per_pixel,
         pixel_samples,
         rgb2spec_table, cie_table,
-        light_sampler_p, light_sampler_q, light_sampler_alias, Int32(n_lights),
+        bvh_nodes, light_to_bit_trail, infinite_light_indices,
+        num_bvh_lights, num_infinite_lights, Int32(n_lights),
         Int32(max_depth), Int32(width), Int32(height),
         sobol_rng,
         nothing  # multi_material_queue
@@ -254,10 +259,10 @@ function cleanup!(state::VolPathState)
     finalize(state.rgb2spec_table)
     finalize(state.cie_table)
 
-    # Cleanup light sampler
-    finalize(state.light_sampler_p)
-    finalize(state.light_sampler_q)
-    finalize(state.light_sampler_alias)
+    # Cleanup BVH light sampler
+    finalize(state.bvh_nodes)
+    finalize(state.light_to_bit_trail)
+    finalize(state.infinite_light_indices)
 
     # Cleanup SobolRNG
     if state.sobol_rng !== nothing

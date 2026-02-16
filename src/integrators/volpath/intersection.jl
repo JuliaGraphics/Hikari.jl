@@ -198,7 +198,7 @@ end
         hit, primitive, t_hit, barycentric = Raycore.closest_hit(accel, work.ray)
 
         if hit
-            mi_idx = primitive.metadata[1]::UInt32
+            mi_idx = primitive.metadata.medium_interface_idx
             mi = media_interfaces[mi_idx]
             mat_idx = mi.material
 
@@ -209,7 +209,8 @@ end
                 geom.pi, geom.n, geom.dpdu, geom.dpdv,
                 geom.ns, geom.dpdus, geom.dpdvs,
                 geom.uv, mat_idx, mi,
-                primitive.metadata[2], SVector{3,Float32}(barycentric)
+                primitive.metadata.primitive_index, SVector{3,Float32}(barycentric),
+                primitive.metadata.arealight_flat_idx, Raycore.area(primitive)
             ))
         else
             push!(medium_sample_queue, VPMediumSampleWorkItem(work))
@@ -226,7 +227,7 @@ end
                 return
             end
 
-            mi_idx = primitive.metadata[1]::UInt32
+            mi_idx = primitive.metadata.medium_interface_idx
             mi = media_interfaces[mi_idx]
             mat_idx = mi.material
 
@@ -255,7 +256,8 @@ end
                 geom.pi, geom.n, geom.dpdu, geom.dpdv,
                 geom.ns, geom.dpdus, geom.dpdvs,
                 geom.uv, mat_idx, mi,
-                primitive.metadata[2], SVector{3,Float32}(barycentric),
+                primitive.metadata.primitive_index, SVector{3,Float32}(barycentric),
+                primitive.metadata.arealight_flat_idx, Raycore.area(primitive),
                 t_hit
             ))
             return
@@ -333,7 +335,7 @@ while opaque surfaces block it. The final contribution is computed as:
         end
 
         # Hit a surface - look up MediumInterfaceIdx
-        mi_idx = primitive.metadata[1]::UInt32
+        mi_idx = primitive.metadata.medium_interface_idx
         mi = media_interfaces[mi_idx]
         n = vp_compute_geometric_normal(primitive)
         entering = dot(dir, n) < 0f0

@@ -17,9 +17,10 @@ Now uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style
     work::VPMediumScatterWorkItem,
     lights,
     rgb2spec_table,
-    light_sampler_p,
-    light_sampler_q,
-    light_sampler_alias,
+    bvh_nodes,
+    infinite_light_indices,
+    num_infinite_lights::Int32,
+    num_bvh_lights::Int32,
     num_lights::Int32,
     # Pre-computed Sobol samples (SOA layout)
     pixel_samples_direct_uc,
@@ -33,9 +34,12 @@ Now uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style
     u_light = pixel_samples_direct_u[pixel_idx]
     light_select = pixel_samples_direct_uc[pixel_idx]
 
-    # Select light using power-weighted alias table sampling
-    light_idx, light_pmf = sample_light_sampler(
-        light_sampler_p, light_sampler_q, light_sampler_alias, light_select
+    # Select light using BVH light sampler (spatially-aware importance sampling)
+    # Medium scattering has no surface normal → pass Vec3f(0f0)
+    light_idx, light_pmf = bvh_sample_light(
+        bvh_nodes, infinite_light_indices,
+        num_infinite_lights, num_bvh_lights,
+        work.p, Vec3f(0f0), light_select
     )
 
     # Validate index
@@ -118,14 +122,16 @@ end
     shadow_queue,
     lights,
     rgb2spec_table,
-    light_sampler_p, light_sampler_q, light_sampler_alias,
+    bvh_nodes, infinite_light_indices,
+    num_infinite_lights::Int32, num_bvh_lights::Int32,
     num_lights::Int32,
     pixel_samples_direct_uc, pixel_samples_direct_u
 )
     medium_direct_lighting_inner!(
         shadow_queue,
         work, lights, rgb2spec_table,
-        light_sampler_p, light_sampler_q, light_sampler_alias,
+        bvh_nodes, infinite_light_indices,
+        num_infinite_lights, num_bvh_lights,
         num_lights,
         pixel_samples_direct_uc, pixel_samples_direct_u
     )
@@ -220,7 +226,8 @@ function vp_sample_medium_direct_lighting!(state::VolPathState, lights)
         state.shadow_queue,
         lights,
         state.rgb2spec_table,
-        state.light_sampler_p, state.light_sampler_q, state.light_sampler_alias,
+        state.bvh_nodes, state.infinite_light_indices,
+        state.num_infinite_lights, state.num_bvh_lights,
         state.num_lights,
         pixel_samples.direct_uc, pixel_samples.direct_u,
     )

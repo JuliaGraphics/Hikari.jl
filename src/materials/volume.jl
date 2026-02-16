@@ -307,7 +307,7 @@ inside or in front of the volume are properly rendered with correct transmittanc
     has_scene_hit_in_volume = false
     if scene_hit
         # Skip hits on CloudVolume materials (self-intersection with volume box)
-        hit_mat = get_material(scene.materials, scene_primitive.metadata[1])
+        hit_mat = get_material(scene.materials, scene_primitive.metadata.medium_interface_idx)
         if !(hit_mat isa CloudVolume)
             # Compute hit distance from the hit point (intersect! doesn't update t_max)
             hit_p = scene_si.core.p
@@ -357,7 +357,7 @@ inside or in front of the volume are properly rendered with correct transmittanc
         if has_scene_hit_in_volume
             # Hit an object inside/before the volume exit - shade it
             background = Raycore.with_index(
-                shade, scene.materials, scene_primitive.metadata[1],
+                shade, scene.materials, scene_primitive.metadata.medium_interface_idx,
                 volume_ray, scene_si, scene, RGBSpectrum(1f0), depth + Int32(1), max_depth
             )
         else
@@ -375,7 +375,7 @@ inside or in front of the volume are properly rendered with correct transmittanc
             if hit_found
                 # Hit something behind the volume - shade it
                 background = Raycore.with_index(
-                    shade, scene.materials, primitive.metadata[1],
+                    shade, scene.materials, primitive.metadata.medium_interface_idx,
                     continuation_ray, cont_si, scene, RGBSpectrum(1f0), depth + Int32(1), max_depth
                 )
             else

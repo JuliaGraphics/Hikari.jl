@@ -43,7 +43,7 @@ This kernel does NOT generate shadow rays - that happens in direct lighting.
                 push!(escaped_queue, escaped_item)
             else
                 # Got a hit - extract surface info
-                raw_mat_idx = primitive.metadata[1]::SetKey
+                raw_mat_idx = primitive.metadata.medium_interface_idx
 
                 # Compute intersection point
                 pi = Point3f(work.ray.o + work.ray.d * t_hit)
@@ -65,24 +65,11 @@ This kernel does NOT generate shadow rays - that happens in direct lighting.
                 # Note: textures parameter not available here, pass nothing (CPU textures are self-contained)
                 mat_idx = resolve_mix_material(materials, nothing, raw_mat_idx, pi, wo, uv)
 
-                # Check if material is emissive
-                is_em = is_emissive_dispatch(materials, mat_idx)
-
-                if is_em
-                    # Hit an area light - push to hit_light queue
-                    hit_light_item = PWHitAreaLightWorkItem(
-                        pi, n, uv, wo,
-                        work.lambda, work.depth, work.beta,
-                        work.r_u, work.r_l, work.prev_intr_ctx,
-                        work.specular_bounce, work.pixel_index,
-                        mat_idx
-                    )
-                    push!(hit_light_queue, hit_light_item)
-                end
+                # TODO: DiffuseAreaLight hit detection via arealight_flat_idx
+                # (will be added when PhysicalWavefront gets DiffuseAreaLight support)
 
                 # Push to material queue for BSDF evaluation
-                # Skip only pure emissive materials (no BSDF to evaluate)
-                if !is_em
+                if true
                     mat_item = PWMaterialEvalWorkItem(
                         pi, n, dpdu, dpdv,
                         ns, dpdus, dpdvs, uv,

@@ -356,7 +356,7 @@ end
     has_tangents = !all(x -> all(isnan, x), t_tangents)
 
     if !has_normals && !has_tangents
-        return SurfaceInteraction(surf_interact; face_idx=triangle.metadata[2], bary=bary_coords)
+        return SurfaceInteraction(surf_interact; face_idx=triangle.metadata.primitive_index, bary=bary_coords)
     end
 
     # Initialize shading normal
@@ -391,7 +391,7 @@ end
         Normal3f(0f0),
         true
     )
-    return SurfaceInteraction(surf_interact; face_idx=triangle.metadata[2], bary=bary_coords)
+    return SurfaceInteraction(surf_interact; face_idx=triangle.metadata.primitive_index, bary=bary_coords)
 end
 
 # ============================================================================

@@ -580,7 +580,7 @@ function render!(
         if n_hits > 0
             if vp.material_coherence == :per_type && multi_queue !== nothing
                 reset_queues!(backend, multi_queue)
-                vp_process_surface_hits_coherent!(state, multi_queue, materials)
+                vp_process_surface_hits_coherent!(state, multi_queue, materials, lights)
 
                 # Following pbrt-v4: launch kernels unconditionally, let them check size internally
                 # This avoids expensive GPU→CPU sync from length() / total_size() calls
@@ -594,7 +594,7 @@ function render!(
 
                 vp_evaluate_materials_coherent!(state, multi_queue, materials, camera, Int32(vp.samples_per_pixel), vp.regularize)
             else
-                vp_process_surface_hits!(state, materials)
+                vp_process_surface_hits!(state, materials, lights)
 
                 n_material = length(state.material_queue)
                 if n_material > 0 && length(lights) > 0

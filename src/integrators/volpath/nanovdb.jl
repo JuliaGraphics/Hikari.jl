@@ -554,6 +554,368 @@ end
 end
 
 # ============================================================================
+# Dense Array → NanoVDB Buffer Construction
+# ============================================================================
+
+# Node sizes (bytes)
+const UPPER_NODE_SIZE = UPPER_TABLE_OFFSET + UPPER_SIZE * 8  # 270400
+const LOWER_NODE_SIZE = LOWER_TABLE_OFFSET + LOWER_SIZE * 8  # 33856
+
+# Buffer write helpers (1-indexed byte offsets, matching the read helpers)
+@inline function write_buf!(buffer::Vector{UInt8}, offset::Integer, value::Float32)
+    GC.@preserve buffer unsafe_store!(reinterpret(Ptr{Float32}, pointer(buffer, offset)), value)
+end
+@inline function write_buf!(buffer::Vector{UInt8}, offset::Integer, value::Int32)
+    GC.@preserve buffer unsafe_store!(reinterpret(Ptr{Int32}, pointer(buffer, offset)), value)
+end
+@inline function write_buf!(buffer::Vector{UInt8}, offset::Integer, value::UInt32)
+    GC.@preserve buffer unsafe_store!(reinterpret(Ptr{UInt32}, pointer(buffer, offset)), value)
+end
+@inline function write_buf!(buffer::Vector{UInt8}, offset::Integer, value::Int64)
+    GC.@preserve buffer unsafe_store!(reinterpret(Ptr{Int64}, pointer(buffer, offset)), value)
+end
+@inline function write_buf!(buffer::Vector{UInt8}, offset::Integer, value::UInt64)
+    GC.@preserve buffer unsafe_store!(reinterpret(Ptr{UInt64}, pointer(buffer, offset)), value)
+end
+
+# Set bit n in a bitmask at mask_offset (1-indexed, n is 0-indexed)
+@inline function bitmask_set!(buffer::Vector{UInt8}, mask_offset::Integer, n::Integer)
+    byte_idx = n >> 3
+    bit_idx = n & 7
+    buffer[mask_offset + byte_idx] |= UInt8(1) << bit_idx
+end
+
+"""
+    build_nanovdb_from_dense(data::Array{Float32,3}, origin::Point3f, extent::Vec3f; background=0f0)
+
+Convert a dense 3D Float32 array to a NanoVDB-compatible binary buffer.
+Only stores leaf blocks (8³) that contain non-background voxels, giving
+significant memory savings for sparse data (e.g. cloud fields with ~1% fill).
+
+Returns `(buffer::Vector{UInt8}, metadata::NamedTuple)` suitable for
+constructing a `NanoVDBMedium`.
+
+The NanoVDB tree hierarchy is: Root → Upper (32³) → Lower (16³) → Leaf (8³).
+Buffer layout: [Root | Upper nodes | Lower nodes | Leaf nodes]
+All child offsets are stored relative to the parent node.
+"""
+function build_nanovdb_from_dense(
+    data::Array{Float32, 3},
+    origin::Point3f,
+    extent::Vec3f;
+    background::Float32 = 0f0
+)
+    nx, ny, nz = size(data)
+    dx, dy, dz = extent[1] / nx, extent[2] / ny, extent[3] / nz
+
+    # ---- Phase 1: Collect active leaf blocks (8³) ----
+    n_bx = cld(nx, LEAF_DIM)
+    n_by = cld(ny, LEAF_DIM)
+    n_bz = cld(nz, LEAF_DIM)
+
+    leaf_coords = NTuple{3, Int32}[]   # NanoVDB base coordinate per leaf
+    leaf_values = Vector{Vector{Float32}}()  # 512 values per leaf
+
+    # Reuse a single scratch buffer to avoid 622k temporary allocations
+    scratch = Vector{Float32}(undef, 512)
+
+    for bz in 0:n_bz-1, by in 0:n_by-1, bx in 0:n_bx-1
+        has_active = false
+        fill!(scratch, background)
+
+        for lz in 0:LEAF_DIM-1, ly in 0:LEAF_DIM-1, lx in 0:LEAF_DIM-1
+            ix = bx * LEAF_DIM + lx + 1  # Julia 1-indexed
+            iy = by * LEAF_DIM + ly + 1
+            iz = bz * LEAF_DIM + lz + 1
+            v = (ix <= nx && iy <= ny && iz <= nz) ? data[ix, iy, iz] : background
+            leaf_idx = (lx << (2*LEAF_LOG2DIM)) | (ly << LEAF_LOG2DIM) | lz
+            scratch[leaf_idx + 1] = v
+            if v != background
+                has_active = true
+            end
+        end
+
+        if has_active
+            base = (Int32(bx * LEAF_DIM), Int32(by * LEAF_DIM), Int32(bz * LEAF_DIM))
+            push!(leaf_coords, base)
+            push!(leaf_values, copy(scratch))
+        end
+    end
+
+    n_leaves = length(leaf_coords)
+
+    # ---- Phase 2: Group leaves into lower nodes (each covers 128³) ----
+    lower_to_leaves = Dict{NTuple{3,Int32}, Vector{Int}}()
+
+    for (li, coord) in enumerate(leaf_coords)
+        lb = (coord[1] & ~Int32(LOWER_MASK),
+              coord[2] & ~Int32(LOWER_MASK),
+              coord[3] & ~Int32(LOWER_MASK))
+        leaves = get!(lower_to_leaves, lb, Int[])
+        push!(leaves, li)
+    end
+
+    lower_bases = sort!(collect(keys(lower_to_leaves)))
+    n_lowers = length(lower_bases)
+
+    # ---- Phase 3: Group lower nodes into upper nodes (each covers 4096³) ----
+    upper_to_lowers = Dict{NTuple{3,Int32}, Vector{Int}}()
+
+    for (low_i, lb) in enumerate(lower_bases)
+        ub = (lb[1] & ~Int32(UPPER_MASK),
+              lb[2] & ~Int32(UPPER_MASK),
+              lb[3] & ~Int32(UPPER_MASK))
+        lowers = get!(upper_to_lowers, ub, Int[])
+        push!(lowers, low_i)
+    end
+
+    upper_bases = sort!(collect(keys(upper_to_lowers)))
+    n_uppers = length(upper_bases)
+
+    # ---- Phase 4: Compute buffer layout ----
+    root_n_tiles = n_uppers
+    root_size = ROOTDATA_HEADER_SIZE + root_n_tiles * ROOTTILE_SIZE
+    upper_section = n_uppers * UPPER_NODE_SIZE
+    lower_section = n_lowers * LOWER_NODE_SIZE
+    leaf_section = n_leaves * LEAFDATA_SIZE
+    total_size = root_size + upper_section + lower_section + leaf_section
+
+    buffer = zeros(UInt8, total_size)
+
+    # 1-indexed byte positions
+    root_pos = 1
+    upper_pos(i) = root_pos + root_size + (i - 1) * UPPER_NODE_SIZE
+    lower_pos(i) = root_pos + root_size + upper_section + (i - 1) * LOWER_NODE_SIZE
+
+    # Sort leaves for deterministic layout; build index mapping
+    leaf_sorted_order = sortperm(leaf_coords)
+    leaf_buf_pos = Vector{Int64}(undef, n_leaves)
+    for (slot, li) in enumerate(leaf_sorted_order)
+        leaf_buf_pos[li] = root_pos + root_size + upper_section + lower_section + (slot - 1) * LEAFDATA_SIZE
+    end
+
+    # ---- Phase 5: Write leaf nodes ----
+    for li in 1:n_leaves
+        coord = leaf_coords[li]
+        values = leaf_values[li]
+        off = leaf_buf_pos[li]
+
+        # BBoxMin (3 × Int32)
+        write_buf!(buffer, off + LEAFDATA_BBOXMIN_OFFSET, coord[1])
+        write_buf!(buffer, off + LEAFDATA_BBOXMIN_OFFSET + 4, coord[2])
+        write_buf!(buffer, off + LEAFDATA_BBOXMIN_OFFSET + 8, coord[3])
+
+        # BBoxDif (3 × UInt8)
+        buffer[off + 12] = 0x07
+        buffer[off + 13] = 0x07
+        buffer[off + 14] = 0x07
+
+        # ValueMask + min/max
+        vmin = typemax(Float32)
+        vmax = typemin(Float32)
+        for i in 0:511
+            v = values[i + 1]
+            if v != background
+                bitmask_set!(buffer, off + LEAFDATA_MASK_OFFSET, i)
+            end
+            vmin = min(vmin, v)
+            vmax = max(vmax, v)
+        end
+        write_buf!(buffer, off + LEAFDATA_MIN_OFFSET, vmin)
+        write_buf!(buffer, off + LEAFDATA_MIN_OFFSET + 4, vmax)
+
+        # Values (512 × Float32)
+        for i in 0:511
+            write_buf!(buffer, off + LEAFDATA_VALUES_OFFSET + i * 4, values[i + 1])
+        end
+    end
+
+    # ---- Phase 6: Write lower nodes ----
+    lower_pos_map = Dict{NTuple{3,Int32}, Int}()
+    for (i, lb) in enumerate(lower_bases)
+        lower_pos_map[lb] = i
+    end
+
+    for (low_i, lb) in enumerate(lower_bases)
+        off = lower_pos(low_i)
+
+        # BBox (min + max, 6 × Int32)
+        write_buf!(buffer, off + LOWER_BBOX_OFFSET, lb[1])
+        write_buf!(buffer, off + LOWER_BBOX_OFFSET + 4, lb[2])
+        write_buf!(buffer, off + LOWER_BBOX_OFFSET + 8, lb[3])
+        # max = lb + 128 - 1
+        write_buf!(buffer, off + LOWER_BBOX_OFFSET + 12, lb[1] + Int32(LEAF_DIM * LOWER_DIM - 1))
+        write_buf!(buffer, off + LOWER_BBOX_OFFSET + 16, lb[2] + Int32(LEAF_DIM * LOWER_DIM - 1))
+        write_buf!(buffer, off + LOWER_BBOX_OFFSET + 20, lb[3] + Int32(LEAF_DIM * LOWER_DIM - 1))
+
+        # Write child mask and table entries for active leaves
+        for li in lower_to_leaves[lb]
+            coord = leaf_coords[li]
+            # Compute child offset within this lower node (0..4095)
+            n = lower_coord_to_offset(coord)
+
+            # Set child mask bit
+            bitmask_set!(buffer, off + LOWER_CHILDMASK_OFFSET, n)
+            # Also set value mask bit
+            bitmask_set!(buffer, off + LOWER_VALUEMASK_OFFSET, n)
+
+            # Write child offset (relative: leaf_position - lower_position)
+            child_off = Int64(leaf_buf_pos[li] - off)
+            write_buf!(buffer, off + LOWER_TABLE_OFFSET + n * 8, child_off)
+        end
+
+        # Tile entries for inactive children get background value (already 0 from zeros())
+    end
+
+    # ---- Phase 7: Write upper nodes ----
+    for (up_i, ub) in enumerate(upper_bases)
+        off = upper_pos(up_i)
+
+        # BBox
+        write_buf!(buffer, off + UPPER_BBOX_OFFSET, ub[1])
+        write_buf!(buffer, off + UPPER_BBOX_OFFSET + 4, ub[2])
+        write_buf!(buffer, off + UPPER_BBOX_OFFSET + 8, ub[3])
+        write_buf!(buffer, off + UPPER_BBOX_OFFSET + 12, ub[1] + Int32(LEAF_DIM * LOWER_DIM * UPPER_DIM - 1))
+        write_buf!(buffer, off + UPPER_BBOX_OFFSET + 16, ub[2] + Int32(LEAF_DIM * LOWER_DIM * UPPER_DIM - 1))
+        write_buf!(buffer, off + UPPER_BBOX_OFFSET + 20, ub[3] + Int32(LEAF_DIM * LOWER_DIM * UPPER_DIM - 1))
+
+        # Write child mask and table entries for active lower nodes
+        for low_i in upper_to_lowers[ub]
+            lb = lower_bases[low_i]
+            n = upper_coord_to_offset(lb)
+
+            bitmask_set!(buffer, off + UPPER_CHILDMASK_OFFSET, n)
+            bitmask_set!(buffer, off + UPPER_VALUEMASK_OFFSET, n)
+
+            child_off = Int64(lower_pos(low_i) - off)
+            write_buf!(buffer, off + UPPER_TABLE_OFFSET + n * 8, child_off)
+        end
+    end
+
+    # ---- Phase 8: Write root node ----
+    # Root header
+    # Compute index bbox from all leaf coords
+    idx_min = (typemax(Int32), typemax(Int32), typemax(Int32))
+    idx_max = (typemin(Int32), typemin(Int32), typemin(Int32))
+    for coord in leaf_coords
+        idx_min = (min(idx_min[1], coord[1]), min(idx_min[2], coord[2]), min(idx_min[3], coord[3]))
+        idx_max = (max(idx_max[1], coord[1] + Int32(LEAF_DIM)),
+                   max(idx_max[2], coord[2] + Int32(LEAF_DIM)),
+                   max(idx_max[3], coord[3] + Int32(LEAF_DIM)))
+    end
+
+    write_buf!(buffer, root_pos + ROOTDATA_BBOX_OFFSET, idx_min[1])
+    write_buf!(buffer, root_pos + ROOTDATA_BBOX_OFFSET + 4, idx_min[2])
+    write_buf!(buffer, root_pos + ROOTDATA_BBOX_OFFSET + 8, idx_min[3])
+    write_buf!(buffer, root_pos + ROOTDATA_BBOX_OFFSET + 12, idx_max[1])
+    write_buf!(buffer, root_pos + ROOTDATA_BBOX_OFFSET + 16, idx_max[2])
+    write_buf!(buffer, root_pos + ROOTDATA_BBOX_OFFSET + 20, idx_max[3])
+    write_buf!(buffer, root_pos + ROOTDATA_TABLESIZE_OFFSET, UInt32(root_n_tiles))
+    write_buf!(buffer, root_pos + ROOTDATA_BACKGROUND_OFFSET, background)
+
+    # Root tiles (one per upper node)
+    tile_base = root_pos + ROOTDATA_HEADER_SIZE
+    for (ti, ub) in enumerate(upper_bases)
+        t_off = tile_base + (ti - 1) * ROOTTILE_SIZE
+        key = coord_to_root_key(ub)
+        write_buf!(buffer, t_off + ROOTTILE_KEY_OFFSET, key)
+        # Child offset: relative to root_pos
+        child_off = Int64(upper_pos(ti) - root_pos)
+        write_buf!(buffer, t_off + ROOTTILE_CHILD_OFFSET, child_off)
+        write_buf!(buffer, t_off + ROOTTILE_STATE_OFFSET, UInt32(1))  # active
+        write_buf!(buffer, t_off + ROOTTILE_VALUE_OFFSET, background)
+    end
+
+    # ---- Build metadata ----
+    # World-to-index transform: p_index = inv_mat * (p_world - vec)
+    # vec = world position of index origin (center of first voxel)
+    vec = (Float32(origin[1] + dx/2), Float32(origin[2] + dy/2), Float32(origin[3] + dz/2))
+    inv_mat = (Float32(1/dx), 0f0, 0f0,
+               0f0, Float32(1/dy), 0f0,
+               0f0, 0f0, Float32(1/dz))
+
+    world_min = (Float32(origin[1]), Float32(origin[2]), Float32(origin[3]))
+    world_max = (Float32(origin[1] + extent[1]), Float32(origin[2] + extent[2]), Float32(origin[3] + extent[3]))
+
+    metadata = (
+        world_min = world_min,
+        world_max = world_max,
+        inv_mat = inv_mat,
+        vec = vec,
+        root_offset = Int64(root_pos),
+        upper_offset = Int64(upper_pos(1)),
+        lower_offset = Int64(lower_pos(1)),
+        leaf_offset = Int64(leaf_buf_pos[leaf_sorted_order[1]]),
+        leaf_count = Int32(n_leaves),
+        lower_count = Int32(n_lowers),
+        upper_count = Int32(n_uppers),
+        root_table_size = Int32(root_n_tiles),
+        index_min = idx_min,
+        index_max = idx_max,
+    )
+
+    return buffer, metadata
+end
+
+"""
+    NanoVDBMedium(data::Array{Float32,3}; bounds, σ_a, σ_s, g, majorant_res, buffer_alloc)
+
+Construct a NanoVDBMedium from a dense 3D array by building a sparse NanoVDB tree.
+Only leaf blocks (8³) containing non-zero voxels are stored, giving significant
+memory savings for sparse volumetric data like cloud fields.
+
+# Arguments
+- `data`: Dense 3D Float32 array of density/opacity values
+- `bounds`: World-space bounding box (`Bounds3`)
+- `σ_a`: Absorption coefficient (default: 0 for pure scattering clouds)
+- `σ_s`: Scattering coefficient (default: 1)
+- `g`: Henyey-Greenstein asymmetry parameter
+- `majorant_res`: Resolution of majorant grid (default: 64³)
+- `buffer_alloc`: Array constructor for target device (default: `Vector{UInt8}`)
+"""
+function NanoVDBMedium(
+    data::Array{Float32, 3};
+    bounds::Bounds3,
+    σ_a::RGBSpectrum = RGBSpectrum(0f0),
+    σ_s::RGBSpectrum = RGBSpectrum(1f0),
+    g::Float32 = 0f0,
+    majorant_res::Vec3i = Vec3i(64, 64, 64),
+    buffer_alloc = Vector{UInt8}
+)
+    origin = Point3f(bounds.p_min)
+    extent = Vec3f(bounds.p_max - bounds.p_min)
+
+    buffer, metadata = build_nanovdb_from_dense(data, origin, extent)
+
+    # Build majorant grid
+    majorant_grid = build_nanovdb_majorant_grid(buffer, metadata, bounds, majorant_res)
+
+    gpu_buffer = buffer_alloc(buffer)
+
+    NanoVDBMedium(
+        gpu_buffer,
+        metadata.root_offset,
+        metadata.upper_offset,
+        metadata.lower_offset,
+        metadata.leaf_offset,
+        metadata.leaf_count,
+        metadata.lower_count,
+        metadata.upper_count,
+        metadata.root_table_size,
+        metadata.inv_mat,
+        metadata.vec,
+        bounds,
+        metadata.index_min,
+        metadata.index_max,
+        σ_a,
+        σ_s,
+        g,
+        majorant_grid,
+        Float32(maximum(majorant_grid.voxels))
+    )
+end
+
+# ============================================================================
 # NanoVDB File Parsing and Medium Construction
 # ============================================================================
 

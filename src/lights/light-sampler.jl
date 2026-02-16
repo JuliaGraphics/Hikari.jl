@@ -415,6 +415,19 @@ end
     4f0 * Float32(π) * luminance(light.i) * 0.1f0
 end
 
+@propagate_inbounds function estimate_light_power(light::DiffuseAreaLight{RGBSpectrum}, ::Float32)
+    # pbrt-v4: Pi * (twoSided ? 2 : 1) * area * scale * Lemit
+    sided_factor = light.two_sided ? 2f0 : 1f0
+    Float32(π) * sided_factor * light.area * light.scale * luminance(light.Le)
+end
+
+@propagate_inbounds function estimate_light_power(light::DiffuseAreaLight, ::Float32)
+    # Textured emission — can't evaluate texture here, approximate with scale * area
+    # pbrt-v4 averages the image pixels; we use scale as a proxy for average Le
+    sided_factor = light.two_sided ? 2f0 : 1f0
+    Float32(π) * sided_factor * light.area * light.scale
+end
+
 # Helper to get total distribution integral
 distribution_integral(d::Distribution2D) = d.marginal_func_int
 

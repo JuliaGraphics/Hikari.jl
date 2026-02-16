@@ -3,6 +3,17 @@
 # Abstract scene type for dispatch - allows both mutable and immutable implementations
 abstract type AbstractScene end
 
+"""
+    TriangleMeta
+
+Per-triangle metadata baked into the TLAS.
+"""
+struct TriangleMeta
+    medium_interface_idx::UInt32  # Index into scene.media_interfaces
+    primitive_index::UInt32       # Face index within the mesh (1-based)
+    arealight_flat_idx::UInt32    # Flat index into scene.lights (0 = no area light)
+end
+
 # Scene stores lights, accelerator, materials, and media directly.
 # Materials and media use MultiTypeSet (or StaticMultiTypeSet for GPU/kernels).
 # Textures are stored within the materials MultiTypeSet (materials have TextureRef fields).
@@ -81,8 +92,7 @@ function Base.push!(scene::Scene, medium::MediumInterface)
     mat_idx = push!(scene.materials, medium.material)
     inside_idx = push!(scene, medium.inside)
     outside_idx = push!(scene, medium.outside)
-    arealight_idx = isnothing(medium.arealight) ? SetKey() : push!(scene.materials, medium.arealight)
-    mi = MediumInterfaceIdx(mat_idx, inside_idx, outside_idx, arealight_idx)
+    mi = MediumInterfaceIdx(mat_idx, inside_idx, outside_idx)
     idx = findfirst(x -> mi === x, scene.media_interfaces)
     if idx === nothing
         @allowscalar push!(scene.media_interfaces, mi)
@@ -107,15 +117,19 @@ struct SceneHandle
     geometry::TLASHandle # handle for geometry in TLAS
 end
 
-function Base.push!(scene::Scene, mesh::AbstractGeometry, materialidx::UInt32)
-    handle = push!(scene.accel, mesh, materialidx)
+function Base.push!(scene::Scene, mesh::AbstractGeometry, materialidx::UInt32; arealight_indices=nothing)
+    handle = push!(scene.accel, mesh, materialidx; arealight_indices=arealight_indices)
     return SceneHandle(scene, materialidx, handle)
 end
 
-function Base.push!(scene::Scene, mesh::AbstractGeometry, material::Material)
+function Base.push!(scene::Scene, mesh::AbstractGeometry, material::Material; arealight_indices=nothing)
     mat_idx = push!(scene, material)
-    return push!(scene, mesh, mat_idx)
+    return push!(scene, mesh, mat_idx; arealight_indices=arealight_indices)
 end
+
+
+# NOTE: push!(scene, mesh::GB.Mesh, material) and area light helpers are in scene-mesh.jl
+# (included after materials and lights are defined)
 
 # ============================================================================
 # Scene operations

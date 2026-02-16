@@ -149,7 +149,13 @@ end
     material_queue,
     pixel_L,
     materials,
-    rgb2spec_table
+    lights,
+    rgb2spec_table,
+    bvh_nodes,
+    light_to_bit_trail,
+    num_infinite_lights::Int32,
+    num_bvh_lights::Int32,
+    num_lights::Int32
 )
     wo = -work.ray.d
 
@@ -161,57 +167,71 @@ end
         work.pi, wo, work.uv
     )
 
-    # Check for emission: from arealight on MediumInterfaceIdx, or from inner material
-    emission_idx = if has_arealight(work.interface)
-        work.interface.arealight
-    elseif is_emissive(materials, material_idx)
-        material_idx
-    else
-        SetKey()
-    end
-
-    if Raycore.is_valid(emission_idx)
-        # Get emission (use simple TextureFilterContext for emission - no derivatives needed)
-        tfc = TextureFilterContext(work.uv, 0f0, 0f0, 0f0, 0f0, work.face_idx, work.bary)
-        Le = get_emission_spectral_dispatch(
-            rgb2spec_table, materials, emission_idx,
-            wo, work.n, tfc, work.lambda
+    # HandleEmissiveIntersection — following pbrt-v4
+    # Check if we hit a triangle with a DiffuseAreaLight
+    if work.arealight_flat_idx > UInt32(0)
+        # Evaluate emission from the DiffuseAreaLight
+        light_idx = flat_to_light_index(lights, Int32(work.arealight_flat_idx))
+        Le = with_index(arealight_Le, lights, light_idx,
+            lights, rgb2spec_table, wo, Vec3f(work.n), work.uv, work.lambda
         )
 
         if !is_black(Le)
-            # Apply path throughput
             contribution = work.beta * Le
 
-            # MIS weight: on first bounce or specular, no MIS
+            # MIS weight following pbrt-v4 HandleEmissiveIntersection
             final_contrib = if work.depth == Int32(0) || work.specular_bounce
                 contribution / average(work.r_u)
             else
-                # Full MIS weight
-                contribution / average(work.r_u + work.r_l)
+                # lightChoicePDF = PMF from BVH light sampler (spatially-aware)
+                lightChoicePDF = bvh_pmf(
+                    bvh_nodes, light_to_bit_trail,
+                    num_infinite_lights, num_bvh_lights,
+                    work.pi, Vec3f(work.n), Int32(work.arealight_flat_idx)
+                )
+                # PDF_Li: solid angle PDF for uniform triangle sampling
+                # pdf_area = 1/area, convert to solid angle: pdf = dist^2 / (cos_theta * area)
+                cos_theta = abs(dot(work.n, normalize(work.ray.d)))
+                lightPDF = if cos_theta > 0f0 && work.triangle_area > 0f0
+                    pdf_li = (work.t_hit * work.t_hit) / (cos_theta * work.triangle_area)
+                    lightChoicePDF * pdf_li
+                else
+                    0f0
+                end
+                r_l = work.r_l * lightPDF
+                mis_denom = average(work.r_u + r_l)
+                if mis_denom > 1f-10
+                    contribution / mis_denom
+                else
+                    contribution / average(work.r_u)
+                end
             end
 
             # Add to pixel
             pixel_idx = work.pixel_index
             base_idx = (pixel_idx - Int32(1)) * Int32(4)
-
             accumulate_spectrum!(pixel_L, base_idx, final_contrib)
         end
     end
 
     # Create material evaluation work item for BSDF evaluation
-    # Skip pure emissive materials (no BSDF to evaluate)
-    if !is_pure_emissive_dispatch(materials, material_idx)
-        push!(material_queue, VPMaterialEvalWorkItem(work, wo, material_idx))
-    end
+    # All materials have BSDF (EmissiveMaterial is removed)
+    push!(material_queue, VPMaterialEvalWorkItem(work, wo, material_idx))
 end
 
-function vp_process_surface_hits!(state::VolPathState, materials)
+function vp_process_surface_hits!(state::VolPathState, materials, lights)
     foreach(vp_process_surface_hits_kernel!,
         state.hit_surface_queue,
         state.material_queue,
         state.pixel_L,
         materials,
+        lights,
         state.rgb2spec_table,
+        state.bvh_nodes,
+        state.light_to_bit_trail,
+        state.num_infinite_lights,
+        state.num_bvh_lights,
+        state.num_lights,
     )
     return nothing
 end
@@ -222,8 +242,8 @@ end
 
 """Inner function for surface direct lighting - can use return statements.
 
-Uses power-weighted light sampling via alias table for better importance sampling
-in scenes with lights of varying intensities (pbrt-v4's PowerLightSampler approach).
+Uses BVH light sampler for spatially-aware importance sampling.
+Nearby lights get higher probability than distant ones (pbrt-v4's BVHLightSampler).
 
 Now uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style).
 """
@@ -233,9 +253,10 @@ Now uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style
     materials,
     lights,
     rgb2spec_table,
-    light_sampler_p,
-    light_sampler_q,
-    light_sampler_alias,
+    bvh_nodes,
+    infinite_light_indices,
+    num_infinite_lights::Int32,
+    num_bvh_lights::Int32,
     num_lights::Int32,
     # Pre-computed Sobol samples (SOA layout)
     pixel_samples_direct_uc,
@@ -252,10 +273,12 @@ Now uses pre-computed Sobol samples from pixel_samples (pbrt-v4 RaySamples style
     u_light = pixel_samples_direct_u[pixel_idx]
     light_select = pixel_samples_direct_uc[pixel_idx]
 
-    # Select light using power-weighted alias table sampling
-    # Returns (1-based index, PMF for that light)
-    light_idx, light_pmf = sample_light_sampler(
-        light_sampler_p, light_sampler_q, light_sampler_alias, light_select
+    # Select light using BVH importance-weighted sampling
+    # Returns (1-based flat index, PMF for that light)
+    light_idx, light_pmf = bvh_sample_light(
+        bvh_nodes, infinite_light_indices,
+        num_infinite_lights, num_bvh_lights,
+        work.pi, work.ns, light_select
     )
 
     # Validate index (should always be valid if sampler was built correctly)
@@ -328,7 +351,8 @@ end
     materials,
     lights,
     rgb2spec_table,
-    light_sampler_p, light_sampler_q, light_sampler_alias,
+    bvh_nodes, infinite_light_indices,
+    num_infinite_lights::Int32, num_bvh_lights::Int32,
     num_lights::Int32,
     pixel_samples_direct_uc, pixel_samples_direct_u,
     camera, samples_per_pixel::Int32
@@ -336,7 +360,8 @@ end
     surface_direct_lighting_inner!(
         shadow_queue,
         work, materials, lights, rgb2spec_table,
-        light_sampler_p, light_sampler_q, light_sampler_alias,
+        bvh_nodes, infinite_light_indices,
+        num_infinite_lights, num_bvh_lights,
         num_lights,
         pixel_samples_direct_uc, pixel_samples_direct_u,
         camera, samples_per_pixel
@@ -351,7 +376,8 @@ function vp_sample_surface_direct_lighting!(state::VolPathState, materials, ligh
         materials,
         lights,
         state.rgb2spec_table,
-        state.light_sampler_p, state.light_sampler_q, state.light_sampler_alias,
+        state.bvh_nodes, state.infinite_light_indices,
+        state.num_infinite_lights, state.num_bvh_lights,
         state.num_lights,
         pixel_samples.direct_uc, pixel_samples.direct_u,
         camera, samples_per_pixel,
@@ -528,28 +554,5 @@ end
 # Helper: Check for pure emissive material
 # ============================================================================
 
-"""
-    is_pure_emissive_dispatch(materials, mat_idx)
-
-Check if material is purely emissive (no BSDF).
-"""
-@propagate_inbounds function is_pure_emissive_dispatch(materials, mat_idx::SetKey)
-    # Default: assume materials with emission also have BSDF
-    # Override for EmissiveMaterial which has no BSDF
-    return is_emissive(materials, mat_idx) &&
-           !has_bsdf_dispatch(materials, mat_idx)
-end
-
-"""
-    has_bsdf_dispatch(materials, mat_idx)
-
-Check if material has a BSDF component.
-"""
-@propagate_inbounds function has_bsdf_dispatch(materials, mat_idx::SetKey)
-    # Most materials have BSDF
-    # EmissiveMaterial does not
-    type_idx = mat_idx.type_idx
-    # This would need proper dispatch based on material type
-    # For now, return true (most materials have BSDF)
-    return true
-end
+# With DiffuseAreaLight, no material is ever purely emissive — all materials have BSDF.
+@propagate_inbounds is_pure_emissive_dispatch(materials, mat_idx::SetKey) = false

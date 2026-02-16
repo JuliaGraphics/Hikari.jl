@@ -124,6 +124,8 @@ struct VPMediumSampleWorkItem
     hit_interface::MediumInterfaceIdx  # For medium transitions at surface
     hit_face_idx::UInt32              # Triangle face index (for vertex colors)
     hit_bary::SVector{3, Float32}     # Barycentric coordinates (for vertex colors)
+    hit_arealight_flat_idx::UInt32    # Area light flat index (0 = no area light)
+    hit_triangle_area::Float32        # Triangle area (for PDF_Li)
 end
 
 # Constructor from VPRayWorkItem with surface hit
@@ -134,7 +136,8 @@ function VPMediumSampleWorkItem(
     ns::Vec3f, dpdus::Vec3f, dpdvs::Vec3f,
     uv::Point2f, mat_idx::SetKey,
     interface::MediumInterfaceIdx,
-    face_idx::UInt32, bary::SVector{3, Float32}
+    face_idx::UInt32, bary::SVector{3, Float32},
+    arealight_flat_idx::UInt32, triangle_area::Float32
 )
     VPMediumSampleWorkItem(
         work.ray, work.depth, t_max,
@@ -144,7 +147,8 @@ function VPMediumSampleWorkItem(
         work.prev_intr_p, work.prev_intr_n,
         work.medium_idx,
         true, pi, n, dpdu, dpdv, ns, dpdus, dpdvs, uv, mat_idx, interface,
-        face_idx, bary
+        face_idx, bary,
+        arealight_flat_idx, triangle_area
     )
 end
 
@@ -159,8 +163,9 @@ function VPMediumSampleWorkItem(work::VPRayWorkItem)
         work.medium_idx,
         false, Point3f(0f0), Vec3f(0f0, 0f0, 1f0), Vec3f(0f0), Vec3f(0f0),
         Vec3f(0f0, 0f0, 1f0), Vec3f(0f0), Vec3f(0f0),
-        Point2f(0f0, 0f0), SetKey(), MediumInterfaceIdx(SetKey(), SetKey(), SetKey(), SetKey()),
-        UInt32(0), SVector{3, Float32}(0f0, 0f0, 0f0)
+        Point2f(0f0, 0f0), SetKey(), MediumInterfaceIdx(SetKey(), SetKey(), SetKey()),
+        UInt32(0), SVector{3, Float32}(0f0, 0f0, 0f0),
+        UInt32(0), 0f0
     )
 end
 
@@ -338,6 +343,10 @@ struct VPHitSurfaceWorkItem
     face_idx::UInt32                # Triangle face index (for vertex colors)
     bary::SVector{3, Float32}       # Barycentric coordinates (for vertex colors)
 
+    # Area light info (for HandleEmissiveIntersection MIS)
+    arealight_flat_idx::UInt32      # Flat index into scene.lights (0 = no area light)
+    triangle_area::Float32          # Triangle area (for PDF_Li computation)
+
     # Path state
     lambda::Wavelengths
     pixel_index::Int32
@@ -366,12 +375,14 @@ function VPHitSurfaceWorkItem(
     uv::Point2f, mat_idx::SetKey,
     interface::MediumInterfaceIdx,
     face_idx::UInt32, bary::SVector{3, Float32},
+    arealight_flat_idx::UInt32, triangle_area::Float32,
     t_hit::Float32
 )
     VPHitSurfaceWorkItem(
         work.ray,
         pi, n, dpdu, dpdv, ns, dpdus, dpdvs, uv, mat_idx, interface,
         face_idx, bary,
+        arealight_flat_idx, triangle_area,
         work.lambda, work.pixel_index,
         work.beta, work.r_u, work.r_l,
         work.depth, work.eta_scale,
@@ -392,6 +403,7 @@ function VPHitSurfaceWorkItem(
         work.hit_ns, work.hit_dpdus, work.hit_dpdvs,
         work.hit_uv, work.hit_material_idx, work.hit_interface,
         work.hit_face_idx, work.hit_bary,
+        work.hit_arealight_flat_idx, work.hit_triangle_area,
         work.lambda, work.pixel_index,
         beta, r_u, r_l,
         work.depth, work.eta_scale,

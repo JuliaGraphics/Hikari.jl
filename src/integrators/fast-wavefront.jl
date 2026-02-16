@@ -509,7 +509,7 @@ end
             u, v, w = bary[1], bary[2], bary[3]
             normal = Vec3f(normalize(v0 * u + v1 * v + v2 * w))
 
-            mat_idx = tri.metadata[1]::SetKey
+            mat_idx = tri.metadata.medium_interface_idx
             mat_props = extract_material_props(materials, mat_idx, uv)
             base_color = mat_props.base_color
 
@@ -538,7 +538,7 @@ end
         dummy_ray = Ray(o=Point3f(0), d=Vec3f(0, 0, 1), t_max=0.0f0)
 
         if hit_found
-            mat_idx = tri.metadata[1]::SetKey
+            mat_idx = tri.metadata.medium_interface_idx
             mat_props = extract_material_props(materials, mat_idx, uv)
 
             if mat_props.metallic > 0.0f0
@@ -586,7 +586,7 @@ end
                 normal = Vec3f(normalize(v0 * u + v1 * v + v2 * w))
                 uv = compute_uv(tri, Vec3f(bary))
 
-                mat_idx = tri.metadata[1]::SetKey
+                mat_idx = tri.metadata.medium_interface_idx
                 @fast_set reflection_hit_soa[idx] = (hit_found=true, material_idx=mat_idx,
                     dist=dist, bary=Vec3f(bary), uv=uv, normal=normal,
                     ray=ray, primary_hit_idx=hit_idx)
@@ -616,7 +616,7 @@ end
         @fast_get hit_found, tri, uv, pixel_x, pixel_y, sample_idx = hit_queue[idx]
 
         if hit_found
-            mat_idx = tri.metadata[1]::SetKey
+            mat_idx = tri.metadata.medium_interface_idx
             mat_props = extract_material_props(materials, mat_idx, uv)
 
             if mat_props.metallic > 0.0f0

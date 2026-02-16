@@ -2,6 +2,16 @@
 # Provides compute_bsdf(), shade(), and sample_bounce() for each material type
 
 # ============================================================================
+# Emission / emissive checks (base fallbacks)
+# With DiffuseAreaLight, no Material is ever emissive — emission lives on lights.
+# ============================================================================
+
+@propagate_inbounds is_emissive(::Material) = false
+@propagate_inbounds is_pure_emissive(::Material) = false
+@propagate_inbounds get_emission(::Material, ::Vec3f, ::Vec3f, ::Point2f) = RGBSpectrum(0f0)
+@propagate_inbounds get_emission(::Material, ::Point2f) = RGBSpectrum(0f0)
+
+# ============================================================================
 # BSDF computation for each material type
 # ============================================================================
 
@@ -183,7 +193,7 @@ Compute specular reflection or transmission contribution by tracing a bounce ray
 
     # Recursively shade the hit point
     return Raycore.with_index(
-        shade, scene.materials, primitive.metadata[1],
+        shade, scene.materials, primitive.metadata.medium_interface_idx,
         bounce_ray, bounce_si, scene, bounce_beta, depth + Int32(1), max_depth
     )
 end

@@ -14,40 +14,38 @@
 # ============================================================================
 
 """
-    MediumInterface{M<:Material, I, O, L}
+    MediumInterface{M<:Material, I, O}
 
-Material wrapper that combines a surface BSDF with medium boundaries and
-optional area light emission. Follows pbrt-v4's approach where surfaces
-define boundaries between media and can optionally emit light.
+Material wrapper that combines a surface BSDF with medium boundaries.
+Surfaces define boundaries between media.
+
+Emission is handled separately by DiffuseAreaLight (registered per-triangle
+in scene.lights, not on the material).
 
 # Fields
 - `material`: The underlying BSDF material (e.g., MatteMaterial, GlassMaterial)
 - `inside`: Medium for inside the surface, or `nothing` for vacuum
 - `outside`: Medium for outside the surface, or `nothing` for vacuum
-- `arealight`: EmissiveMaterial for area light emission, or `nothing`
 
 # Usage
 ```julia
-# Diffuse surface that also glows
-MediumInterface(MatteMaterial(Kd, σ); arealight=EmissiveMaterial(Le=glow_tex, scale=10))
-
 # Glass with fog inside
 MediumInterface(GlassMaterial(...); inside=fog)
 
-# Pure area light (no reflection)
-MediumInterface(EmissiveMaterial(Le=bright_tex, scale=50))
+# Simple material with no medium transition
+MediumInterface(MatteMaterial(Kd, σ))
 ```
 """
-struct MediumInterface{M<:Material, I, O, L} <: Material
+struct MediumInterface{M<:Material, I, O, E} <: Material
     material::M
     inside::I      # Medium or Nothing
     outside::O     # Medium or Nothing
-    arealight::L   # EmissiveMaterial or Nothing
+    emission::E    # NamedTuple (Le, scale, two_sided) or Nothing
 end
 
 # Convenience constructors
-function MediumInterface(material::M; inside=nothing, outside=nothing, arealight=nothing) where {M<:Material}
-    MediumInterface{M, typeof(inside), typeof(outside), typeof(arealight)}(material, inside, outside, arealight)
+function MediumInterface(material::M; inside=nothing, outside=nothing, emission=nothing) where {M<:Material}
+    MediumInterface{M, typeof(inside), typeof(outside), typeof(emission)}(material, inside, outside, emission)
 end
 
 function MediumInterface(material::M, medium) where {M<:Material}
@@ -60,9 +58,6 @@ end
     mi.inside !== mi.outside
 end
 
-"""Check if this interface has an area light"""
-@propagate_inbounds has_arealight(mi::MediumInterface) = !isnothing(mi.arealight)
-
 # ============================================================================
 # Internal MediumInterfaceIdx (stores SetKey for GPU dispatch)
 # ============================================================================
@@ -70,20 +65,18 @@ end
 """
     MediumInterfaceIdx
 
-Internal index wrapper with material, medium, and area light indices
+Internal index wrapper with material and medium indices
 for GPU-compatible dispatch. Created during scene building from `MediumInterface`.
 
 # Fields (all SetKey indices)
 - `material`: SetKey into materials container (BSDF material)
 - `inside`: SetKey for inside medium (invalid = vacuum)
 - `outside`: SetKey for outside medium (invalid = vacuum)
-- `arealight`: SetKey for area light emission material (invalid = none)
 """
 struct MediumInterfaceIdx
     material::SetKey
     inside::SetKey
     outside::SetKey
-    arealight::SetKey
 end
 
 """Check if this interface represents a medium transition"""
@@ -91,9 +84,6 @@ end
     # Compare both type_idx and vec_idx to check if indices point to different media
     mi.inside.type_idx != mi.outside.type_idx || mi.inside.vec_idx != mi.outside.vec_idx
 end
-
-"""Check if this interface has an area light"""
-@propagate_inbounds has_arealight(mi::MediumInterfaceIdx) = Raycore.is_valid(mi.arealight)
 
 # Accessors for medium indices
 @propagate_inbounds get_inside_medium(mi::MediumInterfaceIdx) = mi.inside

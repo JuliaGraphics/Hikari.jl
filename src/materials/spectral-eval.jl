@@ -317,19 +317,6 @@ from near-specular paths (matches pbrt-v4 BSDF::Regularize).
     end
 end
 
-"""
-    sample_bsdf_spectral(table, mat::EmissiveMaterial, textures, wo, n, uv, lambda, sample_u, rng) -> SpectralBSDFSample
-
-Emissive materials don't scatter - return invalid sample.
-"""
-@propagate_inbounds function sample_bsdf_spectral(
-    mat::EmissiveMaterial, table::RGBToSpectrumTable, textures,
-    wo::Vec3f, n::Vec3f, tfc::TextureFilterContext,
-    lambda::Wavelengths, sample_u::Point2f, rng::Float32,
-    regularize::Bool = false
-)
-    return SpectralBSDFSample()
-end
 
 # Fallback for unknown materials
 @propagate_inbounds function sample_bsdf_spectral(
@@ -500,14 +487,6 @@ Matches pbrt-v4's ConductorBxDF::f and ConductorBxDF::PDF exactly.
     return (f, pdf)
 end
 
-@propagate_inbounds function evaluate_bsdf_spectral(
-    mat::EmissiveMaterial, table::RGBToSpectrumTable, textures,
-    wo::Vec3f, wi::Vec3f, n::Vec3f, tfc::TextureFilterContext, lambda::Wavelengths
-)
-    # Emissive materials don't scatter light (black body)
-    return (SpectralRadiance(), 0f0)
-end
-
 # Fallback
 @propagate_inbounds function evaluate_bsdf_spectral(
     mat::Material, table::RGBToSpectrumTable, textures,
@@ -535,25 +514,7 @@ end
 # Spectral Emission Evaluation
 # ============================================================================
 
-"""
-    get_emission_spectral(table::RGBToSpectrumTable, mat::EmissiveMaterial, textures, wo, n, uv, lambda) -> SpectralRadiance
-
-Get spectral emission from an emissive material.
-"""
-@propagate_inbounds function get_emission_spectral(
-    mat::EmissiveMaterial, table::RGBToSpectrumTable, textures,
-    wo::Vec3f, n::Vec3f, tfc::TextureFilterContext, lambda::Wavelengths
-)
-    cos_theta = dot(wo, n)
-    if !mat.two_sided && cos_theta < 0f0
-        return SpectralRadiance()
-    end
-
-    Le_rgb = eval_tex(textures, mat.Le, tfc) * mat.scale
-    return uplift_rgb(table, Le_rgb, lambda)
-end
-
-# Non-emissive materials return zero
+# All materials return zero emission — emission is handled by DiffuseAreaLight.
 @propagate_inbounds function get_emission_spectral(
     mat::Material, table::RGBToSpectrumTable, textures,
     wo::Vec3f, n::Vec3f, tfc::TextureFilterContext, lambda::Wavelengths
@@ -590,17 +551,6 @@ end
 
 @propagate_inbounds function get_albedo_spectral(mat::ConductorMaterial, table::RGBToSpectrumTable, textures, tfc::TextureFilterContext, lambda::Wavelengths)
     return uplift_rgb(table, eval_tex(textures, mat.reflectance, tfc), lambda)
-end
-
-@propagate_inbounds function get_albedo_spectral(mat::EmissiveMaterial, table::RGBToSpectrumTable, textures, tfc::TextureFilterContext, lambda::Wavelengths)
-    # Normalized emission color
-    Le = eval_tex(textures, mat.Le, tfc)
-    lum = to_Y(Le)
-    if lum > 0f0
-        normalized = Le / lum
-        return uplift_rgb(table, normalized, lambda)
-    end
-    return SpectralRadiance()
 end
 
 @propagate_inbounds function get_albedo_spectral(mat::Material, table::RGBToSpectrumTable, textures, tfc::TextureFilterContext, lambda::Wavelengths)
@@ -3526,23 +3476,21 @@ end
 end
 
 """
-    get_emission_spectral for MediumInterface - checks arealight first, then wrapped material.
+    get_emission_spectral for MediumInterface - forwards to wrapped material.
+    (Emission is now handled by DiffuseAreaLight in the lights set, not on materials.)
 """
 @propagate_inbounds function get_emission_spectral(
     mi::MediumInterface, table::RGBToSpectrumTable, textures,
     wo::Vec3f, n::Vec3f, tfc::TextureFilterContext, lambda::Wavelengths
 )
-    if has_arealight(mi)
-        return get_emission_spectral(mi.arealight, table, textures, wo, n, tfc, lambda)
-    end
     return get_emission_spectral(mi.material, table, textures, wo, n, tfc, lambda)
 end
 
 """
-    is_emissive for MediumInterface - true if arealight present or inner material is emissive.
+    is_emissive for MediumInterface - forwards to wrapped material.
 """
 @propagate_inbounds function is_emissive(mi::MediumInterface)
-    return has_arealight(mi) || is_emissive(mi.material)
+    return is_emissive(mi.material)
 end
 
 """

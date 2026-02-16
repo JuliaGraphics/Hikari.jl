@@ -255,6 +255,75 @@ give zero for directions below the surface, and cos_theta weighting handles the 
     return PWLightSample(Li, wi, pdf, p_light, false)
 end
 
+# ============================================================================
+# DiffuseAreaLight Sampling (pbrt-v4 DiffuseAreaLight::SampleLi)
+# ============================================================================
+
+"""
+    sample_light_spectral(table, lights, light::DiffuseAreaLight, p, lambda, u)
+
+Sample a diffuse area light spectrally. Uniformly samples a point on the triangle
+and converts area PDF to solid angle PDF.
+
+Following pbrt-v4's DiffuseAreaLight::SampleLi + Triangle::Sample (uniform area).
+"""
+@propagate_inbounds function sample_light_spectral(
+    table::RGBToSpectrumTable, lights, light::DiffuseAreaLight, p::Point3f, lambda::Wavelengths, u::Point2f
+)::PWLightSample
+    # Sample point on triangle uniformly (pbrt-v4 SampleUniformTriangle)
+    b0, b1 = if u[1] < u[2]
+        _b0 = u[1] / 2f0
+        _b1 = u[2] - _b0
+        (_b0, _b1)
+    else
+        _b1 = u[2] / 2f0
+        _b0 = u[1] - _b1
+        (_b0, _b1)
+    end
+    b2 = 1f0 - b0 - b1
+
+    # Compute sampled point on triangle via barycentric interpolation
+    p_light = Point3f(
+        b0 * Vec3f(light.vertices[1]) + b1 * Vec3f(light.vertices[2]) + b2 * Vec3f(light.vertices[3])
+    )
+
+    # Compute direction and distance to sampled point
+    to_light = Vec3f(p_light - p)
+    dist_sq = dot(to_light, to_light)
+    if dist_sq < 1f-12
+        return PWLightSample()
+    end
+    dist = sqrt(dist_sq)
+    wi = Vec3f(to_light / dist)
+
+    # cos_theta between light normal and incoming direction
+    # (angle at the light surface — needed for area-to-solid-angle conversion)
+    cos_theta = abs(dot(Vec3f(light.normal), -wi))
+    if cos_theta < 1f-6
+        return PWLightSample()  # Grazing angle — no contribution
+    end
+
+    # Convert area PDF to solid angle PDF
+    # pdf_area = 1/area → pdf_solid_angle = dist² / (cos_theta * area)
+    pdf = dist_sq / (cos_theta * light.area)
+
+    # Compute UV at sampled point via barycentric interpolation
+    uv_sample = Point2f(
+        b0 * Vec2f(light.uv[1]) + b1 * Vec2f(light.uv[2]) + b2 * Vec2f(light.uv[3])
+    )
+
+    # Evaluate emission (wo = -wi = direction from light toward shading point)
+    # Following pbrt-v4: L(ss->intr.p(), ss->intr.n, ss->intr.uv, -wi, lambda)
+    wo = Vec3f(-wi[1], -wi[2], -wi[3])
+    Le = arealight_Le(light, lights, table, wo, Vec3f(light.normal), uv_sample, lambda)
+
+    if is_black(Le)
+        return PWLightSample()
+    end
+
+    return PWLightSample(Le, wi, pdf, p_light, false)
+end
+
 # Fallback for unknown light types
 @propagate_inbounds function sample_light_spectral(
     ::RGBToSpectrumTable, lights, ::Light, ::Point3f, ::Wavelengths, ::Point2f

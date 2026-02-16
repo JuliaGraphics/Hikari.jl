@@ -63,7 +63,13 @@ end
     mat_queue_13, mat_queue_14, mat_queue_15, mat_queue_16,
     pixel_L,
     materials,
+    lights,
     rgb2spec_table,
+    bvh_nodes,
+    light_to_bit_trail,
+    num_infinite_lights::Int32,
+    num_bvh_lights::Int32,
+    num_lights::Int32,
     num_types::Int32
 )
     wo = -work.ray.d
@@ -74,46 +80,48 @@ end
         work.pi, wo, work.uv
     )
 
-    # Check for emission: from arealight on MediumInterfaceIdx, or from inner material
-    emission_idx = if has_arealight(work.interface)
-        work.interface.arealight
-    elseif is_emissive(materials, material_idx)
-        material_idx
-    else
-        SetKey()
-    end
-
-    if Raycore.is_valid(emission_idx)
-        # Get emission - use simple TextureFilterContext (no derivatives needed for emission)
-        tfc = TextureFilterContext(work.uv, 0f0, 0f0, 0f0, 0f0, work.face_idx, work.bary)
-        Le = get_emission_spectral_dispatch(
-            rgb2spec_table, materials, emission_idx,
-            wo, work.n, tfc, work.lambda
+    # HandleEmissiveIntersection — following pbrt-v4
+    if work.arealight_flat_idx > UInt32(0)
+        light_idx = flat_to_light_index(lights, Int32(work.arealight_flat_idx))
+        Le = with_index(arealight_Le, lights, light_idx,
+            lights, rgb2spec_table, wo, Vec3f(work.n), work.uv, work.lambda
         )
 
         if !is_black(Le)
-            # Apply path throughput
             contribution = work.beta * Le
 
-            # MIS weight: on first bounce or specular, no MIS
-            # Match the standard vp_process_surface_hits_kernel! logic exactly
             final_contrib = if work.depth == Int32(0) || work.specular_bounce
                 contribution / average(work.r_u)
             else
-                # Full MIS weight
-                contribution / average(work.r_u + work.r_l)
+                lightChoicePDF = bvh_pmf(
+                    bvh_nodes, light_to_bit_trail,
+                    num_infinite_lights, num_bvh_lights,
+                    work.pi, Vec3f(work.n), Int32(work.arealight_flat_idx)
+                )
+                cos_theta = abs(dot(work.n, normalize(work.ray.d)))
+                lightPDF = if cos_theta > 0f0 && work.triangle_area > 0f0
+                    pdf_li = (work.t_hit * work.t_hit) / (cos_theta * work.triangle_area)
+                    lightChoicePDF * pdf_li
+                else
+                    0f0
+                end
+                r_l = work.r_l * lightPDF
+                mis_denom = average(work.r_u + r_l)
+                if mis_denom > 1f-10
+                    contribution / mis_denom
+                else
+                    contribution / average(work.r_u)
+                end
             end
 
-            # Add to pixel
             pixel_idx = work.pixel_index
             base_idx = (pixel_idx - Int32(1)) * Int32(4)
-
             accumulate_spectrum!(pixel_L, base_idx, final_contrib)
         end
     end
 
-    # Only create material work item if not pure emissive (has BSDF)
-    if !is_pure_emissive_dispatch(materials, material_idx)
+    # All materials have BSDF (EmissiveMaterial is removed)
+    begin
         mat_work = VPMaterialEvalWorkItem(work, wo, material_idx)
 
         # Route to correct per-type queue based on material_type
@@ -319,7 +327,8 @@ end
 function vp_process_surface_hits_coherent!(
     state::VolPathState,
     multi_queue::MultiMaterialQueue{N},
-    materials::NTuple{N, Any}
+    materials::NTuple{N, Any},
+    lights
 ) where {N}
     # Reset per-type queues
     reset_queues!(KA.get_backend(state.hit_surface_queue.items), multi_queue)
@@ -340,7 +349,13 @@ function vp_process_surface_hits_coherent!(
         queues[13], queues[14], queues[15], queues[16],
         state.pixel_L,
         materials,
-            state.rgb2spec_table,
+        lights,
+        state.rgb2spec_table,
+        state.bvh_nodes,
+        state.light_to_bit_trail,
+        state.num_infinite_lights,
+        state.num_bvh_lights,
+        state.num_lights,
         Int32(N),
     )
     return nothing
@@ -419,7 +434,8 @@ function vp_sample_direct_lighting_from_queue!(
         materials,
         lights,
         state.rgb2spec_table,
-        state.light_sampler_p, state.light_sampler_q, state.light_sampler_alias,
+        state.bvh_nodes, state.infinite_light_indices,
+        state.num_infinite_lights, state.num_bvh_lights,
         state.num_lights,
         pixel_samples.direct_uc, pixel_samples.direct_u,
         camera, samples_per_pixel,
