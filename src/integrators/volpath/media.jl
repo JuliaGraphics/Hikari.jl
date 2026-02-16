@@ -2029,3 +2029,11 @@ function SubsurfaceMedium(name::String; scale::Real=1f0, g::Real=0f0)
     σ_a = RGBSpectrum(props.σ_a...) * Float32(scale)
     HomogeneousMedium(σ_a=σ_a, σ_s=σ_s, g=Float32(g))
 end
+
+# ============================================================================
+# Ray Deflection (for spacetime curvature / gravitational lensing)
+# ============================================================================
+
+# Default: no deflection. Media that bend light (e.g. SpacetimeMedium)
+# should override this method.
+@propagate_inbounds apply_deflection(medium, p::Point3f, ray_d::Vec3f, dt::Float32) = ray_d
