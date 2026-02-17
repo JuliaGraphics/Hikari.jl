@@ -224,7 +224,6 @@ struct SampleTMajResult
     r_l::SpectralRadiance
     rng_state::UInt64  # Updated RNG state for continuation
     done::Bool  # true if terminated (absorption/scatter), false if reached end
-    ray_o::Point3f  # Deflected ray origin (for gravitational lensing)
     ray_d::Vec3f    # Deflected ray direction (for gravitational lensing)
 end
 
@@ -256,7 +255,6 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
     max_segments = Int32(256)
 
     # Ray state for deflection (mutable during tracking)
-    ray_o = work.ray.o
     ray_d = work.ray.d
 
     current_iter = iter
@@ -275,7 +273,7 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
             scatter_queue,
             pixel_L,
             work, media, medium_idx, rgb2spec_table, max_depth, max_queued,
-            ray_o, ray_d
+            ray_d
         )
 
         if result.done
@@ -288,13 +286,12 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
         r_u = result.r_u
         r_l = result.r_l
         current_rng = result.rng_state
-        ray_o = result.ray_o
         ray_d = result.ray_d
         # T_maj_accum is reset to 1.0 inside sample_segment! after interactions
         T_maj_accum = SpectralRadiance(1f0)
     end
 
-    return SampleTMajResult(beta, r_u, r_l, current_rng, false, ray_o, ray_d)
+    return SampleTMajResult(beta, r_u, r_l, current_rng, false, ray_d)
 end
 
 """
@@ -319,7 +316,6 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
     rgb2spec_table,
     max_depth::Int32,
     max_queued::Int32,
-    ray_o::Point3f,
     ray_d::Vec3f
 )
     σ_maj = seg.σ_maj
@@ -329,17 +325,22 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
     if σ_maj_0 < 1f-10
         # Just apply transmittance for this segment (which is 1.0 for zero extinction)
         # No need to sample - ray passes through
-        return SampleTMajResult(beta, r_u, r_l, rng_state, false, ray_o, ray_d)
+        return SampleTMajResult(beta, r_u, r_l, rng_state, false, ray_d)
     end
 
     t = seg.t_min
     t_max_seg = seg.t_max
 
+    # Incremental ray position tracking.
+    # For straight rays this reproduces work.ray.o + work.ray.d * t exactly.
+    # For deflecting media (spacetime), the ray follows a curved path.
+    ray_o = Point3f(work.ray.o + ray_d * t)
+
     # Current RNG state (will be updated in loop)
     current_rng = rng_state
 
     # Inner sampling loop (bounded iterations)
-    max_samples = Int32(100)
+    max_samples = Int32(1024)
     for _ in Int32(1):max_samples
         # Sample exponential distance using LCG
         current_rng, u = lcg_next(current_rng)
@@ -358,14 +359,14 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
                 r_l = r_l * T_maj / T_maj_0
             end
             # Continue to next segment
-            return SampleTMajResult(beta, r_u, r_l, current_rng, false, ray_o, ray_d)
+            return SampleTMajResult(beta, r_u, r_l, current_rng, false, ray_d)
         end
 
         # Compute transmittance for this step
         T_maj = exp(-dt * σ_maj)
 
-        # Sample medium properties at interaction point (use deflected ray state)
-        p = Point3f(ray_o + ray_d * t_sample)
+        # Sample medium properties at interaction point (incremental position)
+        p = Point3f(ray_o + ray_d * dt)
         mp = Raycore.with_index(sample_point, media, medium_idx, media, rgb2spec_table, p, work.lambda)
 
         # Add emission if present
@@ -389,12 +390,12 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
 
         if u_event < p_absorb
             # === ABSORPTION ===
-            return SampleTMajResult(SpectralRadiance(0f0), r_u, r_l, current_rng, true, ray_o, ray_d)
+            return SampleTMajResult(SpectralRadiance(0f0), r_u, r_l, current_rng, true, ray_d)
 
         elseif u_event < p_absorb + p_scatter
             # === REAL SCATTERING ===
             if work.depth >= max_depth
-                return SampleTMajResult(beta, r_u, r_l, current_rng, true, ray_o, ray_d)
+                return SampleTMajResult(beta, r_u, r_l, current_rng, true, ray_d)
             end
 
             # Update beta and r_u for scattering
@@ -419,7 +420,7 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
             )
 
             push!(scatter_queue, scatter_item)
-            return SampleTMajResult(beta, r_u, r_l, current_rng, true, ray_o, ray_d)
+            return SampleTMajResult(beta, r_u, r_l, current_rng, true, ray_d)
 
         else
             # === NULL SCATTERING ===
@@ -432,25 +433,23 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
                 r_u = r_u * T_maj * σ_n / pdf
                 r_l = r_l * T_maj * σ_maj / pdf
             else
-                return SampleTMajResult(SpectralRadiance(0f0), r_u, r_l, current_rng, true, ray_o, ray_d)
+                return SampleTMajResult(SpectralRadiance(0f0), r_u, r_l, current_rng, true, ray_d)
             end
 
             t = t_sample
-
-            # Apply ray deflection (for gravitational lensing / curved spacetime)
-            # Update ray origin to current position and bend direction
+            # Advance ray origin to interaction point and apply deflection
             ray_o = p
             ray_d = apply_deflection_dispatch(media, medium_idx, p, ray_d, dt)
 
             # Check throughput
             if is_black(beta) || is_black(r_u)
-                return SampleTMajResult(beta, r_u, r_l, current_rng, true, ray_o, ray_d)
+                return SampleTMajResult(beta, r_u, r_l, current_rng, true, ray_d)
             end
         end
     end
 
     # Exceeded max samples within segment
-    return SampleTMajResult(beta, r_u, r_l, current_rng, false, ray_o, ray_d)
+    return SampleTMajResult(beta, r_u, r_l, current_rng, false, ray_d)
 end
 
 # ============================================================================
