@@ -674,3 +674,72 @@ function vp_handle_escaped_rays!(state::VolPathState, lights)
     )
     return nothing
 end
+
+# ============================================================================
+# Camera Medium Detection
+# ============================================================================
+
+"""
+    _detect_camera_medium_kernel!(result, accel, media_interfaces, camera_pos)
+
+Single-workitem kernel that traces a ray from the camera position to determine
+which medium the camera is inside. Writes a SetKey to result[1].
+"""
+@kernel inbounds=true function _detect_camera_medium_kernel!(
+    result,
+    accel,
+    media_interfaces,
+    @Const(camera_pos::Point3f)
+)
+    # Arbitrary direction, normalized (1,1,1)/√3 — avoids axis-alignment
+    d = Vec3f(0.57735027f0, 0.57735027f0, 0.57735027f0)
+    ray = Raycore.Ray(o=camera_pos, d=d)
+    found = false
+
+    for _ in 1:Int32(16)
+        if !found
+            hit, primitive, t_hit, barycentric = Raycore.closest_hit(accel, ray)
+
+            if !hit
+                result[1] = SetKey()
+                found = true
+            else
+                mi_idx = primitive.metadata.medium_interface_idx
+                mi = media_interfaces[mi_idx]
+
+                if is_medium_transition(mi)
+                    # Medium transition boundary — determine which medium camera is in
+                    n = vp_compute_geometric_normal(primitive)
+                    # get_medium_index with -d gives the medium the ray was traveling through
+                    medium = get_medium_index(mi, -d, n)
+                    result[1] = medium
+                    found = true
+                else
+                    # Not a medium boundary — skip past and continue
+                    pi = Point3f(ray.o + d * t_hit)
+                    n = vp_compute_geometric_normal(primitive)
+                    offset = if dot(d, n) > 0f0; n else; -n end
+                    ray = Raycore.Ray(o=Point3f(pi + offset * 1f-4), d=d)
+                end
+            end
+        end
+    end
+
+    if !found
+        # Max iterations exceeded — assume vacuum
+        result[1] = SetKey()
+    end
+end
+
+"""
+    detect_camera_medium(backend, accel, media_interfaces, camera_pos) -> SetKey
+
+Detect which medium the camera is inside by tracing a single ray from the camera
+position. Returns a SetKey identifying the medium, or SetKey() for vacuum.
+"""
+function detect_camera_medium(backend, accel, media_interfaces, camera_pos::Point3f)
+    result = KA.allocate(backend, SetKey, (1,))
+    kernel! = _detect_camera_medium_kernel!(backend)
+    kernel!(result, accel, media_interfaces, camera_pos; ndrange=1)
+    return @allowscalar result[1]
+end

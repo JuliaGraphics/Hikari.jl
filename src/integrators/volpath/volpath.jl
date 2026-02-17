@@ -507,8 +507,9 @@ function render!(
     pdf_per_pixel = state.pdf_per_pixel
     filter_weight_per_pixel = state.filter_weight_per_pixel
 
-    # Initial medium (vacuum unless camera is inside medium)
-    initial_medium = SetKey()
+    # Detect which medium the camera is inside (vacuum if outside all media)
+    camera_pos = get_camera_position(camera)
+    initial_medium = detect_camera_medium(backend, accel, media_interfaces, camera_pos)
 
     # Clear spectral buffer (pixel_L) for this sample iteration
     # This is per-sample, not per-render - pixel_rgb accumulates across all samples
