@@ -57,6 +57,10 @@ This kernel does NOT generate shadow rays - that happens in direct lighting.
 
                 # Compute shading normal using barycentric interpolation of vertex normals
                 ns = compute_shading_normal(primitive, barycentric, n)
+                # pbrt-v4 FaceForward: flip geometric normal to face shading normal.
+                # The shading normal from vertex interpolation is authoritative for
+                # smooth surfaces; the geometric normal must agree with it.
+                n = dot(n, ns) < 0f0 ? -n : n
                 dpdu, dpdv = compute_tangent_frame(primitive)
                 dpdus, dpdvs = dpdu, dpdv
 
@@ -215,12 +219,11 @@ Falls back to geometric normal if vertex normals are not available (NaN).
     # Normalize the interpolated normal
     ns = normalize(Vec3f(ns_x, ns_y, ns_z))
 
-    # Ensure shading normal is on the same side as geometric normal
-    if dot(ns, geometric_normal) < 0f0
-        return -ns
-    else
-        return ns
-    end
+    # Return raw interpolated shading normal WITHOUT flipping.
+    # Following pbrt-v4: the shading normal is authoritative for smooth surfaces.
+    # The geometric normal should be flipped to face the shading normal (FaceForward),
+    # not the other way around. This is done at the call site.
+    return ns
 end
 
 # ============================================================================

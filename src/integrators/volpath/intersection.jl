@@ -143,12 +143,10 @@ Compute interpolated shading normal from vertex normals.
 
     ns = normalize(Vec3f(ns_x, ns_y, ns_z))
 
-    # Ensure shading normal is on same side as geometric normal
-    if dot(ns, geometric_normal) < 0f0
-        return -ns
-    else
-        return ns
-    end
+    # Return raw interpolated shading normal WITHOUT flipping.
+    # Following pbrt-v4: the shading normal is authoritative for smooth surfaces.
+    # The geometric normal is flipped to face the shading normal at the call site.
+    return ns
 end
 
 """
@@ -172,6 +170,10 @@ Returns (pi, n, dpdu, dpdv, ns, dpdus, dpdvs, uv).
 
     # Shading normal
     ns = vp_compute_shading_normal(primitive, barycentric, n)
+    # pbrt-v4 FaceForward: flip geometric normal to face shading normal.
+    # The shading normal from vertex interpolation is authoritative for
+    # smooth surfaces; the geometric normal must agree with it.
+    n = dot(n, ns) < 0f0 ? -n : n
 
     # Shading tangent vectors
     dpdus, dpdvs = vp_compute_shading_tangents(primitive, barycentric, ns, dpdu, dpdv)
