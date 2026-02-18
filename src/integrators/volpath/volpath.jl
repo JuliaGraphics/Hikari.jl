@@ -44,7 +44,7 @@ end
 """
     VolPath(; max_depth=8, samples=64, russian_roulette_depth=3, regularize=true,
             material_coherence=:none, max_component_value=10, filter=GaussianFilter(),
-            accumulation_eltype=Float64)
+            accumulation_eltype=Float32)
 
 Create a VolPath integrator for volumetric path tracing.
 
@@ -65,8 +65,8 @@ Create a VolPath integrator for volumetric path tracing.
 - `filter`: Pixel reconstruction filter (default: GaussianFilter with radius 1.5, sigma 0.5).
   Supports BoxFilter, TriangleFilter, GaussianFilter, MitchellFilter, LanczosSincFilter.
   All filters use importance sampling with weight≈1 (pbrt-v4 compatible).
-- `accumulation_eltype`: Element type for RGB/weight accumulators (default: Float64).
-  Use Float32 for OpenCL backends that don't support double precision atomics.
+- `accumulation_eltype`: Element type for RGB/weight accumulators (default: Float32).
+  Use Float64 on backends that support double precision for higher accumulation precision.
 
 Note: Sensor simulation (ISO, exposure_time, white_balance) is handled in postprocessing
 via `FilmSensor`, not in the integrator. This matches pbrt-v4's architecture where the
@@ -80,7 +80,7 @@ function VolPath(;
     material_coherence::Symbol = :none,
     max_component_value::Real = 10f0,
     filter::AbstractFilter = GaussianFilter(),  # pbrt-v4 default: Gaussian(1.5, 0.5)
-    accumulation_eltype::DataType = Float64
+    accumulation_eltype::DataType = Float32
 )
     @assert material_coherence in (:none, :sorted, :per_type) "material_coherence must be :none, :sorted, :per_type"
     @assert accumulation_eltype in (Float32, Float64) "accumulation_eltype must be Float32 or Float64"
