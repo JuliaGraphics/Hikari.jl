@@ -136,24 +136,6 @@ Adapt.adapt_structure(to, light::Hikari.AmbientLight) = light
 Adapt.adapt_structure(to, light::Hikari.DirectionalLight) = light
 Adapt.adapt_structure(to, light::Hikari.SunLight) = light
 
-# SunSkyLight - adapt distribution
-function Adapt.adapt_structure(to, light::Hikari.SunSkyLight)
-    Hikari.SunSkyLight(
-        light.sun_direction,
-        light.sun_intensity,
-        light.sun_angular_radius,
-        light.turbidity,
-        light.ground_albedo,
-        light.ground_enabled,
-        light.perez_Y,
-        light.perez_x,
-        light.perez_y,
-        light.zenith_Y,
-        light.zenith_x,
-        light.zenith_y,
-        Adapt.adapt(to, light.distribution),
-    )
-end
 
 
 # Film - adapt pixel/tile arrays and framebuffers

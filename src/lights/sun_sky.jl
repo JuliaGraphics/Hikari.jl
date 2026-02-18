@@ -1,505 +1,356 @@
-"""
-SunSkyLight - Combined sun and procedural sky light using atmospheric scattering.
+# Hosek-Wilkie Spectral Sky Model
+# Port of ArHosekSkyModel.c from pbrt-v4
+# Copyright (c) 2012-2013, Lukas Hosek and Alexander Wilkie (BSD 3-clause)
 
-Provides both:
-- Directional sun illumination via sample_li() for surface/volume lighting
-- Procedural sky background via le() for rays that escape the scene
+# Bernstein polynomial evaluation for degree 5 (6 control points)
+function _hosek_bernstein5(t::Float64, c0, c1, c2, c3, c4, c5)
+    s = 1.0 - t
+    return (s^5 * c0 +
+            5.0 * s^4 * t * c1 +
+            10.0 * s^3 * t^2 * c2 +
+            10.0 * s^2 * t^3 * c3 +
+            5.0 * s * t^4 * c4 +
+            t^5 * c5)
+end
 
-The sky color is computed from the sun position using a simplified atmospheric
-scattering model (Rayleigh + Mie).
+# Port of ArHosekSkyModel_CookConfiguration
+# dataset: flat array of 1080 Float64 (9 coeffs × 6 elev × 10 turb × 2 albedo)
+# Returns 9 config coefficients
+function hosek_cook_config(dataset::Vector{Float64}, turbidity::Float64, albedo::Float64, solar_elevation::Float64)
+    int_turbidity = clamp(floor(Int, turbidity), 1, 10)
+    turbidity_rem = turbidity - Float64(int_turbidity)
 
-Uses importance sampling based on pre-computed sky radiance distribution for
-efficient sampling with low variance.
-"""
-struct SunSkyLight{S<:Spectrum, D} <: Light
-    # Sun parameters
-    sun_direction::Vec3f      # Direction TO the sun (normalized)
-    sun_intensity::S          # Sun radiance
-    sun_angular_radius::Float32  # Angular radius in radians (~0.00465 for real sun)
+    # Remap elevation to cube-root space
+    t = (solar_elevation / (π / 2.0))^(1.0 / 3.0)
 
-    # Atmosphere parameters
-    turbidity::Float32        # Atmospheric turbidity (2.0 = clear, 10.0 = hazy)
-    ground_albedo::S          # Ground color for hemisphere below horizon
-    ground_enabled::Bool      # Whether to show ground plane below horizon
+    config = MVector{9, Float64}(undef)
 
-    # Precomputed sky coefficients (Preetham model)
-    # Perez function coefficients for luminance Y and chromaticity x, y
-    perez_Y::NTuple{5, Float32}
-    perez_x::NTuple{5, Float32}
-    perez_y::NTuple{5, Float32}
-
-    # Zenith values
-    zenith_Y::Float32
-    zenith_x::Float32
-    zenith_y::Float32
-
-    # Importance sampling distribution for the sky hemisphere
-    distribution::D
-
-    """Inner constructor for pre-computed lights (used by Adapt)."""
-    function SunSkyLight(
-        sun_direction::Vec3f,
-        sun_intensity::S,
-        sun_angular_radius::Float32,
-        turbidity::Float32,
-        ground_albedo::S,
-        ground_enabled::Bool,
-        perez_Y::NTuple{5, Float32},
-        perez_x::NTuple{5, Float32},
-        perez_y::NTuple{5, Float32},
-        zenith_Y::Float32,
-        zenith_x::Float32,
-        zenith_y::Float32,
-        distribution::D,
-    ) where {S<:Spectrum, D}
-        new{S, D}(
-            sun_direction, sun_intensity, sun_angular_radius,
-            turbidity, ground_albedo, ground_enabled,
-            perez_Y, perez_x, perez_y, zenith_Y, zenith_x, zenith_y,
-            distribution,
-        )
+    # albedo 0, low turbidity
+    offset = 9 * 6 * (int_turbidity - 1) + 1  # +1 for Julia 1-indexing
+    for i in 1:9
+        config[i] = (1.0 - albedo) * (1.0 - turbidity_rem) *
+            _hosek_bernstein5(t,
+                dataset[offset + i - 1],
+                dataset[offset + i - 1 + 9],
+                dataset[offset + i - 1 + 18],
+                dataset[offset + i - 1 + 27],
+                dataset[offset + i - 1 + 36],
+                dataset[offset + i - 1 + 45])
     end
 
-    function SunSkyLight(
-        sun_direction::Vec3f,
-        sun_intensity::S;
-        turbidity::Float32 = 2.5f0,
-        ground_albedo::S = RGBSpectrum(0.3f0),
-        ground_enabled::Bool = true,
-        sun_angular_radius::Float32 = 0.00465f0,  # Real sun ~0.53 degrees
-        distribution_resolution::Int = 128,  # Resolution for importance sampling grid
-    ) where S<:Spectrum
-        dir = normalize(sun_direction)
+    # albedo 1, low turbidity
+    offset = 9 * 6 * 10 + 9 * 6 * (int_turbidity - 1) + 1
+    for i in 1:9
+        config[i] += albedo * (1.0 - turbidity_rem) *
+            _hosek_bernstein5(t,
+                dataset[offset + i - 1],
+                dataset[offset + i - 1 + 9],
+                dataset[offset + i - 1 + 18],
+                dataset[offset + i - 1 + 27],
+                dataset[offset + i - 1 + 36],
+                dataset[offset + i - 1 + 45])
+    end
 
-        # Sun elevation angle (theta_s is angle from zenith)
-        theta_s = acos(clamp(dir[3], -1f0, 1f0))
-
-        # Compute Preetham sky model coefficients
-        perez_Y, perez_x, perez_y = compute_perez_coefficients(turbidity)
-        zenith_Y, zenith_x, zenith_y = compute_zenith_values(turbidity, theta_s)
-
-        # Build importance sampling distribution for the sky hemisphere
-        # We use equirectangular-like mapping for the upper hemisphere:
-        # u ∈ [0,1] -> φ ∈ [0, 2π] (azimuth)
-        # v ∈ [0,1] -> θ ∈ [0, π/2] (zenith angle, 0=up, π/2=horizon)
-        n_phi = distribution_resolution
-        n_theta = distribution_resolution ÷ 2  # Half resolution for hemisphere
-
-        radiance_grid = Matrix{Float32}(undef, n_theta, n_phi)
-
-        for j in 1:n_theta
-            # θ goes from 0 (zenith) to π/2 (horizon)
-            # Use center of each bin
-            θ = Float32(π / 2) * (j - 0.5f0) / n_theta
-            sin_θ = sin(θ)
-
-            for i in 1:n_phi
-                # φ goes from 0 to 2π
-                φ = 2f0 * Float32(π) * (i - 0.5f0) / n_phi
-
-                # Convert to direction (Z-up)
-                direction = Vec3f(sin_θ * cos(φ), sin_θ * sin(φ), cos(θ))
-
-                # Compute sky + sun radiance for this direction
-                # We need to compute this without using the light struct yet
-                sky_rad = _compute_sky_radiance(
-                    direction, dir, perez_Y, perez_x, perez_y,
-                    zenith_Y, zenith_x, zenith_y, ground_albedo, ground_enabled,
-                )
-                sun_rad = _compute_sun_disk_radiance(
-                    direction, dir, sun_intensity, sun_angular_radius,
-                )
-                total_rad = sky_rad + sun_rad
-
-                # Weight by sin(θ) for solid angle and luminance
-                # This accounts for the fact that near-horizon directions
-                # cover more solid angle in equirectangular mapping
-                radiance_grid[j, i] = to_Y(total_rad) * sin_θ
-            end
+    if int_turbidity < 10
+        # albedo 0, high turbidity
+        offset = 9 * 6 * int_turbidity + 1
+        for i in 1:9
+            config[i] += (1.0 - albedo) * turbidity_rem *
+                _hosek_bernstein5(t,
+                    dataset[offset + i - 1],
+                    dataset[offset + i - 1 + 9],
+                    dataset[offset + i - 1 + 18],
+                    dataset[offset + i - 1 + 27],
+                    dataset[offset + i - 1 + 36],
+                    dataset[offset + i - 1 + 45])
         end
 
-        distribution = Distribution2D(radiance_grid)
+        # albedo 1, high turbidity
+        offset = 9 * 6 * 10 + 9 * 6 * int_turbidity + 1
+        for i in 1:9
+            config[i] += albedo * turbidity_rem *
+                _hosek_bernstein5(t,
+                    dataset[offset + i - 1],
+                    dataset[offset + i - 1 + 9],
+                    dataset[offset + i - 1 + 18],
+                    dataset[offset + i - 1 + 27],
+                    dataset[offset + i - 1 + 36],
+                    dataset[offset + i - 1 + 45])
+        end
+    end
 
-        new{S, typeof(distribution)}(
-            dir, sun_intensity, sun_angular_radius,
-            turbidity, ground_albedo, ground_enabled,
-            perez_Y, perez_x, perez_y,
-            zenith_Y, zenith_x, zenith_y,
-            distribution,
+    return NTuple{9, Float64}(config)
+end
+
+# Port of ArHosekSkyModel_CookRadianceConfiguration
+# dataset: flat array of 120 Float64 (6 elev × 10 turb × 2 albedo)
+function hosek_cook_radiance(dataset::Vector{Float64}, turbidity::Float64, albedo::Float64, solar_elevation::Float64)
+    int_turbidity = clamp(floor(Int, turbidity), 1, 10)
+    turbidity_rem = turbidity - Float64(int_turbidity)
+
+    t = (solar_elevation / (π / 2.0))^(1.0 / 3.0)
+
+    # albedo 0, low turbidity
+    offset = 6 * (int_turbidity - 1) + 1
+    res = (1.0 - albedo) * (1.0 - turbidity_rem) *
+        _hosek_bernstein5(t,
+            dataset[offset], dataset[offset+1], dataset[offset+2],
+            dataset[offset+3], dataset[offset+4], dataset[offset+5])
+
+    # albedo 1, low turbidity
+    offset = 6 * 10 + 6 * (int_turbidity - 1) + 1
+    res += albedo * (1.0 - turbidity_rem) *
+        _hosek_bernstein5(t,
+            dataset[offset], dataset[offset+1], dataset[offset+2],
+            dataset[offset+3], dataset[offset+4], dataset[offset+5])
+
+    if int_turbidity < 10
+        # albedo 0, high turbidity
+        offset = 6 * int_turbidity + 1
+        res += (1.0 - albedo) * turbidity_rem *
+            _hosek_bernstein5(t,
+                dataset[offset], dataset[offset+1], dataset[offset+2],
+                dataset[offset+3], dataset[offset+4], dataset[offset+5])
+
+        # albedo 1, high turbidity
+        offset = 6 * 10 + 6 * int_turbidity + 1
+        res += albedo * turbidity_rem *
+            _hosek_bernstein5(t,
+                dataset[offset], dataset[offset+1], dataset[offset+2],
+                dataset[offset+3], dataset[offset+4], dataset[offset+5])
+    end
+
+    return res
+end
+
+# Port of ArHosekSkyModel_GetRadianceInternal
+function hosek_radiance(config::NTuple{9, Float64}, theta::Float64, gamma::Float64)
+    cos_gamma = cos(gamma)
+    cos_theta = max(cos(theta), 0.0)
+
+    expM = exp(config[5] * gamma)
+    rayM = cos_gamma * cos_gamma
+    mieM = (1.0 + cos_gamma * cos_gamma) /
+           ((1.0 + config[9] * config[9] - 2.0 * config[9] * cos_gamma)^1.5)
+    zenith = sqrt(cos_theta)
+
+    return (1.0 + config[1] * exp(config[2] / (cos_theta + 0.01))) *
+           (config[3] + config[4] * expM + config[6] * rayM + config[7] * mieM + config[8] * zenith)
+end
+
+# ============================================================================
+# Spectral Sky State (11 wavelength bands, 320-720nm)
+# Port of ArHosekSkyModelState from pbrt-v4
+# ============================================================================
+
+struct HosekState
+    configs::NTuple{11, NTuple{9, Float64}}   # 11 spectral band config coefficients
+    radiances::NTuple{11, Float64}             # 11 spectral band radiance scalars
+    turbidity::Float64
+    solar_radius::Float64                      # angular radius in radians (0.51°/2)
+    albedo::Float64
+    elevation::Float64
+end
+
+# Port of arhosekskymodelstate_alloc_init
+function HosekState(turbidity::Float64, albedo::Float64, solar_elevation::Float64)
+    configs = ntuple(wl -> hosek_cook_config(HOSEK_SPECTRAL_CONFIGS[wl], turbidity, albedo, solar_elevation), 11)
+    radiances = ntuple(wl -> hosek_cook_radiance(HOSEK_SPECTRAL_RADIANCES[wl], turbidity, albedo, solar_elevation), 11)
+    solar_radius = deg2rad(0.51) / 2.0  # terrestrial sun angular radius
+    HosekState(configs, radiances, turbidity, solar_radius, albedo, solar_elevation)
+end
+
+# Port of arhosekskymodel_radiance
+# Evaluates spectral sky radiance at arbitrary wavelength by interpolating between bands
+function hosek_spectral_radiance(state::HosekState, theta::Float64, gamma::Float64, wavelength::Float64)
+    low_wl = floor(Int, (wavelength - 320.0) / 40.0)
+
+    if low_wl < 0 || low_wl >= 11
+        return 0.0
+    end
+
+    interp = mod((wavelength - 320.0) / 40.0, 1.0)
+
+    # Julia: bands are 1-indexed, low_wl is 0-indexed from C
+    band = low_wl + 1
+    val_low = hosek_radiance(state.configs[band], theta, gamma) * state.radiances[band]
+
+    if interp < 1e-6
+        return val_low
+    end
+
+    result = (1.0 - interp) * val_low
+
+    if band < 11
+        result += interp * hosek_radiance(state.configs[band + 1], theta, gamma) * state.radiances[band + 1]
+    end
+
+    return result
+end
+
+# Port of arhosekskymodel_sr_internal — solar radiance piecewise polynomial
+const _SOLAR_PIECES = 45
+const _SOLAR_ORDER = 4
+
+function _hosek_solar_sr_internal(state::HosekState, turbidity_idx::Int, wl_idx::Int, elevation::Float64)
+    pos = floor(Int, (2.0 * elevation / π)^(1.0 / 3.0) * _SOLAR_PIECES)
+    if pos > 44
+        pos = 44
+    end
+
+    break_x = (Float64(pos) / Float64(_SOLAR_PIECES))^3.0 * (π * 0.5)
+
+    # Coefficients pointer: C uses 0-indexed turbidity and 0-indexed wl
+    # solarDatasets[wl] + (order * pieces * turbidity + order * (pos+1) - 1)
+    # In Julia: 1-indexed array, coefs walks backwards
+    dataset = HOSEK_SOLAR_DATA[wl_idx]
+    base = _SOLAR_ORDER * _SOLAR_PIECES * turbidity_idx + _SOLAR_ORDER * (pos + 1)
+    # C code reads coefs[0], coefs[-1], coefs[-2], coefs[-3] (walks backwards)
+
+    x = elevation - break_x
+    x_exp = 1.0
+    res = 0.0
+    for i in 0:(_SOLAR_ORDER - 1)
+        res += x_exp * dataset[base - i]  # Julia 1-indexed: base corresponds to C's (base-1 + 1)
+        x_exp *= x
+    end
+
+    return res  # emission_correction_factor_sun is 1.0
+end
+
+# Port of arhosekskymodel_solar_radiance_internal2 — direct solar radiance with limb darkening
+function _hosek_solar_radiance_direct(state::HosekState, wavelength::Float64, elevation::Float64, gamma::Float64)
+    sol_rad_sin = sin(state.solar_radius)
+    ar2 = 1.0 / (sol_rad_sin * sol_rad_sin)
+    singamma = sin(gamma)
+    sc2 = 1.0 - ar2 * singamma * singamma
+    if sc2 < 0.0
+        sc2 = 0.0
+    end
+    sampleCosine = sqrt(sc2)
+    if sampleCosine == 0.0
+        return 0.0
+    end
+
+    turb_low = clamp(floor(Int, state.turbidity) - 1, 0, 8)
+    turb_frac = state.turbidity - Float64(turb_low + 1)
+    if turb_low == 8 && state.turbidity >= 10.0
+        turb_frac = 1.0
+    end
+
+    wl_low = floor(Int, (wavelength - 320.0) / 40.0)
+    wl_frac = mod(wavelength, 40.0) / 40.0
+    if wl_low == 10
+        wl_low = 9
+        wl_frac = 1.0
+    end
+
+    # Julia: wl_idx is 1-indexed, turb_idx is 0-indexed (matching C's array layout)
+    wl_idx_lo = wl_low + 1
+    wl_idx_hi = min(wl_low + 2, 11)
+
+    direct_radiance =
+        (1.0 - turb_frac) * (
+            (1.0 - wl_frac) * _hosek_solar_sr_internal(state, turb_low, wl_idx_lo, elevation) +
+            wl_frac * _hosek_solar_sr_internal(state, turb_low, wl_idx_hi, elevation)
+        ) +
+        turb_frac * (
+            (1.0 - wl_frac) * _hosek_solar_sr_internal(state, turb_low + 1, wl_idx_lo, elevation) +
+            wl_frac * _hosek_solar_sr_internal(state, turb_low + 1, wl_idx_hi, elevation)
         )
-    end
+
+    # Limb darkening: interpolate coefficients between wavelength bands
+    ld_lo = HOSEK_LIMB_DARKENING[wl_idx_lo]
+    ld_hi = HOSEK_LIMB_DARKENING[wl_idx_hi]
+    ldCoeff = ntuple(i -> (1.0 - wl_frac) * ld_lo[i] + wl_frac * ld_hi[i], 6)
+
+    # 5th order polynomial limb darkening
+    darkeningFactor = ldCoeff[1] +
+        ldCoeff[2] * sampleCosine +
+        ldCoeff[3] * sampleCosine^2 +
+        ldCoeff[4] * sampleCosine^3 +
+        ldCoeff[5] * sampleCosine^4 +
+        ldCoeff[6] * sampleCosine^5
+
+    return direct_radiance * darkeningFactor
 end
 
-# SunSky lights are infinite (provide background sky)
-is_infinite_light(::SunSkyLight) = true
-is_infinite_light(::Type{<:SunSkyLight}) = true
-
-"""
-Internal function to compute sky radiance without light struct.
-Used during construction before the struct exists.
-"""
-function _compute_sky_radiance(
-    direction::Vec3f,
-    sun_direction::Vec3f,
-    perez_Y::NTuple{5, Float32},
-    perez_x::NTuple{5, Float32},
-    perez_y::NTuple{5, Float32},
-    zenith_Y::Float32,
-    zenith_x::Float32,
-    zenith_y::Float32,
-    ground_albedo::S,
-    ground_enabled::Bool,
-) where S<:Spectrum
-    # Below horizon - return ground albedo if enabled
-    if direction[3] <= 0f0 && ground_enabled
-        return ground_albedo * 0.3f0
-    end
-
-    # Zenith angle of view direction
-    theta = acos(clamp(direction[3], 0f0, 1f0))
-
-    # Angle between view direction and sun
-    cos_gamma = clamp(dot(direction, sun_direction), -1f0, 1f0)
-    gamma = acos(cos_gamma)
-
-    # Sun's zenith angle
-    theta_s = acos(clamp(sun_direction[3], 0f0, 1f0))
-
-    # Compute relative luminance using Perez function
-    perez_ratio_Y = perez(theta, gamma, perez_Y) / perez(0f0, theta_s, perez_Y)
-    Y = zenith_Y * perez_ratio_Y
-
-    # Compute chromaticity
-    perez_ratio_x = perez(theta, gamma, perez_x) / perez(0f0, theta_s, perez_x)
-    perez_ratio_y = perez(theta, gamma, perez_y) / perez(0f0, theta_s, perez_y)
-    x = zenith_x * perez_ratio_x
-    y = zenith_y * perez_ratio_y
-
-    # Convert xyY to XYZ
-    Y_scaled = Y * 0.04f0
-    X = (x / y) * Y_scaled
-    Z = ((1f0 - x - y) / y) * Y_scaled
-
-    # Convert XYZ to RGB
-    r =  3.2406f0 * X - 1.5372f0 * Y_scaled - 0.4986f0 * Z
-    g = -0.9689f0 * X + 1.8758f0 * Y_scaled + 0.0415f0 * Z
-    b =  0.0557f0 * X - 0.2040f0 * Y_scaled + 1.0570f0 * Z
-
-    RGBSpectrum(max(0f0, r), max(0f0, g), max(0f0, b))
-end
-
-"""
-Internal function to compute sun disk radiance without light struct.
-"""
-function _compute_sun_disk_radiance(
-    direction::Vec3f,
-    sun_direction::Vec3f,
-    sun_intensity::S,
-    sun_angular_radius::Float32,
-) where S<:Spectrum
-    cos_angle = dot(direction, sun_direction)
-    angle = acos(clamp(cos_angle, -1f0, 1f0))
-
-    if angle < sun_angular_radius
-        return sun_intensity
-    elseif angle < sun_angular_radius * 2f0
-        t = (angle - sun_angular_radius) / sun_angular_radius
-        return sun_intensity * (1f0 - t) * 0.5f0
-    else
-        return RGBSpectrum(0f0)
-    end
-end
-
-"""
-Compute Perez function coefficients for given turbidity.
-Based on Preetham et al. "A Practical Analytic Model for Daylight"
-"""
-function compute_perez_coefficients(T::Float32)
-    # Coefficients for Y (luminance)
-    perez_Y = (
-        0.1787f0 * T - 1.4630f0,
-        -0.3554f0 * T + 0.4275f0,
-        -0.0227f0 * T + 5.3251f0,
-        0.1206f0 * T - 2.5771f0,
-        -0.0670f0 * T + 0.3703f0,
-    )
-
-    # Coefficients for x (chromaticity)
-    perez_x = (
-        -0.0193f0 * T - 0.2592f0,
-        -0.0665f0 * T + 0.0008f0,
-        -0.0004f0 * T + 0.2125f0,
-        -0.0641f0 * T - 0.8989f0,
-        -0.0033f0 * T + 0.0452f0,
-    )
-
-    # Coefficients for y (chromaticity)
-    perez_y = (
-        -0.0167f0 * T - 0.2608f0,
-        -0.0950f0 * T + 0.0092f0,
-        -0.0079f0 * T + 0.2102f0,
-        -0.0441f0 * T - 1.6537f0,
-        -0.0109f0 * T + 0.0529f0,
-    )
-
-    perez_Y, perez_x, perez_y
-end
-
-"""
-Compute zenith luminance and chromaticity for given turbidity and sun angle.
-theta_s is the sun's zenith angle (0 = sun at zenith, π/2 = sun at horizon).
-"""
-function compute_zenith_values(T::Float32, theta_s::Float32)
-    # Zenith luminance (in kcd/m²)
-    chi = (4f0/9f0 - T/120f0) * (Float32(π) - 2f0 * theta_s)
-    zenith_Y = (4.0453f0 * T - 4.9710f0) * tan(chi) - 0.2155f0 * T + 2.4192f0
-    zenith_Y = max(0f0, zenith_Y)
-
-    # Zenith chromaticity
-    T2 = T * T
-    theta_s2 = theta_s * theta_s
-    theta_s3 = theta_s2 * theta_s
-
-    zenith_x = (0.00166f0 * theta_s3 - 0.00375f0 * theta_s2 + 0.00209f0 * theta_s) * T2 +
-               (-0.02903f0 * theta_s3 + 0.06377f0 * theta_s2 - 0.03202f0 * theta_s + 0.00394f0) * T +
-               (0.11693f0 * theta_s3 - 0.21196f0 * theta_s2 + 0.06052f0 * theta_s + 0.25886f0)
-
-    zenith_y = (0.00275f0 * theta_s3 - 0.00610f0 * theta_s2 + 0.00317f0 * theta_s) * T2 +
-               (-0.04214f0 * theta_s3 + 0.08970f0 * theta_s2 - 0.04153f0 * theta_s + 0.00516f0) * T +
-               (0.15346f0 * theta_s3 - 0.26756f0 * theta_s2 + 0.06670f0 * theta_s + 0.26688f0)
-
-    zenith_Y, zenith_x, zenith_y
-end
-
-"""
-Perez sky luminance distribution function.
-F(θ, γ) = (1 + A*exp(B/cos(θ))) * (1 + C*exp(D*γ) + E*cos²(γ))
-Where θ is zenith angle of sky point, γ is angle between sky point and sun.
-"""
-@propagate_inbounds function perez(theta::Float32, gamma::Float32, coeffs::NTuple{5, Float32})
-    A, B, C, D, E = coeffs
-    cos_theta = max(0.001f0, cos(theta))
-    (1f0 + A * exp(B / cos_theta)) * (1f0 + C * exp(D * gamma) + E * cos(gamma)^2)
-end
-
-"""
-Compute sky radiance for a given view direction.
-"""
-@propagate_inbounds function sky_radiance(light::SunSkyLight, direction::Vec3f)
-    # Below horizon - return ground albedo if enabled, otherwise continue sky
-    if direction[3] <= 0f0 && light.ground_enabled
-        return light.ground_albedo * 0.3f0
-    end
-
-    # Zenith angle of view direction
-    theta = acos(clamp(direction[3], 0f0, 1f0))
-
-    # Angle between view direction and sun
-    cos_gamma = clamp(dot(direction, light.sun_direction), -1f0, 1f0)
-    gamma = acos(cos_gamma)
-
-    # Sun's zenith angle
-    theta_s = acos(clamp(light.sun_direction[3], 0f0, 1f0))
-
-    # Compute relative luminance using Perez function
-    # Y(θ,γ) = Yz * F(θ,γ) / F(0, θs)
-    perez_ratio_Y = perez(theta, gamma, light.perez_Y) /
-                    perez(0f0, theta_s, light.perez_Y)
-    Y = light.zenith_Y * perez_ratio_Y
-
-    # Compute chromaticity
-    perez_ratio_x = perez(theta, gamma, light.perez_x) /
-                    perez(0f0, theta_s, light.perez_x)
-    perez_ratio_y = perez(theta, gamma, light.perez_y) /
-                    perez(0f0, theta_s, light.perez_y)
-    x = light.zenith_x * perez_ratio_x
-    y = light.zenith_y * perez_ratio_y
-
-    # Convert xyY to XYZ
-    Y_scaled = Y * 0.04f0  # Scale for reasonable brightness
-    X = (x / y) * Y_scaled
-    Z = ((1f0 - x - y) / y) * Y_scaled
-
-    # Convert XYZ to RGB (sRGB primaries)
-    r =  3.2406f0 * X - 1.5372f0 * Y_scaled - 0.4986f0 * Z
-    g = -0.9689f0 * X + 1.8758f0 * Y_scaled + 0.0415f0 * Z
-    b =  0.0557f0 * X - 0.2040f0 * Y_scaled + 1.0570f0 * Z
-
-    RGBSpectrum(max(0f0, r), max(0f0, g), max(0f0, b))
-end
-
-"""
-Compute sun disk radiance (with soft edge).
-"""
-@propagate_inbounds function sun_disk_radiance(light::SunSkyLight, direction::Vec3f)
-    cos_angle = dot(direction, light.sun_direction)
-    angle = acos(clamp(cos_angle, -1f0, 1f0))
-
-    if angle < light.sun_angular_radius
-        # Inside sun disk - full intensity
-        return light.sun_intensity
-    elseif angle < light.sun_angular_radius * 2f0
-        # Corona/limb darkening region
-        t = (angle - light.sun_angular_radius) / light.sun_angular_radius
-        return light.sun_intensity * (1f0 - t) * 0.5f0
-    else
-        return RGBSpectrum(0f0)
-    end
+# Port of arhosekskymodel_solar_radiance — sky + sun disk combined
+function hosek_solar_radiance(state::HosekState, theta::Float64, gamma::Float64, wavelength::Float64)
+    # Direct solar radiance (limb-darkened sun disk)
+    elevation = (π / 2.0) - theta
+    direct = _hosek_solar_radiance_direct(state, wavelength, elevation, gamma)
+    # Inscattered sky radiance
+    inscattered = hosek_spectral_radiance(state, theta, gamma, wavelength)
+    return direct + inscattered
 end
 
 # ============================================================================
-# UV <-> Direction conversion for hemisphere importance sampling
+# Spectral → XYZ conversion for sky baking
+# Matches pbrt-v4's SpectrumToXYZ: XYZ = InnerProduct(CMF, spectrum) / CIE_Y_integral
 # ============================================================================
 
-"""
-Convert UV coordinates to direction on the upper hemisphere.
-- u ∈ [0,1] -> φ ∈ [0, 2π] (azimuth angle)
-- v ∈ [0,1] -> θ ∈ [0, π/2] (zenith angle, 0=up/+Z, π/2=horizon)
-Returns direction with z >= 0.
-"""
-@propagate_inbounds function hemisphere_uv_to_direction(uv::Point2f)::Vec3f
-    φ = uv[1] * 2f0 * Float32(π)
-    θ = uv[2] * Float32(π) / 2f0
-    sin_θ = sin(θ)
-    Vec3f(sin_θ * cos(φ), sin_θ * sin(φ), cos(θ))
-end
-
-"""
-Convert direction to UV coordinates for hemisphere.
-Inverse of hemisphere_uv_to_direction.
-"""
-@propagate_inbounds function hemisphere_direction_to_uv(dir::Vec3f)::Point2f
-    # θ is zenith angle (0 at +Z, π/2 at horizon)
-    θ = acos(clamp(dir[3], 0f0, 1f0))
-    # φ is azimuth angle
-    φ = atan(dir[2], dir[1])
-    if φ < 0f0
-        φ += 2f0 * Float32(π)
+# Evaluate piecewise linear spectrum at a single wavelength
+function _piecewise_linear_eval(lambdas::Vector{Float64}, values::Vector{Float64}, lambda::Float64)
+    n = length(lambdas)
+    if lambda <= lambdas[1]
+        return values[1]
     end
-    # Convert to UV
-    u = φ / (2f0 * Float32(π))
-    v = θ / (Float32(π) / 2f0)
-    Point2f(u, v)
-end
-
-# ============================================================================
-# Light Interface Implementation
-# ============================================================================
-
-"""
-Sample incident radiance at a point from the sky hemisphere.
-
-Uses importance sampling based on pre-computed sky radiance distribution
-for efficient sampling with low variance. The distribution is built at
-construction time from the sky + sun radiance weighted by sin(θ) for
-solid angle correction.
-
-The visibility tester ensures proper shadow testing - if geometry blocks
-the sampled sky direction, no contribution is added.
-"""
-@propagate_inbounds function sample_li(
-    light::SunSkyLight{S, D}, ref::Interaction, u::Point2f, scene::AbstractScene,
-)::Tuple{S,Vec3f,Float32,VisibilityTester} where {S<:Spectrum, D}
-    # Importance sample direction from pre-computed distribution
-    uv, map_pdf = sample_continuous(light.distribution, u)
-
-    # Convert UV to direction on hemisphere
-    wi = hemisphere_uv_to_direction(uv)
-
-    # Convert PDF from image space to solid angle
-    # For hemisphere equirectangular: pdf_solidangle = pdf_image / (π² sin(θ))
-    # where π² = 2π (azimuth range) * π/2 (zenith range)
-    θ = uv[2] * Float32(π) / 2f0
-    sin_θ = sin(θ)
-    pdf_val = sin_θ > 0f0 ? map_pdf / (Float32(π) * Float32(π) * sin_θ) : 0f0
-
-    # Get actual sky radiance for this direction
-    radiance = sky_radiance(light, wi) + sun_disk_radiance(light, wi)
-
-    # Create visibility tester to sky (at infinity in sampled direction)
-    outside_point = ref.p .+ wi .* (2f0 * world_radius(scene))
-    tester = VisibilityTester(
-        ref, Interaction(outside_point, ref.time, Vec3f(0f0), Normal3f(0f0)),
-    )
-
-    radiance, wi, pdf_val, tester
-end
-
-"""
-PDF for sampling a particular direction from the SunSkyLight.
-Returns the probability density for importance sampling this direction.
-"""
-@propagate_inbounds function pdf_li(light::SunSkyLight{S, D}, ::Interaction, wi::Vec3f)::Float32 where {S<:Spectrum, D}
-    # Below horizon has zero probability
-    if wi[3] <= 0f0
-        return 0f0
+    if lambda >= lambdas[n]
+        return values[n]
     end
-
-    # Convert direction to UV
-    uv = hemisphere_direction_to_uv(wi)
-
-    # Get PDF from 2D distribution
-    map_pdf = pdf(light.distribution, uv)
-
-    # Convert from image space to solid angle
-    θ = uv[2] * Float32(π) / 2f0
-    sin_θ = sin(θ)
-    sin_θ > 0f0 ? map_pdf / (Float32(π) * Float32(π) * sin_θ) : 0f0
+    # Binary search for interval
+    lo = 1
+    hi = n
+    while hi - lo > 1
+        mid = (lo + hi) >> 1
+        if lambdas[mid] <= lambda
+            lo = mid
+        else
+            hi = mid
+        end
+    end
+    t = (lambda - lambdas[lo]) / (lambdas[hi] - lambdas[lo])
+    return (1.0 - t) * values[lo] + t * values[hi]
 end
 
-"""
-Return sky radiance for rays that escape the scene.
-This is what makes SunSkyLight provide the sky background.
-"""
-# Separate methods to avoid Union type allocation
-@propagate_inbounds function le(light::SunSkyLight, ray::Ray)
-    dir = normalize(Vec3f(ray.d))
-    sky = sky_radiance(light, dir)
-    sun = sun_disk_radiance(light, dir)
-    sky + sun
-end
-
-@propagate_inbounds function le(light::SunSkyLight, ray::RayDifferentials)
-    dir = normalize(Vec3f(ray.d))
-    sky = sky_radiance(light, dir)
-    sun = sun_disk_radiance(light, dir)
-    sky + sun
-end
-
-"""
-Approximate power - not accurate but needed for interface.
-"""
-@propagate_inbounds function power(light::SunSkyLight{S}, scene::AbstractScene)::S where S<:Spectrum
-    light.sun_intensity * Float32(π) * world_radius(scene)^2
+# Convert spectral sky samples to XYZ, matching pbrt-v4's SpectrumToXYZ
+# Integrates piecewise linear spectrum against CIE CMFs from 360-830nm at 1nm steps
+function _spectrum_to_xyz(lambdas::Vector{Float64}, values::Vector{Float64})
+    x_sum = 0.0
+    y_sum = 0.0
+    z_sum = 0.0
+    for i in 1:N_CIE_SAMPLES
+        lambda = Float64(CIE_LAMBDA_MIN + i - 1)
+        s = _piecewise_linear_eval(lambdas, values, lambda)
+        x_sum += Float64(CIE_X[i]) * s
+        y_sum += Float64(CIE_Y[i]) * s
+        z_sum += Float64(CIE_Z[i]) * s
+    end
+    return (x_sum / Float64(CIE_Y_INTEGRAL),
+            y_sum / Float64(CIE_Y_INTEGRAL),
+            z_sum / Float64(CIE_Y_INTEGRAL))
 end
 
 # ============================================================================
-# Pre-bake sky to EnvironmentLight (pbrt-v4 approach)
+# Pre-bake Hosek-Wilkie sky to EnvironmentLight (pbrt-v4 approach)
 # ============================================================================
 
 """
     sunsky_to_envlight(; direction, intensity=1f0, turbidity=2.5f0, ...) -> (EnvironmentLight, SunLight)
 
-Pre-bake the Preetham sky model into an equal-area EnvironmentMap and create a separate
-SunLight for the sun disk. This matches pbrt-v4's approach of using a pre-baked HDR sky
-image as an environment light, combined with a delta directional light for the sun.
-
-Separating sun and sky avoids aliasing issues (the sun disk is smaller than a pixel at
-typical resolutions) and gives low-variance results:
-- `EnvironmentLight` importance-samples the sky dome correctly
-- `SunLight` samples the exact sun direction with PDF=1 (delta distribution)
-- MIS naturally weights between the two
-
-The EnvironmentLight uses D65 illuminant uplift with photometric normalization
-(`scale = 1/D65_PHOTOMETRIC`), which is the standard spectral rendering pipeline.
+Pre-bake the Hosek-Wilkie spectral sky model into an equal-area EnvironmentMap and create
+a separate SunLight for the sun disk. Matches pbrt-v4's `makesky` approach: evaluate the
+spectral model at 13 wavelengths, convert to XYZ via CIE color matching functions (dividing
+by CIE_Y_integral), then to sRGB for storage.
 
 # Arguments
 - `direction::Vec3f`: Direction TO the sun (normalized internally)
-- `intensity::Float32 = 1f0`: Sun brightness multiplier
-- `turbidity::Float32 = 2.5f0`: Atmospheric turbidity (2=clear, 10=hazy)
+- `intensity::Float32 = 1f0`: Overall brightness multiplier (scale parameter, default 1.0)
+- `turbidity::Float32 = 2.5f0`: Atmospheric turbidity (1=clear, 10=hazy)
 - `ground_albedo::RGBSpectrum = RGBSpectrum(0.3f0)`: Ground color below horizon
 - `ground_enabled::Bool = true`: Whether to show ground below horizon
-- `resolution::Int = 512`: Resolution of equal-area square map (must be square for pbrt-v4 mapping)
+- `resolution::Int = 512`: Resolution of equal-area square map
 
 # Returns
 A tuple of `(EnvironmentLight, SunLight)` to be added to the scene.
@@ -513,157 +364,71 @@ function sunsky_to_envlight(;
     resolution::Int = 512,
 )
     dir = normalize(direction)
-    theta_s = acos(clamp(dir[3], -1f0, 1f0))
 
-    # Compute Preetham sky model coefficients
-    perez_Y, perez_x, perez_y = compute_perez_coefficients(turbidity)
-    zenith_Y, zenith_x, zenith_y = compute_zenith_values(turbidity, theta_s)
+    # Sun elevation = angle above horizon (complement of zenith angle)
+    # dir[3] = cos(zenith_angle) = sin(elevation)
+    solar_elevation = Float64(asin(clamp(dir[3], 0f0, 1f0)))
 
-    # Bake sky (WITHOUT sun disk) to equal-area octahedral map (square, matching pbrt-v4)
+    # Initialize Hosek-Wilkie spectral state (11 bands, 320-720nm)
+    state = HosekState(Float64(turbidity), Float64(0.5), solar_elevation)
+
+    # Spectral sampling wavelengths — matches pbrt-v4's makesky:
+    # 13 points from 320nm to 720nm, uniformly spaced
+    n_lambda = 1 + div(720 - 320, 32)  # = 13
+    sample_lambdas = [320.0 + i * (720.0 - 320.0) / (n_lambda - 1) for i in 0:(n_lambda - 1)]
+
+    # Bake sky to equal-area octahedral map
     sky_data = Matrix{RGBSpectrum}(undef, resolution, resolution)
+    sky_values = Vector{Float64}(undef, n_lambda)
 
     for v_idx in 1:resolution
         for u_idx in 1:resolution
-            # UV at pixel center
             uv = Point2f((u_idx - 0.5f0) / resolution, (v_idx - 0.5f0) / resolution)
 
-            # Convert to world direction via equal-area mapping (Z-up, matching scene)
+            # Convert to world direction via equal-area mapping (Z-up)
             wi = equal_area_square_to_sphere(uv)
 
-            # Sky radiance from Preetham model (uses Y * 0.04 scaling, no sun disk)
-            sky_rgb = _compute_sky_radiance(
-                wi, dir, perez_Y, perez_x, perez_y,
-                zenith_Y, zenith_x, zenith_y, ground_albedo, ground_enabled,
-            )
+            if wi[3] <= 0f0 && ground_enabled
+                sky_data[v_idx, u_idx] = ground_albedo * 0.3f0
+                continue
+            end
 
-            sky_data[v_idx, u_idx] = sky_rgb
+            # Zenith angle (clamp to horizon for below-horizon when ground disabled)
+            theta = Float64(acos(clamp(wi[3], 0f0, 1f0)))
+            # Angle between view direction and sun
+            cos_gamma = clamp(dot(wi, dir), -1f0, 1f0)
+            gamma = Float64(acos(cos_gamma))
+
+            # Evaluate spectral sky at all sample wavelengths
+            # Using sky-only radiance (no sun disk — sun is a separate SunLight)
+            for i in 1:n_lambda
+                sky_values[i] = hosek_spectral_radiance(state, theta, gamma, sample_lambdas[i])
+            end
+
+            # Convert spectrum to XYZ then sRGB
+            # Matches pbrt-v4: SpectrumToXYZ divides by CIE_Y_integral
+            x, y, z = _spectrum_to_xyz(sample_lambdas, sky_values)
+            rgb = xyz_to_linear_srgb(Vec3f(Float32(x), Float32(y), Float32(z)))
+
+            sky_data[v_idx, u_idx] = RGBSpectrum(
+                max(0f0, rgb[1]),
+                max(0f0, rgb[2]),
+                max(0f0, rgb[3]))
         end
     end
 
     # Build EnvironmentMap with luminance-weighted importance sampling distribution
     env_map = EnvironmentMap(sky_data)
+    # sample_light_spectral uplifts env map pixels via D65 illuminant (uplift_rgb_illuminant).
+    # Standard photometric normalization cancels the D65 factor: scale = intensity / D65_PHOTOMETRIC.
+    env_light = EnvironmentLight(env_map, RGBSpectrum(intensity / D65_PHOTOMETRIC))
 
-    # Photometric normalization: scale = 1/D65_PHOTOMETRIC ensures that the D65
-    # illuminant uplift in the spectral path roundtrips correctly:
-    # pixel_rgb → (pixel_rgb / D65_PHOTOMETRIC) → uplift_rgb_illuminant → integrate → ≈ pixel_rgb
-    env_light = EnvironmentLight(env_map, RGBSpectrum(1f0 / D65_PHOTOMETRIC))
-
-    # Sun as separate delta directional light.
-    # SunLight(RGB{Float32}, direction) creates an RGBIlluminantSpectrum with
-    # automatic photometric normalization (scale = 1/D65_PHOTOMETRIC).
-    # SunLight direction = direction light TRAVELS (away from sun), so negate.
-    #
-    # Scale sun by 10x to get realistic sun:sky illumination ratio (~10:1).
-    # Sky hemisphere integral gives ~0.66 irradiance, sun at 10x gives ~8 irradiance
-    # on a surface perpendicular to sun direction, yielding ~12:1 ratio.
-    sun_scale = 10f0 * intensity
+    # Sun as separate delta directional light
+    # SunLight direction = direction light TRAVELS (away from sun), so negate
+    # Sun:sky illuminance ratio ≈ 5:1 for clear conditions
+    sun_scale = 5f0 * intensity
     sun_rgb = RGB{Float32}(sun_scale, sun_scale * 0.95f0, sun_scale * 0.85f0)
     sun_light = SunLight(sun_rgb, -dir)
-
-    return env_light, sun_light
-end
-
-# ============================================================================
-# Helper function to create separated sun + sky lights for low-variance rendering
-# ============================================================================
-
-"""
-    create_sun_and_sky_lights(sun_direction; kwargs...) -> (EnvironmentLight, SunLight)
-
-Create separated sun and sky lights for lower-variance volumetric rendering.
-
-When rendering volumetric media like clouds, using a combined `SunSkyLight` can cause
-high variance because the tiny bright sun disk (~0.5° radius) gets blended with the
-dim sky in the importance sampling distribution. This leads to PDF/radiance mismatch:
-- Sometimes we sample sky but hit sun disk → radiance >> PDF → bright fireflies
-- Sometimes we sample sun but miss → PDF biased high → dark spots
-
-By separating into two lights:
-- `SunLight` samples exactly the sun direction with PDF=1 (delta distribution)
-- `EnvironmentLight` importance-samples the sky (without sun disk) properly
-
-# Arguments
-- `sun_direction::Vec3f`: Direction TO the sun (will be normalized)
-
-# Keyword Arguments
-- `sun_intensity::RGBSpectrum = RGBSpectrum(100f0)`: Radiance of the sun
-- `turbidity::Float32 = 2.5f0`: Atmospheric turbidity (2=clear, 10=hazy)
-- `ground_albedo::RGBSpectrum = RGBSpectrum(0.3f0)`: Ground color below horizon
-- `ground_enabled::Bool = true`: Whether to show ground below horizon
-- `sky_resolution::Int = 256`: Resolution of sky environment map
-
-# Returns
-A tuple of (EnvironmentLight, SunLight) to be added to the scene.
-
-# Example
-```julia
-env_light, sun_light = create_sun_and_sky_lights(
-    Vec3f(0.5f0, 0.5f0, 0.8f0);
-    sun_intensity = RGBSpectrum(80f0),
-    turbidity = 3.0f0,
-)
-scene = Scene([...], [env_light, sun_light])
-```
-"""
-function create_sun_and_sky_lights(
-    sun_direction::Vec3f;
-    sun_intensity::RGBSpectrum = RGBSpectrum(100f0),
-    turbidity::Float32 = 2.5f0,
-    ground_albedo::RGBSpectrum = RGBSpectrum(0.3f0),
-    ground_enabled::Bool = true,
-    sky_resolution::Int = 256,
-)
-    dir = normalize(sun_direction)
-
-    # Sun elevation angle (theta_s is angle from zenith, z-up)
-    theta_s = acos(clamp(dir[3], -1f0, 1f0))
-
-    # Compute Preetham sky model coefficients
-    perez_Y, perez_x, perez_y = compute_perez_coefficients(turbidity)
-    zenith_Y, zenith_x, zenith_y = compute_zenith_values(turbidity, theta_s)
-
-    # Render sky to equirectangular environment map (WITHOUT sun disk)
-    # Full sphere: u ∈ [0,1] -> φ ∈ [-π, π], v ∈ [0,1] -> θ ∈ [0, π]
-    h = sky_resolution
-    w = sky_resolution * 2
-    sky_data = Matrix{RGBSpectrum}(undef, h, w)
-
-    for v_idx in 1:h
-        # θ goes from 0 (top/+Y in env map convention) to π (bottom/-Y)
-        θ = Float32(π) * (v_idx - 0.5f0) / h
-
-        for u_idx in 1:w
-            # φ goes from -π to π
-            φ = 2f0 * Float32(π) * (u_idx - 0.5f0) / w - Float32(π)
-
-            # Convert to direction (Y-up for environment map)
-            sin_θ = sin(θ)
-            direction_yup = Vec3f(sin_θ * cos(φ), cos(θ), sin_θ * sin(φ))
-
-            # Convert to Z-up for sky_radiance computation
-            # Y-up: (x, y, z) -> Z-up: (x, z, y)
-            direction_zup = Vec3f(direction_yup[1], direction_yup[3], direction_yup[2])
-
-            # Compute sky radiance (no sun disk!) using internal helper
-            sky_rad = _compute_sky_radiance(
-                direction_zup, dir, perez_Y, perez_x, perez_y,
-                zenith_Y, zenith_x, zenith_y, ground_albedo, ground_enabled,
-            )
-
-            sky_data[v_idx, u_idx] = sky_rad
-        end
-    end
-
-    # Create EnvironmentMap and EnvironmentLight
-    env_map = EnvironmentMap(sky_data, 0f0)
-    env_light = EnvironmentLight(env_map)
-
-    # Create SunLight
-    # SunLight expects light_to_world transformation and direction in light space
-    # For simplicity, we use identity transform and pass world direction directly
-    # Note: SunLight direction is the direction light TRAVELS (away from sun)
-    # So we negate sun_direction (which points TO sun) to get travel direction
-    sun_light = SunLight(sun_intensity, -dir)
 
     return env_light, sun_light
 end

@@ -772,46 +772,23 @@ Base.close(integrator::FastWavefront) = cleanup!(integrator)
 @propagate_inbounds function _extract_sky_from_light(acc::RGB{Float32}, light)
     # If we already found a sky color, keep it
     acc != RGB{Float32}(0f0, 0f0, 0f0) && return acc
-    # Check if this light is a SunSkyLight
-    if light isa SunSkyLight
-        zenith_dir = Vec3f(0f0, 0f0, 1f0)
-        sky = sky_radiance(light, zenith_dir)
-        return RGB{Float32}(sky.c[1], sky.c[2], sky.c[3])
-    end
     return acc
 end
 
 """
 Extract sky color from scene lights. Returns RGB for background rays.
-If SunSkyLight is present, samples sky at zenith direction.
 """
 function extract_sky_color(lights)::RGB{Float32}
-    # reduce_unrolled supports Tuple, StaticMultiTypeSet, and MultiTypeSet
     reduce_unrolled(_extract_sky_from_light, lights, RGB{Float32}(0f0, 0f0, 0f0))
 end
 
 """
-Convert SunSkyLight to DirectionalLight for shadow ray calculations.
-Returns a new lights tuple with SunSkyLight replaced by DirectionalLight.
+Convert lights for fast wavefront rendering.
+Returns a tuple of lights.
 """
 function convert_lights_for_fast_wavefront(lights, world_radius::Float32)
-    # Ensure we have a Tuple (to_tuple handles MultiTypeSet/StaticMultiTypeSet/Tuple)
     lights_tuple = Raycore.to_tuple(lights)
-    converted = map(lights_tuple) do light
-        if light isa SunSkyLight
-            # Convert to DirectionalLight using sun direction and intensity
-            # DirectionalLight expects direction light TRAVELS (opposite of sun_direction)
-            # sun_direction points TO the sun, so we negate it
-            DirectionalLight(
-                Transformation(),  # Identity transform
-                light.sun_intensity,
-                -light.sun_direction,  # Direction light travels (away from sun)
-            )
-        else
-            light
-        end
-    end
-    return converted
+    return lights_tuple
 end
 
 # ============================================================================
@@ -824,10 +801,10 @@ function (integrator::FastWavefront)(scene::AbstractScene, film::Film, camera::C
     materials = scene.materials
     original_lights = scene.lights
 
-    # Extract sky color from SunSkyLight if present
+    # Extract sky color from lights if present
     sky_color = extract_sky_color(original_lights)
 
-    # Convert SunSkyLight to DirectionalLight for shadow ray calculations
+    # Convert lights for fast wavefront rendering
     lights = convert_lights_for_fast_wavefront(original_lights, world_radius(scene))
 
     num_lights = length(lights)

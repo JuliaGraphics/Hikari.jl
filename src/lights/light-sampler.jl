@@ -404,10 +404,6 @@ end
     Float32(π) * scene_radius^2 * light.scale * luminance(light.i)
 end
 
-@propagate_inbounds function estimate_light_power(light::SunSkyLight, scene_radius::Float32)
-    # Sun contributes most of the direct illumination
-    Float32(π) * scene_radius^2 * luminance(light.sun_intensity)
-end
 
 @propagate_inbounds function estimate_light_power(light::AmbientLight, ::Float32)
     # Ambient lights provide uniform illumination - less important for direct lighting
