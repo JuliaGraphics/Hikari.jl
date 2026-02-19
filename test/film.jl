@@ -1,26 +1,28 @@
 
 @testset "LanczosSincFilter" begin
-    l = Trace.LanczosSincFilter(Point2f(4f0), 3f0)
+    l = Hikari.LanczosSincFilter(Point2f(4f0), 3f0)
     @test l(Point2f(0f0)) ≈ 1f0
     @test l(Point2f(4f0)) < 1f-6
     @test l(Point2f(5f0)) ≈ 0f0
 end
 
 @testset "Film testing" begin
-    filter = Trace.LanczosSincFilter(Point2f(4f0), 3f0)
-    film = Trace.Film(
-        Point2f(1920f0, 1080f0), Trace.Bounds2(Point2f(0f0), Point2f(1f0)),
-        filter, 35f0, 1f0
+    filter = Hikari.LanczosSincFilter(Point2f(4f0), 3f0)
+    film = Hikari.Film(
+        Point2f(1920f0, 1080f0);
+        filter=filter, crop_bounds=Hikari.Bounds2(Point2f(0f0), Point2f(1f0)),
+        diagonal=35f0, scale=1f0,
     )
     @test size(film.pixels) == (1080, 1920)
-    @test Trace.get_sample_bounds(film) == Trace.Bounds2(Point2f(-3f0), Point2f(1924f0, 1084f0))
+    @test Hikari.get_sample_bounds(film) == Hikari.Bounds2(Point2f(-3f0), Point2f(1924f0, 1084f0))
 end
 
 @testset "FilmTile testing" begin
-    filter = Trace.LanczosSincFilter(Point2f(4f0), 3f0)
-    film = Trace.Film(
-        Point2f(100f0, 100f0), Trace.Bounds2(Point2f(0f0), Point2f(1f0)),
-        filter, 35f0, 1f0; tile_size=4
+    filter = Hikari.LanczosSincFilter(Point2f(4f0), 3f0)
+    film = Hikari.Film(
+        Point2f(100f0, 100f0);
+        filter=filter, crop_bounds=Hikari.Bounds2(Point2f(0f0), Point2f(1f0)),
+        diagonal=35f0, scale=1f0, tile_size=4,
     )
 
     # Test tile structure
@@ -34,15 +36,15 @@ end
     # Add sample at pixel (5, 5), which should affect a small region around it
     # For tile_size=4, each tile should be a 4x4 region
     # Tile bounds are inclusive: [1, 4] means pixels 1, 2, 3, 4
-    tile_bounds = Trace.Bounds2(Point2f(1f0), Point2f(4f0))
+    tile_bounds = Hikari.Bounds2(Point2f(1f0), Point2f(4f0))
     tile_col = Int32(1)  # First tile column
 
     # Initially, tiles should be zero
     @test all(film.tiles.filter_weight_sum[:, tile_col] .≈ 0f0)
 
     # Add a sample at (2.5, 2.5) which is within the tile bounds [1, 4]
-    Trace.add_sample!(film.tiles, tile_bounds, tile_col, Point2f(2.5f0, 2.5f0), Trace.RGBSpectrum(1f0),
-        film.filter_table, film.filter_radius)
+    # add_sample! now takes a pre-computed filter_weight instead of filter_table + filter_radius
+    Hikari.add_sample!(film.tiles, tile_bounds, tile_col, Point2f(2.5f0, 2.5f0), Hikari.RGBSpectrum(1f0), 1f0)
 
     # After adding sample, some tile pixels should have non-zero weights
     @test any(film.tiles.filter_weight_sum[:, tile_col] .> 0f0)
@@ -52,7 +54,7 @@ end
     @test film.pixels[2, 2].filter_weight_sum ≈ 0f0
 
     # Merge tile into film
-    Trace.merge_film_tile!(film.pixels, film.crop_bounds, film.tiles, tile_bounds, tile_col)
+    Hikari.merge_film_tile!(film.pixels, film.crop_bounds, film.tiles, tile_bounds, tile_col)
 
     # After merging, pixels around (2.5, 2.5) should have accumulated weight
     # The filter has radius 4, so it affects a region around the sample point
@@ -66,22 +68,23 @@ end
 end
 
 @testset "Perspective Camera" begin
-    filter = Trace.LanczosSincFilter(Point2f(4f0), 3f0)
-    film = Trace.Film(
-        Point2f(1920f0, 1080f0), Trace.Bounds2(Point2f(0f0), Point2f(1f0)),
-        filter, 35f0, 1f0
+    filter = Hikari.LanczosSincFilter(Point2f(4f0), 3f0)
+    film = Hikari.Film(
+        Point2f(1920f0, 1080f0);
+        filter=filter, crop_bounds=Hikari.Bounds2(Point2f(0f0), Point2f(1f0)),
+        diagonal=35f0, scale=1f0,
     )
-    camera = Trace.PerspectiveCamera(
-        Trace.translate(Vec3f(0)), Trace.Bounds2(Point2f(0), Point2f(10)),
+    camera = Hikari.PerspectiveCamera(
+        Hikari.translate(Vec3f(0)), Hikari.Bounds2(Point2f(0), Point2f(10)),
         0f0, 1f0, 0f0, 700f0, 45f0, film,
     )
 
-    sample1 = Trace.CameraSample(Point2f(1f0), Point2f(1f0), 0f0)
-    ray1, contribution = Trace.generate_ray(camera, sample1)
-    sample2 = Trace.CameraSample(
+    sample1 = Hikari.CameraSample(Point2f(1f0), Point2f(1f0), 0f0)
+    ray1, contribution = Hikari.generate_ray(camera, sample1)
+    sample2 = Hikari.CameraSample(
         Point2f(film.resolution[1]), Point2f(film.resolution[2]), 0f0,
     )
-    ray2, contribution = Trace.generate_ray(camera, sample2)
+    ray2, contribution = Hikari.generate_ray(camera, sample2)
 
     @test contribution == 1f0
     @test ray1.o == ray2.o == Point3f(0f0)
@@ -91,7 +94,7 @@ end
     @test argmax(abs.(ray1.d)) == 3
     @test argmax(abs.(ray2.d)) in (2, 3)  # Can be 2 or 3 depending on field of view
 
-    ray_differential, contribution = Trace.generate_ray_differential(
+    ray_differential, contribution = Hikari.generate_ray_differential(
         camera, sample1,
     )
     @test ray_differential.has_differentials

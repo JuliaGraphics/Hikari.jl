@@ -1,5 +1,5 @@
 using Hikari, ImageShow, Colors, FileIO, LinearAlgebra, GeometryBasics
-using TraceMakie, GLMakie
+using RayMakie, GLMakie
 
 glass = Hikari.GlassMaterial(
     Hikari.ConstantTexture(Hikari.RGBSpectrum(1.0f0)),
@@ -43,7 +43,7 @@ mesh!(scene, Rect3f(Vec3f(-2, -2, zmin), Vec3f(4, 4, 0.01)), material=plastic)
 update_cam!(scene, Vec3f(1.25, 1.08, 0.44), Vec3f(0.36, -0.22, -0.52), Vec3f(-0.29, -0.42, 0.85))
 
 # Render with SPPM
-img = TraceMakie.render_sppm(scene; search_radius=0.075f0, max_depth=5, iterations=500)
+img = RayMakie.render_sppm(scene; search_radius=0.075f0, max_depth=5, iterations=500)
 
 # Display and save the result
 s = Scene(size=size(img))

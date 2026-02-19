@@ -1,7 +1,7 @@
 using GeometryBasics, ImageShow
 using LinearAlgebra
 using Hikari, FileIO, MeshIO
-using TraceMakie, GLMakie
+using RayMakie, GLMakie
 
 model = load(joinpath(@__DIR__, "..", "..", "src", "assets", "models", "caustic-glass.ply"))
 
@@ -36,7 +36,7 @@ center!(scene)
 update_cam!(scene, Vec3f(-1.6, 6.2, 0.2), Vec3f(-3.6, 2.5, 2.4), Vec3f(0, 1, 0))
 
 # Render with SPPM
-img = TraceMakie.render_sppm(scene; search_radius=0.075f0, max_depth=5, iterations=100)
+img = RayMakie.render_sppm(scene; search_radius=0.075f0, max_depth=5, iterations=100)
 
 # Save the result
 using Colors

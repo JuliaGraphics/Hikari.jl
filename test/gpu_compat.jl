@@ -180,11 +180,13 @@ end
 # Test Scene Generator
 # ============================================================================
 
+using Adapt
+
 function gen_gpu_test_scene()
     # Materials
     white_matte = Hikari.MatteMaterial(Kd=Hikari.RGBSpectrum(0.73f0))
     glass = Hikari.GlassMaterial(index=1.5f0)
-    emissive = Hikari.MediumInterface(Hikari.EmissiveMaterial(Le=Hikari.RGBSpectrum(10f0)))
+    emissive = Hikari.Emissive(Le=Hikari.RGBSpectrum(10f0))
 
     # Media
     fog = Hikari.HomogeneousMedium(
@@ -195,39 +197,30 @@ function gen_gpu_test_scene()
     )
     glass_with_fog = Hikari.MediumInterface(glass; inside=fog, outside=nothing)
 
-    # Geometry
-    function tmesh(prim, material)
-        prim_tess = prim isa Sphere ? Tesselation(prim, 16) : prim
-        mesh = normal_mesh(prim_tess)
-        Hikari.GeometricPrimitive(Raycore.TriangleMesh(mesh), material)
-    end
-
-    primitives = [
-        tmesh(Rect3f(Vec3f(-1, 0, -1), Vec3f(2, 0.01f0, 2)), white_matte),
-        tmesh(Sphere(Point3f(0, 0.5f0, 0), 0.3f0), glass_with_fog),
-        tmesh(Sphere(Point3f(0, 1.5f0, 0), 0.1f0), emissive),
-    ]
-    mat_scene = Hikari.MaterialScene(primitives)
+    # Build scene using push! API
+    scene = Hikari.Scene()
+    push!(scene, normal_mesh(Rect3f(Vec3f(-1, 0, -1), Vec3f(2, 0.01f0, 2))), white_matte)
+    push!(scene, normal_mesh(Tesselation(Sphere(Point3f(0, 0.5f0, 0), 0.3f0), 16)), glass_with_fog)
+    push!(scene, normal_mesh(Tesselation(Sphere(Point3f(0, 1.5f0, 0), 0.1f0), 16)), emissive)
 
     # Lights
-    lights = (
-        Hikari.PointLight(Point3f(0f0, 2f0, 0f0), Hikari.RGBSpectrum(10f0)),
-        Hikari.AmbientLight(Hikari.RGBSpectrum(0.1f0)),
-    )
+    push!(scene, Hikari.PointLight(Point3f(0f0, 2f0, 0f0), Hikari.RGBSpectrum(10f0)))
+    push!(scene, Hikari.AmbientLight(Hikari.RGBSpectrum(0.1f0)))
+    Hikari.sync!(scene)
 
-    scene = Hikari.Scene(lights, mat_scene)
+    # Adapt scene to get StaticMultiTypeSet for type analysis
+    backend = KernelAbstractions.CPU()
+    adapted = Adapt.adapt(backend, scene)
 
-    # VolPathState for rgb2spec_table
-    state = Hikari.VolPathState(KernelAbstractions.CPU(), 64, Int32(4))
+    # Get rgb2spec_table directly
+    rgb2spec_table = Hikari.to_gpu(backend, Hikari.get_srgb_table())
 
     (
-        scene=scene,
-        mat_scene=mat_scene,
-        materials=mat_scene.materials,
-        media=mat_scene.media,
-        textures=mat_scene.textures,
-        lights=lights,
-        rgb2spec_table=state.rgb2spec_table,
+        scene=adapted,
+        materials=adapted.materials,
+        media=adapted.media,
+        lights=adapted.lights,
+        rgb2spec_table=rgb2spec_table,
         lambda=Hikari.SampledWavelengths{4}((400f0, 500f0, 600f0, 700f0), (1f0, 1f0, 1f0, 1f0)),
         mat_idx=Hikari.SetKey(UInt8(1), UInt32(1)),
         ray=Raycore.Ray(o=Point3f(0,0,0), d=Vec3f(0,0,1), t_max=Inf32),
@@ -241,28 +234,17 @@ end
 @testset "GPU Compatibility: VolPath Kernel Functions" begin
     td = gen_gpu_test_scene()
 
-    @testset "Material Dispatch Functions" begin
-        @test test_no_dispatch(Hikari.is_emissive_dispatch, (typeof(td.materials), typeof(td.mat_idx)))
-        @test test_no_dispatch(Hikari.is_pure_emissive_dispatch, (typeof(td.materials), typeof(td.mat_idx)))
-        @test test_no_dispatch(Hikari.has_bsdf_dispatch, (typeof(td.materials), typeof(td.mat_idx)))
-        @test test_no_dispatch(Hikari.has_medium_interface_dispatch, (typeof(td.materials), typeof(td.mat_idx)))
-    end
+    tfc_type = Hikari.TextureFilterContext
 
-    @testset "Medium Dispatch Functions" begin
-        @test test_no_dispatch(Hikari.sample_point_dispatch,
-            (typeof(td.rgb2spec_table), typeof(td.media), Int32, Point3f, typeof(td.lambda)))
-        @test test_no_dispatch(Hikari.get_majorant_dispatch,
-            (typeof(td.rgb2spec_table), typeof(td.media), Int32, typeof(td.ray), Float32, Float32, typeof(td.lambda)))
+    @testset "Material Dispatch Functions" begin
+        @test test_no_dispatch(Hikari.is_emissive, (typeof(td.materials), typeof(td.mat_idx)))
+        @test test_no_dispatch(Hikari.is_pure_emissive, (typeof(td.materials), typeof(td.mat_idx)))
+        @test test_no_dispatch(Hikari.has_medium_interface_dispatch, (typeof(td.materials), typeof(td.mat_idx)))
     end
 
     @testset "Phase Functions" begin
         @test test_no_dispatch(Hikari.hg_p, (Float32, Float32))
         @test test_no_dispatch(Hikari.sample_hg, (Float32, Vec3f, Point2f))
-    end
-
-    @testset "Light Sampling" begin
-        @test test_no_dispatch(Hikari.sample_light_from_tuple,
-            (typeof(td.rgb2spec_table), typeof(td.lights), Int32, Point3f, typeof(td.lambda), Point2f))
     end
 
     @testset "Geometry Sampling" begin
@@ -277,25 +259,24 @@ end
     end
 
     @testset "BSDF Sampling" begin
-        matte_mat = first(td.materials[1])
-        glass_mat = first(td.materials[2])
-        emissive_mat = first(td.materials[3])
+        # Materials are stored in the StaticMultiTypeSet; access by type slot
+        matte_mat = first(td.materials.data[1])
+        glass_mat = first(td.materials.data[2])
+        emissive_mat = first(td.materials.data[3])
 
-        bsdf_types = (typeof(td.rgb2spec_table), Any, typeof(td.textures), Vec3f, Vec3f, Point2f, typeof(td.lambda), Point2f, Float32)
-
         @test test_no_dispatch(Hikari.sample_bsdf_spectral,
-            (typeof(td.rgb2spec_table), typeof(matte_mat), typeof(td.textures), Vec3f, Vec3f, Point2f, typeof(td.lambda), Point2f, Float32))
+            (typeof(matte_mat), typeof(td.rgb2spec_table), typeof(td.materials), Vec3f, Vec3f, tfc_type, typeof(td.lambda), Point2f, Float32))
         @test test_no_dispatch(Hikari.sample_bsdf_spectral,
-            (typeof(td.rgb2spec_table), typeof(glass_mat), typeof(td.textures), Vec3f, Vec3f, Point2f, typeof(td.lambda), Point2f, Float32))
+            (typeof(glass_mat), typeof(td.rgb2spec_table), typeof(td.materials), Vec3f, Vec3f, tfc_type, typeof(td.lambda), Point2f, Float32))
         @test test_no_dispatch(Hikari.sample_bsdf_spectral,
-            (typeof(td.rgb2spec_table), typeof(emissive_mat), typeof(td.textures), Vec3f, Vec3f, Point2f, typeof(td.lambda), Point2f, Float32))
+            (typeof(emissive_mat), typeof(td.rgb2spec_table), typeof(td.materials), Vec3f, Vec3f, tfc_type, typeof(td.lambda), Point2f, Float32))
     end
 
     @testset "Emission Functions" begin
         @test test_no_dispatch(Hikari.get_emission_spectral_dispatch,
-            (typeof(td.rgb2spec_table), typeof(td.materials), typeof(td.textures), typeof(td.mat_idx), Vec3f, Vec3f, Point2f, typeof(td.lambda)))
+            (typeof(td.rgb2spec_table), typeof(td.materials), typeof(td.mat_idx), Vec3f, Vec3f, tfc_type, typeof(td.lambda)))
         @test test_no_dispatch(Hikari.get_emission_spectral_uv_dispatch,
-            (typeof(td.rgb2spec_table), typeof(td.materials), typeof(td.textures), typeof(td.mat_idx), Point2f, typeof(td.lambda)))
+            (typeof(td.rgb2spec_table), typeof(td.materials), typeof(td.mat_idx), tfc_type, typeof(td.lambda)))
     end
 
     @testset "Microfacet/Fresnel Functions" begin

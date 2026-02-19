@@ -1,68 +1,68 @@
 @testset "Fresnel Dielectric" begin
     # Vacuum gives no reflectance.
-    @test Trace.fresnel_dielectric(1f0, 1f0, 1f0) ≈ 0f0
-    @test Trace.fresnel_dielectric(0.5f0, 1f0, 1f0) ≈ 0f0
+    @test Hikari.fresnel_dielectric(1f0, 1f0, 1f0) ≈ 0f0
+    @test Hikari.fresnel_dielectric(0.5f0, 1f0, 1f0) ≈ 0f0
 end
 
 @testset "Fresnel Conductor" begin
-    s = Trace.RGBSpectrum(1f0)
-    @test Trace.fresnel_conductor(0f0, s, s, s) == s
-    @test all(Trace.fresnel_conductor(cos(π / 4f0), s, s, s).c .> 0f0)
-    @test all(Trace.fresnel_conductor(1f0, s, s, s).c .> 0f0)
+    s = Hikari.RGBSpectrum(1f0)
+    @test Hikari.fresnel_conductor(0f0, s, s, s) == s
+    @test all(Hikari.fresnel_conductor(cos(π / 4f0), s, s, s).c .> 0f0)
+    @test all(Hikari.fresnel_conductor(1f0, s, s, s).c .> 0f0)
 end
 
 @testset "SpecularReflection" begin
-    sr = Trace.SpecularReflection(true, Trace.RGBSpectrum(1f0), Trace.FresnelNoOp())
-    @test sr & (Trace.BSDF_SPECULAR | Trace.BSDF_REFLECTION)
+    sr = Hikari.SpecularReflection(true, Hikari.RGBSpectrum(1f0), Hikari.FresnelNoOp())
+    @test sr & (Hikari.BSDF_SPECULAR | Hikari.BSDF_REFLECTION)
 end
 
 @testset "SpecularTransmission" begin
-    st = Trace.SpecularTransmission(
-        true, Trace.RGBSpectrum(1f0), 1f0, 1f0,
-        Trace.UInt8(1),
+    st = Hikari.SpecularTransmission(
+        true, Hikari.RGBSpectrum(1f0), 1f0, 1f0,
+        Hikari.UInt8(1),
     )
-    @test st & (Trace.BSDF_SPECULAR | Trace.BSDF_TRANSMISSION)
+    @test st & (Hikari.BSDF_SPECULAR | Hikari.BSDF_TRANSMISSION)
 end
 
 @testset "FresnelSpecular" begin
-    f = Trace.FresnelSpecular(
-        true, Trace.RGBSpectrum(1f0), Trace.RGBSpectrum(1f0),
-        1f0, 1f0, Trace.UInt8(1),
+    f = Hikari.FresnelSpecular(
+        true, Hikari.RGBSpectrum(1f0), Hikari.RGBSpectrum(1f0),
+        1f0, 1f0, Hikari.UInt8(1),
     )
-    @test f & (Trace.BSDF_SPECULAR | Trace.BSDF_REFLECTION | Trace.BSDF_TRANSMISSION)
+    @test f & (Hikari.BSDF_SPECULAR | Hikari.BSDF_REFLECTION | Hikari.BSDF_TRANSMISSION)
 
     wo = Vec3f(0, 0, 1)
     u = Point2f(0, 0)
-    wi, pdf, bxdf_value, sampled_type = Trace.sample_f(f, wo, u)
+    wi, pdf, bxdf_value, sampled_type = Hikari.sample_f(f, wo, u)
     @test wi ≈ -wo
     @test pdf ≈ 1f0
-    @test sampled_type == Trace.BSDF_SPECULAR | Trace.BSDF_TRANSMISSION
+    @test sampled_type == Hikari.BSDF_SPECULAR | Hikari.BSDF_TRANSMISSION
 end
 
 @testset "MicrofacetReflection" begin
-    m = Trace.MicrofacetReflection(
-        true, Trace.RGBSpectrum(1f0),
-        Trace.TrowbridgeReitzDistribution(1f0, 1f0),
-        Trace.FresnelNoOp(),
-        Trace.UInt8(1),
+    m = Hikari.MicrofacetReflection(
+        true, Hikari.RGBSpectrum(1f0),
+        Hikari.TrowbridgeReitzDistribution(1f0, 1f0),
+        Hikari.FresnelNoOp(),
+        Hikari.UInt8(1),
     )
-    @test m & (Trace.BSDF_REFLECTION | Trace.BSDF_GLOSSY)
+    @test m & (Hikari.BSDF_REFLECTION | Hikari.BSDF_GLOSSY)
     wo = Vec3f(0, 0, 1)
     u = Point2f(0, 0)
-    wi, pdf, bxdf_value, sampled_type = Trace.sample_f(m, wo, u)
+    wi, pdf, bxdf_value, sampled_type = Hikari.sample_f(m, wo, u)
     @test wi ≈ Vec3f(0, 0, 1)
 end
 
 @testset "MicrofacetTransmission" begin
-    m = Trace.MicrofacetTransmission(
-        true, Trace.RGBSpectrum(1f0),
-        Trace.TrowbridgeReitzDistribution(1f0, 1f0),
+    m = Hikari.MicrofacetTransmission(
+        true, Hikari.RGBSpectrum(1f0),
+        Hikari.TrowbridgeReitzDistribution(1f0, 1f0),
         1f0, 2f0,
-        Trace.UInt8(1),
+        Hikari.UInt8(1),
     )
-    @test m & (Trace.BSDF_TRANSMISSION | Trace.BSDF_GLOSSY)
+    @test m & (Hikari.BSDF_TRANSMISSION | Hikari.BSDF_GLOSSY)
     wo = Vec3f(0, 0, 1)
     u = Point2f(0, 0)
-    wi, pdf, bxdf_value, sampled_type = Trace.sample_f(m, wo, u)
+    wi, pdf, bxdf_value, sampled_type = Hikari.sample_f(m, wo, u)
     @test wi ≈ Vec3f(0, 0, -1)
 end
