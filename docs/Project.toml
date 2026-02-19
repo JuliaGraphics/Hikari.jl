@@ -17,4 +17,4 @@ FileIO = "1.16"
 
 [sources]
 Hikari = {path = ".."}
-Raycore = {path = "../../Raycore"}
+Raycore = {url = "https://github.com/JuliaGeometry/Raycore.jl", rev = "sd/multitype-vec"}
