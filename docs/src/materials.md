@@ -1,30 +1,25 @@
 ## Materials Showcase
 
-This example demonstrates all the different material types available in Hikari, arranged in a scene to clearly show their properties.
+This example demonstrates the different material types available in Hikari, arranged in a scene to clearly show their properties.
 
 ### Available Materials
 
 Hikari supports several physically-based materials:
 
 - **MatteMaterial**: Diffuse surfaces with optional roughness (Oren-Nayar model)
-- **MirrorMaterial**: Perfect specular reflection (can simulate polished metals)
+- **MirrorMaterial**: Perfect specular reflection
 - **GlassMaterial**: Transparent material with refraction and optional roughness
-- **PlasticMaterial**: Combination of diffuse and glossy specular reflection
+- **PlasticMaterial**: Combination of diffuse and glossy specular reflection (coated diffuse)
+- **ConductorMaterial**: Physically-based metals with complex IOR (eta + k)
 
 ```@example materials
 using GeometryBasics
 using Hikari
-using Raycore
 using FileIO
 using ImageShow
 
-# Helper to convert primitives to Hikari meshes
-function tmesh(prim, material)
-    prim = prim isa Sphere ? Tesselation(prim, 64) : prim
-    mesh = normal_mesh(prim)
-    m = Raycore.TriangleMesh(mesh)
-    return Hikari.GeometricPrimitive(m, material)
-end
+# Helper to tessellate primitives
+to_mesh(prim) = normal_mesh(prim isa Sphere ? Tesselation(prim, 64) : prim)
 
 # Helper to create a sphere resting on the ground
 LowSphere(radius, x, z) = Sphere(Point3f(x, radius, z), radius)
@@ -35,174 +30,114 @@ LowSphere(radius, x, z) = Sphere(Point3f(x, radius, z), radius)
 
 # 1. MATTE MATERIALS - Diffuse reflection
 # Smooth diffuse (Lambertian) - terracotta color
-matte_smooth = Hikari.MatteMaterial(
-    Hikari.ConstantTexture(Hikari.RGBSpectrum(0.8f0, 0.4f0, 0.3f0)),
-    Hikari.ConstantTexture(0f0),  # σ=0 means perfectly smooth Lambertian
-)
+matte_smooth = Hikari.MatteMaterial(Kd=Hikari.RGBSpectrum(0.8f0, 0.4f0, 0.3f0))
 # Rough diffuse (Oren-Nayar) - chalk/clay appearance
-matte_rough = Hikari.MatteMaterial(
-    Hikari.ConstantTexture(Hikari.RGBSpectrum(0.85f0, 0.85f0, 0.8f0)),
-    Hikari.ConstantTexture(60f0),  # σ=60° high roughness for chalky look
-)
+matte_rough = Hikari.MatteMaterial(Kd=Hikari.RGBSpectrum(0.85f0, 0.85f0, 0.8f0), σ=60f0)
 
-# 2. MIRROR/METAL MATERIALS - Perfect specular reflection
+# 2. MIRROR - Perfect specular reflection
 # Silver mirror
-metal_silver = Hikari.MirrorMaterial(
-    Hikari.ConstantTexture(Hikari.RGBSpectrum(0.95f0, 0.93f0, 0.88f0)),
+mirror_silver = Hikari.MirrorMaterial(Kr=Hikari.RGBSpectrum(0.95f0, 0.93f0, 0.88f0))
+
+# 3. CONDUCTOR MATERIALS - Physically-based metals
+# Gold
+gold = Hikari.ConductorMaterial(
+    eta=Hikari.RGBSpectrum(0.15557f0, 0.42415f0, 1.3831f0),
+    k=Hikari.RGBSpectrum(3.6024f0, 2.4721f0, 1.9155f0),
+    roughness=0.05f0,
 )
-# Gold metal - warm golden tint
-metal_gold = Hikari.MirrorMaterial(
-    Hikari.ConstantTexture(Hikari.RGBSpectrum(1.0f0, 0.78f0, 0.34f0)),
-)
-# Copper metal - reddish-orange metallic
-metal_copper = Hikari.MirrorMaterial(
-    Hikari.ConstantTexture(Hikari.RGBSpectrum(0.95f0, 0.64f0, 0.54f0)),
+# Copper
+copper = Hikari.ConductorMaterial(
+    eta=Hikari.RGBSpectrum(0.27105f0, 0.67693f0, 1.3164f0),
+    k=Hikari.RGBSpectrum(3.6092f0, 2.6248f0, 2.2921f0),
+    roughness=0.1f0,
 )
 
-# 3. GLASS MATERIALS - Refraction and transparency
+# 4. GLASS MATERIALS - Refraction and transparency
 # Clear glass
-glass_clear = Hikari.GlassMaterial(
-    Hikari.ConstantTexture(Hikari.RGBSpectrum(1f0)),      # Reflectance
-    Hikari.ConstantTexture(Hikari.RGBSpectrum(1f0)),      # Transmittance
-    Hikari.ConstantTexture(0f0),                          # u_roughness
-    Hikari.ConstantTexture(0f0),                          # v_roughness
-    Hikari.ConstantTexture(1.5f0),                        # IOR (glass ≈ 1.5)
-    true,
-)
-# Frosted glass - rough transmission for diffuse transparency
-glass_frosted = Hikari.GlassMaterial(
-    Hikari.ConstantTexture(Hikari.RGBSpectrum(1f0)),
-    Hikari.ConstantTexture(Hikari.RGBSpectrum(1f0)),
-    Hikari.ConstantTexture(0.15f0),                       # Moderate roughness for frosted look
-    Hikari.ConstantTexture(0.15f0),
-    Hikari.ConstantTexture(1.5f0),
-    true,
-)
+glass_clear = Hikari.GlassMaterial(index=1.5f0)
+# Frosted glass
+glass_frosted = Hikari.GlassMaterial(roughness=0.15f0, index=1.5f0)
 
-# 4. PLASTIC MATERIALS - Diffuse + glossy specular
+# 5. PLASTIC MATERIALS - Diffuse + glossy specular
 # Shiny red plastic
 plastic_shiny = Hikari.PlasticMaterial(
-    Hikari.ConstantTexture(Hikari.RGBSpectrum(0.8f0, 0.1f0, 0.1f0)),  # Diffuse red
-    Hikari.ConstantTexture(Hikari.RGBSpectrum(0.4f0)),                 # Specular
-    Hikari.ConstantTexture(0.02f0),                                    # Low roughness (shiny)
-    true,
+    Kd=Hikari.RGBSpectrum(0.8f0, 0.1f0, 0.1f0),
+    Ks=Hikari.RGBSpectrum(0.4f0),
+    roughness=0.02f0,
 )
 # Matte blue plastic
 plastic_matte = Hikari.PlasticMaterial(
-    Hikari.ConstantTexture(Hikari.RGBSpectrum(0.15f0, 0.3f0, 0.7f0)),
-    Hikari.ConstantTexture(Hikari.RGBSpectrum(0.15f0)),
-    Hikari.ConstantTexture(0.25f0),                                    # Higher roughness
-    true,
+    Kd=Hikari.RGBSpectrum(0.15f0, 0.3f0, 0.7f0),
+    Ks=Hikari.RGBSpectrum(0.15f0),
+    roughness=0.25f0,
 )
 
-# Floor material
-floor_mat = Hikari.MatteMaterial(
-    Hikari.ConstantTexture(Hikari.RGBSpectrum(0.85f0)),
-    Hikari.ConstantTexture(0f0),
-)
+# Floor
+floor_mat = Hikari.MatteMaterial(Kd=Hikari.RGBSpectrum(0.85f0))
 
 # ============================================
 # Create scene with 3x3 grid of spheres
 # ============================================
 # Back row:   Matte Smooth | Matte Rough  | Glass Clear
-# Middle row: Metal Silver | Metal Gold   | Metal Copper
+# Middle row: Mirror Silver| Gold         | Copper
 # Front row:  Frosted Glass| Plastic Shiny| Plastic Matte
 
-r = 0.38f0  # sphere radius
-sx, sz = 1.0f0, 1.1f0  # spacing
+r = 0.38f0
+sx, sz = 1.0f0, 1.1f0
 
-# Back row (z = -sz)
-s1 = tmesh(LowSphere(r, -sx, -sz), matte_smooth)
-s2 = tmesh(LowSphere(r, 0f0, -sz), matte_rough)
-s3 = tmesh(LowSphere(r, sx, -sz), glass_clear)
+scene = Hikari.Scene()
+
+# Back row (z = sz)
+push!(scene, to_mesh(LowSphere(r, -sx, sz)), matte_smooth)
+push!(scene, to_mesh(LowSphere(r, 0f0, sz)), matte_rough)
+push!(scene, to_mesh(LowSphere(r, sx, sz)), glass_clear)
 
 # Middle row (z = 0)
-s4 = tmesh(LowSphere(r, -sx, 0f0), metal_silver)
-s5 = tmesh(LowSphere(r, 0f0, 0f0), metal_gold)
-s6 = tmesh(LowSphere(r, sx, 0f0), metal_copper)
+push!(scene, to_mesh(LowSphere(r, -sx, 0f0)), mirror_silver)
+push!(scene, to_mesh(LowSphere(r, 0f0, 0f0)), gold)
+push!(scene, to_mesh(LowSphere(r, sx, 0f0)), copper)
 
-# Front row (z = sz)
-s7 = tmesh(LowSphere(r, -sx, sz), glass_frosted)
-s8 = tmesh(LowSphere(r, 0f0, sz), plastic_shiny)
-s9 = tmesh(LowSphere(r, sx, sz), plastic_matte)
+# Front row (z = -sz)
+push!(scene, to_mesh(LowSphere(r, -sx, -sz)), glass_frosted)
+push!(scene, to_mesh(LowSphere(r, 0f0, -sz)), plastic_shiny)
+push!(scene, to_mesh(LowSphere(r, sx, -sz)), plastic_matte)
 
 # Ground plane
-ground = tmesh(Rect3f(Vec3f(-3, 0, -3), Vec3f(6, 0.01, 6)), floor_mat)
+push!(scene, to_mesh(Rect3f(Vec3f(-3, 0, -3), Vec3f(6, 0.01, 6))), floor_mat)
 
-primitives = [s1, s2, s3, s4, s5, s6, s7, s8, s9, ground]
-mat_scene = Hikari.MaterialScene(primitives)
+# Lighting
+push!(scene, Hikari.PointLight(Point3f(3f0, 4f0, -3f0), Hikari.RGBSpectrum(15f0)))
+push!(scene, Hikari.PointLight(Point3f(-3f0, 3f0, -2f0), Hikari.RGBSpectrum(6f0)))
+push!(scene, Hikari.PointLight(Point3f(0f0, 3f0, 3f0), Hikari.RGBSpectrum(8f0)))
+push!(scene, Hikari.AmbientLight(Hikari.RGBSpectrum(0.05f0)))
 
-# HDRI Environment lighting with importance sampling
-# world_radius should be ~2-3x the scene extent for efficient photon mapping
-env_light = Hikari.EnvironmentLight(
-    joinpath(@__DIR__, "..", "..", "..", "RadeonProRender", "assets", "studio026.exr");
-    scale=Hikari.RGBSpectrum(0.5f0),  # Dimmed to let spotlights be visible
-    rotation=0f0,
-)
-
-# Add spotlights for dramatic lighting and to show specular highlights
-# Key light - warm spotlight from front-right
-key_light = Hikari.SpotLight(
-    Point3f(3f0, 4f0, 3f0),   # position
-    Point3f(0f0, 0f0, 0f0),   # target (scene center)
-    Hikari.RGBSpectrum(15f0, 14f0, 12f0),  # warm white
-    35f0, 30f0                 # cone angles
-)
-
-# Fill light - cooler spotlight from front-left
-fill_light = Hikari.SpotLight(
-    Point3f(-3f0, 3f0, 2f0),
-    Point3f(0f0, 0.2f0, 0f0),
-    Hikari.RGBSpectrum(6f0, 7f0, 8f0),  # cool white
-    40f0, 35f0
-)
-
-# Rim light - from behind to create edge highlights on metals
-rim_light = Hikari.SpotLight(
-    Point3f(0f0, 3f0, -3f0),
-    Point3f(0f0, 0.3f0, 0f0),
-    Hikari.RGBSpectrum(8f0),
-    45f0, 40f0
-)
-
-scene = Hikari.Scene([env_light, key_light, fill_light, rim_light], mat_scene)
+Hikari.sync!(scene)
 
 # Camera setup
 resolution = Point2f(1024)
-filter = Hikari.LanczosSincFilter(Point2f(1f0), 3f0)
-film = Hikari.Film(
-    resolution,
-    Hikari.Bounds2(Point2f(0f0), Point2f(1f0)),
-    filter, 1f0, 1f0,
-)
-screen = Hikari.Bounds2(Point2f(-1f0), Point2f(1f0))
+film = Hikari.Film(resolution)
 camera = Hikari.PerspectiveCamera(
-    Hikari.look_at(Point3f(0, 3.5, 5), Point3f(0, 0.2, 0), Vec3f(0, 1, 0)),
-    screen, 0f0, 1f0, 0f0, 1f6, 40f0, film,
+    Point3f(0f0, 3.5f0, -5f0), Point3f(0f0, 0.2f0, 0f0), film; fov=40f0,
 )
+Hikari.clear!(film)
 
-# Render with Wavefront path tracer
-integrator = Hikari.WavefrontIntegrator(camera; max_depth=5, samples_per_pixel=16)
-integrator(scene, film)
+# Render
+integrator = Hikari.VolPath(samples=16, max_depth=5)
+integrator(scene, film, camera)
+
+img = Hikari.postprocess!(film; exposure=1.0f0, tonemap=:aces, gamma=2.2f0)
+Array(img)
 ```
 
 ### Material Properties Reference
 
 | Material | Key Parameters | Best For |
-|----------|---------------|----------|<>
+|----------|---------------|----------|
 | **MatteMaterial** | `Kd` (color), `σ` (roughness 0-90°) | Diffuse surfaces: walls, cloth, paper, chalk |
-| **MirrorMaterial** | `Kr` (reflectance color) | Polished metals: silver, gold, copper, chrome |
-| **GlassMaterial** | `Kr`, `Kt`, roughness, `index` (IOR) | Glass, water, gems, ice, frosted surfaces |
+| **MirrorMaterial** | `Kr` (reflectance color) | Perfect specular mirrors |
+| **GlassMaterial** | `Kr`, `Kt`, `roughness`, `index` (IOR) | Glass, water, gems, ice, frosted surfaces |
 | **PlasticMaterial** | `Kd`, `Ks`, `roughness` | Plastic, painted surfaces, ceramics |
-
-### Metal Colors Reference
-
-Common reflectance values for metals using MirrorMaterial:
-- **Silver**: RGB(0.95, 0.93, 0.88)
-- **Gold**: RGB(1.0, 0.78, 0.34)
-- **Copper**: RGB(0.95, 0.64, 0.54)
-- **Aluminum**: RGB(0.91, 0.92, 0.92)
-- **Iron**: RGB(0.56, 0.57, 0.58)
+| **ConductorMaterial** | `eta`, `k`, `roughness` | Physically-based metals: gold, copper, silver |
 
 ### Index of Refraction (IOR) Reference
 

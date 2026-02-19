@@ -18,7 +18,6 @@ makedocs(; sitename = "Hikari", authors = "Anton Smirnov, Simon Danisch and cont
         "Home" => "index.md",
         "Get Started" => "get_started.md",
         "Shadows" => "shadows.md",
-        "Caustics" => "caustics.md",
         "Materials" => "materials.md",
         "API" => "api.md",
     ],

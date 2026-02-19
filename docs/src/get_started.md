@@ -13,54 +13,40 @@ A minimal Hikari scene requires:
 ```@example getstarted
 using GeometryBasics
 using Hikari
-using Raycore
 using ImageShow
 
-# Helper to convert GeometryBasics primitives to Hikari meshes
-function tmesh(prim, material)
-    prim = prim isa Sphere ? Tesselation(prim, 64) : prim
-    mesh = normal_mesh(prim)
-    m = Raycore.TriangleMesh(mesh)
-    return Hikari.GeometricPrimitive(m, material)
-end
+# Helper to tessellate GeometryBasics primitives into triangle meshes
+to_mesh(prim) = normal_mesh(prim isa Sphere ? Tesselation(prim, 64) : prim)
 
-# Create a simple matte material (diffuse red)
-red_material = Hikari.MatteMaterial(
-    Hikari.ConstantTexture(Hikari.RGBSpectrum(0.8f0, 0.2f0, 0.2f0)),
-    Hikari.ConstantTexture(0f0),
-)
+# Create materials using keyword constructors
+red_material = Hikari.MatteMaterial(Kd=Hikari.RGBSpectrum(0.8f0, 0.2f0, 0.2f0))
+white_material = Hikari.MatteMaterial(Kd=Hikari.RGBSpectrum(0.9f0))
 
-# White material for the ground
-white_material = Hikari.MatteMaterial(
-    Hikari.ConstantTexture(Hikari.RGBSpectrum(0.9f0)),
-    Hikari.ConstantTexture(0f0),
-)
+# Build the scene using the push! API
+scene = Hikari.Scene()
+push!(scene, to_mesh(Sphere(Point3f(0, 0.5, 0), 0.5f0)), red_material)
+push!(scene, to_mesh(Rect3f(Vec3f(-3, 0, -3), Vec3f(6, 0.01, 6))), white_material)
 
-# Create a sphere sitting on a ground plane
-sphere = tmesh(Sphere(Point3f(0, 0, 0.5), 0.5f0), red_material)
-ground = tmesh(Rect3f(Vec3f(-3, -3, 0), Vec3f(6, 6, 0.01)), white_material)
+# Add lights
+push!(scene, Hikari.PointLight(Point3f(2f0, 3f0, -2f0), Hikari.RGBSpectrum(15f0)))
+push!(scene, Hikari.AmbientLight(Hikari.RGBSpectrum(0.1f0)))
 
-# Build the scene with geometry and lights
-mat_scene = Hikari.MaterialScene([sphere, ground])
-lights = [Hikari.PointLight(Vec3f(2, -2, 3), Hikari.RGBSpectrum(15f0))]
-scene = Hikari.Scene(lights, mat_scene)
+# Finalize the acceleration structure
+Hikari.sync!(scene)
 
-# Set up the camera
-resolution = Point2f(1024)
-filter = Hikari.LanczosSincFilter(Point2f(1f0), 3f0)
-film = Hikari.Film(
-    resolution,
-    Hikari.Bounds2(Point2f(0f0), Point2f(1f0)),
-    filter, 1f0, 1f0,
-)
-screen = Hikari.Bounds2(Point2f(-1f0), Point2f(1f0))
-# Camera looking at the sphere from above and to the side
+# Set up camera and film
+resolution = Point2f(512, 512)
+film = Hikari.Film(resolution)
 camera = Hikari.PerspectiveCamera(
-    Hikari.look_at(Point3f(2, 2, 1.5), Point3f(0, 0, 0.3), Vec3f(0, 0, 1)),
-    screen, 0f0, 1f0, 0f0, 1f6, 45f0, film,
+    Point3f(2f0, 2f0, -2f0), Point3f(0f0, 0.3f0, 0f0), film; fov=45f0,
 )
+Hikari.clear!(film)
 
-# Render!
-integrator = Hikari.WhittedIntegrator(camera, Hikari.UniformSampler(8), 5)
+# Render with the VolPath integrator
+integrator = Hikari.VolPath(samples=16, max_depth=5)
 integrator(scene, film, camera)
+
+# Postprocess and display
+img = Hikari.postprocess!(film; exposure=1.0f0, tonemap=:aces, gamma=2.2f0)
+Array(img)
 ```
