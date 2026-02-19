@@ -1,36 +1,78 @@
-# Trace.jl
-[![][docs-dev-img]][docs-dev-url]
+# Hikari.jl
 
-Physically-based ray tracing on CPU
+GPU-accelerated physically-based spectral path tracer for Julia, built on [KernelAbstractions.jl](https://github.com/JuliaGPU/KernelAbstractions.jl). Used as the ray tracing backend for [Makie.jl](https://github.com/MakieOrg/Makie.jl) via [RayMakie](https://github.com/MakieOrg/Makie.jl).
 
-[docs-dev-img]: https://img.shields.io/badge/docs-dev-blue.svg
-[docs-dev-url]: https://pxl-th.github.io/Trace.jl/dev/
+<p align="center">
+  <img src="./images/cloud_bomex.png" width="600">
+  <br>
+  <em>BOMEX LES cloud field with volumetric path tracing</em>
+</p>
 
-<img src="./docs/src/assets/shadows-sppm-1024x1024_mio.png">
+## Gallery
 
-Output from `/scenes/shadows.jl`.
+All renders produced with Hikari via RayMakie. Demo source code at [SimonDanisch/RayDemo](https://github.com/SimonDanisch/RayDemo).
+
+|   |   |
+|:-:|:-:|
+| <img src="./images/terrain.png" width="400"> | <img src="./images/black_hole.png" width="400"> |
+| Terrain with volumetric clouds | Black hole with gravitational lensing |
+| <img src="./images/protein_glass.png" width="400"> | <img src="./images/protein_gold.png" width="400"> |
+| Protein structure (glass) | Protein structure (gold conductor) |
+| <img src="./images/cms_detector.png" width="400"> | <img src="./images/spacecraft.png" width="400"> |
+| CMS particle detector ([Geant4.jl](https://github.com/JuliaHEP/Geant4.jl)) | HL-20 spacecraft with volumetric exhaust |
+| <img src="./images/plants.png" width="400"> | <img src="./images/bunny_cloud.png" width="400"> |
+| Oil palm ([PlantGeom.jl](https://github.com/VEZY/PlantGeom.jl)) | Stanford bunny cloud (NanoVDB) |
+
+## Features
+
+- **GPU-accelerated**: Runs on AMD (ROCm) and NVIDIA (CUDA) GPUs via KernelAbstractions.jl
+- **Spectral rendering**: Hero-wavelength spectral path tracing with CIE XYZ color matching
+- **Volumetric path tracing**: Delta tracking with null scattering for participating media (fog, smoke, clouds)
+- **NanoVDB support**: Sparse volumetric data for large-scale cloud/smoke rendering
+- **pbrt-v4 based**: Physically-based materials and light transport ported from [pbrt-v4](https://github.com/mmp/pbrt-v4)
+- **Material system**: Glass, conductor (measured spectral data), coated diffuse, thin dielectric, diffuse transmission, and more
+- **BVH light sampling**: Spatially-aware importance sampling for many-light scenes
+- **Makie integration**: Drop-in ray tracing backend for the Makie ecosystem via RayMakie
+
+## Related packages
+
+| Package | Description |
+|---------|-------------|
+| [Raycore.jl](https://github.com/JuliaGeometry/Raycore.jl) | BVH acceleration and ray-scene intersection |
+| [RayMakie](https://github.com/MakieOrg/Makie.jl) | Makie backend that connects Hikari to the Makie plotting ecosystem |
+| [RayDemo](https://github.com/SimonDanisch/RayDemo) | Demo scenes and rendered gallery |
 
 ## Install
 
-```
-] add https://github.com/pxl-th/Trace.jl.git
-```
-
-## Examples
-
-All of the examples are available in `scenes/` directory.
-
-Example of running caustic glass scene (note that it supports multithreading).
-
-```bash
-julia -t 4 --project=. scenes/caustic_glass.jl
+```julia
+] add Hikari
 ```
 
-### Caustic simulation
+## Quick start
 
-Caustic effect using Stochastic Progressive Photon Mapping on a glass block.
+Using Hikari through RayMakie:
 
-|Image|Video|
-|:-:|:-:|
-|<img src="https://github.com/user-attachments/assets/f7d8cd98-1dfa-4bb2-9bb4-3a48e3556f1a" width=400>|<img src="https://i.ytimg.com/vi_webp/87NlMA3Vwvs/maxresdefault.webp" width="720">|
-|100 iterations, ray depth 8|25 iterations per frame, ray depth 5. [YouTube](https://www.youtube.com/watch?v=87NlMA3Vwvs)|
+```julia
+using GLMakie, RayMakie, Hikari
+
+# Activate the ray tracing backend
+backend = Hikari.KernelAbstractions.CPU() # Or e.g. CUDA.CUDABackend() or AMDGPU.ROCBackend()
+RayMakie.activate!(; device=backend)
+
+# Build a scene with Makie
+scene = Scene(; size=(800, 800), lights=[Makie.SunSkyLight(Vec3f(1, 2, 9); intensity=1f0, turbidity=3f0, ground_enabled=false)])
+cam3d!(scene)
+
+# Add geometry with physically-based materials
+mesh!(scene, Sphere(Point3f(0), 1f0); material=Hikari.GlassMaterial(index=1.5))
+mesh!(scene, Rect3f(Point3f(-2, -2, -1), Vec3f(4, 4, 0.01));
+    material=Hikari.Gold(roughness=0.01f0))
+
+# Render
+integrator = Hikari.VolPath(samples=256, max_depth=12)
+img = Makie.colorbuffer(scene; integrator=integrator)
+```
+
+## Acknowledgements
+
+Originally developed as [Trace.jl](https://github.com/pxl-th/Trace.jl) by [Anton Smirnov](https://github.com/pxl-th). Rewritten with GPU support, spectral rendering, and a pbrt-v4 based volumetric path tracer.

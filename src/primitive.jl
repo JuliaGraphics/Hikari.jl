@@ -1,35 +1,27 @@
-struct GeometricPrimitive{T<:AbstractShape} <: Primitive
-    shape::T
-    material::Maybe{M} where M<:Material
+# GeometricPrimitive is no longer needed with new RayCaster API
+# Materials are now stored separately in MaterialScene
 
-    function GeometricPrimitive(
-        shape::T, material::Maybe{M} = nothing,
-    ) where {T<:AbstractShape,M<:Material}
-        new{T}(shape, material)
+# Helper function to build MaterialScene from TriangleMesh with materials
+function build_material_scene(mesh_material_pairs::Vector{Tuple{TriangleMesh, M}}) where {M<:Material}
+    materials = M[]
+    meshes = TriangleMesh[]
+
+    for (mesh, material) in mesh_material_pairs
+        push!(materials, material)
+        push!(meshes, mesh)
     end
+
+    # Build BVH with material indices
+    bvh = BVH(meshes)
+
+    # MaterialScene expects a tuple of material vectors
+    return MaterialScene(bvh, (materials,))
 end
 
-function intersect!(
-    p::GeometricPrimitive{T}, ray::Union{Ray,RayDifferentials},
-) where T<:AbstractShape
-    intersects, t_hit, interaction = intersect(p.shape, ray)
-    !intersects && return false, nothing
-    ray.t_max = t_hit
-    interaction.primitive = p
-    true, interaction
-end
+# Compatibility: keep GeometricPrimitive for backward compatibility in basic-scene.jl
+struct GeometricPrimitive{M<:Material}
+    shape::TriangleMesh
+    material::M
 
-@inline function intersect_p(
-    p::GeometricPrimitive, ray::Union{Ray,RayDifferentials},
-)
-    intersect_p(p.shape, ray)
-end
-@inline world_bound(p::GeometricPrimitive) = world_bound(p.shape)
-
-function compute_scattering!(
-    p::GeometricPrimitive, si::SurfaceInteraction,
-    allow_multiple_lobes::Bool, ::Type{T},
-) where T<:TransportMode
-    !(p.material isa Nothing) && p.material(si, allow_multiple_lobes, T)
-    @real_assert (si.core.n ⋅ si.shading.n) ≥ 0f0
+    GeometricPrimitive(shape::TriangleMesh, material::M) where {M<:Material} = new{M}(shape, material)
 end

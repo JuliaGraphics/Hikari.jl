@@ -1,12 +1,12 @@
 using Documenter
 using DocumenterVitepress
-using Trace
+using Hikari
 
-makedocs(; sitename = "Trace", authors = "Anton Smirnov and contributors",
-    modules = [Trace],
+makedocs(; sitename = "Hikari", authors = "Anton Smirnov, Simon Danisch and contributors",
+    modules = [Hikari],
     checkdocs = :all,
     format = DocumenterVitepress.MarkdownVitepress(
-        repo = "github.com/pxl-th/Trace.jl", # this must be the full URL!
+        repo = "github.com/JuliaGraphics/Hikari.jl", # this must be the full URL!
         devbranch = "master",
         devurl = "dev";
     ),
@@ -18,12 +18,13 @@ makedocs(; sitename = "Trace", authors = "Anton Smirnov and contributors",
         "Home" => "index.md",
         "Get Started" => "get_started.md",
         "Shadows" => "shadows.md",
+        "Materials" => "materials.md",
         "API" => "api.md",
     ],
 )
 
 deploydocs(;
-    repo = "github.com/pxl-th/Trace.jl",
+    repo = "github.com/JuliaGraphics/Hikari.jl",
     target = "build", # this is where Vitepress stores its output
     branch = "gh-pages",
     devbranch = "master",

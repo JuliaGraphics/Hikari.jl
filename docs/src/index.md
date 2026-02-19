@@ -4,18 +4,18 @@
 layout: home
 
 hero:
-  name: "Trace.jl"
-  tagline: Physically-based ray tracing on CPU
+  name: "Hikari.jl"
+  tagline: Physically-based ray tracing on CPU & GPU
   image:
     src: /logo.png
-    alt: Trace
+    alt: Hikari
   actions:
     - theme: brand
       text: Get Started
       link: /get_started
     - theme: alt
       text: View on Github
-      link: https://github.com/pxl-th/Trace.jl
+      link: https://github.com/JuliaGraphics/Hikari.jl
     - theme: alt
       text: API
       link: /api

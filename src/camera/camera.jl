@@ -4,8 +4,6 @@ struct CameraCore
     camera_to_world::Transformation
     shutter_open::Float32
     shutter_close::Float32
-    film::Film
-    # medium::Medium
 end
 
 struct CameraSample
@@ -23,7 +21,17 @@ struct CameraSample
     shutter_open & shutter_close time range.
     """
     time::Float32
+    """
+    Filter weight for this sample. Used when accumulating samples into pixels.
+    Computed from filter importance sampling - samples at the center of the
+    filter have higher weight than those at the edges.
+    """
+    filter_weight::Float32
 end
+
+# Convenience constructor for backwards compatibility (weight defaults to 1.0)
+CameraSample(film::Point2f, lens::Point2f, time::Float32) =
+    CameraSample(film, lens, time, 1.0f0)
 
 """
 Compute the ray corresponding to a given sample.
@@ -37,17 +45,19 @@ set this value to indicate how much light carries through the lenses,
 based on their optical properties.
 """
 function generate_ray(
-    camera::C, sample::CameraSample,
-)::Tuple{Ray,Float32} where C<:Camera
+        camera::C, sample::CameraSample,
+    )::Tuple{Ray,Float32} where C<:Camera
 end
+
 """
 Same as `generate_ray`, but also computes rays for pixels shifted one pixel
 in x & y directions on the film plane.
 Useful for anti-aliasing textures.
 """
 function generate_ray_differential(
-    camera::C, sample::CameraSample,
-)::Tuple{RayDifferentials,Float32} where C<:Camera
+        camera::C, sample::CameraSample,
+    )::Tuple{RayDifferentials,Float32} where C<:Camera
+
     ray, wt = generate_ray(camera, sample)
     shifted_x = CameraSample(
         sample.film + Point2f(1f0, 0f0), sample.lens, sample.time,
@@ -57,11 +67,21 @@ function generate_ray_differential(
     )
     ray_x, wt_x = generate_ray(camera, shifted_x)
     ray_y, wt_y = generate_ray(camera, shifted_y)
-    ray = RayDifferentials(
+    rayd = RayDifferentials(
         ray.o, ray.d, ray.t_max, ray.time,
-        true, ray_x.o, ray_y.o, ray_x.d, ray_y.d,
+        true, ray_x.o, ray_y.o, ray_x.d, ray_y.d
     )
-    ray, wt
+    rayd, wt
 end
 
 include("perspective.jl")
+include("matrix.jl")
+
+# Generic accessor for camera_to_world transform (handles different nesting depths)
+# PerspectiveCamera: camera.core (ProjectiveCamera) .core (CameraCore) .camera_to_world
+# MatrixCamera: camera.core (CameraCore) .camera_to_world
+get_camera_to_world(camera::PerspectiveCamera) = camera.core.core.camera_to_world
+get_camera_to_world(camera::MatrixCamera) = camera.core.camera_to_world
+
+get_camera_position(camera::PerspectiveCamera) = get_camera_to_world(camera)(Point3f(0f0))
+get_camera_position(camera::MatrixCamera) = get_camera_to_world(camera)(Point3f(0f0))

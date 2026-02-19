@@ -1,113 +1,55 @@
-## shadows
+## Shadows
 
-```@example
+This example demonstrates a Cornell box-style scene with multiple spheres, different materials (matte, mirror, conductor), and shadow rendering.
+
+```@example shadows
 using GeometryBasics
-using Trace
-using FileIO
-using ImageCore
+using Hikari
+using ImageShow
 
-function render()
-    material_red = Trace.MatteMaterial(
-        Trace.ConstantTexture(Trace.RGBSpectrum(0.796f0, 0.235f0, 0.2f0)),
-        Trace.ConstantTexture(0f0),
-    )
-    material_blue = Trace.MatteMaterial(
-        Trace.ConstantTexture(Trace.RGBSpectrum(0.251f0, 0.388f0, 0.847f0)),
-        Trace.ConstantTexture(0f0),
-    )
-    material_white = Trace.MatteMaterial(
-        Trace.ConstantTexture(Trace.RGBSpectrum(1f0)),
-        Trace.ConstantTexture(0f0),
-    )
-    mirror = Trace.MirrorMaterial(Trace.ConstantTexture(Trace.RGBSpectrum(1f0)))
-    glass = Trace.GlassMaterial(
-        Trace.ConstantTexture(Trace.RGBSpectrum(1f0)),
-        Trace.ConstantTexture(Trace.RGBSpectrum(1f0)),
-        Trace.ConstantTexture(0f0),
-        Trace.ConstantTexture(0f0),
-        Trace.ConstantTexture(1.5f0),
-        true,
-    )
+# Helper to tessellate primitives
+to_mesh(prim) = normal_mesh(prim isa Sphere ? Tesselation(prim, 64) : prim)
 
-    core = Trace.ShapeCore(
-        Trace.translate(Vec3f(0.3, 0.11, -2.2)), false,
-    )
-    sphere = Trace.Sphere(core, 0.1f0, 360f0)
-    primitive = Trace.GeometricPrimitive(sphere, glass)
+# Define materials
+material_white = Hikari.MatteMaterial(Kd=Hikari.RGBSpectrum(0.9f0))
+material_red = Hikari.MatteMaterial(Kd=Hikari.RGBSpectrum(0.8f0, 0.2f0, 0.2f0))
+material_green = Hikari.MatteMaterial(Kd=Hikari.RGBSpectrum(0.2f0, 0.8f0, 0.2f0))
+material_blue = Hikari.MatteMaterial(Kd=Hikari.RGBSpectrum(0.3f0, 0.5f0, 0.9f0))
+mirror = Hikari.MirrorMaterial(Kr=Hikari.RGBSpectrum(0.95f0))
 
-    core2 = Trace.ShapeCore(
-        Trace.translate(Vec3f(0.2, 0.11, -2.6)), false,
-    )
-    sphere2 = Trace.Sphere(core2, 0.1f0, 360f0)
-    primitive2 = Trace.GeometricPrimitive(sphere2, material_blue)
+# Build scene
+scene = Hikari.Scene()
 
-    core3 = Trace.ShapeCore(
-        Trace.translate(Vec3f(0.7, 0.31, -2.8)), false,
-    )
-    sphere3 = Trace.Sphere(core3, 0.3f0, 360f0)
-    primitive3 = Trace.GeometricPrimitive(sphere3, mirror)
+# Spheres with different materials
+push!(scene, to_mesh(Sphere(Point3f(0, 0.5, 0), 0.5f0)), mirror)        # Center mirror
+push!(scene, to_mesh(Sphere(Point3f(0.8, 0.3, 0.3), 0.3f0)), material_blue)
+push!(scene, to_mesh(Sphere(Point3f(-0.8, 0.3, 0.3), 0.3f0)), material_red)
+push!(scene, to_mesh(Sphere(Point3f(0, 0.25, 0.9), 0.25f0)), material_white)
 
-    core4 = Trace.ShapeCore(
-        Trace.translate(Vec3f(0.7, 0.11, -2.3)), false,
-    )
-    sphere4 = Trace.Sphere(core4, 0.1f0, 360f0)
-    primitive4 = Trace.GeometricPrimitive(sphere4, material_red)
+# Room geometry (Cornell box style, Y-up)
+push!(scene, to_mesh(Rect3f(Vec3f(-2, 0, -2), Vec3f(4, 0.01, 4))), material_white)   # Floor
+push!(scene, to_mesh(Rect3f(Vec3f(-2, 0, 2 - 0.01), Vec3f(4, 3, 0.01))), material_white)  # Back wall
+push!(scene, to_mesh(Rect3f(Vec3f(-2, 0, -2), Vec3f(0.01, 3, 4))), material_red)     # Left wall
+push!(scene, to_mesh(Rect3f(Vec3f(2 - 0.01, 0, -2), Vec3f(0.01, 3, 4))), material_green)  # Right wall
 
-    triangles = Trace.create_triangle_mesh(
-        Trace.ShapeCore(Trace.translate(Vec3f(0, 0, -2)), false),
-        4,
-        UInt32[
-            1, 2, 3,
-            1, 4, 3,
-            2, 3, 5,
-            6, 5, 3,
-        ],
-        6,
-        [
-            Point3f(0, 0, 0), Point3f(0, 0, -1),
-            Point3f(1, 0, -1), Point3f(1, 0, 0),
-            Point3f(0, 1, -1), Point3f(1, 1, -1),
-        ],
-        [
-            Trace.Normal3f(0, 1, 0), Trace.Normal3f(0, 1, 0),
-            Trace.Normal3f(0, 1, 0), Trace.Normal3f(0, 1, 0),
-            Trace.Normal3f(0, 0, 1), Trace.Normal3f(0, 0, 1),
-        ],
-    )
-    triangle_primitive = Trace.GeometricPrimitive(triangles[1], mirror)
-    triangle_primitive2 = Trace.GeometricPrimitive(triangles[2], mirror)
-    triangle_primitive3 = Trace.GeometricPrimitive(triangles[3], material_white)
-    triangle_primitive4 = Trace.GeometricPrimitive(triangles[4], material_white)
+# Lights
+push!(scene, Hikari.PointLight(Point3f(0f0, 2.5f0, 0f0), Hikari.RGBSpectrum(12f0)))
+push!(scene, Hikari.PointLight(Point3f(-1f0, 1.5f0, -1.5f0), Hikari.RGBSpectrum(4f0)))
 
-    bvh = Trace.BVHAccel([
-        primitive, primitive2, primitive3, primitive4,
-        triangle_primitive, triangle_primitive2,
-        triangle_primitive3, triangle_primitive4,
-    ], 1)
+Hikari.sync!(scene)
 
-    lights = [Trace.PointLight(
-        Trace.translate(Vec3f(-1, 1, 0)), Trace.RGBSpectrum(25f0),
-    )]
-    scene = Trace.Scene(lights, bvh)
+# Camera and film
+resolution = Point2f(512, 512)
+film = Hikari.Film(resolution)
+camera = Hikari.PerspectiveCamera(
+    Point3f(0f0, 1.5f0, -3f0), Point3f(0f0, 0.4f0, 0f0), film; fov=50f0,
+)
+Hikari.clear!(film)
 
-    resolution = Point2f(1024 ÷ 3)
-    filter = Trace.LanczosSincFilter(Point2f(1f0), 3f0)
-    film = Trace.Film(resolution,
-        Trace.Bounds2(Point2f(0f0), Point2f(1f0)),
-        filter, 1f0, 1f0,
-        "shadows_sppm_res.png",
-    )
-    screen = Trace.Bounds2(Point2f(-1f0), Point2f(1f0))
-    camera = Trace.PerspectiveCamera(
-        Trace.look_at(Point3f(0, 15, 50), Point3f(0, 0, -2), Vec3f(0, 1, 0)),
-        screen, 0f0, 1f0, 0f0, 1f6, 90f0, film,
-    )
-    # integrator = Trace.WhittedIntegrator(camera, Trace.UniformSampler(8), 8)
-    integrator = Trace.SPPMIntegrator(camera, 0.025f0, 5, 10)
-    scene |> integrator
-end
+# Render
+integrator = Hikari.VolPath(samples=16, max_depth=10)
+integrator(scene, film, camera)
 
-render()
+img = Hikari.postprocess!(film; exposure=1.0f0, tonemap=:aces, gamma=2.2f0)
+Array(img)
 ```
-
-![](shadows_sppm_res.png)

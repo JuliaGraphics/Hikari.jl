@@ -7,18 +7,18 @@ outline: deep
 ## Public API
 ```@meta
 DocTestSetup= quote
-using Trace
+using Hikari
 end
 ```
 
 ```@autodocs
-Modules = [Trace]
+Modules = [Hikari]
 Private = false
 ```
 
 ## Internal API
 
 ```@autodocs
-Modules = [Trace]
+Modules = [Hikari]
 Public = false
 ```

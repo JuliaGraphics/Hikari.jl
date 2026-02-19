@@ -1,0 +1,603 @@
+# Film update for PhysicalWavefront path tracing
+# Converts accumulated spectral radiance to RGB for Film output
+#
+# ARCHITECTURE NOTE:
+# All operations use @kernel functions that work identically on CPU (Array backend)
+# and GPU (ROCArray/CuArray/etc). Never use CPU-specific loops that copy data back
+# and forth. The CIE table arrays must be passed explicitly to kernels - there is
+# no global table.
+
+# ============================================================================
+# Per-Sample Spectral-to-RGB Accumulation Kernel (pbrt-v4 style)
+# ============================================================================
+
+"""
+    pw_accumulate_sample_to_rgb_kernel!(pixel_rgb, pixel_L, wavelengths_per_pixel,
+                                         pdf_per_pixel, cie_x, cie_y, cie_z, num_pixels)
+
+Convert this sample's spectral radiance to RGB using PER-PIXEL wavelengths
+and accumulate into pixel_rgb buffer.
+
+This is the key operation that pbrt-v4 does: spectral-to-RGB conversion happens
+IMMEDIATELY after each sample, using THAT PIXEL's wavelengths. The RGB values
+are then accumulated across samples.
+
+Each pixel has independently sampled wavelengths, which decorrelates color noise
+and results in much faster convergence than using shared wavelengths.
+
+Arguments:
+- `pixel_rgb`: RGB accumulation buffer (3 × num_pixels, interleaved R,G,B)
+- `pixel_L`: Spectral radiance for this sample (4 × num_pixels, interleaved)
+- `wavelengths_per_pixel`: Wavelengths for each pixel (4 × num_pixels)
+- `pdf_per_pixel`: PDF for each wavelength sample (4 × num_pixels)
+- `cie_x`, `cie_y`, `cie_z`: CIE XYZ color matching function arrays
+- `num_pixels`: Total number of pixels
+"""
+@kernel inbounds=true function pw_accumulate_sample_to_rgb_kernel!(
+    pixel_rgb,
+    @Const(pixel_L),
+    @Const(wavelengths_per_pixel),
+    @Const(pdf_per_pixel),
+    @Const(cie_x),
+    @Const(cie_y),
+    @Const(cie_z),
+    @Const(num_pixels::Int32)
+)
+    idx = @index(Global)
+
+    if idx <= num_pixels
+        base = (idx - Int32(1)) * Int32(4) + Int32(1)
+        L = load(pixel_L, base, SpectralRadiance)
+        lambda_tuple = load(wavelengths_per_pixel, base, NTuple{4, Float32})
+        pdf_tuple = load(pdf_per_pixel, base, NTuple{4, Float32})
+        lambda = Wavelengths(lambda_tuple, pdf_tuple)
+
+        cie_table = CIEXYZTable(cie_x, cie_y, cie_z)
+        rgb = spectral_to_linear_rgb(cie_table, L, lambda)
+
+        # Clamp negative values and NaN/Inf
+        rgb = map(c-> ifelse(isfinite(c), c, 0f0), rgb)
+        # Accumulate into RGB buffer (atomic add for thread safety)
+        base_rgb = (idx - Int32(1)) * Int32(3)
+        pixel_rgb[base_rgb + Int32(1)] += rgb[1]
+        pixel_rgb[base_rgb + Int32(2)] += rgb[2]
+        pixel_rgb[base_rgb + Int32(3)] += rgb[3]
+    end
+end
+
+"""
+    pw_accumulate_sample_to_rgb!(backend, pixel_rgb, pixel_L, wavelengths_per_pixel,
+                                  pdf_per_pixel, cie_table, num_pixels)
+
+High-level wrapper to accumulate spectral sample to RGB buffer.
+"""
+function pw_accumulate_sample_to_rgb!(
+    backend,
+    pixel_rgb::AbstractVector{Float32},
+    pixel_L::AbstractVector{Float32},
+    wavelengths_per_pixel::AbstractVector{Float32},
+    pdf_per_pixel::AbstractVector{Float32},
+    cie_table::CIEXYZTable,
+    num_pixels::Int32
+)
+    kernel! = pw_accumulate_sample_to_rgb_kernel!(backend)
+    kernel!(
+        pixel_rgb,
+        pixel_L,
+        wavelengths_per_pixel,
+        pdf_per_pixel,
+        cie_table.cie_x,
+        cie_table.cie_y,
+        cie_table.cie_z,
+        num_pixels;
+        ndrange=Int(num_pixels)
+    )
+    KernelAbstractions.synchronize(backend)
+    return nothing
+end
+
+# ============================================================================
+# Film Finalization Kernel
+# ============================================================================
+
+"""
+    pw_finalize_film_kernel!(framebuffer, pixel_rgb, inv_samples, width, height)
+
+Copy accumulated RGB values to film framebuffer, dividing by sample count.
+"""
+@kernel inbounds=true function pw_finalize_film_kernel!(
+    framebuffer,
+    @Const(pixel_rgb),
+    @Const(inv_samples::Float32),
+    @Const(width::Int32),
+    @Const(height::Int32)
+)
+    idx = @index(Global)
+    num_pixels = width * height
+
+    if idx <= num_pixels
+        base = (idx - Int32(1)) * Int32(3)
+        rgb = load(pixel_rgb, base + Int32(1), Vec3f) * inv_samples
+
+        # Clamp
+        rgb = map(c -> ifelse(isfinite(c), max(0f0, c), 0f0), rgb)
+
+        # Convert linear index to 2D coordinates
+        pixel_idx = idx - Int32(1)
+        x = u_int32(mod(pixel_idx, width)) + Int32(1)
+        y = u_int32(div(pixel_idx, width)) + Int32(1)
+
+        framebuffer[y, x] = RGB{Float32}(rgb[1], rgb[2], rgb[3])
+    end
+end
+
+"""
+    pw_finalize_film!(backend, film, pixel_rgb, samples_per_pixel)
+
+Copy accumulated RGB values to film framebuffer, dividing by sample count.
+"""
+function pw_finalize_film!(
+    backend,
+    film::Film,
+    pixel_rgb::AbstractVector{Float32},
+    samples_per_pixel::Int32
+)
+    width = Int32(size(film.framebuffer, 2))
+    height = Int32(size(film.framebuffer, 1))
+    num_pixels = width * height
+    inv_samples = 1.0f0 / Float32(samples_per_pixel)
+
+    kernel! = pw_finalize_film_kernel!(backend)
+    kernel!(
+        film.framebuffer,
+        pixel_rgb,
+        inv_samples,
+        width, height;
+        ndrange=Int(num_pixels)
+    )
+    KernelAbstractions.synchronize(backend)
+    return nothing
+end
+
+# ============================================================================
+# Spectral to RGB Conversion Kernel (per-pixel wavelengths, final update)
+# ============================================================================
+
+"""
+    pw_update_film_spectral_kernel!(framebuffer, pixel_L, wavelengths_per_pixel,
+                                     pdf_per_pixel, cie_x, cie_y, cie_z,
+                                     samples_accumulated, width, height)
+
+Convert accumulated spectral radiance to RGB and update film framebuffer.
+
+Each pixel stores 4 spectral values in pixel_L (interleaved), and wavelengths_per_pixel
+stores the sampled wavelengths. Uses CIE XYZ color matching for accurate conversion.
+"""
+@kernel inbounds=true function pw_update_film_spectral_kernel!(
+    framebuffer,
+    @Const(pixel_L),
+    @Const(wavelengths_per_pixel),
+    @Const(pdf_per_pixel),
+    @Const(cie_x),
+    @Const(cie_y),
+    @Const(cie_z),
+    @Const(samples_accumulated::Int32),
+    @Const(width::Int32),
+    @Const(height::Int32)
+)
+    idx = @index(Global)
+    num_pixels = width * height
+
+    if idx <= num_pixels
+        base = (idx - Int32(1)) * Int32(4)
+        L = load(pixel_L, base + Int32(1), SpectralRadiance)
+        lambda_tuple = load(wavelengths_per_pixel, base + Int32(1), NTuple{4, Float32})
+        pdf_tuple = load(pdf_per_pixel, base + Int32(1), NTuple{4, Float32})
+        lambda = Wavelengths(lambda_tuple, pdf_tuple)
+
+        cie_table = CIEXYZTable(cie_x, cie_y, cie_z)
+        rgb = spectral_to_linear_rgb(cie_table, L, lambda)
+
+        # Average by number of samples
+        if samples_accumulated > Int32(0)
+            rgb = rgb * (1.0f0 / Float32(samples_accumulated))
+        end
+
+        # Clamp NaN/Inf
+        rgb = map(c -> ifelse(isfinite(c), c, 0f0), rgb)
+
+        # Convert linear index to 2D coordinates
+        pixel_idx = idx - Int32(1)
+        x = u_int32(mod(pixel_idx, width)) + Int32(1)
+        y = u_int32(div(pixel_idx, width)) + Int32(1)
+
+        framebuffer[y, x] = RGB{Float32}(rgb[1], rgb[2], rgb[3])
+    end
+end
+
+# ============================================================================
+# Simplified Spectral Update (Uniform Wavelength Sampling)
+# ============================================================================
+
+"""
+    pw_update_film_uniform_kernel!(framebuffer, pixel_L, cie_x, cie_y, cie_z,
+                                    lambda, samples_accumulated, width, height)
+
+Convert accumulated spectral radiance to RGB using uniform wavelength sampling.
+
+When using stratified wavelength sampling, all pixels share the same wavelengths
+within a sample iteration. This kernel uses a single Wavelengths value for all pixels.
+"""
+@kernel inbounds=true function pw_update_film_uniform_kernel!(
+    framebuffer,
+    @Const(pixel_L),
+    @Const(cie_x),
+    @Const(cie_y),
+    @Const(cie_z),
+    @Const(lambda::Wavelengths),
+    @Const(samples_accumulated::Int32),
+    @Const(width::Int32),
+    @Const(height::Int32)
+)
+    idx = @index(Global)
+    num_pixels = width * height
+
+    if idx <= num_pixels
+        base = (idx - Int32(1)) * Int32(4)
+        L = load(pixel_L, base + Int32(1), SpectralRadiance)
+
+        cie_table = CIEXYZTable(cie_x, cie_y, cie_z)
+        rgb = spectral_to_linear_rgb(cie_table, L, lambda)
+
+        # Average by number of samples
+        if samples_accumulated > Int32(0)
+            rgb = rgb * (1.0f0 / Float32(samples_accumulated))
+        end
+
+        # Clamp NaN/Inf
+        rgb = map(c -> ifelse(isfinite(c), c, 0f0), rgb)
+
+        # Convert linear index to 2D coordinates
+        pixel_idx = idx - Int32(1)
+        x = u_int32(mod(pixel_idx, width)) + Int32(1)
+        y = u_int32(div(pixel_idx, width)) + Int32(1)
+
+        framebuffer[y, x] = RGB{Float32}(rgb[1], rgb[2], rgb[3])
+    end
+end
+
+# ============================================================================
+# Accumulative Film Update (for progressive rendering)
+# ============================================================================
+
+"""
+    pw_accumulate_to_film_kernel!(pixel_L_accum, pixel_L_sample, num_pixels)
+
+Accumulate sample results into the film accumulator.
+Adds new sample's spectral values to existing accumulated values.
+"""
+@kernel inbounds=true function pw_accumulate_to_film_kernel!(
+    pixel_L_accum,
+    @Const(pixel_L_sample),
+    @Const(num_pixels::Int32)
+)
+    idx = @index(Global)
+
+     if idx <= num_pixels * Int32(4)
+        pixel_L_accum[idx] += pixel_L_sample[idx]
+    end
+end
+
+# ============================================================================
+# Clear Film Kernel
+# ============================================================================
+
+"""
+    pw_clear_film_kernel!(pixel_L, num_pixels)
+
+Clear accumulated spectral radiance to zero for new render.
+"""
+@kernel inbounds=true function pw_clear_film_kernel!(
+    pixel_L,
+    @Const(num_pixels::Int32)
+)
+    idx = @index(Global)
+
+     if idx <= num_pixels * Int32(4)
+        pixel_L[idx] = 0.0f0
+    end
+end
+
+# ============================================================================
+# High-Level Wrapper Functions
+# ============================================================================
+
+"""
+    pw_update_film_perPixel!(backend, film, pixel_L, wavelengths_per_pixel,
+                              pdf_per_pixel, cie_table, samples_accumulated)
+
+Update film framebuffer with per-pixel wavelength data.
+Uses proper kernel with CIE table arrays passed explicitly.
+"""
+function pw_update_film_perPixel!(
+    backend,
+    film::Film,
+    pixel_L::AbstractVector{Float32},
+    wavelengths_per_pixel::AbstractVector{Float32},
+    pdf_per_pixel::AbstractVector{Float32},
+    cie_table::CIEXYZTable,
+    samples_accumulated::Int32
+)
+    width = Int32(size(film.framebuffer, 2))
+    height = Int32(size(film.framebuffer, 1))
+    num_pixels = width * height
+
+    kernel! = pw_update_film_spectral_kernel!(backend)
+    kernel!(
+        film.framebuffer,
+        pixel_L,
+        wavelengths_per_pixel,
+        pdf_per_pixel,
+        cie_table.cie_x,
+        cie_table.cie_y,
+        cie_table.cie_z,
+        samples_accumulated,
+        width, height;
+        ndrange=Int(num_pixels)
+    )
+
+    KernelAbstractions.synchronize(backend)
+    return nothing
+end
+
+"""
+    pw_update_film_uniform!(backend, film, pixel_L, cie_table, lambda, samples_accumulated)
+
+Update film framebuffer using uniform wavelength sampling (all pixels share wavelengths).
+"""
+function pw_update_film_uniform!(
+    backend,
+    film::Film,
+    pixel_L::AbstractVector{Float32},
+    cie_table::CIEXYZTable,
+    lambda::Wavelengths,
+    samples_accumulated::Int32
+)
+    width = Int32(size(film.framebuffer, 2))
+    height = Int32(size(film.framebuffer, 1))
+    num_pixels = width * height
+
+    kernel! = pw_update_film_uniform_kernel!(backend)
+    kernel!(
+        film.framebuffer,
+        pixel_L,
+        cie_table.cie_x,
+        cie_table.cie_y,
+        cie_table.cie_z,
+        lambda,
+        samples_accumulated,
+        width, height;
+        ndrange=Int(num_pixels)
+    )
+
+    KernelAbstractions.synchronize(backend)
+    return nothing
+end
+
+"""
+    pw_accumulate_samples!(backend, pixel_L_accum, pixel_L_sample, num_pixels)
+
+Add new sample results to accumulated film values.
+"""
+function pw_accumulate_samples!(
+    backend,
+    pixel_L_accum::AbstractVector{Float32},
+    pixel_L_sample::AbstractVector{Float32},
+    num_pixels::Int32
+)
+    kernel! = pw_accumulate_to_film_kernel!(backend)
+    kernel!(
+        pixel_L_accum,
+        pixel_L_sample,
+        num_pixels;
+        ndrange=Int(num_pixels * Int32(4))
+    )
+
+    KernelAbstractions.synchronize(backend)
+    return nothing
+end
+
+"""
+    pw_clear_film!(backend, pixel_L, num_pixels)
+
+Clear film accumulator to zero for a new render.
+"""
+function pw_clear_film!(
+    backend,
+    pixel_L::AbstractVector{Float32},
+    num_pixels::Int32
+)
+    kernel! = pw_clear_film_kernel!(backend)
+    kernel!(
+        pixel_L,
+        num_pixels;
+        ndrange=Int(num_pixels * Int32(4))
+    )
+
+    KernelAbstractions.synchronize(backend)
+    return nothing
+end
+
+# ============================================================================
+# Auxiliary Buffer Update from Material Queue
+# ============================================================================
+
+"""
+    pw_update_aux_from_material_queue!(backend, film, material_queue, materials, rgb2spec_table)
+
+Update film auxiliary buffers (albedo, normal, depth) from first-bounce material hits.
+
+This extracts albedo from materials during the wavefront pipeline,
+unlike the separate fill_aux_buffers! which traces primary rays again.
+"""
+function pw_update_aux_from_material_queue!(
+    backend,
+    film::Film,
+    material_queue::WorkQueue{PWMaterialEvalWorkItem},
+    materials,
+    rgb2spec_table::RGBToSpectrumTable
+)
+    n = length(material_queue)
+    n == 0 && return nothing
+
+    width = Int32(size(film.framebuffer, 2))
+    height = Int32(size(film.framebuffer, 1))
+
+    kernel! = pw_update_aux_kernel!(backend)
+    kernel!(
+        film.albedo,
+        film.normal,
+        film.depth,
+        material_queue.items, material_queue.size,
+        materials,
+        rgb2spec_table,
+        width, height, Int32(n);
+        ndrange=Int(n)
+    )
+
+    KernelAbstractions.synchronize(backend)
+    return nothing
+end
+
+"""
+    pw_update_aux_kernel!(aux_albedo, aux_normal, aux_depth,
+                           material_queue_items, material_queue_size,
+                           materials, rgb2spec_table,
+                           width, height, max_queued)
+
+Kernel to update auxiliary buffers from depth=0 material queue items.
+"""
+@kernel inbounds=true function pw_update_aux_kernel!(
+    aux_albedo,    # RGB{Float32} matrix (height × width)
+    aux_normal,    # Vec3f matrix (height × width)
+    aux_depth,     # Float32 matrix (height × width)
+    @Const(material_queue_items), @Const(material_queue_size),
+    @Const(materials),
+    @Const(rgb2spec_table),
+    @Const(width::Int32), @Const(height::Int32),
+    @Const(max_queued::Int32)
+)
+    idx = @index(Global)
+
+     if idx <= max_queued
+        current_size = material_queue_size[1]
+        if idx <= current_size
+            work = material_queue_items[idx]
+
+            # Only update from first bounce hits
+            if work.depth == Int32(0)
+                pixel_idx = work.pixel_index
+
+                # Get material albedo (spectral, convert to RGB)
+                albedo_spec = with_index(get_albedo_spectral, materials, work.material_idx,
+                    rgb2spec_table, materials, work.uv, work.lambda
+                )
+                # Simple average of spectral values as grayscale approximation
+                # Could use hero wavelength for better color, but this is for denoising
+                albedo_avg = average(albedo_spec)
+
+                # Convert linear pixel index to 2D
+                # pixel_index uses row-major: idx = (y-1)*width + x
+                # aux buffers are (height, width), so use [y, x]
+                p_idx = pixel_idx - Int32(1)
+                x = u_int32(mod(p_idx, width)) + Int32(1)   # column
+                y = u_int32(div(p_idx, width)) + Int32(1)   # row
+
+                # Store albedo (grayscale for now)
+                aux_albedo[y, x] = RGB{Float32}(albedo_avg, albedo_avg, albedo_avg)
+
+                # Store normal (world space)
+                aux_normal[y, x] = work.ns
+
+                # Store depth (z-coordinate of hit point as proxy)
+                aux_depth[y, x] = work.pi[3]
+            end
+        end
+    end
+end
+
+# ============================================================================
+# Tonemapping and Postprocessing
+# ============================================================================
+
+"""
+    pw_apply_exposure_kernel!(framebuffer, exposure)
+
+Apply exposure adjustment to framebuffer (in-place).
+"""
+@kernel inbounds=true function pw_apply_exposure_kernel!(
+    framebuffer,
+    @Const(exposure::Float32)
+)
+    idx = @index(Global)
+
+     begin
+        pixel = framebuffer[idx]
+        r = pixel.r * exposure
+        g = pixel.g * exposure
+        b = pixel.b * exposure
+        framebuffer[idx] = RGB{Float32}(r, g, b)
+    end
+end
+
+"""
+    pw_apply_exposure!(backend, film::Film, exposure::Float32)
+
+Apply exposure adjustment to film framebuffer.
+"""
+function pw_apply_exposure!(backend, film::Film, exposure::Float32)
+    kernel! = pw_apply_exposure_kernel!(backend)
+    kernel!(
+        film.framebuffer,
+        exposure;
+        ndrange=length(film.framebuffer)
+    )
+    KernelAbstractions.synchronize(backend)
+    return nothing
+end
+
+"""
+    pw_apply_srgb_gamma_kernel!(output, input)
+
+Apply sRGB gamma curve to convert from linear to display sRGB.
+"""
+@kernel inbounds=true function pw_apply_srgb_gamma_kernel!(
+    output,
+    @Const(input)
+)
+    idx = @index(Global)
+
+     begin
+        pixel = input[idx]
+        r = linear_to_srgb_gamma(pixel.r)
+        g = linear_to_srgb_gamma(pixel.g)
+        b = linear_to_srgb_gamma(pixel.b)
+        output[idx] = RGB{Float32}(r, g, b)
+    end
+end
+
+"""
+    pw_apply_srgb_gamma!(backend, film::Film)
+
+Apply sRGB gamma to framebuffer and store in postprocess buffer.
+"""
+function pw_apply_srgb_gamma!(backend, film::Film)
+    kernel! = pw_apply_srgb_gamma_kernel!(backend)
+    kernel!(
+        film.postprocess,
+        film.framebuffer;
+        ndrange=length(film.framebuffer)
+    )
+    KernelAbstractions.synchronize(backend)
+    return nothing
+end

@@ -1,18 +1,35 @@
-struct SpecularReflection{S<:Spectrum,F<:Fresnel} <: BxDF
-    """
-    Spectrum used to scale the reflected color.
-    """
-    r::S
-    """
-    Describes fresnel properties.
-    """
-    fresnel::F
+const SPECULAR_REFLECTION = UInt8(1)
 
-    type::UInt8
+function SpecularReflection(active::Bool, r::S, fresnel::Fresnel, type=BSDF_SPECULAR | BSDF_REFLECTION) where {S}
+    UberBxDF{S}(active, SPECULAR_REFLECTION; r=r, fresnel=fresnel, type=type)
+end
 
-    function SpecularReflection(r::S, fresnel::F) where {S<:Spectrum,F<:Fresnel}
-        new{S,F}(r, fresnel, BSDF_SPECULAR | BSDF_REFLECTION)
-    end
+const SPECULAR_TRANSMISSION = UInt8(2)
+
+function SpecularTransmission(
+        active::Bool, t::S, η_a::Float32, η_b::Float32, transport
+    ) where {S<:Spectrum}
+
+    UberBxDF{S}(
+        active, SPECULAR_TRANSMISSION;
+        t=t, η_a=η_a, η_b=η_b,
+        fresnel=FresnelDielectric(η_a, η_b),
+        type=BSDF_SPECULAR | BSDF_TRANSMISSION,
+        transport=transport
+    )
+end
+
+const FRESNEL_SPECULAR = UInt8(3)
+
+function FresnelSpecular(
+    active::Bool, r::S, t::S, η_a::Float32, η_b::Float32, transport
+) where {S<:Spectrum}
+    UberBxDF{S}(
+        active, FRESNEL_SPECULAR;
+        r=r, t=t, η_a=η_a, η_b=η_b,
+        type=BSDF_SPECULAR | BSDF_TRANSMISSION | BSDF_REFLECTION,
+        transport=transport
+    )
 end
 
 """
@@ -20,9 +37,7 @@ Return value of the distribution function for the given pair of directions.
 For specular reflection, no scattering is returned, since
 for arbitrary directions δ-funcion returns no scattering.
 """
-function (s::SpecularReflection{S,F})(
-    ::Vec3f, ::Vec3f,
-)::RGBSpectrum where {S<:Spectrum,F<:Fresnel}
+function distribution_specular_reflection(::UberBxDF{S}, ::Vec3f, ::Vec3f)::S where {S<:Spectrum}
     S(0f0)
 end
 
@@ -31,48 +46,21 @@ Compute the direction of incident light wi, given an outgoing direction wo
 and return the value of BxDF for the pair of directions.
 `sample` parameter isn't needed for the δ-distribution.
 """
-@inline function sample_f(
-    s::SpecularReflection{S,F}, wo::Vec3f, ::Point2f,
-)::Tuple{Vec3f,Float32,RGBSpectrum,Maybe{UInt8}} where {S<:Spectrum,F<:Fresnel}
+@propagate_inbounds function sample_specular_reflection(
+        s::UberBxDF{S}, wo::Vec3f, ::Point2f,
+    )::Tuple{Vec3f,Float32,S,UInt8} where {S<:Spectrum}
     wi = Vec3f(-wo[1], -wo[2], wo[3])
-    wi, 1f0, s.fresnel(cos_θ(wi)) * s.r / abs(cos_θ(wi)), nothing
+    wisp = s.fresnel(cos_θ(wi)) * s.r / abs(cos_θ(wi))
+    return wi, 1.0f0, wisp, UInt8(0)
 end
 
-struct SpecularTransmission{S<:Spectrum,T<:TransportMode} <: BxDF
-    t::S
-    """
-    Index of refraction above the surface.
-    Side the surface normal lies in is "above".
-    """
-    η_a::Float32
-    """
-    Index of refraction below the surface.
-    Side the surface normal lies in is "above".
-    """
-    η_b::Float32
-    fresnel::FresnelDielectric
-
-    type::UInt8
-
-    function SpecularTransmission(
-        t::S, η_a::Float32, η_b::Float32, ::Type{T},
-    ) where {S<:Spectrum,T<:TransportMode}
-        new{S,T}(
-            t, η_a, η_b,
-            FresnelDielectric(η_a, η_b),
-            BSDF_SPECULAR | BSDF_TRANSMISSION,
-        )
-    end
-end
 
 """
 Return value of the distribution function for the given pair of directions.
 For specular transmission, no scattering is returned, since
 for arbitrary directions δ-funcion returns no scattering.
 """
-function (s::SpecularTransmission{S,T})(
-    ::Vec3f, ::Vec3f,
-)::RGBSpectrum where {S<:Spectrum,T<:TransportMode}
+function distribution_specular_transmission(::UberBxDF{S}, ::Vec3f, ::Vec3f)::S where {S<:Spectrum}
     S(0f0)
 end
 
@@ -81,70 +69,43 @@ Compute the direction of incident light wi, given an outgoing direction wo
 and return the value of BxDF for the pair of directions.
 `sample` parameter isn't needed for the δ-distribution.
 """
-@inline function sample_f(
-    s::SpecularTransmission{S,T}, wo::Vec3f, ::Point2f,
-)::Tuple{Vec3f,Float32,RGBSpectrum,Maybe{UInt8}} where {S<:Spectrum,T<:TransportMode}
-    # Figure out which η is incident and which is transmitted.
+@propagate_inbounds function sample_specular_transmission(s::UberBxDF{S}, wo::Vec3f, ::Point2f)::Tuple{Vec3f,Float32,S,UInt8} where {S}
+    # refract() uses pbrt-v4 convention: eta = η_t / η_i
+    # η_a is typically 1.0 (air), η_b is typically glass IOR (e.g., 1.5)
+    # When entering (wo.z > 0): incident=air, transmitted=glass, eta = η_b / η_a
+    # When exiting (wo.z < 0): incident=glass, transmitted=air, eta = η_a / η_b
     entering = cos_θ(wo) > 0
-    η_i = entering ? s.η_a : s.η_b
-    η_t = entering ? s.η_b : s.η_a
-    # Compute ray direction for specular transmission.
-    valid, wi = refract(
-        wo, face_forward(Normal3f(0f0, 0f0, 1f0), wo), η_i / η_t,
-    )
-    # Total internal reflection.
-    !valid && return Vec3f(0f0), 0f0, S(0f0), nothing
+    eta = entering ? (s.η_b / s.η_a) : (s.η_a / s.η_b)
+
+    # Compute ray direction for specular transmission
+    valid, wi = refract(wo, face_forward(Normal3f(0f0, 0f0, 1f0), wo), eta)
+
+    # Total internal reflection
+    !valid && return Vec3f(0f0), 0f0, S(0f0), UInt8(0)
+
     pdf = 1f0
-
     cos_wi = cos_θ(wi)
-    ft = s.t * (S(1f0) - s.fresnel(cos_wi))
-    # Account for non-symmetry with transmission to different medium.
-    T isa Radiance && (ft *= (η_i^2) / (η_t^2))
-    wi, pdf, ft / abs(cos_wi), nothing
+    ft = s.t * (S(1.0f0) - s.fresnel(cos_wi))
+
+    # Account for non-symmetry with transmission to different medium
+    # Scale factor is (η_i / η_t)² = 1/eta² for radiance transport
+    s.transport === Radiance && (ft /= eta^2)
+
+    return wi, pdf, ft / abs(cos_wi), UInt8(0)
 end
 
-
-struct FresnelSpecular{S<:Spectrum,T<:TransportMode} <: BxDF
-    r::S
-    t::S
-    """
-    Index of refraction above the surface.
-    Side the surface normal lies in is "above".
-    """
-    η_a::Float32
-    """
-    Index of refraction below the surface.
-    Side the surface normal lies in is "above".
-    """
-    η_b::Float32
-
-    type::UInt8
-
-    function FresnelSpecular(
-        r::S, t::S, η_a::Float32, η_b::Float32, ::Type{T},
-    ) where {S<:Spectrum,T<:TransportMode}
-        new{S,T}(
-            r, t, η_a, η_b,
-            BSDF_SPECULAR | BSDF_TRANSMISSION | BSDF_REFLECTION,
-        )
-    end
-end
-
-@inline function (f::FresnelSpecular{S,T})(
-    ::Vec3f, ::Vec3f,
-)::RGBSpectrum where {S<:Spectrum,T<:TransportMode}
+@propagate_inbounds function distribution_fresnel_specular(::UberBxDF{S}, ::Vec3f, ::Vec3f)::S where {S<:Spectrum}
     S(0f0)
 end
 
-@inline compute_pdf(f::FresnelSpecular, wo::Vec3f, wi::Vec3f)::Float32 = 0f0
+@propagate_inbounds pdf_fresnel_specular(f::UberBxDF, wo::Vec3f, wi::Vec3f)::Float32  = 0.0f0
 
 """
 Compute the direction of incident light wi, given an outgoing direction wo
 and return the value of BxDF for the pair of directions.
 """
-@inline function sample_f(
-    f::FresnelSpecular{S,T}, wo::Vec3f, u::Point2f,
-)::Tuple{Vec3f,Float32,RGBSpectrum,Maybe{UInt8}} where {S<:Spectrum,T<:TransportMode}
+@propagate_inbounds function sample_fresnel_specular(f::UberBxDF{S}, wo::Vec3f, u::Point2f)::Tuple{Vec3f,Float32,RGBSpectrum,UInt8} where {S<:Spectrum}
+
     fd = fresnel_dielectric(cos_θ(wo), f.η_a, f.η_b)
     if u[1] < fd # Compute perfect specular reflection direction.
         wi = Vec3f(-wo[1], -wo[2], wo[3])
@@ -152,22 +113,21 @@ and return the value of BxDF for the pair of directions.
         return wi, fd, fd * f.r / abs(cos_θ(wi)), sampled_type
     end
 
-    # Figure out which η is incident and which is transmitted.
-    if cos_θ(wo) > 0
-        η_i, η_t = f.η_a, f.η_b
-    else
-        η_i, η_t = f.η_b, f.η_a
-    end
-    # Compute ray direction for specular transmission.
-    refracted, wi = refract(
-        wo, face_forward(Normal3f(0f0, 0f0, 1f0), wo), η_i / η_t,
-    )
-    !refracted && return wi, fd, RGBSpectrum(0f0), nothing
+    # refract() uses pbrt-v4 convention: eta = η_t / η_i
+    entering = cos_θ(wo) > 0
+    eta = entering ? (f.η_b / f.η_a) : (f.η_a / f.η_b)
+
+    # Compute ray direction for specular transmission
+    refracted, wi = refract(wo, face_forward(Normal3f(0f0, 0f0, 1f0), wo), eta)
+    !refracted && return wi, fd, RGBSpectrum(0f0), UInt8(0)
 
     pdf = 1f0 - fd
     ft = f.t * pdf
-    # Account for non-symmetry with transmission to different medium.
-    T isa Radiance && (ft *= (η_i^2) / (η_t^2))
+
+    # Account for non-symmetry with transmission to different medium
+    # Scale factor is (η_i / η_t)² = 1/eta² for radiance transport
+    f.transport === Radiance && (ft /= eta^2)
+
     sampled_type = BSDF_SPECULAR | BSDF_TRANSMISSION
-    wi, pdf, ft / abs(cos_θ(wi)), sampled_type
+    return wi, pdf, ft / abs(cos_θ(wi)), sampled_type
 end

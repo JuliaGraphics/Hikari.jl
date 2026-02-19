@@ -1,51 +1,47 @@
 const TextureType = Union{Float32,S} where S<:Spectrum
-abstract type Texture end
 
-struct ConstantTexture{T<:TextureType} <: Texture
-    value::T
+# Texture wraps actual texture data arrays. For constant values, use raw values directly
+# in material fields (materials should have loose type parameters).
+struct Texture{ElType, N, T<:AbstractArray{ElType, N}}
+    data::T
+    constval::ElType
+    isconst::Bool
+end
+Texture(data::AbstractArray{T,N}) where {T,N} = Texture{T,N,typeof(data)}(data, zero(T), false)
+function ConstTexture(val::T) where {T}
+    arr = Array{T,0}(undef)
+    Texture{T,0,typeof(arr)}(arr, val, true)
 end
 
-function (c::ConstantTexture{T})(si::SurfaceInteraction)::T where T<:TextureType
-    c.value
+Base.zero(::Type{RGBSpectrum}) = RGBSpectrum(0.0f0, 0.0f0, 0.0f0, 1.0f0)
+
+# Sample texture data array with UV flip (standard texture coordinate convention)
+@propagate_inbounds function _sample_texture_data(data::AbstractArray{T,N}, uv::Point2f)::T where {T,N}
+    uv_adj = Vec2f(1f0 - uv[2], uv[1])
+    s = unsafe_trunc.(Int32, size(data))
+    idx = map(x -> unsafe_trunc(Int32, x), Int32(1) .+ ((s .- Int32(1)) .* uv_adj))
+    idx = clamp.(idx, Int32(1), s)
+    return data[idx...]
 end
 
-struct ScaleTexture{T<:Texture} <: Texture
-    texture_1::T
-    texture_2::T
+# 0-dim arrays are scalar constants - just return the value, no UV sampling
+@propagate_inbounds function _sample_texture_data(data::AbstractArray{T,0}, ::Point2f)::T where T
+    return data[]
 end
 
-function (s::ScaleTexture)(si::SurfaceInteraction)
-    s.texture_1(si) * s.texture_2(si)
+function (c::Texture{T})(si::SurfaceInteraction)::T where {T<:TextureType}
+    return _sample_texture_data(c.data, si.uv)
 end
 
-"""
-`texture_1` & `texture_2` may be of any single texture type,
-but `mix` should be a texture that returns floating-point value
-that is used to interpolate between the first two.
-"""
-struct MixTexture{T<:Texture,S<:Texture} <: Texture
-    texture_1::T
-    texture_2::T
-    mix::S
+# UV-only texture evaluation
+@propagate_inbounds function evaluate_texture(tex::Texture{T}, uv::Point2f)::T where T
+    tex.isconst && return tex.constval
+    return _sample_texture_data(tex.data, uv)
 end
 
-function (m::MixTexture)(si::SurfaceInteraction)
-    t::Float32 = m.mix(si)
-    (1 - t) * m.texture_1(si) + t * m.texture_2(si)
+# Per-face vertex color texture: stores 3 colors per face for barycentric interpolation
+struct VertexColorTexture{T}
+    face_colors::T   # (3, n_faces) matrix of RGBSpectrum, becomes TextureRef via MultiTypeSet
+    n_faces::Int32
 end
 
-struct BilerpTexture{T<:Texture,M<:Mapping2D} <: Texture
-    mapping::M
-    v00::T
-    v01::T
-    v10::T
-    v11::T
-end
-
-function (b::BilerpTexture)(si::SurfaceInteraction)
-    st, _, _ = b.mapping(si)
-    (1f0 - st[1]) * (1f0 - st[2]) * b.v00 +
-    (1f0 - st[1]) * st[2] * b.v01 +
-    st[1] * (1f0 - st[2]) * b.v10 +
-    st[1] * st[2] * b.v11
-end
