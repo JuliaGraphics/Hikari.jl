@@ -1,4 +1,8 @@
 # Hikari.jl
+[![][docs-dev-img]][docs-dev-url]
+
+[docs-dev-img]: https://img.shields.io/badge/documentation-in%20development-orange?style=round-square
+[docs-dev-url]: https://juliagraphics.github.io/Hikari.jl/dev/
 
 GPU-accelerated physically-based spectral path tracer for Julia, built on [KernelAbstractions.jl](https://github.com/JuliaGPU/KernelAbstractions.jl). Used as the ray tracing backend for [Makie.jl](https://github.com/MakieOrg/Makie.jl) via [RayMakie](https://github.com/MakieOrg/Makie.jl).
 
