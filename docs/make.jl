@@ -23,7 +23,7 @@ makedocs(; sitename = "Hikari", authors = "Anton Smirnov, Simon Danisch and cont
     ],
 )
 
-deploydocs(;
+DocumenterVitepress.deploydocs(;
     repo = "github.com/JuliaGraphics/Hikari.jl",
     target = "build", # this is where Vitepress stores its output
     branch = "gh-pages",
