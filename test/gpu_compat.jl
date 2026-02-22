@@ -222,7 +222,7 @@ function gen_gpu_test_scene()
         lights=adapted.lights,
         rgb2spec_table=rgb2spec_table,
         lambda=Hikari.SampledWavelengths{4}((400f0, 500f0, 600f0, 700f0), (1f0, 1f0, 1f0, 1f0)),
-        mat_idx=Hikari.SetKey(UInt8(1), UInt32(1)),
+        mat_idx=Hikari.SetKey(UInt32(1), UInt32(1)),
         ray=Raycore.Ray(o=Point3f(0,0,0), d=Vec3f(0,0,1), t_max=Inf32),
     )
 end

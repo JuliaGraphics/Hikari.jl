@@ -316,7 +316,7 @@ The flat index counts across all typed arrays in order.
         push!(branches, quote
             if flat_idx <= $cumsum_expr
                 vec_idx = UInt32(flat_idx - $prev_cumsum)
-                return SetKey(UInt8($i), vec_idx)
+                return SetKey(UInt32($i), vec_idx)
             end
         end)
     end
@@ -324,7 +324,7 @@ The flat index counts across all typed arrays in order.
     quote
         $(branches...)
         # Fallback - return last valid index
-        return SetKey(UInt8($N), UInt32(length(lights.data[$N])))
+        return SetKey(UInt32($N), UInt32(length(lights.data[$N])))
     end
 end
 

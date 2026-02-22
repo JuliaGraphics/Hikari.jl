@@ -107,8 +107,8 @@ Clear the integrator's internal state (RGB and weight accumulators) for restarti
 """
 function Hikari.clear!(vp::VolPath)
     if vp.state !== nothing
-        KernelAbstractions.fill!(vp.state.pixel_rgb, 0.0)  # Float64
-        KernelAbstractions.fill!(vp.state.pixel_weight_sum, 0.0)  # Float64
+        KernelAbstractions.fill!(vp.state.pixel_rgb, zero(eltype(vp.state.pixel_rgb)))
+        KernelAbstractions.fill!(vp.state.pixel_weight_sum, zero(eltype(vp.state.pixel_weight_sum)))
     end
 end
 
@@ -405,11 +405,11 @@ Following pbrt-v4's RGBFilm::GetPixelRGB:
         rgb_base = (pixel_idx - Int32(1)) * Int32(3)
         weight_sum = pixel_weight_sum[pixel_idx]
 
-        # Normalize by weight sum (pbrt-v4 style)
-        # Note: pixel_rgb and pixel_weight_sum are Float64 for accumulation precision,
-        # but we convert to Float32 for the final framebuffer output
-        if weight_sum > 0.0
-            inv_weight = 1.0 / weight_sum
+        # Normalize by weight sum (pbrt-v4 style).
+        # Use zero/one relative to weight_sum's type so the kernel stays in Float32
+        # when accumulation_eltype=Float32 (the GPU-compatible default).
+        if weight_sum > zero(weight_sum)
+            inv_weight = one(weight_sum) / weight_sum
             r = Float32(pixel_rgb[rgb_base + Int32(1)] * inv_weight)
             g = Float32(pixel_rgb[rgb_base + Int32(2)] * inv_weight)
             b = Float32(pixel_rgb[rgb_base + Int32(3)] * inv_weight)
