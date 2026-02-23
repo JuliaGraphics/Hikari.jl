@@ -276,11 +276,7 @@ Check if wavelength i has non-zero PDF (should contribute).
     Atomix.@atomic pixel_L[base_idx+Int32(4)] += contrib[4]
 end
 
-_pointer(x, idx) = pointer(x, idx)
-_pointer(x::Base.Experimental.Const, idx) = pointer(x.a, idx)
-
-Base.@propagate_inbounds function load(array::AbstractArray{Float32}, index::Integer, ::Type{T}) where T
-    ptr = _pointer(array, index)
-    ptr32 = as_pointer(T, ptr)
-    return Base.unsafe_load(ptr32)
+@inline function load(array, index::Integer, ::Type{T}) where T
+    N = sizeof(T) ÷ sizeof(Float32)
+    @inbounds T(ntuple(i -> array[index + i - 1], Val(N)))
 end

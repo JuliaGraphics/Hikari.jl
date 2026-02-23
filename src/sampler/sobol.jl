@@ -111,12 +111,9 @@ Arguments:
     v = UInt32(0)
     base_i = dimension * SOBOL_MATRIX_SIZE + Int32(1)  # Julia is 1-indexed
 
-    # Fully unrolled loop using @nexprs for SPIR-V structured control flow compatibility
-    # Each iteration: branchless XOR - always read matrix, mask with bit value
-    # Uses pure bitwise ops to avoid any conditional branches
-    Base.Cartesian.@nexprs 52 bit -> begin
-        bit0 = Int32(bit) - Int32(1)
-        # Extract bit and spread to all 32 bits: 0 if bit clear, 0xffffffff if bit set
+    # Regular for loop — CUDA compiler selects optimal unroll factor.
+    # Branchless XOR: always read matrix, mask with bit value.
+    for bit0 in Int32(0):Int32(SOBOL_MATRIX_SIZE - 1)
         bit_val = UInt32((a >> bit0) & Int64(1))
         mask = (bit_val * UInt32(0xffffffff))  # 0 or 0xffffffff
         @inbounds v ⊻= sobol_matrices[base_i + bit0] & mask
@@ -224,9 +221,9 @@ Uses compile-time unrolled loop with branchless operations for SPIR-V compatibil
     last_digit = pow2_flag
     pow2_adjust = pow2_flag
 
-    # Compile-time unrolled loop (32 iterations covers up to 64-bit Morton codes)
-    Base.Cartesian.@nexprs 32 iter -> begin
-        iter0 = Int32(iter) - Int32(1)
+    # Regular for loop — CUDA compiler selects optimal unroll factor.
+    # 32 iterations covers up to 64-bit Morton codes.
+    for iter0 in Int32(0):Int32(31)
         i = n_base4_digits - Int32(1) - iter0
 
         # Branchless max to ensure digit_shift >= 0
