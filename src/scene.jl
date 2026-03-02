@@ -47,8 +47,8 @@ push!(scene, AmbientLight(...))
 sync!(scene)  # Build acceleration structure
 ```
 """
-function Scene(; backend=KA.CPU())
-    tlas = TLAS(backend)
+function Scene(; backend=KA.CPU(), accel=nothing)
+    tlas = accel !== nothing ? accel : TLAS(backend)
     lights = MultiTypeSet(backend)
     materials = MultiTypeSet(backend)
     media = MultiTypeSet(backend)
@@ -56,8 +56,8 @@ function Scene(; backend=KA.CPU())
     Scene(lights, tlas, materials, media, media_interfaces, Ref((Bounds3(), Sphere(Point3f(0), 0f0))))
 end
 
-function Scene(mesh_material_pairs::Vector{<:Tuple}; lights = (), backend = KA.CPU())
-    scene = Scene(; backend=backend)
+function Scene(mesh_material_pairs::Vector{<:Tuple}; lights = (), backend = KA.CPU(), accel = nothing)
+    scene = Scene(; backend=backend, accel=accel)
     for light in lights
         push!(scene, light)
     end

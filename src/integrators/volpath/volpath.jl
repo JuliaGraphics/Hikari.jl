@@ -37,6 +37,9 @@ mutable struct VolPath <: Integrator
     filter_sampler_data::Union{Nothing, GPUFilterSamplerData}  # Tabulated data for importance sampling
     accumulation_eltype::DataType  # Element type for RGB/weight accumulators (Float64 or Float32)
 
+    # Hardware ray tracing flag — when true, RayMakie creates HWTLAS instead of software TLAS
+    hw_accel::Bool
+
     # Cached render state
     state::Union{Nothing, VolPathState}
 end
@@ -44,7 +47,7 @@ end
 """
     VolPath(; max_depth=8, samples=64, russian_roulette_depth=3, regularize=true,
             material_coherence=:none, max_component_value=10, filter=GaussianFilter(),
-            accumulation_eltype=Float32)
+            accumulation_eltype=Float32, hw_accel=nothing)
 
 Create a VolPath integrator for volumetric path tracing.
 
@@ -67,6 +70,9 @@ Create a VolPath integrator for volumetric path tracing.
   All filters use importance sampling with weight≈1 (pbrt-v4 compatible).
 - `accumulation_eltype`: Element type for RGB/weight accumulators (default: Float32).
   Use Float64 on backends that support double precision for higher accumulation precision.
+- `hw_accel`: Enable hardware ray tracing (default: false).
+  When true and using LavaBackend, RayMakie creates an HWTLAS for hardware BVH traversal
+  instead of software BVH. Dispatch happens on the accel type, not this flag.
 
 Note: Sensor simulation (ISO, exposure_time, white_balance) is handled in postprocessing
 via `FilmSensor`, not in the integrator. This matches pbrt-v4's architecture where the
@@ -80,7 +86,8 @@ function VolPath(;
     material_coherence::Symbol = :none,
     max_component_value::Real = 10f0,
     filter::AbstractFilter = GaussianFilter(),  # pbrt-v4 default: Gaussian(1.5, 0.5)
-    accumulation_eltype::DataType = Float32
+    accumulation_eltype::DataType = Float32,
+    hw_accel::Bool = false
 )
     @assert material_coherence in (:none, :sorted, :per_type) "material_coherence must be :none, :sorted, :per_type"
     @assert accumulation_eltype in (Float32, Float64) "accumulation_eltype must be Float32 or Float64"
@@ -96,9 +103,27 @@ function VolPath(;
         GPUFilterParams(filter),
         sampler_data,
         accumulation_eltype,
-        nothing
+        hw_accel,
+        nothing   # state
     )
 end
+
+# Dispatch wrappers: pass `vp` so external packages (e.g. hikari_integration.jl)
+# can overload based on accel type.
+# Default (software BVH): delegate to the existing implementation.
+function vp_trace_rays!(state::VolPathState, accel, media_interfaces, materials, ::VolPath)
+    vp_trace_rays!(state, accel, media_interfaces, materials)
+end
+function vp_trace_shadow_rays!(state::VolPathState, accel, media_interfaces, media, materials, ::VolPath)
+    vp_trace_shadow_rays!(state, accel, media_interfaces, media, materials)
+end
+
+# Scene adaptation dispatch — overridden for HWAdaptedAccel in hikari_integration.jl
+_adapt_scene_for_render(backend, scene, ::VolPath) = Adapt.adapt(backend, scene)
+
+# Camera medium detection dispatch — overridden for HWAdaptedAccel in hikari_integration.jl
+_detect_initial_medium(backend, accel, media_interfaces, camera_pos, ::VolPath) =
+    detect_camera_medium(backend, accel, media_interfaces, camera_pos)
 
 """
     clear!(integrator::VolPath)
@@ -453,7 +478,8 @@ function render!(
     backend = KA.get_backend(img)
 
     # Adapt scene for kernel dispatch (TLAS → StaticTLAS, MultiTypeSet → StaticMultiTypeSet)
-    adapted = Adapt.adapt(backend, scene)
+    # HW RT overrides this to skip GPU TLAS upload (saves ~100s MB of VRAM)
+    adapted = _adapt_scene_for_render(backend, scene, vp)
     accel = adapted.accel
     materials = adapted.materials
     media = adapted.media
@@ -499,8 +525,9 @@ function render!(
     filter_weight_per_pixel = state.filter_weight_per_pixel
 
     # Detect which medium the camera is inside (vacuum if outside all media)
+    # HW RT overrides this to run on CPU (only consumer of accel, not perf-critical)
     camera_pos = get_camera_position(camera)
-    initial_medium = detect_camera_medium(backend, accel, media_interfaces, camera_pos)
+    initial_medium = _detect_initial_medium(backend, accel, media_interfaces, camera_pos, vp)
 
     # Clear spectral buffer (pixel_L) for this sample iteration
     # This is per-sample, not per-render - pixel_rgb accumulates across all samples
@@ -544,7 +571,7 @@ function render!(
         vp_generate_ray_samples!(backend, state, sample_idx, Int32(depth), sobol_rng)
 
         reset_iteration_queues!(state)
-        vp_trace_rays!(state, accel, media_interfaces, materials)
+        vp_trace_rays!(state, accel, media_interfaces, materials, vp)
 
         if !isempty(media)
             n_medium = length(state.medium_sample_queue)
@@ -582,7 +609,7 @@ function render!(
 
                 # Shadow rays still need size check since it's a different queue
                 # But we can batch this with other checks later
-                vp_trace_shadow_rays!(state, accel, media_interfaces, media, materials)
+                vp_trace_shadow_rays!(state, accel, media_interfaces, media, materials, vp)
 
                 vp_evaluate_materials_coherent!(state, multi_queue, materials, camera, Int32(vp.samples_per_pixel), vp.regularize)
             else
@@ -595,7 +622,7 @@ function render!(
 
                 n_shadow = length(state.shadow_queue)
                 if n_shadow > 0
-                    vp_trace_shadow_rays!(state, accel, media_interfaces, media, materials)
+                    vp_trace_shadow_rays!(state, accel, media_interfaces, media, materials, vp)
                 end
 
                 if n_material > 0
