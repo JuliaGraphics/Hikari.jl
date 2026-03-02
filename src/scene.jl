@@ -47,8 +47,11 @@ push!(scene, AmbientLight(...))
 sync!(scene)  # Build acceleration structure
 ```
 """
-function Scene(; backend=KA.CPU(), accel=nothing)
-    tlas = accel !== nothing ? accel : TLAS(backend)
+_default_accel(backend, ::Val{false}) = TLAS(backend)
+_default_accel(backend, ::Val{true}) = TLAS(backend)  # overridden in hw-rt.jl for LavaBackend
+
+function Scene(; backend=KA.CPU(), accel=nothing, hw_accel::Bool=false)
+    tlas = accel !== nothing ? accel : _default_accel(backend, Val(hw_accel))
     lights = MultiTypeSet(backend)
     materials = MultiTypeSet(backend)
     media = MultiTypeSet(backend)
@@ -56,8 +59,8 @@ function Scene(; backend=KA.CPU(), accel=nothing)
     Scene(lights, tlas, materials, media, media_interfaces, Ref((Bounds3(), Sphere(Point3f(0), 0f0))))
 end
 
-function Scene(mesh_material_pairs::Vector{<:Tuple}; lights = (), backend = KA.CPU(), accel = nothing)
-    scene = Scene(; backend=backend, accel=accel)
+function Scene(mesh_material_pairs::Vector{<:Tuple}; lights = (), backend = KA.CPU(), accel = nothing, hw_accel::Bool=false)
+    scene = Scene(; backend=backend, accel=accel, hw_accel=hw_accel)
     for light in lights
         push!(scene, light)
     end

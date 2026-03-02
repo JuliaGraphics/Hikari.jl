@@ -28,6 +28,9 @@ using GeometryBasics: decompose, decompose_normals, TriangleFace
 
 const Mat4f = SMatrix{4, 4, Float32, 16}
 
+# Override Scene's _default_accel for LavaBackend + hw_accel=true
+_default_accel(::LavaBackend, ::Val{true}) = HWTLAS()
+
 # ══════════════════════════════════════════════════════════════════════════════
 # HWTLAS — Hardware-accelerated TLAS (no CPU BVH)
 # ══════════════════════════════════════════════════════════════════════════════
