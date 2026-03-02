@@ -26,8 +26,8 @@ import Raycore: distance, distance_squared, bounding_sphere
 # Note: lerp is defined in spectrum.jl for Spectrum, Float32, and Point3f
 import Raycore: Transformation, translate, scale, rotate, rotate_x, rotate_y, rotate_z, look_at, perspective
 import Raycore: swaps_handedness, has_scale
-import Raycore: Triangle, TriangleMesh
-import Raycore: AccelPrimitive, BVH, TLAS, StaticTLAS, TraversableTLAS, TLASHandle, Instance, world_bound, closest_hit, any_hit, sync!
+import Raycore: Triangle
+import Raycore: TLAS, StaticTLAS, TraversableTLAS, TLASHandle, world_bound, closest_hit, any_hit, sync!
 
 # Legacy alias - InstanceHandle was renamed to TLASHandle
 const InstanceHandle = TLASHandle
