@@ -250,14 +250,6 @@ This replaces rand() calls with correlated low-discrepancy samples.
         py = u_int32(div(pixel_idx_0, rng.width)) + Int32(1)
 
         # Base dimension: 6 (camera) + 7 * depth
-        # Camera uses dims 0-5: wavelength(1), film_x(1), film_y(1), lens_x(1), lens_y(1), filter(1)
-        # pbrt-v4's Get1D/Get2D increment dimension BEFORE computing hash, so:
-        # - Get1D for direct.uc: dim++ → 7, hash uses 7
-        # - Get2D for direct.u: dim+=2 → 9, hash uses 9
-        # - Get1D for indirect.uc: dim++ → 10, hash uses 10
-        # - Get2D for indirect.u: dim+=2 → 12, hash uses 12
-        # - Get1D for indirect.rr: dim++ → 13, hash uses 13
-        # So dimensions used are: 7, 9, 10, 12, 13 (for depth 0)
         base_dim = Int32(6) + Int32(7) * depth
         # Generate 7 samples for this bounce using SobolRNG
         # Direct lighting: light selection (1D) + light position (2D)
@@ -290,12 +282,11 @@ function vp_generate_ray_samples!(
     depth::Int32,
     sobol_rng::SobolRNG
 )
-    ray_queue = current_ray_queue(state)
-    n_rays = length(ray_queue)
-    n_rays == 0 && return
-
     # Access SOA components of pixel_samples
+    ray_queue = current_ray_queue(state)
     pixel_samples = state.pixel_samples
+    n = length(ray_queue)
+    n == 0 && return
 
     kernel! = vp_generate_ray_samples_kernel!(backend)
     kernel!(
@@ -309,7 +300,7 @@ function vp_generate_ray_samples!(
         sample_idx,
         depth,
         sobol_rng;  # Pass whole SobolRNG, Adapt handles conversion
-        ndrange=n_rays
+        ndrange=n
     )
 end
 

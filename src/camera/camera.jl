@@ -54,7 +54,7 @@ Same as `generate_ray`, but also computes rays for pixels shifted one pixel
 in x & y directions on the film plane.
 Useful for anti-aliasing textures.
 """
-function generate_ray_differential(
+@inline function generate_ray_differential(
         camera::C, sample::CameraSample,
     )::Tuple{RayDifferentials,Float32} where C<:Camera
 

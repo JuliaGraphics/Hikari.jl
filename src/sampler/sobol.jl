@@ -110,8 +110,9 @@ Arguments:
     v = UInt32(0)
     base_i = dimension * SOBOL_MATRIX_SIZE + Int32(1)  # Julia is 1-indexed
 
+    # Regular for loop — CUDA compiler selects optimal unroll factor.
+    # Branchless XOR: always read matrix, mask with bit value.
     for bit0 in Int32(0):Int32(SOBOL_MATRIX_SIZE - 1)
-        # Extract bit from 'a': either 0 or 1
         bit_val = UInt32((a >> bit0) & Int64(1))
         # Create mask: 0xffffffff if bit set, 0x00000000 otherwise
         mask = bit_val * UInt32(0xffffffff)
@@ -206,6 +207,8 @@ ensuring good sample distribution across pixels while maintaining low-discrepanc
     last_digit = pow2_flag
     pow2_adjust = pow2_flag
 
+    # Regular for loop — CUDA compiler selects optimal unroll factor.
+    # 32 iterations covers up to 64-bit Morton codes.
     for iter0 in Int32(0):Int32(31)
         i = n_base4_digits - Int32(1) - iter0
 

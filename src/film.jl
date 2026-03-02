@@ -420,17 +420,19 @@ function fill_aux_buffers!(film::Film, scene, camera; has_infinite_lights::Bool=
 
     backend = KA.get_backend(albedo)
     kernel! = aux_buffer_kernel!(backend)
+    # Pass scene.accel directly instead of the full scene struct to avoid
+    # misaligned address errors on CUDA from passing large nested structs.
     kernel!(
         albedo, normal, depth,
         resolution, crop_bounds,
-        scene, camera, miss_depth;
+        scene.accel, camera, miss_depth;
         ndrange = length(albedo)
     )
     KA.synchronize(backend)
     return film
 end
 
-@kernel inbounds=true function aux_buffer_kernel!(albedo, normal, depth, resolution, crop_bounds, scene, camera, miss_depth::Float32)
+@kernel inbounds=true function aux_buffer_kernel!(albedo, normal, depth, resolution, crop_bounds, accel, camera, miss_depth::Float32)
     idx = @index(Global)
 
     # Convert linear index to 2D pixel coordinates
@@ -444,13 +446,15 @@ end
     py = Float32(row) + crop_bounds.p_min[2] - 1f0
     pixel = Point2f(px + 0.5f0, py + 0.5f0)  # Center of pixel
 
-    # Generate primary ray
+    # Generate primary ray (use generate_ray, not generate_ray_differential —
+    # aux buffers don't need ray differentials, and the simpler call avoids
+    # large return-value stack pressure on CUDA)
     camera_sample = CameraSample(pixel, Point2f(0.5f0), 0f0)
-    ray, ω = generate_ray_differential(camera, camera_sample)
+    ray, ω = generate_ray(camera, camera_sample)
 
      if ω > 0f0
         # Trace primary ray
-        hit, _primitive, si = intersect!(scene, ray)
+        hit, _primitive, si = intersect!(accel, ray)
 
         if hit
             # Store normal (world space)
