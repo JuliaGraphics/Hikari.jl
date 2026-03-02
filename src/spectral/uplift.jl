@@ -429,10 +429,21 @@ const D65_ILLUMINANT_VALUES = (
 )
 
 """
+    _d65_cpu_values() -> Vector{Float32}
+
+Return D65 illuminant values as a CPU Vector for use in RGBToSpectrumTable.
+This avoids runtime NTuple indexing which fails on Metal GPU.
+"""
+function _d65_cpu_values()::Vector{Float32}
+    return collect(Float32, D65_ILLUMINANT_VALUES)
+end
+
+"""
     sample_d65(lambda::Float32) -> Float32
 
 Sample the D65 illuminant spectrum at wavelength lambda (nm).
 Uses linear interpolation between tabulated values.
+CPU-only version using NTuple constant (not Metal-compatible).
 """
 @propagate_inbounds function sample_d65(lambda::Float32)::Float32
     # Clamp to valid range
@@ -457,6 +468,30 @@ Uses linear interpolation between tabulated values.
 end
 
 """
+    sample_d65(lambda::Float32, d65_values::AbstractVector{Float32}) -> Float32
+
+GPU-compatible version that reads from a GPU array instead of NTuple constant.
+Required for Metal where runtime NTuple indexing returns 0.
+"""
+@propagate_inbounds function sample_d65(lambda::Float32, d65_values::AbstractVector{Float32})::Float32
+    if lambda <= 300f0
+        return @inbounds d65_values[1]
+    elseif lambda >= 830f0
+        return @inbounds d65_values[107]
+    end
+
+    t = (lambda - 300f0) / 5f0
+    idx = floor_int32(t) + Int32(1)
+    idx = clamp(idx, Int32(1), Int32(106))
+    frac = t - Float32(floor_int32(t))
+    @inbounds begin
+        v0 = d65_values[idx]
+        v1 = d65_values[idx + Int32(1)]
+    end
+    return v0 * (1f0 - frac) + v1 * frac
+end
+
+"""
     sample_d65_spectral(lambda::Wavelengths) -> SpectralRadiance
 
 Sample D65 illuminant at multiple wavelengths.
@@ -471,6 +506,17 @@ Matches pbrt-v4's illuminant->Sample(lambda) behavior.
         v4 = sample_d65(lambda.lambda[4])
     end
     # Return raw D65 values matching pbrt-v4's DenselySampledSpectrum::Sample()
+    return SpectralRadiance((v1, v2, v3, v4))
+end
+
+"""GPU-compatible version using array instead of NTuple."""
+@propagate_inbounds function sample_d65_spectral(lambda::Wavelengths, d65_values::AbstractVector{Float32})::SpectralRadiance
+    @inbounds begin
+        v1 = sample_d65(lambda.lambda[1], d65_values)
+        v2 = sample_d65(lambda.lambda[2], d65_values)
+        v3 = sample_d65(lambda.lambda[3], d65_values)
+        v4 = sample_d65(lambda.lambda[4], d65_values)
+    end
     return SpectralRadiance((v1, v2, v3, v4))
 end
 
@@ -527,8 +573,9 @@ point is D65, so an RGB=(1,1,1) light source should emit a D65-like spectrum.
 
     # Sample polynomial at wavelengths and multiply by D65 illuminant
     # Following pbrt-v4's RGBIlluminantSpectrum::Sample()
+    # Use GPU array for D65 values (NTuple runtime indexing fails on Metal)
     @inbounds begin
-        d65 = sample_d65_spectral(lambda)
+        d65 = sample_d65_spectral(lambda, table.d65_values)
         v1 = scale * poly(lambda.lambda[1]) * d65.data[1]
         v2 = scale * poly(lambda.lambda[2]) * d65.data[2]
         v3 = scale * poly(lambda.lambda[3]) * d65.data[3]
@@ -559,10 +606,18 @@ Do NOT use for:
 end
 
 # RGBIlluminantSpectrum already has the polynomial baked in, just sample it
+# Uses table.d65_values for GPU-compatible D65 lookup
 @propagate_inbounds function uplift_rgb_illuminant(
-    ::RGBToSpectrumTable, s::RGBIlluminantSpectrum, lambda::Wavelengths
+    table::RGBToSpectrumTable, s::RGBIlluminantSpectrum, lambda::Wavelengths
 )::SpectralRadiance
-    return Sample(s, lambda)
+    @inbounds begin
+        d65 = sample_d65_spectral(lambda, table.d65_values)
+        v1 = s.scale * s.poly(lambda.lambda[1]) * d65.data[1]
+        v2 = s.scale * s.poly(lambda.lambda[2]) * d65.data[2]
+        v3 = s.scale * s.poly(lambda.lambda[3]) * d65.data[3]
+        v4 = s.scale * s.poly(lambda.lambda[4]) * d65.data[4]
+    end
+    return SpectralRadiance((v1, v2, v3, v4))
 end
 
 """
@@ -579,15 +634,22 @@ while RGBIlluminantSpectrum uses its baked-in polynomial.
 end
 
 """
-    Sample(::RGBToSpectrumTable, s::RGBIlluminantSpectrum, lambda::Wavelengths) -> SpectralRadiance
+    Sample(table::RGBToSpectrumTable, s::RGBIlluminantSpectrum, lambda::Wavelengths) -> SpectralRadiance
 
 Sample an RGBIlluminantSpectrum at multiple wavelengths.
-The table argument is ignored since the polynomial is already baked in.
+Uses table.d65_values for GPU-compatible D65 lookup.
 """
 @propagate_inbounds function Sample(
-    ::RGBToSpectrumTable, s::RGBIlluminantSpectrum, lambda::Wavelengths
+    table::RGBToSpectrumTable, s::RGBIlluminantSpectrum, lambda::Wavelengths
 )::SpectralRadiance
-    return Sample(s, lambda)
+    @inbounds begin
+        d65 = sample_d65_spectral(lambda, table.d65_values)
+        v1 = s.scale * s.poly(lambda.lambda[1]) * d65.data[1]
+        v2 = s.scale * s.poly(lambda.lambda[2]) * d65.data[2]
+        v3 = s.scale * s.poly(lambda.lambda[3]) * d65.data[3]
+        v4 = s.scale * s.poly(lambda.lambda[4]) * d65.data[4]
+    end
+    return SpectralRadiance((v1, v2, v3, v4))
 end
 
 # ============================================================================
