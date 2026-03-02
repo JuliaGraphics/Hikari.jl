@@ -113,33 +113,13 @@ HWTLAS() = HWTLAS(
 
 # ── push! — build Vulkan BLAS immediately ──
 
-function Base.push!(hwtlas::HWTLAS, geometry, material_idx; arealight_indices=nothing)
-    return push!(hwtlas, Raycore.Instance(geometry; metadata=material_idx); arealight_indices)
-end
-
-function Base.push!(hwtlas::HWTLAS, geometry, material_idx, transform::Mat4f; arealight_indices=nothing)
-    return push!(hwtlas, Raycore.Instance(geometry, transform, material_idx); arealight_indices)
-end
-
-function Base.push!(hwtlas::HWTLAS, geometry, material_idx, transforms::AbstractVector{Mat4f}; arealight_indices=nothing)
-    return push!(hwtlas, Raycore.Instance(geometry, transforms; metadata=material_idx); arealight_indices)
-end
-
-function Base.push!(hwtlas::HWTLAS, geometry)
-    return push!(hwtlas, Raycore.Instance(geometry))
-end
-
-"""
-    push!(hwtlas::HWTLAS, mesh::GeometryBasics.Mesh, transform::Mat4f=Mat4f(I))
-
-Add a GeometryBasics.Mesh to the HWTLAS. Per-face metadata is read from the mesh's
-`face_meta` attribute (if present). Mirrors `push!(::TLAS, ::Mesh, ::Mat4f)`.
-"""
-function Base.push!(hwtlas::HWTLAS, mesh::GeometryBasics.Mesh, transform::Mat4f=Mat4f(I))
+# Shared: decompose mesh, build triangles + Vulkan BLAS, register in hwtlas.
+# Returns blas_idx for instance registration.
+function _hwtlas_add_geometry!(hwtlas::HWTLAS, mesh::GeometryBasics.Mesh)
     nmesh = GeometryBasics.expand_faceviews(mesh)
     fs = decompose(TriangleFace{UInt32}, nmesh)
     verts = decompose(Point3f, nmesh)
-    norms = Raycore.Normal3f.(decompose_normals(nmesh))
+    norms = Normal3f.(decompose_normals(nmesh))
     uvs_raw = GeometryBasics.decompose_uv(nmesh)
     uvs = isnothing(uvs_raw) ? Point2f[] : Point2f.(uvs_raw)
     indices = collect(reinterpret(UInt32, fs))
@@ -149,10 +129,10 @@ function Base.push!(hwtlas::HWTLAS, mesh::GeometryBasics.Mesh, transform::Mat4f=
 
     cpu_triangles = [begin
             meta = has_meta ? nmesh.face_meta[indices[3*(i-1)+1]] : UInt32(i)
-            Raycore.build_triangle(verts, norms, uvs, indices, i, meta)
+            build_triangle(verts, norms, uvs, indices, i, meta)
         end
         for i in 1:n_faces
-        if !Raycore.is_degenerate_face(verts, indices, i)
+        if !is_degenerate_face(verts, indices, i)
     ]
     isempty(cpu_triangles) && error("Geometry has no valid triangles")
 
@@ -186,84 +166,47 @@ function Base.push!(hwtlas::HWTLAS, mesh::GeometryBasics.Mesh, transform::Mat4f=
         end
     end
 
+    hwtlas.dirty = true
+    return blas_idx
+end
+
+# Register one or more instances (transforms) for a BLAS, return TLASHandle.
+function _hwtlas_add_instances!(hwtlas::HWTLAS, blas_idx::Int, transforms)
     start_idx = length(hwtlas.instance_blas_indices) + 1
-    push!(hwtlas.instance_blas_indices, blas_idx)
-    push!(hwtlas.instance_transforms, _mat4_to_vk_transform(transform))
-    push!(hwtlas.instance_custom_indices, UInt32(blas_idx - 1))
+    for transform in transforms
+        push!(hwtlas.instance_blas_indices, blas_idx)
+        push!(hwtlas.instance_transforms, _mat4_to_vk_transform(transform))
+        push!(hwtlas.instance_custom_indices, UInt32(blas_idx - 1))
+    end
     end_idx = length(hwtlas.instance_blas_indices)
 
     handle = TLASHandle(hwtlas.next_handle_id)
     hwtlas.next_handle_id += UInt32(1)
     hwtlas.handle_to_range[handle] = start_idx:end_idx
-
-    hwtlas.dirty = true
     return handle
 end
 
-function Base.push!(hwtlas::HWTLAS, inst::Raycore.Instance; arealight_indices=nothing)
-    # Decompose mesh → triangles (same as Raycore)
-    mesh = Raycore.to_triangle_mesh(inst.geometry)
-    has_per_face_mat = !isempty(mesh.material_indices)
-    n_faces = div(length(mesh.indices), 3)
+"""
+    push!(hwtlas::HWTLAS, mesh::GeometryBasics.Mesh, transform::Mat4f=Mat4f(I))
 
-    cpu_triangles = [begin
-            mat_key = has_per_face_mat ? mesh.material_indices[i] : inst.metadata[1]
-            al_idx = !isnothing(arealight_indices) ? arealight_indices[i] : UInt32(0)
-            Triangle(mesh, i, TriangleMeta(mat_key, UInt32(i), al_idx))
-        end
-        for i in 1:n_faces
-        if !Raycore.is_degenerate(Raycore.get_vertices(mesh, i))]
-    isempty(cpu_triangles) && error("Geometry has no valid triangles")
+Add a GeometryBasics.Mesh to the HWTLAS with a single transform.
+Mirrors `push!(::TLAS, ::Mesh, ::Mat4f)`.
+"""
+function Base.push!(hwtlas::HWTLAS, mesh::GeometryBasics.Mesh, transform::Mat4f=Mat4f(I))
+    blas_idx = _hwtlas_add_geometry!(hwtlas, mesh)
+    return _hwtlas_add_instances!(hwtlas, blas_idx, (transform,))
+end
 
-    # Extract vertices + indices for Vulkan BLAS build
-    n_tris = length(cpu_triangles)
-    vertices = Vector{NTuple{3,Float32}}(undef, n_tris * 3)
-    for i in 1:n_tris
-        verts = cpu_triangles[i].vertices
-        for j in 1:3
-            v = verts[j]
-            vertices[(i-1)*3 + j] = (Float32(v[1]), Float32(v[2]), Float32(v[3]))
-        end
-    end
-    indices = Vector{UInt32}(undef, n_tris * 3)
-    for i in 0:(n_tris*3 - 1)
-        indices[i+1] = UInt32(i)
-    end
+"""
+    push!(hwtlas::HWTLAS, mesh::GeometryBasics.Mesh, transforms::AbstractVector{Mat4f})
 
-    # Build Vulkan BLAS immediately
-    hw_blas = build_blas(vertices, indices)
-    push!(hwtlas.blas_list, hw_blas)
-    push!(hwtlas.blas_triangles, cpu_triangles)
-    blas_idx = length(hwtlas.blas_list)
-
-    # Compute offset into flat triangle array
-    offset = isempty(hwtlas.blas_offsets) ? UInt32(0) :
-             hwtlas.blas_offsets[end] + UInt32(length(hwtlas.blas_triangles[end-1]))
-    push!(hwtlas.blas_offsets, offset)
-
-    # Update bounding box from triangle vertices
-    for tri in cpu_triangles
-        for v in tri.vertices
-            hwtlas.root_aabb = union(hwtlas.root_aabb, Bounds3(Point3f(v)))
-        end
-    end
-
-    # Add instances (one per transform)
-    start_idx = length(hwtlas.instance_blas_indices) + 1
-    for transform in inst.transforms
-        push!(hwtlas.instance_blas_indices, blas_idx)
-        push!(hwtlas.instance_transforms, _mat4_to_vk_transform(transform))
-        push!(hwtlas.instance_custom_indices, UInt32(blas_idx - 1))  # 0-based for HW RT
-    end
-    end_idx = length(hwtlas.instance_blas_indices)
-
-    # Create handle
-    handle = TLASHandle(hwtlas.next_handle_id)
-    hwtlas.next_handle_id += UInt32(1)
-    hwtlas.handle_to_range[handle] = start_idx:end_idx
-
-    hwtlas.dirty = true
-    return handle
+Add a GeometryBasics.Mesh to the HWTLAS with multiple transforms (instancing).
+Builds BLAS once, creates one instance per transform.
+Mirrors `push!(::TLAS, ::Mesh, ::AbstractVector{Mat4f})`.
+"""
+function Base.push!(hwtlas::HWTLAS, mesh::GeometryBasics.Mesh, transforms::AbstractVector{Mat4f})
+    blas_idx = _hwtlas_add_geometry!(hwtlas, mesh)
+    return _hwtlas_add_instances!(hwtlas, blas_idx, transforms)
 end
 
 # ── delete! ──
