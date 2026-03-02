@@ -466,17 +466,3 @@ end
     return true, triangle, interaction
 end
 
-# Intersect BVH - returns hit info, primitive, and SurfaceInteraction
-@propagate_inbounds function intersect!(accel::BVH, ray::AbstractRay)
-    hit_found, triangle, distance, bary_coords = closest_hit(accel, ray)
-
-    if !hit_found
-        return false, triangle, SurfaceInteraction()
-    end
-
-    # Convert to SurfaceInteraction
-    interaction = triangle_to_surface_interaction(triangle, ray, bary_coords)
-
-    # Return primitive so caller can access triangle.metadata (SetKey)
-    return true, triangle, interaction
-end

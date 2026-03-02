@@ -197,9 +197,6 @@ function Base.show(io::IO, ::MIME"text/plain", scene::Scene)
         n_geometries = length(accel.blas_array)
         println(io, "  Geometries: ", n_geometries)
         println(io, "  Instances:  ", n_instances)
-    elseif accel isa BVH
-        n_triangles = length(accel.primitives)
-        println(io, "  Triangles:  ", n_triangles)
     end
     bound = world_bound(scene)
     print(io,   "  Bounds:     ", bound.p_min, " to ", bound.p_max)
