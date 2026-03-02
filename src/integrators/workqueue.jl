@@ -177,12 +177,19 @@ end
 # more concurrent blocks per SM.
 const DEFAULT_WORKGROUPSIZE = 256
 
+"""
+    _gpu_ndrange(backend, size_buf)
+
+Get the ndrange for dispatching over a queue's GPU-resident size buffer.
+Default: CPU readback (works on AMDGPU, CUDA, CPU).
+Lava overrides this to return the GPU array directly for indirect dispatch (no flush).
+"""
+_gpu_ndrange(backend, size_buf) = max(Int(Array(size_buf)[1]), 0)
+
 function Base.foreach(f, queue::WorkQueue, args...; workgroupsize=DEFAULT_WORKGROUPSIZE)
-    n = length(queue)
-    n == 0 && return nothing
     backend = KA.get_backend(queue.items)
     kernel! = _workqueue_map_kernel!(backend, workgroupsize)
-    kernel!(f, queue, args...; ndrange=n)
+    kernel!(f, queue, args...; ndrange=_gpu_ndrange(backend, queue.size))
     return nothing
 end
 

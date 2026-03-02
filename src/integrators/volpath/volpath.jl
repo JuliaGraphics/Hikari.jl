@@ -310,8 +310,6 @@ function vp_generate_ray_samples!(
     # Access SOA components of pixel_samples
     ray_queue = current_ray_queue(state)
     pixel_samples = state.pixel_samples
-    n = length(ray_queue)
-    n == 0 && return
 
     kernel! = vp_generate_ray_samples_kernel!(backend)
     kernel!(
@@ -325,7 +323,7 @@ function vp_generate_ray_samples!(
         sample_idx,
         depth,
         sobol_rng;  # Pass whole SobolRNG, Adapt handles conversion
-        ndrange=n
+        ndrange=_gpu_ndrange(backend, ray_queue.size)
     )
 end
 
@@ -573,65 +571,48 @@ function render!(
         reset_iteration_queues!(state)
         vp_trace_rays!(state, accel, media_interfaces, materials, vp)
 
+        # Medium sampling — indirect dispatch handles empty queues (0 groups = no-op)
         if !isempty(media)
-            n_medium = length(state.medium_sample_queue)
-            if n_medium > 0
-                vp_sample_medium_interaction!(state, media)
-            end
+            vp_sample_medium_interaction!(state, media)
         end
 
         if !isempty(media)
-            n_scatter = length(state.medium_scatter_queue)
-            if n_scatter > 0
-                if length(lights) > 0
-                    vp_sample_medium_direct_lighting!(state, lights)
-                end
-                vp_sample_medium_scatter!(state)
+            if length(lights) > 0
+                vp_sample_medium_direct_lighting!(state, lights)
             end
+            vp_sample_medium_scatter!(state)
         end
 
-        n_escaped = length(state.escaped_queue)
-        if n_escaped > 0 && length(lights) > 0
+        # Escaped rays — lights check is CPU-side static scene data
+        if length(lights) > 0
             vp_handle_escaped_rays!(state, lights)
         end
 
-        n_hits = length(state.hit_surface_queue)
-        if n_hits > 0
-            if vp.material_coherence == :per_type && multi_queue !== nothing
-                reset_queues!(backend, multi_queue)
-                vp_process_surface_hits_coherent!(state, multi_queue, materials, lights)
+        # Surface hits — all dispatches use indirect (empty queues = no-op)
+        if vp.material_coherence == :per_type && multi_queue !== nothing
+            reset_queues!(backend, multi_queue)
+            vp_process_surface_hits_coherent!(state, multi_queue, materials, lights)
 
-                # Following pbrt-v4: launch kernels unconditionally, let them check size internally
-                # This avoids expensive GPU→CPU sync from length() / total_size() calls
-                if length(lights) > 0
-                    vp_sample_direct_lighting_coherent!(state, multi_queue, materials, lights, camera, Int32(vp.samples_per_pixel))
-                end
+            if length(lights) > 0
+                vp_sample_direct_lighting_coherent!(state, multi_queue, materials, lights, camera, Int32(vp.samples_per_pixel))
+            end
 
-                # Shadow rays still need size check since it's a different queue
-                # But we can batch this with other checks later
-                vp_trace_shadow_rays!(state, accel, media_interfaces, media, materials, vp)
+            vp_trace_shadow_rays!(state, accel, media_interfaces, media, materials, vp)
 
-                vp_evaluate_materials_coherent!(state, multi_queue, materials, camera, Int32(vp.samples_per_pixel), vp.regularize)
+            vp_evaluate_materials_coherent!(state, multi_queue, materials, camera, Int32(vp.samples_per_pixel), vp.regularize)
+        else
+            vp_process_surface_hits!(state, materials, lights)
+
+            if length(lights) > 0
+                vp_sample_surface_direct_lighting!(state, materials, lights, camera, Int32(vp.samples_per_pixel))
+            end
+
+            vp_trace_shadow_rays!(state, accel, media_interfaces, media, materials, vp)
+
+            if vp.material_coherence == :sorted
+                vp_evaluate_materials_sorted!(state, materials, camera, Int32(vp.samples_per_pixel), vp.regularize)
             else
-                vp_process_surface_hits!(state, materials, lights)
-
-                n_material = length(state.material_queue)
-                if n_material > 0 && length(lights) > 0
-                    vp_sample_surface_direct_lighting!(state, materials, lights, camera, Int32(vp.samples_per_pixel))
-                end
-
-                n_shadow = length(state.shadow_queue)
-                if n_shadow > 0
-                    vp_trace_shadow_rays!(state, accel, media_interfaces, media, materials, vp)
-                end
-
-                if n_material > 0
-                    if vp.material_coherence == :sorted
-                        vp_evaluate_materials_sorted!(state, materials, camera, Int32(vp.samples_per_pixel), vp.regularize)
-                    else
-                        vp_evaluate_materials!(state, materials, camera, Int32(vp.samples_per_pixel), vp.regularize)
-                    end
-                end
+                vp_evaluate_materials!(state, materials, camera, Int32(vp.samples_per_pixel), vp.regularize)
             end
         end
 
