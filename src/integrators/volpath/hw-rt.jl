@@ -17,11 +17,18 @@
 # automatically dispatch to hardware implementations via the adapted accel type.
 #
 # Current limitations:
-# - Alpha transparency (cutout textures) is NOT supported — surfaces are treated
-#   as fully opaque. Full alpha support requires an any_hit shader (future work).
+# - Alpha transparency (cutout textures) is NOT fully supported — the any-hit
+#   shader handles medium transitions (glass) but not texture-based alpha.
+#   Full alpha support requires texture sampling in the any-hit shader (future work).
 
 using Lava: RTRay, RTHitResult, LavaArray, LavaBackend, LavaBLAS, LavaTLAS,
             lava_global_invocation_id_x, trace_closest_hits!, trace_closest_hits_indirect!,
+            trace_closest_hits_anyhit!, trace_closest_hits_anyhit_indirect!,
+            set_anyhit_pipeline!,
+            _lava_rt_ignore_intersection, _lava_rt_terminate_ray,
+            lava_rt_primitive_id, lava_rt_instance_custom_index,
+            lava_rt_launch_id_x, _lava_rt_payload_store_f32_at, _lava_rt_payload_load_f32_at,
+            _lava_rt_trace_ray,
             vk_flush!, build_blas, build_tlas, _mat4_to_vk_transform
 
 using GeometryBasics: decompose, decompose_normals, TriangleFace
@@ -726,12 +733,20 @@ function vp_trace_shadow_rays!(state::VolPathState, accel::HWAdaptedAccel, media
     process_k! = _process_shadow_round_kernel!(backend, 256)
     count_k! = _count_active_shadows_kernel!(backend, 256)
 
-    # Run all rounds without early termination — inactive rays have active=0
-    # and produce no-op work in extract/process kernels. This avoids expensive
-    # GPU→CPU sync (vk_flush + Array readback) on every round.
-    for _round in 1:10
+    # Round 1: full dispatch (all rays active initially)
+    extract_k!(ray_buf, states, Int32(cap); ndrange=n_rays_gpu)
+    trace_closest_hits_indirect!(result_buf, ray_buf, hw, n_rays_gpu)
+    process_k!(states, result_buf, hwtlas.tri_gpu, hwtlas.off_gpu,
+               media_interfaces, media, materials, state.rgb2spec_table,
+               Int32(cap); ndrange=n_rays_gpu)
+
+    # Rounds 2-10: RT trace uses active counter (0 active = hardware no-op)
+    for _round in 2:10
+        fill!(active_counter, Int32(0))
+        count_k!(active_counter, states, Int32(cap); ndrange=n_rays_gpu)
+
         extract_k!(ray_buf, states, Int32(cap); ndrange=n_rays_gpu)
-        trace_closest_hits_indirect!(result_buf, ray_buf, hw, n_rays_gpu)
+        trace_closest_hits_indirect!(result_buf, ray_buf, hw, active_counter)
         process_k!(states, result_buf, hwtlas.tri_gpu, hwtlas.off_gpu,
                    media_interfaces, media, materials, state.rgb2spec_table,
                    Int32(cap); ndrange=n_rays_gpu)
@@ -742,4 +757,106 @@ function vp_trace_shadow_rays!(state::VolPathState, accel::HWAdaptedAccel, media
     finalize_k!(states, state.pixel_L, Int32(cap); ndrange=n_rays_gpu)
 
     return nothing
+end
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Any-Hit Shadow Shader — Handles Medium Transitions in Hardware
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# When tracing shadow rays with an any-hit shader, the RT hardware calls
+# the any-hit function at every potential intersection. If the surface is a
+# medium transition (glass boundary), we call OpIgnoreIntersectionKHR to
+# continue traversal. Opaque surfaces let the hit be accepted normally.
+#
+# This eliminates the multi-round extract→trace→process loop for scenes
+# with transparent surfaces — a single RT dispatch handles all transparency.
+
+"""
+Raygen shader for shadow RT with any-hit support.
+Same as `_hw_raygen` but receives extra args for the any-hit shader's BDA access:
+  (rays, results, tri_gpu, off_gpu, media_interfaces)
+The extra args aren't used by raygen directly — they're in the shared BDA buffer
+so the any-hit shader can load them via the same push constant.
+"""
+function _hw_raygen_shadow(rays::Ptr{RTRay}, results::Ptr{RTHitResult},
+                           tri_gpu, off_gpu, media_interfaces)
+    lid = lava_rt_launch_id_x()
+
+    ray = unsafe_load(rays, lid + 1)
+
+    _lava_rt_payload_store_f32_at(0f0, UInt32(0))   # hit=0
+    _lava_rt_payload_store_f32_at(-1f0, UInt32(1))   # t=-1
+
+    _lava_rt_trace_ray(
+        UInt32(0),    # flags (no special flags — any-hit handles transparency)
+        UInt32(0xFF), # cull mask
+        UInt32(0),    # sbt offset
+        UInt32(0),    # sbt stride
+        UInt32(0),    # miss index
+        ray.origin_x, ray.origin_y, ray.origin_z, ray.tmin,
+        ray.dir_x, ray.dir_y, ray.dir_z, ray.tmax
+    )
+
+    hit  = _lava_rt_payload_load_f32_at(UInt32(0))
+    t    = _lava_rt_payload_load_f32_at(UInt32(1))
+    pid  = _lava_rt_payload_load_f32_at(UInt32(2))
+    ci   = _lava_rt_payload_load_f32_at(UInt32(3))
+    bu   = _lava_rt_payload_load_f32_at(UInt32(4))
+    bv   = _lava_rt_payload_load_f32_at(UInt32(5))
+
+    result = RTHitResult(
+        reinterpret(UInt32, hit), t,
+        reinterpret(UInt32, pid), reinterpret(UInt32, ci),
+        bu, bv, UInt32(0), UInt32(0)
+    )
+    unsafe_store!(results, result, lid + 1)
+    return nothing
+end
+
+"""
+Any-hit shader for shadow rays — checks medium transitions.
+
+Called by the RT hardware at every potential intersection during traversal.
+If the hit surface is a medium transition (glass/dielectric boundary),
+calls OpIgnoreIntersectionKHR to skip it and continue traversal.
+Opaque surfaces are accepted normally (closest-hit shader runs).
+
+BDA arg buffer layout matches `_hw_raygen_shadow`:
+  (rays, results, tri_gpu, off_gpu, media_interfaces)
+"""
+function _hw_anyhit_shadow(rays::Ptr{RTRay}, results::Ptr{RTHitResult},
+                           tri_gpu, off_gpu, media_interfaces)
+    prim_id = lava_rt_primitive_id()
+    inst_idx = lava_rt_instance_custom_index()
+
+    # Look up BLAS offset, then triangle
+    tri_offset = unsafe_load(off_gpu, inst_idx + UInt32(1))
+    tri = unsafe_load(tri_gpu, Int(tri_offset) + Int(prim_id) + 1)
+
+    # Check medium interface — transparent surfaces should be skipped
+    mi_idx = tri.metadata.medium_interface_idx
+    mi = unsafe_load(media_interfaces, Int(mi_idx))
+
+    # is_medium_transition: inside != outside (different media on each side)
+    if mi.inside.type_idx != mi.outside.type_idx || mi.inside.vec_idx != mi.outside.vec_idx
+        _lava_rt_ignore_intersection()
+    end
+    # Opaque: do nothing — hardware accepts the hit, closest-hit shader stores result
+    return nothing
+end
+
+"""
+    _ensure_anyhit_pipeline!(hwtlas::HWTLAS)
+
+Lazily create the any-hit RT pipeline for shadow rays.
+Uses `_hw_raygen_shadow` + `_hw_anyhit_shadow` with the concrete
+Triangle and MediumInterfaceIdx types from the scene's triangle data.
+"""
+function _ensure_anyhit_pipeline!(hwtlas::HWTLAS)
+    hw = hwtlas.hw_accel
+    hw === nothing && error("HWTLAS not synced — call sync! first")
+    hw.anyhit_pipeline !== nothing && return hw
+
+    set_anyhit_pipeline!(hw, _hw_anyhit_shadow, _hw_raygen_shadow)
+    return hw
 end
