@@ -42,6 +42,9 @@ mutable struct VolPath <: Integrator
 
     # Cached render state
     state::Union{Nothing, VolPathState}
+
+    # Cached adapted scene (avoids re-uploading BVH every sample)
+    _adapted_scene_cache::Any  # (scene_id, adapted) or nothing
 end
 
 """
@@ -104,7 +107,8 @@ function VolPath(;
         sampler_data,
         accumulation_eltype,
         hw_accel,
-        nothing   # state
+        nothing,  # state
+        nothing   # _adapted_scene_cache
     )
 end
 
@@ -476,8 +480,15 @@ function render!(
     backend = KA.get_backend(img)
 
     # Adapt scene for kernel dispatch (TLAS → StaticTLAS, MultiTypeSet → StaticMultiTypeSet)
-    # HW RT overrides this to skip GPU TLAS upload (saves ~100s MB of VRAM)
-    adapted = _adapt_scene_for_render(backend, scene, vp)
+    # Cache the adapted scene to avoid re-uploading BVH every sample (~30 MiB per adapt)
+    scene_id = objectid(scene)
+    cached = vp._adapted_scene_cache
+    if cached !== nothing && cached[1] === scene_id
+        adapted = cached[2]
+    else
+        adapted = _adapt_scene_for_render(backend, scene, vp)
+        vp._adapted_scene_cache = (scene_id, adapted)
+    end
     accel = adapted.accel
     materials = adapted.materials
     media = adapted.media
