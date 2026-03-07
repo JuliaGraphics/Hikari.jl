@@ -46,6 +46,9 @@ function Base.clamp(c::RGB{Float32})
     RGB{Float32}(clamp(c.r, 0f0, 1f0), clamp(c.g, 0f0, 1f0), clamp(c.b, 0f0, 1f0))
 end
 
+# Clamp scalar to [0,1] (used when textures evaluate to plain Float32)
+Base.clamp(x::AbstractFloat) = clamp(x, zero(x), one(x))
+
 function Base.isnan(c::C) where C<:Spectrum
     # Explicit checks to avoid tuple iteration (causes PHI node errors in SPIR-V)
     isnan(c.c[1]) || isnan(c.c[2]) || isnan(c.c[3])
@@ -68,6 +71,7 @@ RGBSpectrum(c::Point3f) = RGBSpectrum(Point4f(c[1], c[2], c[3], 1f0))
 RGBSpectrum(c::Vec3f) = RGBSpectrum(Point4f(c[1], c[2], c[3], 1f0))
 RGBSpectrum(c::StaticVector{3, Float32}) = RGBSpectrum(Point4f(c[1], c[2], c[3], 1f0))
 get_alpha(s::RGBSpectrum) = s.c[4]
+get_alpha(::Real) = 1f0
 is_black(c::RGBSpectrum) = c.c[1] == 0f0 && c.c[2] == 0f0 && c.c[3] == 0f0  # ignore alpha
 
 to_XYZ(s::RGBSpectrum) = RGB_to_XYZ(Point3f(s.c[1], s.c[2], s.c[3]))

@@ -268,6 +268,7 @@ end
     end
 end
 
+# 4-arg version: software BVH (original implementation)
 function vp_trace_rays!(state::VolPathState, accel, media_interfaces, materials)
     input_queue = current_ray_queue(state)
     foreach(vp_trace_rays_kernel!,
@@ -281,6 +282,7 @@ function vp_trace_rays!(state::VolPathState, accel, media_interfaces, materials)
     )
     return nothing
 end
+
 
 # ============================================================================
 # Shadow Ray Tracing Kernel (with medium transmittance)
@@ -599,6 +601,7 @@ Handles transmissive boundaries (MediumInterface) by tracing through them.
     end
 end
 
+# 5-arg version: software BVH (original implementation)
 function vp_trace_shadow_rays!(
         state::VolPathState,
         accel,
@@ -614,6 +617,7 @@ function vp_trace_shadow_rays!(
     )
     return nothing
 end
+
 
 # ============================================================================
 # Escaped Ray Handling (Environment Light)

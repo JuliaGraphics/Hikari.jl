@@ -47,8 +47,11 @@ push!(scene, AmbientLight(...))
 sync!(scene)  # Build acceleration structure
 ```
 """
-function Scene(; backend=KA.CPU())
-    tlas = TLAS(backend)
+_default_accel(backend, ::Val{false}) = TLAS(backend)
+_default_accel(backend, ::Val{true}) = TLAS(backend)  # overridden in hw-rt.jl for LavaBackend
+
+function Scene(; backend=KA.CPU(), accel=nothing, hw_accel::Bool=false)
+    tlas = accel !== nothing ? accel : _default_accel(backend, Val(hw_accel))
     lights = MultiTypeSet(backend)
     materials = MultiTypeSet(backend)
     media = MultiTypeSet(backend)
@@ -56,8 +59,8 @@ function Scene(; backend=KA.CPU())
     Scene(lights, tlas, materials, media, media_interfaces, Ref((Bounds3(), Sphere(Point3f(0), 0f0))))
 end
 
-function Scene(mesh_material_pairs::Vector{<:Tuple}; lights = (), backend = KA.CPU())
-    scene = Scene(; backend=backend)
+function Scene(mesh_material_pairs::Vector{<:Tuple}; lights = (), backend = KA.CPU(), accel = nothing, hw_accel::Bool=false)
+    scene = Scene(; backend=backend, accel=accel, hw_accel=hw_accel)
     for light in lights
         push!(scene, light)
     end
@@ -197,9 +200,6 @@ function Base.show(io::IO, ::MIME"text/plain", scene::Scene)
         n_geometries = length(accel.blas_array)
         println(io, "  Geometries: ", n_geometries)
         println(io, "  Instances:  ", n_instances)
-    elseif accel isa BVH
-        n_triangles = length(accel.primitives)
-        println(io, "  Triangles:  ", n_triangles)
     end
     bound = world_bound(scene)
     print(io,   "  Bounds:     ", bound.p_min, " to ", bound.p_max)
