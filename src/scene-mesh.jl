@@ -65,6 +65,26 @@ end
 _unwrap_inner(m::Material) = m
 _unwrap_inner(m::MediumInterface) = _unwrap_inner(m.material)
 
+# SBT hit-group slot for one N-instance batch. The offset alone selects the
+# material bucket: `material_of_type` is `@generated` and resolves it from the
+# chit's compile-time type, using only the `vec_idx` half of the SetKey. Lava
+# carries one offset per batch, hence the same-type requirement. `type_idx` comes
+# off the registered `MediumInterfaceIdx` because re-probing would run
+# `to_device_material`, which stores textures into the set.
+function _instance_sbt_offset(scene::Scene, materials::AbstractVector{<:Material},
+                              mi_indices::AbstractVector{UInt32})
+    isempty(mi_indices) && return UInt32(0)
+    if !isconcretetype(eltype(materials))
+        T1 = typeof(first(materials))
+        all(m -> typeof(m) === T1, materials) || throw(ArgumentError(
+            "per-instance materials must all have the same type: the hardware \
+             TLAS carries one shader-binding-table offset per instance batch. \
+             Got $(unique(map(typeof, materials)))."))
+    end
+    type_idx = (@allowscalar scene.media_interfaces[mi_indices[1]]).material.type_idx
+    return type_idx == UInt32(0) ? UInt32(0) : UInt32(type_idx - 1)
+end
+
 """
     push!(scene::Scene, mesh::GeometryBasics.Mesh,
           materials::AbstractVector{<:Material},
@@ -132,8 +152,10 @@ function Base.push!(scene::Scene, mesh::GeometryBasics.Mesh,
     face_meta = [TriangleMeta(UInt32(0), UInt32(i), UInt32(0)) for i in 1:n_faces]
     mesh_with_meta = GeometryBasics.mesh(mesh; face_meta=GeometryBasics.per_face(face_meta, mesh))
 
+    # The software TLAS ignores `sbt_offset` and resolves the type at trace time.
+    sbt_offset = _instance_sbt_offset(scene, materials, mi_indices)
     accel_handle = push!(scene.accel, mesh_with_meta, collect(transforms);
-                         instance_ids=mi_indices)
+                         instance_ids=mi_indices, sbt_offset=sbt_offset)
     # One SceneHandle per instance, all sharing the same accel handle.
     return [SceneHandle(scene, mi_indices[i], accel_handle) for i in eachindex(mi_indices)]
 end
