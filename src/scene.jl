@@ -54,7 +54,7 @@ function Scene(; backend=KA.CPU(), accel=nothing, hw_accel::Bool=false)
     lights = MultiTypeSet(backend)
     materials = MultiTypeSet(backend)
     media = MultiTypeSet(backend)
-    media_interfaces = KA.allocate(backend, MediumInterfaceIdx, 0)
+    media_interfaces = Mantle.devicearray(backend, MediumInterfaceIdx, 0)
     Scene(lights, tlas, materials, media, media_interfaces, Ref((Bounds3(), Sphere(Point3f(0), 0f0))))
 end
 

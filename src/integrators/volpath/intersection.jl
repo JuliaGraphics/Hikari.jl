@@ -909,7 +909,7 @@ Detect which medium the camera is inside by tracing a single ray from the camera
 position. Returns a SetKey identifying the medium, or SetKey() for vacuum.
 """
 function detect_camera_medium(backend, accel, media_interfaces, camera_pos::Point3f)
-    result = KA.allocate(backend, SetKey, (1,))
+    result = Mantle.devicearray(backend, SetKey, (1,))
     kernel! = detect_camera_medium_kernel!(backend)
     kernel!(result, accel, media_interfaces, camera_pos; ndrange=1)
     return @allowscalar result[1]

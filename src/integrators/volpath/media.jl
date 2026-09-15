@@ -1472,7 +1472,7 @@ function build_majorant_grid(density::AbstractArray{Float32,3}, res::Vec3i)
     nx, ny, nz = size(density)
     backend = KA.get_backend(density)
     n_voxels = Int(res[1]) * Int(res[2]) * Int(res[3])
-    voxels = KA.allocate(backend, Float32, n_voxels)
+    voxels = Mantle.devicearray(backend, Float32, n_voxels)
     fill!(voxels, 0f0)
     grid = MajorantGrid(voxels, Vec{3,Int32}(Int32(res[1]), Int32(res[2]), Int32(res[3])))
     build_majorant_kernel!(backend)(

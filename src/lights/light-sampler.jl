@@ -246,7 +246,7 @@ function PowerLightSampler(lights::Raycore.MultiTypeSet; scene_radius::Float32=1
     backend = lights.backend
 
     # Allocate GPU array for powers
-    powers_gpu = KA.allocate(backend, Float32, n)
+    powers_gpu = Mantle.devicearray(backend, Float32, n)
 
     # Get the GPU-ready StaticMultiTypeSet
     lights_static = Raycore.get_static(lights)
