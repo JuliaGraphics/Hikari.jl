@@ -35,7 +35,7 @@
 #
 # Run: julia --project=. benchmarks/queue_aliasing/aliasing.jl
 
-using Mantle
+using Mantle, KernelAbstractions
 import KernelAbstractions as KA
 const M = Mantle
 
@@ -45,6 +45,37 @@ const PX = 1280 * 1080
 const SIZES = (ray = 164, medium_sample = 320, medium_scatter = 116,
                hit_surface = 304, shadow = 132, escaped = 128,
                hit_area_light = 172, typed_ref = 4)
+
+# ── The three access patterns a stage can have ────────────────────────────────
+#
+# Never launched: this file measures PLACEMENT, and a plan that is compiled but
+# not run still places every transient. They have to be real kernels all the
+# same, because what a pass touches is read off the kernel.
+
+@kernel function fills!(bufs...)
+    i = @index(Global)
+    ntuple(length(bufs)) do k
+        @inbounds bufs[k][i] = 0x01
+    end
+end
+
+@kernel function reads!(bufs...)
+    i = @index(Global)
+    s = UInt8(0)
+    ntuple(length(bufs)) do k
+        @inbounds s += bufs[k][i]
+    end
+    @inbounds bufs[1][i] = s      # a read the optimiser cannot delete
+end
+
+"""One stage: drain the first queue, append to the rest."""
+@kernel function drains!(src, dsts...)
+    i = @index(Global)
+    @inbounds v = src[i]
+    ntuple(length(dsts)) do k
+        @inbounds dsts[k][i] = v
+    end
+end
 
 """
 `nrounds` bounces, with every intermediate queue a transient of its real size.
@@ -70,44 +101,32 @@ function chunk_probe(dev, nrounds; n_material_types = 4)
          per_material = [T(SIZES.typed_ref) for _ in 1:n_material_types])
     counters = [M.Transient.Buffer(g, UInt8, 4) for _ in 1:(6 + n_material_types)]
 
+    # The stages are modelled by which KERNEL each one dispatches, because that
+    # is where the access lives: `drains!` reads its first argument and appends
+    # to the rest, `fills!` only writes. Declaring it any other way is not
+    # available and should not be — a stage that says it reads what it writes is
+    # the mistake the whole `use`-less API removed.
     for r in 1:nrounds
-        M.compute!(g, "reset$r") do p
-            for c in counters; M.use(p, c; write = true); end
-        end
-        M.compute!(g, "trace$r") do p
-            for b in (q.escaped, q.medium_sample, q.hit_surface,
-                      q.hit_area_light, q.per_material...)
-                M.use(p, b; read = true, write = true)
-            end
-        end
-        M.compute!(g, "medium-sample$r") do p
-            M.use(p, q.medium_sample; read = true)
-            for b in (q.medium_scatter, q.hit_surface, q.hit_area_light,
-                      q.escaped, q.per_material...)
-                M.use(p, b; read = true, write = true)
-            end
-        end
-        M.compute!(g, "medium-dl$r") do p
-            M.use(p, q.medium_scatter; read = true)
-            M.use(p, q.shadow; read = true, write = true)
-        end
-        M.compute!(g, "medium-scatter$r") do p
-            M.use(p, q.medium_scatter; read = true)
-        end
-        M.compute!(g, "escaped$r") do p; M.use(p, q.escaped; read = true); end
-        M.compute!(g, "emitters$r") do p; M.use(p, q.hit_area_light; read = true); end
-        M.compute!(g, "shade$r") do p
-            M.use(p, q.hit_surface; read = true)
-            for b in q.per_material; M.use(p, b; read = true); end
-        end
-        M.compute!(g, "shadow$r") do p; M.use(p, q.shadow; read = true); end
+        M.dispatch!(g, fills!, (counters...,), 1; name = "reset$r")
+        M.dispatch!(g, drains!, (q.escaped, q.medium_sample, q.hit_surface,
+                                 q.hit_area_light, q.per_material...), PX;
+                    name = "trace$r")
+        M.dispatch!(g, drains!, (q.medium_sample, q.medium_scatter, q.hit_surface,
+                                 q.hit_area_light, q.escaped, q.per_material...), PX;
+                    name = "medium-sample$r")
+        M.dispatch!(g, drains!, (q.medium_scatter, q.shadow), PX; name = "medium-dl$r")
+        M.dispatch!(g, reads!, (q.medium_scatter,), PX; name = "medium-scatter$r")
+        M.dispatch!(g, reads!, (q.escaped,), PX; name = "escaped$r")
+        M.dispatch!(g, reads!, (q.hit_area_light,), PX; name = "emitters$r")
+        M.dispatch!(g, reads!, (q.hit_surface, q.per_material...), PX; name = "shade$r")
+        M.dispatch!(g, reads!, (q.shadow,), PX; name = "shadow$r")
     end
     return g
 end
 
 mib(x) = round(x / 2^20; digits = 1)
 
-function report(dev = M.Device(M.Host()), rounds = (1, 2, 4, 8))
+function report(dev = M.Device(M.HostAPI()), rounds = (1, 2, 4, 8))
     println("work queues as transients, $(PX) px:")
     for nr in rounds
         pl = M.Plan(chunk_probe(dev, nr))

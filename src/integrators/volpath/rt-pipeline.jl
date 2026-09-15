@@ -587,45 +587,40 @@ function trace_pass!(g, accel_t::Mantle.AdaptedAccel, state::VolPathState, refs,
     # `vp_rt_pipeline` is resolved here rather than per record because the
     # per-material closest-hit set decides the shader binding table: a different
     # material set is a different pipeline, and that is a recompile either way.
-    Mantle.compute!(g, "trace") do p
-        trace_uses!(p, state, cur, nxt)
-        Mantle.use(p, refs.sample_idx; read = true)
-        Mantle.use(p, refs.camera; read = true)
-        Mantle.trace!(p,
-            vp_rt_pipeline(refs.materials),
-            refs.accel,
-            (cur, nxt,
-             state.escaped_queue,
-             state.medium_sample_queue,
-             state.per_material_queue,
-             state.hit_surface_queue,
-             state.hit_area_light_queue,
-             state.pixel_L,
-             refs.accel, refs.media_interfaces, refs.media, refs.materials, refs.lights,
-             state.rgb2spec_table,
-             state.bvh_nodes,
-             state.infinite_light_indices,
-             state.light_to_bit_trail,
-             state.num_infinite_lights,
-             state.num_bvh_lights,
-             state.num_lights,
-             state.max_depth,
-             refs.regularize,
-             state.sobol_rng, refs.sample_idx,
-             refs.camera, refs.samples_per_pixel,
-             state.rr_depth),
-            # The CEILING, like every other queue dispatch in `graph.jl`. Without
-            # it `bakedrange` builds a `DeferredRange`, whose `ndrangeof` calls
-            # `awaitwrites` — a full device synchronise, on the host, before this
-            # dispatch every single time. On a KernelAbstractions backend that
-            # was measured at 320 syncs and 0.585 s of a 0.602 s frame; the
-            # traversal itself was never the cost.
-            #
-            # Over-dispatching is defined to be a no-op for the surplus threads:
-            # every kernel dispatched over a `DeviceRange` bounds-check itself,
-            # repo-wide, which is what makes the ceiling safe. This was the one
-            # queue dispatch in the integrator that still read its count on the
-            # host.
-            Mantle.DeviceRange(cur.size; max = Int(cur.capacity)))
-    end
+    Mantle.trace!(g,
+                  vp_rt_pipeline(refs.materials),
+                  refs.accel,
+                  (cur, nxt,
+                   state.escaped_queue,
+                   state.medium_sample_queue,
+                   state.per_material_queue,
+                   state.hit_surface_queue,
+                   state.hit_area_light_queue,
+                   state.pixel_L,
+                   refs.accel, refs.media_interfaces, refs.media, refs.materials, refs.lights,
+                   state.rgb2spec_table,
+                   state.bvh_nodes,
+                   state.infinite_light_indices,
+                   state.light_to_bit_trail,
+                   state.num_infinite_lights,
+                   state.num_bvh_lights,
+                   state.num_lights,
+                   state.max_depth,
+                   refs.regularize,
+                   state.sobol_rng, refs.sample_idx,
+                   refs.camera, refs.samples_per_pixel,
+                   state.rr_depth),
+                  # The CEILING, like every other queue dispatch in `graph.jl`. Without
+                  # it `bakedrange` builds a `DeferredRange`, whose `ndrangeof` calls
+                  # `awaitwrites` — a full device synchronise, on the host, before this
+                  # dispatch every single time. On a KernelAbstractions backend that
+                  # was measured at 320 syncs and 0.585 s of a 0.602 s frame; the
+                  # traversal itself was never the cost.
+                  #
+                  # Over-dispatching is defined to be a no-op for the surplus threads:
+                  # every kernel dispatched over a `DeviceRange` bounds-check itself,
+                  # repo-wide, which is what makes the ceiling safe. This was the one
+                  # queue dispatch in the integrator that still read its count on the
+                  # host.
+                  Mantle.DeviceRange(cur.size; max = Int(cur.capacity)))
 end

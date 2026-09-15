@@ -43,56 +43,21 @@ import StructArrays
 # What a stage touches
 # ─────────────────────────────────────────────────────────────────────────────
 
-"""
-    devicebuffers!(acc, x) -> acc
-
-Every device buffer reachable from `x`, appended to `acc`.
-
-A barrier is scoped to a buffer, so a stage declares the leaves rather than the
-container that holds them: a work queue is a payload plus an atomic counter, and
-on the SOA path that payload is one array per field of the work item, several
-levels deep.
-"""
-devicebuffers!(acc, x::AbstractArray) = (push!(acc, x); acc)
-devicebuffers!(acc, x::StructArrays.StructArray) =
-    (foreach(c -> devicebuffers!(acc, c), StructArrays.components(x)); acc)
-devicebuffers!(acc, q::WorkQueue) = devicebuffers!(devicebuffers!(acc, q.items), q.size)
-devicebuffers!(acc, m::MultiTypeWorkQueue) =
-    (foreach(q -> devicebuffers!(acc, q), m.queues); acc)
-
-"""
-    use!(pass, x; read, write)
-
-Declare `x` — a buffer, a work queue, or a whole multi-type queue — at the
-access this stage uses it with. Returns nothing: what the kernel receives is the
-container, and what the graph orders on are its buffers.
-"""
-function use!(p, x; read::Bool = false, write::Bool = false, unordered::Bool = false)
-    for b in devicebuffers!(Any[], x)
-        Mantle.use(p, b; read = read, write = write, unordered = unordered)
-    end
-    return nothing
-end
-
-"""
-    accumulates!(pass, buffer)
-
-Declare a buffer this stage only ever adds into, atomically.
-
-Six stages of a round do exactly one thing to the per-pixel radiance —
-`atomic +=` — and the order they do it in does not change the sum. Declared as
-an ordinary read-write that is a hazard between every pair of them, so the
-escaped, emitter and shading stages are ordered against each other even though
-their queues are disjoint and nothing else connects them. `Unordered` is the
-vocabulary for exactly this, and it is checked on both sides: only two stages
-that BOTH declare it may overlap, so the film clear before them and the
-accumulate after them still get their barriers.
-
-Float addition is not associative, so the sum's last bits depend on the order
-the additions land in — which is already true between invocations of one
-dispatch and is why the pbrt gate is a tolerance and not an equality.
-"""
-accumulates!(p, x) = use!(p, x; read = true, write = true, unordered = true)
+# `devicebuffers!`, `use!` and `accumulates!` were here: the leaf walk that turns
+# a work queue into the buffers a barrier is scoped to, and the two verbs that
+# declared them. All three are gone.
+#
+# The walk is `Mantle.resourceleaves!` — it opens up any container it is handed,
+# so a `WorkQueue`, a `StructArray` and a `MultiTypeWorkQueue` need no method of
+# their own. The declarations are not written at all: `dispatch!` reads what the
+# kernel does to each argument off the kernel, which is where the answer was.
+#
+# `accumulates!` is worth a sentence of its own, because it was the subtlest
+# thing in this file. Six stages did one thing to the per-pixel radiance —
+# `atomic +=` — and saying so let them overlap instead of taking a barrier
+# between every pair. That is now inferred: a resource whose every write is an
+# atomic read-modify-write comes back `Unordered`, and the stages that merely
+# clear or read it still get their barriers, because those writes are not atomic.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # The values a recorded plan reads per render
@@ -158,12 +123,8 @@ a `fill!` per queue was ~20 commands and their barriers per round."""
 function reset_pass!(g, state::VolPathState, nxt::WorkQueue)
     queues = round_queues(state, nxt)
     counters = _collect_size_counters((), queues...)
-    Mantle.compute!(g, "reset") do p
-        for c in counters
-            Mantle.use(p, c; write = true)
-        end
-        Mantle.dispatch!(p, zero_size_counters_kernel!, (counters,), 1; group = 1)
-    end
+    Mantle.dispatch!(g, zero_size_counters_kernel!, (counters,), 1;
+                     group = 1, name = "reset")
 end
 
 """Every queue a round fills, so the reset covers all of them and nothing
@@ -187,11 +148,7 @@ backend and the graph still orders it, because what it touches is declared here
 either way.
 """
 function trace_pass!(g, accel, state::VolPathState, refs, cur::WorkQueue, nxt::WorkQueue)
-    Mantle.compute!(g, "trace") do p
-        trace_uses!(p, state, cur, nxt)
-        Mantle.use(p, refs.sample_idx; read = true)
-        Mantle.use(p, refs.camera; read = true)
-        Mantle.dispatch!(p, workqueue_map_kernel!,
+    Mantle.dispatch!(g, workqueue_map_kernel!,
                          (vp_trace_and_shade_kernel!, cur, nxt,
                           state.escaped_queue, state.medium_sample_queue,
                           state.per_material_queue, state.hit_surface_queue,
@@ -206,56 +163,29 @@ function trace_pass!(g, accel, state::VolPathState, refs, cur::WorkQueue, nxt::W
                           state.max_depth, refs.regularize,
                           state.sobol_rng, refs.sample_idx,
                           refs.camera, refs.samples_per_pixel, state.rr_depth),
-                         Mantle.DeviceRange(cur.size; max = Int(cur.capacity));
-                         group = DEFAULT_WORKGROUPSIZE)
-    end
-end
-
-function trace_uses!(p, state::VolPathState, cur::WorkQueue, nxt::WorkQueue)
-    use!(p, cur; read = true)
-    use!(p, nxt; read = true, write = true)
-    use!(p, state.escaped_queue; read = true, write = true)
-    use!(p, state.medium_sample_queue; read = true, write = true)
-    use!(p, state.per_material_queue; read = true, write = true)
-    use!(p, state.hit_surface_queue; read = true, write = true)
-    use!(p, state.hit_area_light_queue; read = true, write = true)
-    accumulates!(p, state.pixel_L)
-    return nothing
+                     Mantle.DeviceRange(cur.size; max = Int(cur.capacity));
+                     group = DEFAULT_WORKGROUPSIZE, name = "trace")
 end
 
 """Delta tracking through the media the trace deferred. Fills the scatter queue
 and, for rays that leave their medium and land on a surface, the same surface
 queues the trace fills."""
 function medium_sample_pass!(g, state::VolPathState, refs, nxt::WorkQueue)
-    Mantle.compute!(g, "medium-sample") do p
-        use!(p, state.medium_sample_queue; read = true)
-        use!(p, state.medium_scatter_queue; read = true, write = true)
-        use!(p, state.per_material_queue; read = true, write = true)
-        use!(p, state.hit_surface_queue; read = true, write = true)
-        use!(p, state.hit_area_light_queue; read = true, write = true)
-        use!(p, nxt; read = true, write = true)
-        use!(p, state.escaped_queue; read = true, write = true)
-        accumulates!(p, state.pixel_L)
-        Mantle.dispatch!(p, workqueue_map_kernel!,
+    Mantle.dispatch!(g, workqueue_map_kernel!,
                          (vp_sample_medium_kernel!, state.medium_sample_queue,
                           state.medium_scatter_queue, state.per_material_queue,
                           state.hit_surface_queue, state.hit_area_light_queue,
                           nxt, state.escaped_queue, state.pixel_L,
                           refs.media, refs.materials, state.rgb2spec_table,
                           state.max_depth),
-                         Mantle.DeviceRange(state.medium_sample_queue.size;
-                                            max = Int(state.medium_sample_queue.capacity));
-                         group = DEFAULT_WORKGROUPSIZE)
-    end
+                     Mantle.DeviceRange(state.medium_sample_queue.size;
+                                        max = Int(state.medium_sample_queue.capacity));
+                     group = DEFAULT_WORKGROUPSIZE, name = "medium-sample")
 end
 
 """Direct lighting at a real scatter event. The only producer of shadow rays."""
 function medium_dl_pass!(g, state::VolPathState, refs)
-    Mantle.compute!(g, "medium-dl") do p
-        use!(p, state.medium_scatter_queue; read = true)
-        use!(p, state.shadow_queue; read = true, write = true)
-        Mantle.use(p, refs.sample_idx; read = true)
-        Mantle.dispatch!(p, workqueue_map_kernel!,
+    Mantle.dispatch!(g, workqueue_map_kernel!,
                          (vp_medium_direct_lighting_kernel!,
                           state.medium_scatter_queue, state.shadow_queue,
                           refs.lights, state.rgb2spec_table,
@@ -263,60 +193,46 @@ function medium_dl_pass!(g, state::VolPathState, refs)
                           state.num_infinite_lights, state.num_bvh_lights,
                           state.num_lights,
                           state.sobol_rng, refs.sample_idx),
-                         Mantle.DeviceRange(state.medium_scatter_queue.size;
-                                            max = Int(state.medium_scatter_queue.capacity));
-                         group = DEFAULT_WORKGROUPSIZE)
-    end
+                     Mantle.DeviceRange(state.medium_scatter_queue.size;
+                                        max = Int(state.medium_scatter_queue.capacity));
+                     group = DEFAULT_WORKGROUPSIZE, name = "medium-dl")
 end
 
 """The phase-function bounce out of a scatter event."""
 function medium_scatter_pass!(g, state::VolPathState, refs, nxt::WorkQueue)
-    Mantle.compute!(g, "medium-scatter") do p
-        use!(p, state.medium_scatter_queue; read = true)
-        use!(p, nxt; read = true, write = true)
-        Mantle.use(p, refs.sample_idx; read = true)
-        Mantle.dispatch!(p, workqueue_map_kernel!,
+    Mantle.dispatch!(g, workqueue_map_kernel!,
                          (vp_medium_scatter_kernel!, state.medium_scatter_queue,
                           nxt, state.max_depth, state.sobol_rng, refs.sample_idx),
-                         Mantle.DeviceRange(state.medium_scatter_queue.size;
-                                            max = Int(state.medium_scatter_queue.capacity));
-                         group = DEFAULT_WORKGROUPSIZE)
-    end
+                     Mantle.DeviceRange(state.medium_scatter_queue.size;
+                                        max = Int(state.medium_scatter_queue.capacity));
+                     group = DEFAULT_WORKGROUPSIZE, name = "medium-scatter")
 end
 
 """Rays that hit nothing: the environment lights, with MIS."""
 function escaped_pass!(g, state::VolPathState, refs)
-    Mantle.compute!(g, "escaped") do p
-        use!(p, state.escaped_queue; read = true)
-        accumulates!(p, state.pixel_L)
-        Mantle.dispatch!(p, workqueue_map_kernel!,
+    Mantle.dispatch!(g, workqueue_map_kernel!,
                          (vp_handle_escaped_rays_kernel!, state.escaped_queue,
                           state.pixel_L, state.rgb2spec_table, refs.lights,
                           state.bvh_nodes, state.light_to_bit_trail,
                           state.infinite_light_indices,
                           state.num_infinite_lights, state.num_bvh_lights),
-                         Mantle.DeviceRange(state.escaped_queue.size;
-                                            max = Int(state.escaped_queue.capacity));
-                         group = DEFAULT_WORKGROUPSIZE)
-    end
+                     Mantle.DeviceRange(state.escaped_queue.size;
+                                        max = Int(state.escaped_queue.capacity));
+                     group = DEFAULT_WORKGROUPSIZE, name = "escaped")
 end
 
 """Emission MIS for indirect rays that landed on an area light — pbrt-v4's
 "Handle emitters hit by indirect rays"."""
 function emitters_pass!(g, state::VolPathState, refs)
-    Mantle.compute!(g, "emitters") do p
-        use!(p, state.hit_area_light_queue; read = true)
-        accumulates!(p, state.pixel_L)
-        Mantle.dispatch!(p, workqueue_map_kernel!,
+    Mantle.dispatch!(g, workqueue_map_kernel!,
                          (vp_handle_emitters_kernel!, state.hit_area_light_queue,
                           state.pixel_L, refs.lights, state.rgb2spec_table,
                           state.bvh_nodes, state.light_to_bit_trail,
                           state.num_infinite_lights, state.num_bvh_lights,
                           state.num_lights),
-                         Mantle.DeviceRange(state.hit_area_light_queue.size;
-                                            max = Int(state.hit_area_light_queue.capacity));
-                         group = DEFAULT_WORKGROUPSIZE)
-    end
+                     Mantle.DeviceRange(state.hit_area_light_queue.size;
+                                        max = Int(state.hit_area_light_queue.capacity));
+                     group = DEFAULT_WORKGROUPSIZE, name = "emitters")
 end
 
 """
@@ -329,15 +245,8 @@ hand-placed `concurrent_indirect_group` used to say; here it follows from the
 dispatches sharing a pass, and the backend fuses their prepares into one.
 """
 function shade_pass!(g, state::VolPathState, refs, nxt::WorkQueue)
-    Mantle.compute!(g, "shade") do p
-        use!(p, state.per_material_queue; read = true)
-        use!(p, state.hit_surface_queue; read = true)
-        use!(p, nxt; read = true, write = true)
-        accumulates!(p, state.pixel_L)
-        Mantle.use(p, refs.sample_idx; read = true)
-        Mantle.use(p, refs.camera; read = true)
-        for q in state.per_material_queue.queues
-            Mantle.dispatch!(p, workqueue_map_kernel!,
+    for q in state.per_material_queue.queues
+        Mantle.dispatch!(g, workqueue_map_kernel!,
                              (vp_shade_material_kernel!, q,
                               state.hit_surface_queue, nxt, state.pixel_L,
                               refs.accel, refs.media_interfaces, refs.media,
@@ -348,25 +257,20 @@ function shade_pass!(g, state::VolPathState, refs, nxt::WorkQueue)
                               state.num_lights, state.max_depth, refs.regularize,
                               state.sobol_rng, refs.sample_idx,
                               refs.camera, refs.samples_per_pixel, state.rr_depth),
-                             Mantle.DeviceRange(q.size; max = Int(q.capacity));
-                             group = DEFAULT_WORKGROUPSIZE)
-        end
+                         Mantle.DeviceRange(q.size; max = Int(q.capacity));
+                         group = DEFAULT_WORKGROUPSIZE, name = "shade")
     end
 end
 
 """Transmittance along the shadow rays the medium direct lighting queued."""
 function shadow_pass!(g, state::VolPathState, refs)
-    Mantle.compute!(g, "shadow") do p
-        use!(p, state.shadow_queue; read = true)
-        accumulates!(p, state.pixel_L)
-        Mantle.dispatch!(p, workqueue_map_kernel!,
+    Mantle.dispatch!(g, workqueue_map_kernel!,
                          (vp_trace_shadow_rays_kernel!, state.shadow_queue,
                           state.pixel_L, state.rgb2spec_table, refs.accel,
                           refs.media_interfaces, refs.media, refs.materials),
-                         Mantle.DeviceRange(state.shadow_queue.size;
-                                            max = Int(state.shadow_queue.capacity));
-                         group = DEFAULT_WORKGROUPSIZE)
-    end
+                     Mantle.DeviceRange(state.shadow_queue.size;
+                                        max = Int(state.shadow_queue.capacity));
+                     group = DEFAULT_WORKGROUPSIZE, name = "shadow")
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -442,29 +346,16 @@ nothing orders them against each other — the fact the `concurrent_dispatch_gro
 around them was there to assert.
 """
 function setup_passes!(g, state::VolPathState, refs, cur::WorkQueue)
-    Mantle.compute!(g, "clear") do p
-        Mantle.use(p, state.pixel_L; write = true)
-        Mantle.use(p, cur.size; write = true)
-        Mantle.dispatch!(p, vp_clear_kernel!, (state.pixel_L, 0f0),
-                         length(state.pixel_L))
-        Mantle.dispatch!(p, zero_size_counters_kernel!, ((cur.size,),), 1; group = 1)
-    end
-    Mantle.compute!(g, "camera") do p
-        use!(p, cur; read = true, write = true)
-        Mantle.use(p, state.wavelengths_per_pixel; write = true)
-        Mantle.use(p, state.pdf_per_pixel; write = true)
-        Mantle.use(p, state.filter_weight_per_pixel; write = true)
-        Mantle.use(p, refs.sample_idx; read = true)
-        Mantle.use(p, refs.camera; read = true)
-        Mantle.use(p, refs.initial_medium; read = true)
-        Mantle.use(p, refs.filter_params; read = true)
-        Mantle.dispatch!(p, vp_generate_camera_rays_kernel!,
-                         (cur, state.wavelengths_per_pixel, state.pdf_per_pixel,
-                          state.filter_weight_per_pixel, state.height,
-                          refs.camera, refs.sample_idx, refs.initial_medium,
-                          refs.filter_params, refs.filter_sampler, state.sobol_rng),
-                         Int(state.width) * Int(state.height))
-    end
+    Mantle.dispatch!(g, vp_clear_kernel!, (state.pixel_L, 0f0),
+                     length(state.pixel_L); name = "clear")
+    Mantle.dispatch!(g, zero_size_counters_kernel!, ((cur.size,),), 1;
+                     group = 1, name = "clear-queue")
+    Mantle.dispatch!(g, vp_generate_camera_rays_kernel!,
+                     (cur, state.wavelengths_per_pixel, state.pdf_per_pixel,
+                      state.filter_weight_per_pixel, state.height,
+                      refs.camera, refs.sample_idx, refs.initial_medium,
+                      refs.filter_params, refs.filter_sampler, state.sobol_rng),
+                     Int(state.width) * Int(state.height); name = "camera")
     return g
 end
 
@@ -472,23 +363,15 @@ end
 """This sample's spectral radiance, weighted into the RGB accumulators."""
 function accumulate_passes!(g, state::VolPathState, refs)
     n_pixels = Int(state.width) * Int(state.height)
-    Mantle.compute!(g, "accumulate") do p
-        Mantle.use(p, state.pixel_L; read = true)
-        Mantle.use(p, state.wavelengths_per_pixel; read = true)
-        Mantle.use(p, state.pdf_per_pixel; read = true)
-        Mantle.use(p, state.filter_weight_per_pixel; read = true)
-        Mantle.use(p, state.pixel_rgb; read = true, write = true)
-        Mantle.use(p, state.pixel_weight_sum; read = true, write = true)
-        Mantle.dispatch!(p, vp_accumulate_to_rgb_kernel!,
-                         (state.pixel_rgb, state.pixel_weight_sum, state.pixel_L,
-                          state.wavelengths_per_pixel, state.pdf_per_pixel,
-                          state.filter_weight_per_pixel,
-                          state.cie_table.cie_x, state.cie_table.cie_y,
-                          state.cie_table.cie_z, Int32(n_pixels),
-                          refs.max_component_value, state.output_matrix,
-                          state.imaging_ratio),
-                         n_pixels)
-    end
+    Mantle.dispatch!(g, vp_accumulate_to_rgb_kernel!,
+                     (state.pixel_rgb, state.pixel_weight_sum, state.pixel_L,
+                      state.wavelengths_per_pixel, state.pdf_per_pixel,
+                      state.filter_weight_per_pixel,
+                      state.cie_table.cie_x, state.cie_table.cie_y,
+                      state.cie_table.cie_z, Int32(n_pixels),
+                      refs.max_component_value, state.output_matrix,
+                      state.imaging_ratio),
+                     n_pixels; name = "accumulate")
     return g
 end
 
@@ -496,15 +379,10 @@ end
 """The divide that turns the accumulators into the picture."""
 function finalize_passes!(g, state::VolPathState, framebuffer)
     n_pixels = Int(state.width) * Int(state.height)
-    Mantle.compute!(g, "finalize") do p
-        Mantle.use(p, state.pixel_rgb; read = true)
-        Mantle.use(p, state.pixel_weight_sum; read = true)
-        Mantle.use(p, framebuffer; write = true)
-        Mantle.dispatch!(p, vp_finalize_film_kernel!,
-                         (framebuffer, state.pixel_rgb, state.pixel_weight_sum,
-                          state.width, state.height),
-                         n_pixels)
-    end
+    Mantle.dispatch!(g, vp_finalize_film_kernel!,
+                     (framebuffer, state.pixel_rgb, state.pixel_weight_sum,
+                      state.width, state.height),
+                     n_pixels; name = "finalize")
     return g
 end
 
@@ -547,10 +425,8 @@ function sample_graph(dev, state::VolPathState, refs, max_depth::Int32;
     # declared reads; a store through one lands in the run's own submission,
     # ahead of the recorded commands that read it. Everything else was fixed at
     # `record!`.
-    Mantle.compute!(g, "next sample") do p
-        Mantle.use(p, refs.sample_idx; read = true, write = true)
-        Mantle.dispatch!(p, vp_next_sample_kernel!, (refs.sample_idx,), 1; group = 1)
-    end
+    Mantle.dispatch!(g, vp_next_sample_kernel!, (refs.sample_idx,), 1;
+                     group = 1, name = "next sample")
     setup_passes!(g, state, refs, a)
     d = Int(max_depth)
     if d >= 2

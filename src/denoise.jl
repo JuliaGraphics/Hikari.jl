@@ -345,31 +345,19 @@ function denoise_plan!(film::Film, config::DenoiseConfig)
         # constant of the plan rather than an argument.
         step = Int32(1) << (i - 1)
         src, dst = isodd(i) ? (film.framebuffer, scratch) : (scratch, film.framebuffer)
-        Mantle.compute!(g, "atrous-$i") do p
-            Mantle.use(p, src; read = true)
-            Mantle.use(p, dst; write = true)
-            Mantle.use(p, film.normal; read = true)
-            Mantle.use(p, film.depth; read = true)
-            Mantle.use(p, refs.sigma_color; read = true)
-            Mantle.use(p, refs.sigma_normal; read = true)
-            Mantle.use(p, refs.sigma_depth; read = true)
-            Mantle.dispatch!(p, atrous_denoise_kernel!,
-                             (dst, src, film.normal, film.depth,
-                              Int32(width), Int32(height), step,
-                              refs.sigma_color, refs.sigma_normal, refs.sigma_depth),
-                             n_pixels)
-        end
+        Mantle.dispatch!(g, atrous_denoise_kernel!,
+                         (dst, src, film.normal, film.depth,
+                          Int32(width), Int32(height), step,
+                          refs.sigma_color, refs.sigma_normal, refs.sigma_depth),
+                         n_pixels; name = "atrous-$i")
     end
     # An odd iteration count leaves the result in the scratch. A copy pass rather
     # than a broadcast afterwards, so it is ordered by the barrier the graph
     # derives like everything else.
     if isodd(config.iterations)
-        Mantle.compute!(g, "writeback") do p
-            Mantle.use(p, scratch; read = true)
-            Mantle.use(p, film.framebuffer; write = true)
-            Mantle.dispatch!(p, denoise_copy_kernel!,
-                             (film.framebuffer, scratch, Int32(n_pixels)), n_pixels)
-        end
+        Mantle.dispatch!(g, denoise_copy_kernel!,
+                         (film.framebuffer, scratch, Int32(n_pixels)), n_pixels;
+                         name = "writeback")
     end
     made = DenoisePlan(film.framebuffer, config.iterations, scratch, refs,
                        Mantle.record!(Mantle.Plan(g)), mem)

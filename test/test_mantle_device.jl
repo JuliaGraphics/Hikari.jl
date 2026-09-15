@@ -31,11 +31,8 @@ end
 
     g = Mantle.Graph(dev)
     dst = Mantle.Buffer(dev, zeros(Float32, n))
-    Mantle.compute!(g, "read-foreign") do p
-        Mantle.dispatch!(p, Hikari.mantle_probe_scale!,
-                         (Mantle.use(p, dst; write = true),
-                          Mantle.use(p, src; read = true), 3f0), n)
-    end
+    Mantle.dispatch!(g, Hikari.mantle_probe_scale!, (dst, src, 3f0), n;
+                     name = "read-foreign")
     Mantle.run!(Mantle.record!(Mantle.Plan(g)))   # run! never records
     @test all(==(6f0), Array(Mantle.storage(dst)))
 end
@@ -68,16 +65,9 @@ end
     KA.fill!(out, 0f0)
 
     g = Mantle.Graph(dev)
-    Mantle.compute!(g, "fill") do p
-        Hikari.use!(p, q; write = true)
-        Mantle.dispatch!(p, mantle_probe_fill_queue!, (q, Int32(want)), cap)
-    end
-    Mantle.compute!(g, "drain") do p
-        Hikari.use!(p, q; read = true)
-        Mantle.dispatch!(p, mantle_probe_drain_queue!,
-                         (q, Mantle.use(p, out; write = true)),
-                         Mantle.DeviceRange(q.size; max = cap))
-    end
+    Mantle.dispatch!(g, mantle_probe_fill_queue!, (q, Int32(want)), cap; name = "fill")
+    Mantle.dispatch!(g, mantle_probe_drain_queue!, (q, out),
+                     Mantle.DeviceRange(q.size; max = cap); name = "drain")
     Mantle.run!(Mantle.record!(Mantle.Plan(g)))   # run! never records
     KA.synchronize(backend)
 
@@ -93,11 +83,11 @@ end
     Hikari.free!(mem)
 end
 
-@testset "several device-sized dispatches in one pass" begin
-    # What the per-material shading stage is: N queues drained in one pass,
-    # each over its own count. They share one fused prepare and one barrier, so
-    # a count going astray between them would show up as the wrong number of
-    # elements written for that queue alone.
+@testset "several device-sized dispatches, each over its own count" begin
+    # What the per-material shading stage is: N queues drained side by side,
+    # each over its own count. Nothing orders them against each other — they
+    # touch disjoint queues — so a count going astray between them would show up
+    # as the wrong number of elements written for that queue alone.
     backend = Mantle.defaultbackend()
     dev = Hikari.mantle_device(backend)
     cap, k = 2048, 4
@@ -108,19 +98,12 @@ end
     wants = [500 + i for i in 1:k]
 
     g = Mantle.Graph(dev)
-    Mantle.compute!(g, "fill") do p
-        for (q, w) in zip(qs, wants)
-            Hikari.use!(p, q; write = true)
-            Mantle.dispatch!(p, mantle_probe_fill_queue!, (q, Int32(w)), cap)
-        end
+    for (q, w) in zip(qs, wants)
+        Mantle.dispatch!(g, mantle_probe_fill_queue!, (q, Int32(w)), cap; name = "fill")
     end
-    Mantle.compute!(g, "drain") do p
-        for (q, o) in zip(qs, outs)
-            Hikari.use!(p, q; read = true)
-            Mantle.dispatch!(p, mantle_probe_drain_queue!,
-                             (q, Mantle.use(p, o; write = true)),
-                             Mantle.DeviceRange(q.size; max = cap))
-        end
+    for (q, o) in zip(qs, outs)
+        Mantle.dispatch!(g, mantle_probe_drain_queue!, (q, o),
+                         Mantle.DeviceRange(q.size; max = cap); name = "drain")
     end
     Mantle.run!(Mantle.record!(Mantle.Plan(g)))   # run! never records
     KA.synchronize(backend)
@@ -141,12 +124,8 @@ end
     KA.fill!(out, 7f0)
 
     g = Mantle.Graph(dev)
-    Mantle.compute!(g, "drain") do p
-        Hikari.use!(p, q; read = true)
-        Mantle.dispatch!(p, mantle_probe_drain_queue!,
-                         (q, Mantle.use(p, out; write = true)),
-                         Mantle.DeviceRange(q.size; max = cap))
-    end
+    Mantle.dispatch!(g, mantle_probe_drain_queue!, (q, out),
+                     Mantle.DeviceRange(q.size; max = cap); name = "drain")
     Mantle.run!(Mantle.record!(Mantle.Plan(g)))   # run! never records
     KA.synchronize(backend)
     @test all(==(7f0), Array(out))
@@ -179,12 +158,7 @@ end
     scale = Mantle.GPURef(dev, 3f0)
 
     g = Mantle.Graph(dev)
-    Mantle.compute!(g, "scale") do p
-        Mantle.use(p, dst; write = true)
-        Mantle.use(p, src; read = true)
-        Mantle.use(p, scale; read = true)
-        Mantle.dispatch!(p, _probe_readref!, (dst, src, scale), n)
-    end
+    Mantle.dispatch!(g, _probe_readref!, (dst, src, scale), n; name = "scale")
     plan = Mantle.record!(Mantle.Plan(g))
     Mantle.run!(plan)
     KA.synchronize(backend)
