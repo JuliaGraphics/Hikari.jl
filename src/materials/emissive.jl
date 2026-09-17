@@ -25,7 +25,7 @@ Emissive(Le=(3, 3, 3), scale=1.0, two_sided=true)
 """
 # Constants collapse into a `TexHandle`, so every `Emissive(Le=<colour>)` is
 # ONE type however the colour was spelled — that is what pbrt area lights use
-# (`AreaLightSource "diffuse" "rgb L"`), and a parametric `Le` used to give an
+# (`AreaLightSource "diffuse" "rgb L"`), where a parametric `Le` gives an
 # emissive scene one closest-hit shader per spelling.
 #
 # An image `Texture` stays as-is: `Raycore`'s push-time conversion turns it into

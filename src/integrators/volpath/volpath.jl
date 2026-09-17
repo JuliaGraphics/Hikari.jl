@@ -70,9 +70,8 @@ mutable struct VolPath <: Integrator
     # bag of VIEWS over the scene's device arrays, so a mutation that writes
     # in place (a refit, a surgical same-type `push!`) is visible through it,
     # and one that changes shape announces itself through `notify_scene_changed`
-    # — which drops this via `invalidate!`. It used to be rebuilt on every
-    # sample: a few hundred bytes of wrapper construction per sample, for
-    # nothing.
+    # — which drops this via `invalidate!`. Rebuilding it per sample is a few
+    # hundred bytes of wrapper construction for nothing.
     adapted::Any
 
     # The per-run refs of the current plans, typed (see `PerRun`): `nothing`
@@ -370,18 +369,18 @@ end
 # Inline Sobol samples
 # ============================================================================
 #
-# Previously, a separate `vp_generate_ray_samples_kernel!` ran once per bounce
-# to pre-fill five `pixel_samples_*` SOA buffers (direct_uc, direct_u,
-# indirect_uc, indirect_u, indirect_rr) from Sobol.  Per-kernel GPU timing
-# (Lava.with_dispatch_timing, 2026-06-03) showed that kernel was 58 % of GPU
-# time on killeroo native HW RT — the actual path-tracing kernels were
-# 0.1 %.  The fix: each consumer (surface_direct_lighting_inner!,
-# evaluate_material_inner!, medium_direct_lighting_inner!,
-# medium_scatter_inner!) now generates only the Sobol dimensions it needs,
-# inline from `(work.pixel_index, sample_idx, work.depth)`.  Eliminates the
-# kernel dispatch + barrier per bounce, plus the SOA write of ~13 floats per
-# pixel and the SOA read of those floats in the next dispatch (~150 MB of
-# memory traffic per bounce on a 1.4 Mpx scene).
+# Each consumer (surface_direct_lighting_inner!, evaluate_material_inner!,
+# medium_direct_lighting_inner!, medium_scatter_inner!) generates only the Sobol
+# dimensions it needs, inline from `(work.pixel_index, sample_idx,
+# work.depth)`.
+#
+# Pre-filling five `pixel_samples_*` SOA buffers (direct_uc, direct_u,
+# indirect_uc, indirect_u, indirect_rr) in a kernel of its own per bounce
+# measured 58 % of GPU time on killeroo native HW RT, against 0.1 % in the
+# actual path-tracing kernels (per-kernel dispatch timing). Inline costs no
+# dispatch, no barrier per bounce, no SOA write of ~13 floats per pixel and no
+# read of them in the next dispatch: ~150 MB of memory traffic per bounce on a
+# 1.4 Mpx scene.
 
 
 # ============================================================================
@@ -690,11 +689,9 @@ function rebuild_render_state!(vp::VolPath, scene::AbstractScene, film::Film,
        # needs them shows up on a reused integrator.
        (has_media && Int(vp.state.medium_sample_queue.capacity) < width * height) ||
        (!chit_owns_surface && Int(vp.state.hit_surface_queue.capacity) < width * height)
-        # The previous state's regions go back before the new ones are taken, so
-        # a resize does not hold two states' worth at once. The comment here
-        # used to read "a bare reassign races GC finalizers and doubles peak
-        # memory" and the line above it was a `KA.synchronize`; neither is true
-        # any more — nothing finalizes, and `free!` retires.
+        # The previous state's regions go back before the new ones are taken,
+        # so a resize does not hold two states' worth at once. No synchronize
+        # and no finalizer race: nothing finalizes, and `free!` retires.
         vp.state === nothing || free!(vp.state)
         # Use original scene.lights (MultiTypeSet) for PowerLightSampler (needs .backend)
         # Ensure SobolRNG has enough bits for progressive rendering:
@@ -730,9 +727,9 @@ function rebuild_render_state!(vp::VolPath, scene::AbstractScene, film::Film,
         vp.filter_sampler_gpu = Adapt.adapt(backend, vp.filter_sampler_data)
     end
 
-    # The camera effects flags the kernel used to get as arguments are computed
-    # on the device now — with the camera behind a `GPURef` they would need refs
-    # of their own, and they are two field reads on a value already in registers.
+    # The camera effects flags are computed on the device and not passed as
+    # arguments: with the camera behind a `GPURef` they would need refs of their
+    # own, and they are two field reads on a value already in registers.
     rebuild_plans!(state, film, backend,
                    accel, media_interfaces, media, materials, lights,
                    camera,

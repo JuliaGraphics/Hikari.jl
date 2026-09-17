@@ -1,12 +1,12 @@
 # One volpath sample, as Mantle graphs.
 #
 # The wavefront loop is ~20 dispatches a round whose only ordering constraints
-# are which queue each stage fills and which one it drains. Those constraints
-# used to be expressed by the order of the calls plus two hand-placed
-# `concurrent_dispatch_group` / `concurrent_indirect_group` scopes asserting
-# which dispatches were independent — an assertion nothing checked, and the one
-# that was wrong (a prepare-indirect read racing its own producer) cost ~15 % of
-# the energy on a scene where the queue happened to empty mid-pipeline.
+# are which queue each stage fills and which one it drains. Declaring those is
+# what makes the barriers derivable: expressing them as the order of the calls
+# plus hand-placed `concurrent_dispatch_group` / `concurrent_indirect_group`
+# scopes is an assertion nothing checks, and one wrong scope (a prepare-indirect
+# read racing its own producer) costs ~15 % of the energy on a scene where the
+# queue empties mid-pipeline.
 #
 # Here each stage declares what it reads and what it writes, and the barriers
 # between them are derived from that. A stage that shares nothing with its
@@ -43,9 +43,8 @@ import StructArrays
 # What a stage touches
 # ─────────────────────────────────────────────────────────────────────────────
 
-# `devicebuffers!`, `use!` and `accumulates!` were here: the leaf walk that turns
-# a work queue into the buffers a barrier is scoped to, and the two verbs that
-# declared them. All three are gone.
+# Nothing here turns a work queue into the buffers a barrier is scoped to, or
+# declares them.
 #
 # The walk is `Mantle.resourceleaves!` — it opens up any container it is handed,
 # so a `WorkQueue`, a `StructArray` and a `MultiTypeWorkQueue` need no method of
@@ -107,8 +106,8 @@ render_refs(accel, media_interfaces, media, materials, lights,
 
 # `KA.fill!` is a launch rather than a `@kernel`, and a pass records kernels.
 # Writing the fill as one is also what lets it share a pass with the counter
-# reset: the two touch disjoint memory, which is the fact the hand-placed
-# `concurrent_dispatch_group` around them used to assert.
+# reset: the two touch disjoint memory, which is the fact a hand-placed
+# `concurrent_dispatch_group` around them would assert.
 @kernel inbounds = true function vp_clear_kernel!(dst, value)
     i = @index(Global)
     dst[i] = value
@@ -240,8 +239,8 @@ Surface shading, one dispatch per concrete material type.
 
 They go in ONE pass because they are mutually independent — each drains its own
 typed queue and writes atomically-claimed slots in the shared next-ray queue —
-and a pass is the unit Mantle emits barriers between. That is what the
-hand-placed `concurrent_indirect_group` used to say; here it follows from the
+and a pass is the unit Mantle emits barriers between. A hand-placed
+`concurrent_indirect_group` says the same thing; here it follows from the
 dispatches sharing a pass, and the backend fuses their prepares into one.
 """
 function shade_pass!(g, state::VolPathState, refs, nxt::WorkQueue)
@@ -405,7 +404,8 @@ to where it found them, which is what makes one recording valid for every
 iteration. It also fixes the overshoot: the loop can only stop on an even
 boundary, so at most one dead round runs after the rays are gone.
 
-This replaces a host loop that drained the pipeline every eight rounds to read
+The alternative is a host loop that drains the pipeline every eight rounds to
+read
 the same counter. Eight was that drain's amortisation constant — `live_rounds/8`
 stalls per sample, bought with up to seven dead rounds of overshoot — and with
 the test on the device there is nothing left to amortise.
@@ -460,8 +460,8 @@ The compiled plans for one scene shape, film and integrator configuration.
 
 Two plans, because a sample is two things: everything that produces the picture,
 and the divide that writes it out. `sample` holds setup, the whole bounce loop
-and accumulate; it used to be four plans driven by a host `while` loop, which
-existed only so the host could read the ray count between chunks.
+and accumulate, in one plan rather than four driven by a host `while` loop that
+exists only so the host can read the ray count between chunks.
 
 There is no key and no per-sample comparison: `refs` holds the values the plans
 were packed with, the per-run ones as `GPURef`s a store lands in the run's own
@@ -551,9 +551,9 @@ is the one compare a sample makes per value. A still scene stores nothing, and
 a moved camera stores the camera and nothing else.
 
 Typed all the way: `perrun` arrives through `VolPath.perrun`, a union over the
-camera type, so this is a static call whose compares are bitwise. It used to
-take the plans, which are `Any` on the state, and the dynamic call boxed the
-camera it was handed every sample.
+camera type, so this is a static call whose compares are bitwise. Taking the
+plans instead — they are `Any` on the state — makes it dynamic, and the dynamic
+call boxes the camera it is handed every sample.
 """
 function storechanged!(pr::PerRun{C}, camera::C, initial_medium::SetKey,
                        filter_params::GPUFilterParams) where {C <: Camera}
@@ -618,18 +618,16 @@ allplans(p::VPPlans) = (p.sample, p.finalize)
 #
 # Recording writes the command buffers once; a run submits them. The host saving
 # is real — a round's recording is 0.101 ms and submitting it 0.0058 ms — and it
-# used to be swallowed whole by how a replay reached the queue. `replay!`
-# submitted on its own, behind a semaphore wait on the previous replay, so
-# replays were serialised against each other: an ordering that one recording
-# expresses with an intra-submission barrier became a GPU round-trip between
-# submissions. Measured then, paired and interleaved in one session: at a chunk
-# of 8 rounds baking COST 5.2 % on medium_null, and only at a chunk of 64 — the
-# whole sample in one plan, hence one replay — did it win 14.5 %.
+# is only visible because a recording leaves in the same `vkQueueSubmit2` as the
+# batch the host is already building. A replay that submits on its own, behind a
+# semaphore wait on the previous one, serialises replays against each other, and
+# an ordering one recording expresses with an intra-submission barrier becomes a
+# GPU round-trip: measured that way, recording COST 5.2 % at a chunk of 8 rounds
+# on medium_null and won 14.5 % only at a chunk of 64, one replay for the whole
+# sample.
 #
-# That is gone. A recording is appended to the batch the host is already building
-# and leaves in the same `vkQueueSubmit2`, so there is no wait and no extra
-# submission. Re-measured 2026-08-31 on an RTX 4000 Ada, every plan below baked,
-# paired in one session against the same integrator:
+# Measured 2026-08-31 on an RTX 4000 Ada, every plan below recorded, paired in
+# one session against the same integrator:
 #
 #     materials  1200x900   10 spp  depth 50    0.744 s -> 0.717 s   1.037x
 #     crown      1000x1400  16 spp  depth 100   2.226 s -> 2.130 s   1.045x
@@ -638,17 +636,14 @@ allplans(p::VPPlans) = (p.sample, p.finalize)
 # and at 10 and 16. So the chunk stays at 8 — the early exit is worth far more
 # than either number.
 #
-# Four things had to be right before any of this could be compared, and each was
-# wrong at some point, so each is worth knowing: `bake!` used to RUN the plan as
-# it captured it (the accumulate pass would contribute a spurious sample); a
-# baked plan replayed the arguments it captured unless the caller remembered
-# `Mantle.rebind!`; `rebind!` could not reach a `custom!` pass's arguments, which
-# is what the hardware RT trace used to be; and a recording belongs to the
-# argument slot it was captured in, which `bake!` got wrong for any plan that had
-# already run. All four are pinned by tests in Mantle and all four are
-# unreachable now — `run!` records for itself, `custom!` is gone, and the only
-# value a run feeds is a `GPURef` the commands hold the address of, so there is
-# no rebinding and no ring to be out of phase with.
+# Four ways a recorded render can differ from an interpreted one, all four
+# pinned by tests in Mantle and all four unreachable here: recording a plan must
+# not RUN it (the accumulate pass would contribute a spurious sample); a
+# recording must not replay stale arguments; every pass's arguments have to be
+# reachable, including a trace's; and a recording must not belong to one
+# argument slot. `run!` records for itself, and the only value a run feeds is a
+# `GPURef` whose address the commands hold, so there is nothing to rebind and no
+# ring to be out of phase with.
 
 
 """
@@ -668,10 +663,9 @@ function rebuild_plans!(state::VolPathState, film::Film, backend,
                         regularize::Bool, samples_per_pixel::Int32,
                         max_component_value::Float32, max_depth::Int32;
                         chit_owns_surface::Bool, has_media::Bool, has_lights::Bool)
-    # The old plans go back without a wait. Their recordings may well still be in
-    # flight; `Mantle.free!` retires the regions rather than releasing them, so
-    # the pool hands those bytes on only once the device says so. This used to be
-    # `KA.synchronize(backend)` first.
+    # The previous plans go back without a wait. Their recordings may well still
+    # be in flight; `Mantle.free!` retires the regions rather than releasing
+    # them, so the pool hands those bytes on only once the device says so.
     state.plans === nothing || free!(state.plans)
     dev = mantle_device(backend)
     # One device slot per per-run value, addressed by the recorded commands and

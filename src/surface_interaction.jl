@@ -437,8 +437,8 @@ end
         world_sn = Normal3f(normalize(inv_t_3x3 * local_sn))
 
         # Tangent/bitangent: direction transform R * v_local. Raycore.transform_direction
-        # handles the Mat3x4f layout correctly (the old inline `Mat3f(transform[…])` built
-        # R^T, which is wrong for non-orthogonal R).
+        # handles the Mat3x4f layout correctly, where an inline
+        # `Mat3f(transform[…])` builds R^T and is wrong for non-orthogonal R.
         world_dpdu = normalize(Raycore.transform_direction(transform, interaction.∂p∂u))
         world_dpdv = normalize(Raycore.transform_direction(transform, interaction.∂p∂v))
         world_st   = normalize(Raycore.transform_direction(transform, interaction.shading.∂p∂u))

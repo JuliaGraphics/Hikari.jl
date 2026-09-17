@@ -154,8 +154,8 @@ end
 # pbrt-v4's `DielectricMaterial::GetBxDF` resolves eta and the microfacet
 # distribution once per hit and hands `DielectricBxDF` only those. Hikari adds
 # the Kr/Kt tints, which are texture reads, so they belong here too: direct
-# lighting calls `evaluate_bsdf_spectral` once per light sample, and each call
-# used to redo both texture reads, the IOR lookup, and the roughness remap for
+# lighting calls `evaluate_bsdf_spectral` once per light sample, so doing them
+# there redoes both texture reads, the IOR lookup and the roughness remap for
 # values that cannot change within one hit.
 
 struct DielectricEvaluated

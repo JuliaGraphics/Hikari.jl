@@ -296,9 +296,9 @@ end
     # The sample index is a `Mantle.GPURef`, so it arrives as a one-element
     # device array and the recorded commands hold its ADDRESS. That is what lets
     # one recording render every sample: the plan is written once and the host
-    # writes this number with one `cmd_update_buffer` per run. It was an `Int32`
-    # packed into the arguments of every dispatch that reads it, which is why a
-    # recorded plan needed the whole per-run repack.
+    # writes this number with one `cmd_update_buffer` per run. An `Int32` packed
+    # into the arguments of every dispatch that reads it is what would make a
+    # recorded plan need a per-run repack.
     sample_idx = @inbounds sample_idx_ref[Int32(1)]
     # The camera is a `GPURef` for the same reason: a moved camera is an update
     # in the run's own submission, not a new plan.

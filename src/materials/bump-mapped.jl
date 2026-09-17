@@ -7,8 +7,8 @@
 # as smooth surfaces; with it, displacement textures on gold and pearl
 # materials show through.
 #
-# This used to be a `BumpMapped{M, T}` WRAPPER material. That wrapper doubled
-# the concrete material type count of any scene that bump-maps some of its
+# NOT a `BumpMapped{M, T}` WRAPPER material: such a wrapper doubles the
+# concrete material type count of any scene that bump-maps some of its
 # surfaces — `Conductor{…}` and `BumpMapped{Conductor{…}, TextureRef{…}}` are
 # different types, so the per-material closest-hit path compiled a separate
 # shader for each. pbrt-v4 does not wrap: `displacement` is a plain field on
@@ -62,8 +62,8 @@ a sub-material before `GetDisplacement` is consulted).
     :displacement in fs || return :(mat)
     args = [f === :displacement ? :h : :(getfield(mat, $(QuoteNode(f)))) for f in fs]
     # Through the UnionAll: rebuilding through the CONCRETE type would convert
-    # `h` to the old field's type, and for an unstored texture that conversion
-    # is exactly what cannot exist yet.
+    # `h` to the existing field's type, and for an unstored texture that
+    # conversion is exactly what cannot exist yet.
     return :($(Base.typename(M).wrapper)($(args...)))
 end
 
@@ -172,5 +172,5 @@ end
 # The bump perturbation is applied at intersection time by
 # `get_perturbed_shading_frame` (see dispatch.jl), NOT inside the BSDF: the
 # path integrator's own `cos_theta = dot(wi, work.ns)` factor has to see the
-# perturbed normal too, or bumps on Conductor surfaces vanish (Crown's gold
-# dome rendered smooth with the old in-BSDF version).
+# perturbed normal too, or bumps on Conductor surfaces vanish: perturbing
+# inside the BSDF renders Crown's gold dome smooth.

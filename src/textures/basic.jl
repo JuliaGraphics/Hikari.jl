@@ -75,9 +75,9 @@ end
 # Procedural checkerboard texture — exact port of pbrt-v4's CheckerboardTexture
 # (textures.cpp `Checkerboard()`, 2D case) fused with `UVMapping::Map`.
 # Evaluated analytically at shading time with pbrt's closed-form triangle-filter
-# integral. This replaces the old 256² LUT rasterization in the pbrt scene
-# builder: the LUT's bilinear smoothing both quantized checker-edge positions to
-# the texel grid and widened the height-field gradient bands that bump mapping
+# integral, and not a 256² LUT rasterised in the pbrt scene builder: a LUT's
+# bilinear smoothing quantises checker-edge positions to the texel grid and
+# widens the height-field gradient bands that bump mapping
 # differentiates (shadow_bumpgold_dome_over_velvet pinned the resulting 21%
 # energy loss).
 #

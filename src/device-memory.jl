@@ -1,15 +1,13 @@
 # Where a render state's device memory comes from, and the only thing that gives
 # it back.
 #
-# It used to come from `KA.allocate` and go back through `finalize`, scattered
-# across the state, the work queues, the light BVH upload and the Sobol matrices
-# — twelve `finalize` calls that a reader had to find and keep in step. That is
-# the pattern the project rule forbids in as many words: memory management is
-# centralized, and high-level code never finalizes GPU resources. The comments
-# around those calls record what it cost — "a bare reassign races GC finalizers
-# and doubles peak memory", "proactive free! from a finalizer would free arrays
-# still in use by the render loop" — which is a lifetime protocol maintained by
-# hand and commented rather than expressed.
+# One place, and not `KA.allocate` with `finalize` scattered across the state,
+# the work queues, the light BVH upload and the Sobol matrices. That is the
+# pattern the project rule forbids in as many words: memory management is
+# centralized, and high-level code never finalizes GPU resources. What it costs
+# otherwise is a lifetime protocol maintained by hand — a bare reassign racing
+# GC finalizers and doubling peak memory, a proactive free from a finalizer
+# taking arrays the render loop is still using.
 #
 # Here every allocation is a `Mantle.Buffer` from the device's pool, and the
 # whole tree goes back in one call. Three things follow that are not just
@@ -125,9 +123,8 @@ Give every region back.
 **No precondition, and that is the point.** `Mantle.free!` retires: the bytes go
 back on a free list when the device says it is finished, not when this returns.
 So there is no "the GPU must be idle" rule here for a caller to get wrong, and
-none of the `KA.synchronize` calls that used to guard these — one before every
-plan rebuild, every queue rebuild and every teardown, each of them a place to
-forget.
+no `KA.synchronize` guarding any of it — one before every plan rebuild, every
+queue rebuild and every teardown is one more place to forget.
 
 Safe from the GC thread for the same reason, which is why it can be the
 finalizer as well as the explicit path. There is no separate `retire!`: this was

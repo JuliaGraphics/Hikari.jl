@@ -115,21 +115,19 @@ Adapt.adapt_structure(to, light::Hikari.SunLight) = light
 
 
 
-# A `Film` has no `adapt_structure`, deliberately. It used to have one, and it
-# was not a conversion: `Adapt.adapt(::LavaBackend, ::Array)` allocates, so
-# `adapt(backend, film)` was the film's ALLOCATOR, reached through an interface
-# with nowhere to put an allocator — which is why the result had no owner and
-# could only be reclaimed by the GC. `Film(backend, film)` is that path now.
+# A `Film` has no `adapt_structure`, deliberately: `Adapt.adapt(backend,
+# ::Array)` allocates, so `adapt(backend, film)` would be the film's ALLOCATOR,
+# reached through an interface with nowhere to put an allocator, and the result
+# would have no owner. `Film(backend, film)` is that path.
 #
-# Nothing else wanted it: kernels take `film.framebuffer` and `film.normal`, not
-# the film, so no dispatch ever adapted one.
+# Nothing else wants it: kernels take `film.framebuffer` and `film.normal`, not
+# the film.
 #
-# This method exists to make the old spelling LOUD. `Adapt.adapt` falls back to
-# identity for a type with no `adapt_structure`, so simply deleting the method
-# would have made `adapt(backend, film)` quietly return the HOST film — a render
-# then runs a device scene against host arrays, which fails somewhere else
-# entirely or not at all. Two call sites still spelled it that way and this is
-# what found them.
+# This method exists to make that spelling LOUD. `Adapt.adapt` falls back to
+# identity for a type with no `adapt_structure`, so with no method at all
+# `adapt(backend, film)` quietly returns the HOST film, and a render then runs a
+# device scene against host arrays: a failure somewhere else entirely, or not at
+# all.
 Adapt.adapt_structure(::Any, ::Film) = throw(ArgumentError(
     "`Adapt.adapt` does not allocate a Film — it converts, and allocating a " *
     "film's layers on a backend needs an allocator to own them. Use " *

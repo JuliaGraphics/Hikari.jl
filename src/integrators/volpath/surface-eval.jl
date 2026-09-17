@@ -289,11 +289,11 @@ end
 # 128 the per-SM thread count drops from 512 to 256).
 #
 # This is the ONLY surface-shading implementation, and the closest-hit shaders
-# call the same two inner functions. A second, `with_index`-based copy used to
-# live here and was dispatched for exactly one configuration (hardware RT on a
-# scene with media), which is how it drifted: Phase 1 moved every BSDF onto a
-# `get_bxdf` carrier, this copy was updated, the other kept calling the raw
-# material and silently matched a gray-Lambertian `::Material` catch-all — a
+# call the same two inner functions. A second, `with_index`-based copy would be
+# dispatched for exactly one configuration (hardware RT on a scene with media),
+# which is how such a copy drifts: move every BSDF onto a `get_bxdf` carrier,
+# update one copy, and the other keeps calling the raw material and silently
+# matches a gray-Lambertian `::Material` catch-all — a
 # specular medium boundary became a diffuse wall and `medium_smoke_point`
 # rendered at 0.037 of reference on HW while SW was correct. Everything that
 # copy did beyond shading — MixMaterial resolution, the null-material medium

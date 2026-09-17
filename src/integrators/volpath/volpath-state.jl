@@ -30,10 +30,8 @@ should_use_soa(::Type{VPHitSurfaceWorkItem}) = true
 should_use_soa(::Type{VPMaterialEvalWorkItem}) = true
 should_use_soa(::Type{VPMediumSampleWorkItem}) = true
 should_use_soa(::Type{VPMediumScatterWorkItem}) = true
-# VPRaySamples used to be a per-pixel Sobol cache filled by
-# vp_generate_ray_samples_kernel!; that kernel and its buffer are gone now
-# (samples are computed inline in each consumer), so the SOA hint is no
-# longer needed.
+# No hint for a per-pixel Sobol cache: samples are computed inline in each
+# consumer, so there is no such buffer.
 
 # ============================================================================
 # VolPath State Container
@@ -162,7 +160,7 @@ Release all GPU memory held by the VolPath render state (work queues,
 pixel buffers, tables).
 
 No precondition: the regions are retired, not released, so calling this with a
-render still in flight is fine. It used to require an idle GPU and say so.
+render still in flight is fine.
 """
 function free!(state::VolPathState)
     # The plans first: they name the buffers below, and a plan gives its own pool

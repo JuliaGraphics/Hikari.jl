@@ -19,18 +19,16 @@
 # the compiler is what lowers them. The PIPELINE that dispatches them is Mantle's,
 # because building one needs a device.
 #
-# That split is the 2026-08-27 move in one import block: everything a kernel says
-# comes from the compiler, everything that runs one comes from the runtime.
-# DELETED in phase 1.5: see Mantle/docs/mantle-owns-it.md
+# So the split is one import block: everything a kernel says comes from the
+# compiler, everything that runs one comes from the runtime.
 #
-# `import Lava` and the thirteen `lava_rt_*` intrinsics. This was the ONLY
-# reason a renderer that reaches the GPU through Mantle for everything else
-# named a backend at load time — and once Lava depended on Vulkan again, the
-# reason Hikari stopped loading on any machine without a Vulkan driver.
-#
-# The hardware path (`hw-rt.jl`) never needed it: it imports `Mantle: HWTLAS,
-# AdaptedAccel` and nothing else, and it is what runs on Metal. Phase 2.1 gives
-# these intrinsics vendor-free names in KernelInterface.
+# No `import Lava` and no `lava_rt_*` names here. They are the only reason a
+# renderer that reaches the GPU through Mantle for everything else would name a
+# backend at load time, and with Lava depending on Vulkan that is the difference
+# between loading and not loading on a machine with no driver. The intrinsics
+# have vendor-free names in KernelInterface; the hardware path (`hw-rt.jl`)
+# imports `Mantle: HWTLAS, AdaptedAccel` and nothing else, which is what runs on
+# Metal.
 import Mantle
 import Mantle: RayTracingPipeline, trace_rays_indirect!
 
@@ -256,7 +254,8 @@ end
 # mesh's material type so the GPU dispatches the right chit directly — no
 # with_index switch inside.
 #
-# The chit body merges the work that used to be split across three kernels:
+# The chit body does in one pass what the queue path spreads over three
+# kernels:
 #   1. `vp_closesthit_shade`         — routing + geometry + null boundary
 #   2. `vp_handle_emitters_kernel!`  — area-light emission MIS
 #   3. `vp_shade_material_kernel!`   — DL + BSDF sample + RR + continuation
@@ -577,12 +576,11 @@ function trace_pass!(g, accel_t::Mantle.AdaptedAccel, state::VolPathState, refs,
                       Tuple{Any, Any, VolPathState, Any, WorkQueue, WorkQueue},
                       g, accel_t, state, refs, cur, nxt)
     end
-    # `trace!`, not `custom!`. The body used to be a closure that opened the
-    # queue itself, packed its own arguments into per-frame scratch and called
-    # `trace_rays_indirect!`. That is what `custom!` is for — work the graph
-    # declares but does not model — and tracing is not that: it is one launch
-    # with arguments, which is what `Trace` says. Two things follow from the
-    # change and both are the point.
+    # `trace!`, and not a `custom!` closure that opens the queue itself, packs
+    # its own arguments into per-frame scratch and calls
+    # `trace_rays_indirect!`. `custom!` is for work the graph declares but does
+    # not model, and tracing is not that: it is one launch with arguments, which
+    # is what `Trace` says. Two things follow and both are the point.
     #
     #   * The arguments live in the plan's argument memory at a fixed offset, so
     #     a hardware-RT plan can be RECORDED. Under `custom!` the address baked
@@ -627,8 +625,6 @@ function trace_pass!(g, accel_t::Mantle.AdaptedAccel, state::VolPathState, refs,
                   #
                   # Over-dispatching is defined to be a no-op for the surplus threads:
                   # every kernel dispatched over a `DeviceRange` bounds-check itself,
-                  # repo-wide, which is what makes the ceiling safe. This was the one
-                  # queue dispatch in the integrator that still read its count on the
-                  # host.
+                  # repo-wide, which is what makes the ceiling safe.
                   Mantle.DeviceRange(cur.size; max = Int(cur.capacity)))
 end

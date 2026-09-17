@@ -87,10 +87,10 @@ end
 
 # A queue has no `free!` of its own: its arrays are views into regions the
 # state's `DeviceMemory` owns, so `free!(mem)` releases them and there is nothing
-# per-queue to remember. What used to be here walked the SOA components calling
-# `finalize` on each, because `finalize(::StructArray)` is a no-op and would have
-# left them alive until the GC ran — one more piece of a lifetime protocol that
-# is now the pool's.
+# per-queue to remember. Walking the SOA components to `finalize` each is the
+# alternative, because `finalize(::StructArray)` is a no-op and would leave them
+# alive until the GC ran: one more piece of a lifetime protocol that belongs to
+# the pool.
 
 """
     WorkQueue{T}(mem::DeviceMemory, capacity; soa=should_use_soa(T))
@@ -186,8 +186,6 @@ end
 # How a queue is dispatched over is `Mantle.DeviceRange(q.size; max = q.capacity)`
 # in the graph — the count lives on the device, the backend turns it into
 # workgroups there, and the graph orders the stage after whoever wrote the count.
-# What used to be here was the launch side of that: a `gpu_ndrange` that handed
-# Lava the counter buffer and read it back on every other backend.
 const DEFAULT_WORKGROUPSIZE = 256
 
 # ============================================================================

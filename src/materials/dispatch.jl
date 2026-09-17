@@ -10,9 +10,9 @@ Type-stable dispatch that returns the bump-perturbed shading frame for a
 material. Materials without a `displacement` height field (or with an unset
 one) return the frame untouched.
 
-This used to live inside the material's `sample_bsdf_spectral` but the
-perturbation never reached the path-integrator's `cos_theta = dot(wi,
-work.ns)` factor, so bumps on Conductor surfaces vanished (Crown's gold
+Here and not inside the material's `sample_bsdf_spectral`, where the
+perturbation never reaches the path-integrator's `cos_theta = dot(wi,
+work.ns)` factor, so bumps on Conductor surfaces vanish (Crown's gold
 dome rendered smooth even with bump mapping active). Hoisting it to the
 intersection point lets `work.ns` itself be the perturbed normal — the
 BSDF, MIS, and direct-lighting paths all see the same shading frame.

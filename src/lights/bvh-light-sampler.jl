@@ -471,9 +471,9 @@ Upload BVH light sampler data into memory the render state owns. Returns a
 NamedTuple with GPU arrays; `free!(mem)` releases them.
 """
 function bvh_to_gpu(mem, sampler::BVHLightSampler)
-    # `upload!` handles the empty case by allocating one element, which is what
-    # the three branches here used to spell out: a kernel indexes these
-    # unconditionally and a zero-length array has no address to give it.
+    # `upload!` handles the empty case by allocating one element, so no branch
+    # here has to: a kernel indexes these unconditionally and a zero-length
+    # array has no address to give it.
     nodes_gpu = upload!(mem, sampler.nodes)
     bit_trail_gpu = upload!(mem, sampler.light_to_bit_trail)
     inf_indices_gpu = upload!(mem, sampler.infinite_light_indices)

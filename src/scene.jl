@@ -234,7 +234,7 @@ end
 # to the generic path is wrong: it would try to stuff a whole `MediumInterface`
 # into the inner-material slot of `scene.materials`, which is a type mismatch,
 # and with a `NullMaterial` inside the inner slot is `SetKey()` (unpushed)
-# which used to trip a `BoundsError`.  Instead, refresh the three component
+# which trips a `BoundsError`.  Instead, refresh the three component
 # slots independently — each guarded by `Raycore.is_valid` so invalid /
 # unpushed slots (NullMaterial, `inside=nothing`, `outside=nothing`) are
 # silent no-ops.

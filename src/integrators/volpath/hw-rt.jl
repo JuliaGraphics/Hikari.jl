@@ -37,8 +37,8 @@ end
 # Fused primary-ray + closest-hit + depth/normal/albedo kernel.  One thread
 # per pixel: generate the camera ray, run inline ray query via
 # `Raycore.closest_hit(accel, ray)` (lowers to OpRayQueryInitializeKHR /
-# Proceed / Get*KHR through the polymorphic dispatch we added in step 2),
-# write the aux buffers.  Replaces the previous 3-step dance
+# Proceed / Get*KHR through the polymorphic dispatch), write the aux buffers.
+# One kernel instead of a 3-step
 # (generate_rays → trace_closest_hits! → extract_depth) plus the dependency
 # on `aux_rays`/`aux_results` scratch buffers.
 @kernel inbounds = true function hw_fill_aux_kernel!(
@@ -117,8 +117,8 @@ end
 # the ordinary material pass rather than inside the trace.
 shades_surfaces_inline(a::AdaptedAccel) = Mantle.supports_rt_pipeline(a)
 
-# Tracing needs no HW override. It used to: extract_rays → prepare_indirect →
-# cmd_trace_rays_indirect_khr → process. Inline ray queries on
+# Tracing needs no HW override of its own (extract_rays → prepare_indirect →
+# cmd_trace_rays_indirect_khr → process): inline ray queries on
 # `Raycore.closest_hit(::AdaptedAccel, ray)` collapse that to a single
 # dispatch, so `vp_trace_and_shade!` covers both backends.
 

@@ -184,7 +184,7 @@ Compute all sample values for a pixel sample deterministically.
 Uses R2 sequence for pixel jitter (better 2D stratification) and
 hash-based sampling for other dimensions.
 
-NOTE: This is the old hash-based version. Use compute_pixel_sample_sobol for better convergence.
+Hash-based; `compute_pixel_sample_sobol` converges better.
 """
 @inline function compute_pixel_sample(px::Int32, py::Int32, sample_idx::Int32)::PixelSample
     # Dimensions:
@@ -211,7 +211,7 @@ end
 Compute a 1D sample for path tracing at a given depth.
 Each depth gets a separate set of dimensions to avoid correlation.
 
-NOTE: This is the old hash-based version. Use compute_path_sample_1d_sobol for better convergence.
+Hash-based; `compute_path_sample_1d_sobol` converges better.
 """
 @inline function compute_path_sample_1d(px::Int32, py::Int32, sample_idx::Int32, depth::Int32, local_dim::Int32)::Float32
     # Base dimension for camera samples is 6
@@ -225,7 +225,7 @@ end
 
 Compute a 2D sample for path tracing at a given depth.
 
-NOTE: This is the old hash-based version. Use compute_path_sample_2d_sobol for better convergence.
+Hash-based; `compute_path_sample_2d_sobol` converges better.
 """
 @inline function compute_path_sample_2d(px::Int32, py::Int32, sample_idx::Int32, depth::Int32, local_dim::Int32)::Tuple{Float32, Float32}
     # Each depth uses 8 dimensions

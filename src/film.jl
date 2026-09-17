@@ -60,11 +60,6 @@ struct Film{
     # The denoiser's compiled plan and its ping-pong scratch (see `denoise!`).
     # Kept across frames rather than rebuilt per call, and `Any` so the plan's
     # type stays out of `Film`'s.
-    #
-    # `aux_rays`/`aux_results` used to sit here too — scratch for a three-step
-    # HW aux pass that `hw_fill_aux_kernel!` replaced. Nothing has assigned them
-    # since; they were declared, carried through every adapt and freed in
-    # `free!`, and always `nothing`.
     denoise_plan::Base.RefValue{Any}
 
     # Every device array above comes from here and goes back through it. See
@@ -275,15 +270,14 @@ end
 
 Release GPU memory held by the film.
 
-No precondition. This used to require an idle GPU and warn that calling it
-during a render was a use-after-free; the regions are retired now, so the pool
-decides when they are safe rather than the caller.
+No precondition: the regions are retired, so the pool decides when they are
+safe rather than the caller.
 """
 function free!(film::Film)
     # The denoiser first: it holds a compiled plan and its own scratch, and both
     # are its to give back. `filter_table` appears nowhere because it is a host
-    # `Matrix{Float32}` — it was in the `finalize` list this replaces, doing
-    # nothing while reading as if it released GPU memory.
+    # `Matrix{Float32}`: freeing it here would read as releasing GPU memory and
+    # do nothing.
     dp = film.denoise_plan[]
     if dp !== nothing
         free!(dp)

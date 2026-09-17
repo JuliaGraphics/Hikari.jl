@@ -47,10 +47,7 @@ Units (post log-luminance / relative-depth fix):
 
 There is no `use_variance`: real SVGF needs *temporal* variance from sample
 history, which a `Film` does not store, and the spatial substitute was actively
-harmful — it mistakes texture for noise. See `weight_color`. It used to be a
-field that did nothing, plus a kernel argument that had to be a zero-length
-device array to keep the signature; that array was freed under the running
-dispatch, so the GPU denoiser could not run at all.
+harmful — it mistakes texture for noise. See `weight_color`.
 """
 function DenoiseConfig(;
     iterations::Int=4,
@@ -256,20 +253,14 @@ Applies a 5x5 filter with edge-stopping weights.
     end
 end
 
-# `compute_variance_kernel!` used to live here: a 3x3 spatial variance nobody
-# dispatched, for a `weight_color` argument that ignored it. Deleted with the
-# `use_variance` field and the zero-length placeholder array that had to be
-# passed to keep the kernel signature — see `weight_color` for why spatial
-# variance is the wrong quantity in the first place.
-
 # =============================================================================
 # High-Level Denoising API (works with Film)
 # =============================================================================
 
 # One pass of the filter writes what the next reads, so the chain is exactly what
-# a graph derives — and it used to be spelled `KA.synchronize(backend)` after
-# every iteration, which drains the whole device to express a dependency between
-# two dispatches. The scratch buffer is the other half: `similar(framebuffer)` is
+# a graph derives. `KA.synchronize(backend)` after every iteration expresses
+# the same dependency by draining the whole device. The scratch buffer is the
+# other half: `similar(framebuffer)` is
 # a full-resolution allocation per CALL, i.e. per frame in a live preview. Here it
 # is allocated once and kept on the film beside the other scratch.
 
@@ -315,10 +306,10 @@ function denoise_plan!(film::Film, config::DenoiseConfig)
         return cached
     end
     backend = KA.get_backend(film.framebuffer)
-    # The one this replaces goes back before the new one is taken, so a session
-    # that changes the iteration count does not leave a plan and a full-frame
-    # scratch behind each time. No wait needed: retiring is safe with its passes
-    # still in flight.
+    # The cached plan goes back before the new one is taken, so a session that
+    # changes the iteration count does not leave a plan and a full-frame scratch
+    # behind each time. No wait needed: retiring is safe with its passes still in
+    # flight.
     if cached isa DenoisePlan
         free!(cached)
         film.denoise_plan[] = nothing

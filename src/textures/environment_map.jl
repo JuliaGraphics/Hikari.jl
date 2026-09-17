@@ -64,9 +64,9 @@ function rotation_matrix(angle_degrees::Real, axis::Vec3f)::Mat3f
 
     # Rodrigues' rotation formula, written COLUMN BY COLUMN.
     #
-    # `Mat3f(...)` fills column-major. This used to be laid out to READ like the
-    # textbook row-major matrix, which made it the TRANSPOSE — i.e. a rotation by
-    # -angle. `rotation_matrix(90, ẑ)` mapped x̂ to (0,-1,0) instead of (0,1,0),
+    # `Mat3f(...)` fills column-major, so laying it out to READ like the
+    # textbook row-major matrix makes it the TRANSPOSE, a rotation by -angle:
+    # `rotation_matrix(90, ẑ)` then maps x̂ to (0,-1,0) instead of (0,1,0),
     # so every rotated environment map was turned the wrong way, and by twice the
     # requested angle relative to the reference.
     Mat3f(

@@ -4,9 +4,9 @@
 #
 # This removes the material type explosion.
 #
-# A material parameter used to be stored as whatever it happened to be: a raw
-# `Float32` for a constant, a `Raycore.TextureRef` for an image map, a
-# `CheckerboardTexture` for a procedural. Those are different TYPES, so
+# A material parameter stored as whatever it happens to be — a raw `Float32`
+# for a constant, a `Raycore.TextureRef` for an image map, a
+# `CheckerboardTexture` for a procedural — is a different TYPE per case, so
 # `Conductor{…,Float32,…}` and `Conductor{…,TextureRef{…},…}` are different
 # materials — and the per-material chit path compiles one closest-hit shader per
 # concrete material type. Crown's 50 named materials collapse to 12 Julia types
@@ -173,8 +173,8 @@ const _TH_TEXEL = Union{Float32, RGB{Float32}, Spectrum}
 @propagate_inbounds _th_proc_spec(arr, textures, tfc) = _TH_ZERO
 
 # Per-face vertex colours: a (3, n_faces) matrix interpolated by the hit's
-# barycentrics. Same shape as the old `VertexColorTexture`, minus the wrapper
-# struct that used to be a material type parameter.
+# barycentrics, without a wrapper struct that would be a material type
+# parameter.
 @propagate_inbounds function _th_vcol_spec(data::AbstractArray{T, 2}, tfc) where {T <: _TH_TEXEL}
     fi = tfc.face_idx
     b = tfc.bary

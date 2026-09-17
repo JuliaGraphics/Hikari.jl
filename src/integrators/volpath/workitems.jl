@@ -2,20 +2,17 @@
 # Extends PhysicalWavefront work items with medium support
 
 # ============================================================================
-# Ray Samples (formerly pre-computed; now generated inline in each consumer)
+# Ray Samples: generated inline in each consumer
 # ============================================================================
 
 # pbrt-v4 caches Sobol samples in a per-pixel `PixelSampleState.RaySamples`
 # buffer filled by `WavefrontPathIntegrator::GenerateRaySamples` once per
-# bounce.  We used to mirror that with `VPRaySamples` + a per-pixel SOA
-# buffer + a `vp_generate_ray_samples_kernel!` dispatch — but per-kernel
-# GPU timing on RTX 4000 Ada showed that approach was 58 % of total GPU
-# time on killeroo and only ~0.1 % of GPU time was in the actual path
-# tracing kernels.  We now generate the dimensions inline in each consumer
-# (`surface_direct_lighting_inner!`, `evaluate_material_inner!`,
-# `medium_direct_lighting_inner!`, `medium_scatter_inner!`).  The struct
-# and its constructor are removed; nothing in the integrator references
-# them after this commit.
+# bounce. There is no such struct here: mirroring it with a per-pixel SOA
+# buffer and a kernel to fill it measures 58 % of total GPU time on killeroo
+# (RTX 4000 Ada), against ~0.1 % in the actual path-tracing kernels, so each
+# consumer (`surface_direct_lighting_inner!`, `evaluate_material_inner!`,
+# `medium_direct_lighting_inner!`, `medium_scatter_inner!`) generates the
+# dimensions it needs inline.
 
 # ============================================================================
 # Ray Work Item with Medium
@@ -399,13 +396,10 @@ struct VPHitSurfaceWorkItem
     # Medium info
     current_medium::SetKey
 
-    # ── Fields removed by the pbrt-v4 HitAreaLightQueue split (2026-06-04) ──
-    # Previously stored here: `arealight_flat_idx`, `triangle_area`, `t_hit`.
-    # Those are emission-MIS-only fields; pbrt-v4 `MaterialEvalWorkItem`
-    # doesn't carry them either. Their data still exists at intersection time
-    # and gets forwarded to `VPHitAreaLightWorkItem` by
-    # `enqueue_after_intersection!` when the hit is on an area light. Saves
-    # 12 B per queued item.
+    # No `arealight_flat_idx`, `triangle_area` or `t_hit`, as in pbrt-v4's own
+    # `MaterialEvalWorkItem`: they are emission-MIS-only fields, and
+    # `enqueue_after_intersection!` forwards them to `VPHitAreaLightWorkItem`
+    # when the hit is on an area light. Saves 12 B per queued item.
 end
 
 # Constructor from VPRayWorkItem with hit geometry.

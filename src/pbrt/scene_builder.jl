@@ -819,8 +819,8 @@ function build_pbrt_material(entity::PBRTEntity, pbrt::PBRTScene,
 
     elseif type == "interface"
         # pbrt `Material "interface"` = nullptr surface: rays pass through, only
-        # the medium swap fires. Wrapping in a transmissive Dielectric was wrong —
-        # it makes shadow rays treat the boundary as opaque (intersection.jl:351)
+        # the medium swap fires. Wrapping in a transmissive Dielectric is
+        # wrong: it makes shadow rays treat the boundary as opaque (intersection.jl:351)
         # and paints the volume's bounding mesh as a uniformly-shadowed cuboid.
         return NullMaterial()
 
