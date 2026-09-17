@@ -8,8 +8,8 @@
 # decides pass/fail; as it goes it records each render and each metric under
 # `recorded/`. This reads that record and presents it.
 #
-# It used to do all of it itself — its own render pass, its own thresholds, its
-# own pass/fail — and the two had come apart in three separate ways:
+# A gallery that renders, thresholds and decides pass/fail itself comes apart
+# from the suite in three ways:
 #
 #   * Both its render step and its tonemap step opened with
 #     `isfile(...) && continue`, so `recorded/` and `display/` were write-once.
@@ -112,7 +112,7 @@ function build_gallery(rows::Vector{SceneRow}, hw_accel::Bool)
     n_pass  = count(s -> within_tolerance(s.tile, s.energy), sorted)
 
     # Thresholds are interpolated from `suite.jl` rather than written out again —
-    # the JS reading different numbers than the suite is how this drifted before.
+    # the JS reading different numbers than the suite is how the two drift.
     html = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -220,8 +220,8 @@ end
 mkpath(DISPLAY_DIR)
 
 # Clear the previous page before building this one. Anything left behind is a
-# scene that is no longer in the record, and a directory holding some images
-# from this run and some from an older one is the failure mode this rewrite
+# scene that is not in the record, and a directory holding some images from this
+# run and some from an earlier one is the failure mode this
 # exists to remove — `display/` is an output, not an accumulator.
 for f in readdir(DISPLAY_DIR)
     if startswith(f, "ref_") || startswith(f, "rec_") ||

@@ -1,14 +1,13 @@
 """
 What Hikari still names from Lava, and why each one is allowed to stay.
 
-This file used to be a debt ledger. `Lava.` in Hikari's source meant a renderer
-reaching into a Vulkan runtime, and the list existed to stop it growing while the
-runtime was moved out. On 2026-08-27 it was: **22 names across 3 files.**
+`Lava.` in Hikari's source means a renderer reaching into a Vulkan runtime, and
+this file is what keeps the count at zero.
 
-The move happened. Lava is a Julia→SPIR-V compiler with no Vulkan dependency, and
-everything Hikari used to reach for — `LavaBackend`, `VulkanTLAS`, `vk_context`,
-`RayTracingPipeline`, `@compile_workload` — is Mantle's. What is left is 13
-names in ONE file, and they are a different kind of thing entirely:
+Lava is a Julia→SPIR-V compiler with no Vulkan dependency, and everything a
+renderer would reach for — `LavaBackend`, `VulkanTLAS`, `vk_context`,
+`RayTracingPipeline`, `@compile_workload` — is Mantle's. The names that could
+plausibly have stayed are the device-side ones:
 
     lava_rt_launch_id_x   lava_rt_trace_ray        lava_rt_primitive_id
     lava_rt_ray_tmax      lava_rt_instance_id      lava_rt_instance_custom_index
@@ -16,15 +15,11 @@ names in ONE file, and they are a different kind of thing entirely:
     lava_rt_hit_object_trace_ray   lava_rt_hit_object_execute_shader
     lava_rt_payload_store_f32_at   lava_rt_payload_load_f32_at
 
-Those were **device-side ray-tracing intrinsics** — what a shader BODY calls,
-lowered by the compiler to `OpTraceRayKHR` and friends — and the docstring said
-they would leave "if KI ever grows a ray-tracing half".
-
-It did. Phase 2.1 made the shader vocabulary `KernelInterface`'s and Mantle
-re-exports it, so `rt-pipeline.jl` names `rt_launch_id_x` from Mantle where it
-named `lava_rt_launch_id_x` from Lava, and the count is now **zero names in zero
-files**. The ledger is closed: this file asserts that Hikari names NOTHING from
-Lava, and any reference at all is the split coming undone.
+Those are **ray-tracing intrinsics** — what a shader BODY calls, lowered by the
+compiler to `OpTraceRayKHR` and friends — and they are `KernelInterface`'s,
+re-exported by Mantle: `rt-pipeline.jl` names `rt_launch_id_x` from Mantle and
+not `lava_rt_launch_id_x` from Lava. So the count is **zero names in zero
+files**, and any reference at all is the split coming undone.
 
 `src/precompile_statements.jl` is skipped: generated from a compile trace, it
 names whatever types the run saw.
@@ -36,8 +31,8 @@ regex either misses the continuation or matches the word in a comment.
 using Test
 
 # Empty, and it stays empty. A file appearing here is a name Hikari took from
-# Lava, which after phase 2.1 can only be a runtime reference: the shader
-# vocabulary is `KernelInterface`'s and reaches Hikari through Mantle.
+# Lava, which can only be a runtime reference: the shader vocabulary is
+# `KernelInterface`'s and reaches Hikari through Mantle.
 const ALLOWED_LAVA_REFS = Dict{String, Dict{String, Int}}()
 
 const GENERATED_SOURCES = ["precompile_statements.jl"]

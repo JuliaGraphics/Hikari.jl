@@ -2,7 +2,7 @@ using Test
 using Hikari
 using GeometryBasics: Point2f
 
-# Regression: `sample_texture_data` used to clamp UVs outside [0,1] to the edge
+# Regression: `sample_texture_data` must not clamp UVs outside [0,1] to the edge
 # pixel. pbrt-v4's ImageTexture defaults to "repeat" wrap mode, and scenes like
 # killeroo-gold.pbrt rely on tiling a `lines.png` grid across UV [0,5]. The
 # clamp caused only one tile (the first cell) to show, with everything past

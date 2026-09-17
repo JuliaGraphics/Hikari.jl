@@ -4,7 +4,7 @@
 #   1. Build scene A (sphere + point light)
 #   2. Render A once (compiles 19 pipelines, 38 kernels)
 #   3. Build scene B (floor + sphere + light, different)  → adds 1 new pipeline
-#   4. Render B once                                       → used to crash with
+#   4. Render B once                                       → crashes with
 #                                                            PERMISSION_FAULTS=7
 #
 # Asymmetry test: B→A is clean (B's pipelines are a superset of A's, so

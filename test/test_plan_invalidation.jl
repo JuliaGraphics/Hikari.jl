@@ -14,7 +14,6 @@ using Test, Hikari, Mantle, Raycore, GeometryBasics, Statistics
 using GeometryBasics: normal_mesh, Tesselation, Sphere
 
 # Bound by runtests.jl; bound here so the file also works standalone.
-# DELETED in phase 1.5: see Mantle/docs/mantle-owns-it.md
 
 function _inv_scene(backend)
     scene = Hikari.Scene(; backend=backend)
@@ -70,9 +69,9 @@ _fbmean(film) = mean(Float32(c.r) for c in Array(film.framebuffer))
     @test vp.state.plans !== plans
     # The accel was rebuilt for the edit (the flag `push!` set is consumed by
     # the adapt's `sync!`), and the plans were built from THAT snapshot. With
-    # the adaptation cached across the edit neither held: the flag stayed set,
-    # the old snapshot was traced, and the two sides of the second assertion
-    # were the same stale object.
+    # the adaptation cached across the edit neither holds: the flag stays set,
+    # the stale snapshot is traced, and the two sides of the second assertion
+    # are the same object.
     @test !scene.accel.dirty
     @test vp.adapted.accel === scene.accel.static_tlas
 

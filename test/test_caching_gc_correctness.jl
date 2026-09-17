@@ -82,8 +82,9 @@ end
     @testset "VolPathState allocation/free" begin
         backend = Mantle.defaultbackend()
 
-        # This used to count `Mantle.live_buffer_count()` before and after, with a
-        # tolerance of ten either side because `finalize` defers to the GC and
+        # NOT a count of `Mantle.live_buffer_count()` before and after with a
+        # tolerance of ten either side, which is what `finalize` deferring to
+        # the GC forces and
         # the GC runs when it likes. Nothing here finalizes any more: the state
         # holds one `DeviceMemory`, every allocation is a region of it, and
         # `free!` gives them all back at a point the caller chose. So the
@@ -244,8 +245,8 @@ end
         # A queue's arrays are regions of the state's `DeviceMemory`, so
         # "freed" means back in the pool, not back to the driver. That is the
         # whole point of the pool and it is what makes the assertion below
-        # stronger than the `live_buffer_count() == baseline` this used to
-        # check: the second round of queues has to cost the device NOTHING,
+        # stronger than `live_buffer_count() == baseline`: the second round of
+        # queues has to cost the device NOTHING,
         # which a driver-level count could satisfy while the pool quietly grew
         # a second block.
         @testset "freed queues come back from the pool, not the device" begin

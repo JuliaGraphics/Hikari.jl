@@ -38,8 +38,9 @@ end
 end
 
 # The two things every wavefront stage needs from a graph, on the smallest thing
-# that shows them. Both used to be `foreach(f, queue, args...)`: an argument that
-# is a STRUCT of device arrays, and an ndrange that is a counter the host never
+# that shows them, and neither is expressible as `foreach(f, queue, args...)`:
+# an argument that is a STRUCT of device arrays, and an ndrange that is a
+# counter the host never
 # reads.
 @kernel function mantle_probe_fill_queue!(q, n::Int32)
     i = @index(Global)

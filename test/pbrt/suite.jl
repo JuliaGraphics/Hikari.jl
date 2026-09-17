@@ -48,9 +48,10 @@ available.
 # Every committed reference is rendered at this sample count, and the suite
 # verifies it rather than trusting it.
 #
-# It is deliberately a constant and not the caller's `samples`. The references
-# had silently drifted apart: of 167, eight sat at 64 spp, two at 512 and one at
-# 1024 while Hikari rendered all of them at 256. For the 64-spp eight that means
+# It is deliberately a constant and not the caller's `samples`, because the
+# references drift apart otherwise: of 167, eight sit at 64 spp, two at 512 and
+# one at 1024 while Hikari renders all of them at 256. For the 64-spp eight that
+# means
 # pbrt carried 4x fewer samples, so the reference was roughly 2x noisier than
 # the image under test — and since the tile score is a p95 of per-pixel
 # difference, that noise was scored as Hikari error. Those eight average tile
@@ -231,8 +232,8 @@ end
 # bug to fix, not a threshold to widen.
 #
 # Defined once, here, because the gallery colours its cells by the same numbers.
-# They used to be written out in the runner and in the gallery separately and
-# the two had drifted: the gallery applied a looser band below 128 spp (tile
+# Written out in the runner and in the gallery separately the two drift: a
+# gallery applying a looser band below 128 spp (tile
 # 0.10, energy ±10 %) plus a per-scene override table reaching tile=0.55 for
 # scenes the runner checks at 0.07, so a scene could read green there and fail
 # the suite.
@@ -257,8 +258,8 @@ record_scores(hw_accel::Bool) = joinpath(RECORD_DIR, hw_accel ? "scores_hw.csv" 
 # metric it just asserted against, and `run_comparison.jl` does nothing but
 # present that record.
 #
-# Previously the gallery rendered its own copy, and both its render step and its
-# tonemap step began with `isfile(...) && continue` — so `recorded/` was
+# A gallery that renders its own copy, with its render step and its tonemap
+# step each beginning `isfile(...) && continue`, makes `recorded/`
 # write-once and froze at whatever was rendered first. The committed gallery was
 # months older than the renderer and no change could ever reach it. Writes here
 # are unconditional for exactly that reason.

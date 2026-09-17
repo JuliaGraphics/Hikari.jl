@@ -45,7 +45,7 @@ using GeometryBasics
     end
 
     # `Transform` replaces the CTM wholesale, so a distance recorded by an
-    # earlier `LookAt` no longer describes the camera.
+    # earlier `LookAt` does not describe the camera any more.
     @testset "Transform after LookAt clears the distance" begin
         scene_str = """
         LookAt 0 0 10   0 0 0   0 1 0

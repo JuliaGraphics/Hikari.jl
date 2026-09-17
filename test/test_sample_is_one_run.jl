@@ -10,11 +10,10 @@ camera stores the camera and nothing else. `test_plan_invalidation.jl` pins that
 the same plans object answers a moved camera; this pins WHAT the host did for
 it.
 
-The last testset — one submission and no allocation per sample — went RED
-until the open command buffer went (step 7 of Mantle's
-`docs/submission-refactor.md`): a run used to be appended to a batch that
-allocated a segment for it and submitted when something else asked. Step 7
-closed it: a run is one submission, made at once, and the recorded plan
+The last testset — one submission and no allocation per sample — is what an
+open command buffer breaks: a run appended to a batch that allocates a segment
+for it and submits when something else asks is neither one submission nor
+allocation-free. A run is one submission, made at once, and the recorded plan
 allocates nothing on the way.
 """
 
@@ -22,7 +21,6 @@ using Test, Hikari, Mantle, Raycore, GeometryBasics
 using GeometryBasics: normal_mesh, Tesselation, Sphere, Point3f, Point2f
 
 # Bound by runtests.jl; bound here so the file also works standalone.
-# DELETED in phase 1.5: see Mantle/docs/mantle-owns-it.md
 
 function onerun_scene(backend)
     scene = Hikari.Scene(; backend = backend)
@@ -126,8 +124,8 @@ end
     @test Mantle.ctxof(bq).diag.flush_counter[] - before == 1
 
     # And the sample adds no per-sample HOST work at all: `render!` of a still
-    # scene allocates zero bytes. Three things each used to cost some, and each
-    # is pinned here by the same number: the run re-walked the recording's
+    # scene allocates zero bytes. Three things can each cost some, and each is
+    # pinned here by the same number: a run re-walking the recording's
     # `IdSet{Any}` of pins (~640 B; `Recording.sync` snapshots them typed at
     # `record!`); `sync_access!` stamped each synced buffer with a boxed
     # `(queue, value)` tuple (48 B a buffer, 2.3 KB a sample on the materials

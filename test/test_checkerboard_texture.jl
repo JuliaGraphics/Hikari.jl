@@ -89,8 +89,8 @@ end
     # pbrt-v4 textures.cpp:436: the DEFAULT encoding is extension-based —
     # `.png → sRGB, everything else → linear` — for float AND spectrum
     # classes, including 16-bit PNGs (image.cpp ReadPNG decodes 16-bit
-    # through `encoding.ToFloatLinear`). Hikari used to sRGB-decode only
-    # 8-bit spectrum-class PNGs, which left float height maps linear and
+    # through `encoding.ToFloatLinear`). sRGB-decoding only 8-bit
+    # spectrum-class PNGs leaves float height maps linear and
     # scaled bump gradients wrong by the local slope of the sRGB curve
     # (~1.45× at h≈0.7) — pinned by tex_conductor_bumpmap_light_point.
     @test Hikari.srgb_to_linear(0.04045f0) ≈ 0.04045f0 / 12.92f0

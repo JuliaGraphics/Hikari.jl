@@ -14,8 +14,8 @@ using LinearAlgebra: normalize
 # `Material::GetBxDF` — and then calls the BSDF methods on the carrier that
 # comes back.
 #
-# There used to be a second implementation reached through `with_index`, live
-# for exactly one configuration (hardware RT on a scene with media). It called
+# A second implementation reached through `with_index`, live for exactly one
+# configuration (hardware RT on a scene with media), calls
 # `sample_bsdf_spectral` on the RAW material. Once a material moved to the
 # GetBxDF pattern its BSDF methods lived on the carrier, so the raw material
 # matched nothing but a gray-Lambertian `::Material` catch-all — silently,
@@ -24,8 +24,8 @@ using LinearAlgebra: normalize
 # diffuse wall: light could not leave the box and `medium_smoke_point` rendered
 # at 0.037 of its reference energy on hardware RT while software RT was fine.
 #
-# The second implementation is gone. These tests pin what replaced the safety
-# it never provided: every material class resolves through `get_bxdf`, and no
+# There is one implementation, and these tests pin the safety a second one only
+# appears to give: every material class resolves through `get_bxdf`, and no
 # converted material has a BSDF method on its raw type for a future `with_index`
 # to find.
 

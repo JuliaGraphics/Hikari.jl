@@ -188,8 +188,8 @@ _channel_maxes(img) = (
     end
 
     # ── 5. HW-path render: each instance shows its own color ────────────────
-    # Mirrors the SW test above on the HW backend. Previously disabled because
-    # a second HW render in the same session DEVICE_LOSTed around dispatch ~104;
+    # Mirrors the SW test above on the HW backend. A second HW render in the
+    # same session DEVICE_LOSTs around dispatch ~104 without the fix;
     # root cause was `combined_instance_buf` being shared across rebuilds (each
     # build_tlas appended it to its TLAS's preserves, so freeing the older TLAS
     # freed the buffer out from under the newer one). Fixed by allocating a

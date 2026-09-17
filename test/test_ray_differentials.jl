@@ -14,7 +14,7 @@
 # neighbouring pixel's ray and differencing where the two land. That is what a
 # differential IS, so this test cannot drift from the definition.
 #
-# It also pins the constant that made the first attempt WRONG: `dx_camera` and
+# It also pins the constant that is easy to get wrong: `dx_camera` and
 # `dy_camera` are offsets on the plane `raster_to_camera` maps the film onto, and
 # that plane is at 2x the camera's `near`, not `near` itself. Reconstructing a
 # camera-space point on the wrong plane made every differential exactly 2x too

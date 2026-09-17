@@ -39,9 +39,8 @@ call — `devicearray` standalone and GC'd, `Buffer` persistent and pool-retired
 `Transient.Buffer` placed by the compiler for one run — instead of every
 allocation looking alike.
 
-Comments are excluded, and deliberately: several of them explain what a call
-used to be, and deleting that history to satisfy a grep would be the wrong
-trade.
+Comments are excluded: a comment naming a call is not a call, and a grep that
+counts one is measuring the prose.
 """
 
 using Test, Mantle

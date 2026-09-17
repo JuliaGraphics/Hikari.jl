@@ -64,8 +64,8 @@ end
 
 @testset "blackbody_normalized matches pbrt's peak convention" begin
     # The SPD primitive itself does follow pbrt (max over wavelengths == 1); it
-    # is only the emitter RGB conversion that differs. This previously threw a
-    # MethodError on every call — `λ_max` was built as a Vector{Float64} and
+    # is only the emitter RGB conversion that differs. Building `λ_max` as a
+    # Vector{Float64} throws a MethodError on every call, since
     # `blackbody` only accepted Vector{Float32} — so it was dead code.
     T = 5500f0
     λ_peak = Hikari.blackbody_peak_wavelength(T)

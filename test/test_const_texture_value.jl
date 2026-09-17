@@ -9,8 +9,8 @@ using Hikari: Texture, ConstTexture, TexHandle, TexKind, RGBSpectrum, constant_v
 #   Texture(arr)      -> value in `data`,     `constval` zeroed, isconst=false
 #   ConstTexture(val) -> value in `constval`, `data` is Array{T,0}(undef)
 #
-# Every conversion to a `TexHandle` used to read `data[]` unconditionally, so a
-# `ConstTexture` produced a handle holding *uninitialised memory*. Nothing in
+# A conversion to a `TexHandle` that reads `data[]` unconditionally gives a
+# `ConstTexture` a handle holding *uninitialised memory*. Nothing in
 # the pbrt builder hit it (scalar parameters arrive as raw `Real`/`RGBSpectrum`
 # and take the value overloads), but RayMakie's `merge_color_with_material`
 # passes the plot's colour through as a const 0-d `Texture` — so a coloured

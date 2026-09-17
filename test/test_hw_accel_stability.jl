@@ -67,9 +67,9 @@ end
 
 function _snapshot()
     mem = Mantle.gpu_memory_usage()
-    # `POOL_BLOCKS` and `mem.LIVE_BUFFERS` were module-level globals and are
-    # gone: the pool is per DEVICE now (two devices used to share one block
-    # list, which served allocations off the wrong GPU), and the counter moved
+    # There are no module-level `POOL_BLOCKS` / `LIVE_BUFFERS` globals: the pool
+    # is per DEVICE (two devices sharing one block list serve allocations off
+    # the wrong GPU), and the counter is
     # onto the returned named tuple. This file had not been updated and could
     # not run.
     (live_bytes = mem.live_bytes, live_bufs = mem.live_buffers,
