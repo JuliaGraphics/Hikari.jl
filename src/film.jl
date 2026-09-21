@@ -239,7 +239,8 @@ end
     col = ((idx - 1) ÷ h) + 1
 
     px = Float32(col) + crop_bounds.p_min[1] - 1f0
-    py = Float32(row) + crop_bounds.p_min[2] - 1f0
+    # Match the camera raster orientation used by the rendered framebuffer.
+    py = Float32(h - row) + crop_bounds.p_min[2]
     pixel = Point2f(px + 0.5f0, py + 0.5f0)
 
     camera_sample = CameraSample(pixel, Point2f(0.5f0), 0f0)
