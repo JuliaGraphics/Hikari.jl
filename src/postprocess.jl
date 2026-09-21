@@ -97,8 +97,8 @@ end
 @kernel inbounds=true function postprocess_kernel!(dst, @Const(src), @Const(depth),
                                       exposure::Float32, tonemap_mode::UInt8,
                                       inv_gamma::Float32, apply_gamma::Bool, white_point::Float32,
-                                      mask_escaped::Bool,
-                                      bg_r::Float32, bg_g::Float32, bg_b::Float32,
+                                      mask_escaped::Bool, sky::Bool,
+                                      bg_r::Float32, bg_g::Float32, bg_b::Float32, bg_a::Float32,
                                       depth_h::Int32, depth_w::Int32)
     i = @index(Global, Linear)
     begin
@@ -114,6 +114,7 @@ end
         end
 
         # Background compositing for escaped rays
+        out_a = 1f0
         if mask_escaped
             row = Int32(((i - 1) % depth_h) + 1)
             col = Int32(((i - 1) ÷ depth_h) + 1)
@@ -128,19 +129,42 @@ end
                     inside = (nr >= Int32(1)) & (nr <= depth_h) & (nc >= Int32(1)) & (nc <= depth_w)
                     if inside
                         didx = (nc - Int32(1)) * depth_h + nr
-                        escaped += Int32(isinf(depth[didx]))
+                        escaped += Int32(missed(depth[didx]))
                         total += Int32(1)
                     end
                 end
             end
 
-            alpha = Float32(escaped) / Float32(total)
-            r = r * (1f0 - alpha) + bg_r * alpha
-            g = g * (1f0 - alpha) + bg_g * alpha
-            b = b * (1f0 - alpha) + bg_b * alpha
+            # `escaped / total` with a fast reciprocal (this backend lowers fdiv
+            # that way: 6f0/6f0 comes out 0.99999994) must not stand in for the
+            # endpoints — a fully escaped pixel has to read EXACTLY 1 here, or
+            # the output alpha below is 2^-24 where it must be 0.
+            alpha = escaped == total ? 1f0 : Float32(escaped) / Float32(total)
+            # What fills the escaped part of the pixel. `sky` says an infinite
+            # light already painted radiance there (an environment map, a sun, an
+            # ambient term), and then the picture's own colour is what fills it —
+            # painting the background over that is how an environment map used to
+            # come back as a flat white rectangle.
+            fill_r = sky ? r : bg_r
+            fill_g = sky ? g : bg_g
+            fill_b = sky ? b : bg_b
+            # Weighted by the background's alpha, which is the one thing that
+            # decides how much of the backdrop is there at all: opaque leaves the
+            # sky (or the background colour) standing, transparent leaves the
+            # escaped part empty and the colour premultiplied for a compositing
+            # caller — including at the antialiased fringe, where `alpha` is
+            # between the two.
+            r = r * (1f0 - alpha) + fill_r * bg_a * alpha
+            g = g * (1f0 - alpha) + fill_g * bg_a * alpha
+            b = b * (1f0 - alpha) + fill_b * bg_a * alpha
+            # The pixel's REAL alpha: the background's, plus what the rays hit on
+            # top of it. An opaque background keeps alpha 1 everywhere (as this
+            # always was); a transparent one lets the misses read as uncovered —
+            # a renderer's caller then needs no separate coverage mask.
+            out_a = bg_a + (1f0 - bg_a) * (1f0 - alpha)
         end
 
-        dst[i] = RGBA{Float32}(r, g, b, 1f0)
+        dst[i] = RGBA{Float32}(r, g, b, out_a)
     end
 end
 
@@ -169,14 +193,24 @@ parameters without re-rendering.
   - `nothing` - linear clamp (no tonemapping)
 - `gamma`: Gamma correction exponent (default 2.2). `nothing` to skip.
 - `white_point`: White point for `:reinhard_extended` (default 4.0)
-- `background`: `RGB{Float32}` color for compositing escaped rays (where depth=Inf)
+- `background`: `RGB{Float32}` or `RGBA{Float32}` color for compositing escaped rays
+  (see [`missed`](@ref)). Its alpha becomes the output alpha of the escaped fraction:
+  an opaque background yields alpha 1 everywhere, a transparent one makes misses
+  read as uncovered — and at the antialiased fringe, where a pixel is half
+  escaped, color and alpha are then already premultiplied.
+- `sky`: whether an infinite light (environment map, sun, ambient) already painted
+  the escaped rays. Then the escaped part of a pixel keeps the colour the render
+  gave it instead of the background's — but its alpha still comes from the
+  background, so a caller asking for a transparent background still gets coverage
+  and not a sky.
 """
 function postprocess!(film::Film;
     exposure::Real = 1.0,
     tonemap::Union{Symbol, Nothing} = :aces,
     gamma::Union{Real, Nothing} = 2.2,
     white_point::Real = 4.0,
-    background::Union{RGB{Float32}, Nothing} = nothing,
+    background::Union{RGB{Float32}, RGBA{Float32}, Nothing} = nothing,
+    sky::Bool = false,
 )
     src = film.framebuffer
     dst = film.postprocess
@@ -204,11 +238,13 @@ function postprocess!(film::Film;
     bg_r = mask_escaped ? background.r : 0f0
     bg_g = mask_escaped ? background.g : 0f0
     bg_b = mask_escaped ? background.b : 0f0
+    bg_a = mask_escaped ? Float32(alpha(background)) : 1f0   # alpha(::RGB) == 1
 
     backend = KernelAbstractions.get_backend(src)
     kernel! = postprocess_kernel!(backend)
     kernel!(dst, src, film.depth, exp_f32, tonemap_mode, inv_gamma, apply_gamma, wp_f32,
-            mask_escaped, bg_r, bg_g, bg_b, Int32(size(src, 1)), Int32(size(src, 2));
+            mask_escaped, sky, bg_r, bg_g, bg_b, bg_a,
+            Int32(size(src, 1)), Int32(size(src, 2));
             ndrange=length(src))
     Mantle.waitidle(mantle_device(backend))
 

@@ -737,3 +737,23 @@ function Plastic(; color=(0.5f0, 0.5f0, 0.5f0), roughness=0.1f0, eta=1.5f0)
     )
 end
 
+# ============================================================================
+# Surface Alpha Evaluation
+# ============================================================================
+
+"""
+    get_surface_alpha(mat::CoatedDiffuse, textures, uv) -> Float32
+
+The cutout alpha of the coat's base texture, so alpha-masked geometry is cut the
+same way it is under [`Diffuse`](@ref).
+
+Without this the generic `Material` fallback returns 1 and the surface is fully
+opaque. That is a silent loss on any asset whose silhouette lives in its alpha
+channel: the raven demo model paints its feather shapes there — 38% of its map is
+fully transparent and 30% of its triangles are partly cut — so giving the bird a
+coat turned every feather card back into a solid quad.
+"""
+@propagate_inbounds function get_surface_alpha(mat::CoatedDiffuse, textures, uv::Point2f)
+    refl = eval_handle_spectrum(textures, mat.reflectance, TextureFilterContext(uv))
+    return get_alpha(refl)
+end

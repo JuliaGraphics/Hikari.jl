@@ -20,6 +20,9 @@ end
 # Environment lights are infinite (at infinity)
 is_infinite_light(::EnvironmentLight) = true
 is_infinite_light(::Type{<:EnvironmentLight}) = true
+# …and it is VISIBLE along an escaped ray, unlike a directional light.
+paints_escaped_rays(::EnvironmentLight) = true
+paints_escaped_rays(::Type{<:EnvironmentLight}) = true
 
 """
 Convenience constructor that loads an environment map from a file.

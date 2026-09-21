@@ -6,6 +6,9 @@ end
 # Ambient lights are infinite (emit from all directions)
 is_infinite_light(::AmbientLight) = true
 is_infinite_light(::Type{<:AmbientLight}) = true
+# …and it is VISIBLE along an escaped ray, unlike a directional light.
+paints_escaped_rays(::AmbientLight) = true
+paints_escaped_rays(::Type{<:AmbientLight}) = true
 
 """
     AmbientLight(rgb::RGB{Float32})

@@ -185,6 +185,25 @@ end
 # ============================================================================
 
 """
+The depth written where a primary ray hit nothing.
+
+Finite, not `Inf`, when the scene has an infinite light: the denoiser filters
+across depth, and a difference against `Inf` is `NaN` — with a sky there, the
+missed pixel is content to be filtered, not missing data. Without one, `Inf` is
+kept because it is the honest answer and nothing downstream reads it.
+
+Both are far beyond any scene, so [`missed`](@ref) reads either, and every
+consumer asks that instead of testing for one of the two. Testing `isinf`
+directly is what made a transparent background come out opaque: with an
+`AmbientLight` in the scene the misses were 1f30, no pixel counted as escaped,
+and the alpha the compositing caller reads was 1 everywhere.
+"""
+const MISS_DEPTH = 1.0f30
+
+"Whether the primary ray at this depth hit nothing — see [`MISS_DEPTH`](@ref)."
+missed(depth::Real) = depth >= MISS_DEPTH
+
+"""
     fill_aux_buffers!(film, scene, camera; has_infinite_lights=false)
 
 Fill auxiliary buffers (albedo, normal, depth) by tracing primary rays.
@@ -196,7 +215,7 @@ function fill_aux_buffers!(film::Film, scene, camera; has_infinite_lights::Bool=
     depth = film.depth
     resolution = film.resolution
     crop_bounds = film.crop_bounds
-    miss_depth = has_infinite_lights ? Float32(1e30) : Inf32
+    miss_depth = has_infinite_lights ? MISS_DEPTH : Inf32
 
     backend = KA.get_backend(albedo)
     # Adapt the acceleration structure for kernel dispatch (TLAS -> StaticTLAS)
@@ -220,7 +239,8 @@ end
     col = ((idx - 1) ÷ h) + 1
 
     px = Float32(col) + crop_bounds.p_min[1] - 1f0
-    py = Float32(row) + crop_bounds.p_min[2] - 1f0
+    # Match the camera raster orientation used by the rendered framebuffer.
+    py = Float32(h - row) + crop_bounds.p_min[2]
     pixel = Point2f(px + 0.5f0, py + 0.5f0)
 
     camera_sample = CameraSample(pixel, Point2f(0.5f0), 0f0)

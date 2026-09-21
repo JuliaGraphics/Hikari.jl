@@ -54,7 +54,10 @@ end
         row = Int32(((idx - Int32(1)) % h) + Int32(1))
         col = Int32(((idx - Int32(1)) ÷ h) + Int32(1))
         px = Float32(col) + crop_p_min[1] - 1f0
-        py = Float32(row) + crop_p_min[2] - 1f0
+        # Film rows run downward; camera raster y runs upward, as in
+        # vp_generate_camera_rays_kernel!. Keep guide buffers aligned with
+        # radiance or denoising leaves a vertically mirrored ghost silhouette.
+        py = Float32(height - row) + crop_p_min[2]
         pixel = Point2f(px + 0.5f0, py + 0.5f0)
         cs = CameraSample(pixel, Point2f(0.5f0, 0.5f0), 0f0)
         ray, w = generate_ray(camera, cs)

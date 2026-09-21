@@ -44,26 +44,14 @@ function Base.push!(scene::Scene, mesh::GeometryBasics.Mesh, mat_idx::UInt32,
                     material::Material; transform::Mat4f=Mat4f(I))
     face_meta = build_face_meta(scene, mesh, mat_idx, material)
     mesh_with_meta = GeometryBasics.mesh(mesh; face_meta=GeometryBasics.per_face(face_meta, mesh))
-    # Reuse path: the material is being update!'d into an existing slot,
-    # so update! returns its SetKey. We don't have a side channel for
-    # update! (would mutate the global state unnecessarily); we still need
-    # the slot index, so we look it up by checking the materials set's
-    # stored representation. Concrete materials only — texture wrappers
-    # collapse to bare scalars during conversion.
-    sbt_offset = UInt32(0)
-    mats = scene.materials
-    if mats isa Raycore.MultiTypeSet
-        converted = Raycore.maybe_convert_field(mats, _unwrap_inner(material))
-        for (i, T) in enumerate(mats.data_order)
-            T === typeof(converted) && (sbt_offset = UInt32(i - 1); break)
-        end
-    end
+    # The interface already names the stored material and therefore its SBT
+    # type slot. Converting the raw material just to discover that type stores
+    # all its textures again, leaking a full feather map on every mesh rebuild.
+    mi = @allowscalar scene.media_interfaces[mat_idx]
+    sbt_offset = Raycore.is_valid(mi.material) ? mi.material.type_idx - UInt32(1) : UInt32(0)
     handle = push!(scene.accel, mesh_with_meta, transform; sbt_offset=sbt_offset)
     return SceneHandle(scene, mat_idx, handle)
 end
-
-_unwrap_inner(m::Material) = m
-_unwrap_inner(m::MediumInterface) = _unwrap_inner(m.material)
 
 """
     push!(scene::Scene, mesh::GeometryBasics.Mesh,
