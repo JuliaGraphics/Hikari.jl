@@ -28,6 +28,8 @@ const TEST_FILES = [
     "gpu_compat.jl",
     "volpath_integration.jl",
     "denoise.jl",
+    "test_aux_alignment.jl",
+    "test_scene_mesh_reuse.jl",
     "test_caching_gc_correctness.jl",
     "test_texture_wrap.jl",
     "test_blackbody_emitter_scale.jl",
