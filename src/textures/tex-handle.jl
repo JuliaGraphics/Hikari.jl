@@ -321,14 +321,36 @@ end
 # item in exactly the form a push would have.
 Raycore.update_item(dhv::Raycore.MultiTypeSet, ::TexHandle, new) = device_param(dhv, new)
 
+"""
+    update_item(dhv, old::TexHandle, new::Texture)
+
+Overwrite the texture slot `old` already names, instead of storing another copy.
+
+`Raycore.store_texture` always appends, so resolving a material a second time
+used to mean a second upload and a second slot — which is why this combination
+used to `error` outright rather than grow the store without bound. But a handle
+of kind `IMAGE` carries exactly what is needed to avoid that: `slot` is the
+index into `texture_order` (the GPU array TYPE) and `idx` is the element within
+it, which together are the contents of a `TextureRef`. Rebuilding that ref lets
+this take the same `copyto_texture!` path `TextureRef` fields already use, so
+the data lands in the existing array and the handle is returned unchanged.
+
+The error this replaces was not a small inconvenience. It fired whenever a plot
+carrying a textured material was re-resolved — setting `pose` on a skinned mesh
+re-resolves the mesh's whole compute edge, `material` among it — so animating
+such a plot meant discarding the screen and rebuilding the scene, and its BVH,
+for every frame. Measured on the raven at 640x360: 33.7 s to build, 0.8 s to
+re-pose on the same screen.
+
+A handle that is NOT an image (a constant, or unset) has no slot to reuse, so
+that case stores once, which is a real material change rather than a repeat.
+"""
 function Raycore.update_item(dhv::Raycore.MultiTypeSet, old::TexHandle, new::Texture)
-    new.isconst && return device_param(dhv, new)
-    # A sampled texture replacing a handle would have to reuse the slot this
-    # handle already names, or every frame stores another copy. That reuse path
-    # exists for a stored `TextureRef` (texture-ref.jl) and not for a `TexHandle`, so say
-    # so rather than silently growing the texture store.
-    error("update_item: replacing a material's TexHandle with a sampled Texture is not " *
-          "supported — the existing slot cannot be reused, so this would store a copy " *
-          "per update. Rebuild the scene, or keep the field a TextureRef.")
+    (new.isconst || old.kind != TexKind.IMAGE || old.slot <= 0) &&
+        return device_param(dhv, new)
+    AT = dhv.texture_order[old.slot]
+    ref = Raycore.TextureRef{AT, eltype(AT), ndims(AT), Int(old.slot)}(Int(old.idx))
+    Raycore.copyto_texture!(dhv, ref, new.data)
+    return old
 end
 
