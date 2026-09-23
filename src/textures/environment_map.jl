@@ -24,9 +24,16 @@ struct EnvironmentMap{S<:Spectrum, T<:AbstractMatrix{S}, D}
     function EnvironmentMap(data::AbstractMatrix{S}, rotation::Mat3f=Mat3f(I)) where {S<:Spectrum}
         h, w = size(data)
 
-        # pbrt-v4 expects square images for equal-area mapping
-        if h != w
-            @warn "Environment map is not square ($w x $h). pbrt-v4 uses equal-area mapping which expects square images."
+        # A 2:1 image is an EQUIRECTANGULAR map, and every HDRI you can
+        # download is one. Resample it rather than warn: read as equal-area it
+        # produces a sky that looks plausible and is wrong in every direction —
+        # the ground ends up overhead — which is a bug nobody reads as a format
+        # mismatch. See `equirect_to_equalarea`.
+        if 2h == w
+            data = equirect_to_equalarea(data)
+            h, w = size(data)
+        elseif h != w
+            @warn "Environment map is not square ($w x $h) and not 2:1, so it is neither equal-area nor equirectangular; it will be read as equal-area."
         end
 
         # Build luminance-weighted distribution for importance sampling
@@ -75,6 +82,63 @@ end
 # =============================================================================
 # Equal-Area Sphere Mapping (pbrt-v4 octahedral mapping)
 # =============================================================================
+
+"""
+    equirect_to_equalarea(img, n = size(img, 2) ÷ 2) -> Matrix
+
+Resample an equirectangular environment map into the equal-area octahedral
+square this type samples.
+
+The two formats look interchangeable and are not: equirectangular is
+`(atan(y, x), acos(z))` on a 2:1 rectangle, equal-area octahedral folds the
+sphere into a square so that every texel carries the same solid angle. Reading
+one as the other gives a picture that still looks like a sky, so the mistake
+survives inspection — the giveaway is that the ground is overhead.
+
+Nearest-neighbour: the destination is chosen no coarser than the source, so the
+resampling is a rotation of information rather than a reduction of it.
+"""
+function equirect_to_equalarea(img::AbstractMatrix{S}, n::Integer = size(img, 2) ÷ 2) where {S}
+    H, W = size(img)
+    out = Matrix{S}(undef, n, n)
+    for j in 1:n, i in 1:n
+        # Texel centre in the square, then the direction it stands for.
+        p = Point2f((i - 0.5f0) / n, (j - 0.5f0) / n)
+        d = equal_area_square_to_sphere(p)
+        u = 0.5f0 + atan(d[2], d[1]) * 0.15915494f0        # 1/(2pi)
+        v = acos(clamp(d[3], -1f0, 1f0)) * 0.31830987f0    # 1/pi, 0 at the zenith
+        si = clamp(round(Int, u * W + 0.5f0), 1, W)
+        sj = clamp(round(Int, v * H + 0.5f0), 1, H)
+        @inbounds out[j, i] = img[sj, si]
+    end
+    return out
+end
+
+"""
+    equalarea_to_equirect(img, w = size(img, 1) * 2) -> Matrix
+
+The inverse of [`equirect_to_equalarea`](@ref): an equal-area octahedral square
+back out to a `w x w/2` equirectangular rectangle.
+
+Here because a renderer that is not this one wants the other convention — a
+raster path sampling `atan(y, x)` / `acos(z)` directly — and converting at the
+boundary is what lets both draw the same sky from one file.
+"""
+function equalarea_to_equirect(img::AbstractMatrix{S}, w::Integer = size(img, 1) * 2) where {S}
+    n = size(img, 1)
+    h = w ÷ 2
+    out = Matrix{S}(undef, h, w)
+    for j in 1:h, i in 1:w
+        phi = ((i - 0.5f0) / w - 0.5f0) * 2f0 * Float32(pi)
+        th = (j - 0.5f0) / h * Float32(pi)
+        d = Vec3f(sin(th) * cos(phi), sin(th) * sin(phi), cos(th))
+        uv = equal_area_sphere_to_square(d)
+        si = clamp(round(Int, uv[1] * n + 0.5f0), 1, n)
+        sj = clamp(round(Int, uv[2] * n + 0.5f0), 1, n)
+        @inbounds out[j, i] = img[sj, si]
+    end
+    return out
+end
 
 """
     equal_area_sphere_to_square(d::Vec3f) -> Point2f

@@ -909,6 +909,18 @@ Detect which medium the camera is inside by tracing a single ray from the camera
 position. Returns a SetKey identifying the medium, or SetKey() for vacuum.
 """
 function detect_camera_medium(backend, accel, media_interfaces, camera_pos::Point3f)
+    # No interfaces, no medium to be inside — and the answer is not a guess,
+    # it is the same `SetKey()` the kernel writes when its probe ray escapes.
+    #
+    # Worth short-circuiting for two reasons. It is a traced probe per distinct
+    # camera position in every scene that has no media, which is most of them.
+    # And on an acceleration structure nothing has been pushed into yet it does
+    # not COMPILE: an untyped one carries `Triangle{UInt32}`, and
+    # `resolve_mi_idx` reads `primitive.metadata.medium_interface_idx`, which a
+    # `UInt32` metadata does not have. That is reachable — an empty plot, a
+    # scene whose geometry has been handed to the rasteriser — and it surfaced
+    # as a shader compile error naming a kernel the scene has no use for.
+    isempty(media_interfaces) && return SetKey()
     result = Mantle.devicearray(backend, SetKey, (1,))
     kernel! = detect_camera_medium_kernel!(backend)
     kernel!(result, accel, media_interfaces, camera_pos; ndrange=1)

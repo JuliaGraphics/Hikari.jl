@@ -61,6 +61,69 @@ abstract type Material end
 abstract type Integrator end
 abstract type Medium end
 
+"""
+    abstract type GeneratedGeometry <: Material
+
+A material that carries its own geometry.
+
+A plot normally hands a renderer triangles. Some things are not triangles: a
+finite element is a polynomial patch, a subdivision surface is a limit, an
+implicit surface is a root. What those share is that the TRIANGLES ARE A CHOICE
+— how many, and how close — and the code that knows how to make them belongs to
+whoever owns the data.
+
+Subtype this and implement [`tessellate`](@ref). That is the whole interface:
+`mesh!(scene, anything; material = yours)` then draws it, rasterised and path
+traced, from the same triangles. The `anything` is what a backend that has never
+heard of your material falls back to.
+
+```julia
+struct MyElements <: Hikari.GeneratedGeometry
+    nodes::Matrix{Float64}
+    tolerance::Float64
+end
+
+Hikari.tessellate(m::MyElements) = GeometryBasics.Mesh(positions, faces)
+```
+
+**If you can solve a ray against your surface**, add a `push!` method and the
+tracer stops approximating — one box per primitive goes into the acceleration
+structure and the hit is exact at any zoom, while the rasteriser goes on using
+`tessellate`. Dispatch picks it; nothing branches on a flag:
+
+```julia
+Base.push!(scene::Hikari.Scene, ::Any, m::MyElements; transform) = ...
+```
+
+`FEMMaterial` in `fem.jl` is a worked example of both halves.
+"""
+abstract type GeneratedGeometry <: Material end
+
+"""
+    tessellate(material::GeneratedGeometry) -> GeometryBasics.Mesh
+
+The triangles `material` wants drawn, at whatever fidelity it carries.
+
+Called once per change of the material, by every renderer. The material is the
+only argument on purpose: how finely to approximate is a property of the thing
+being drawn, so it belongs beside the data rather than in a renderer's settings.
+A tolerance knob is then a field of your material, and moving it is
+`plot.material[] = rebuilt`.
+"""
+function tessellate end
+
+"""
+    shadingmaterial(m::GeneratedGeometry) -> Material
+
+The BSDF a generated geometry's triangles are shaded with. `Diffuse()` unless
+you say otherwise.
+
+Separate from the geometry because a `GeneratedGeometry` IS a material, and
+pushing its own triangles into a scene with itself as the material would be a
+loop. This is where that loop ends.
+"""
+shadingmaterial(::GeneratedGeometry) = Diffuse()
+
 # Default no-op close/clear for integrators without cached state
 Base.close(::Integrator) = nothing
 clear!(::Integrator) = nothing
@@ -121,6 +184,7 @@ include("materials/coated-diffuse-transmission.jl")
 include("materials/diffuse-transmission.jl")
 include("materials/emissive.jl")
 include("materials/bump-mapped.jl")
+include("materials/merge-color.jl")
 include("materials/dispatch.jl")
 
 # Sobol sampler (needs mix_bits from materials/common.jl)
@@ -159,6 +223,10 @@ include("integrators/volpath/volpath-state.jl")
 include("integrators/volpath/delta-tracking.jl")
 include("integrators/volpath/medium-scatter.jl")
 include("integrators/volpath/intersection.jl")
+# After `intersection.jl`: `fem.jl` adds methods to the `vp_compute_*` helpers
+# defined there, which is how an FEM element becomes a surface the integrator
+# can shade without a second code path.
+include("fem.jl")
 include("integrators/volpath/surface-eval.jl")
 # The sample as Mantle graphs — needs every stage's kernel to exist
 include("integrators/volpath/graph.jl")

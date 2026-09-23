@@ -564,7 +564,15 @@ function trace_pass!(g, accel_t::Mantle.AdaptedAccel, state::VolPathState, refs,
     # the shading kernel, which is the generic compute path below this method.
     # Both are hardware traversal — the question is who invokes the hit shaders,
     # and that is a backend capability rather than a property of the accel type.
-    if !Mantle.supports_rt_pipeline(accel_t)
+    #
+    # …and a ray-tracing pipeline needs at least one HIT GROUP, which a scene
+    # with no materials cannot give it. That is not a degenerate case: an
+    # `LScene` holding only `scatter!` and `lines!` has its geometry drawn by
+    # the rasteriser and its sky by a light, and so does a traced scene the
+    # moment `setrasterize!` hands its last mesh to the other renderer. Nothing
+    # can be hit, so the generic compute path traces the (empty) structure and
+    # takes every ray to the miss shader — which is the whole picture there.
+    if !Mantle.supports_rt_pipeline(accel_t) || isempty(refs.materials)
         return invoke(trace_pass!,
                       Tuple{Any, Any, VolPathState, Any, WorkQueue, WorkQueue},
                       g, accel_t, state, refs, cur, nxt)

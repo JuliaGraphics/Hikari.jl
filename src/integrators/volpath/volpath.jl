@@ -675,7 +675,10 @@ function rebuild_render_state!(vp::VolPath, scene::AbstractScene, film::Film,
     # (`delta-tracking.jl`'s `vp_sample_medium_kernel!`) still uses
     # `enqueue_after_intersection!` to push hits into both queues, so they
     # must be full-capacity even on HW.
-    chit_owns_surface = shades_surfaces_inline(accel) && isempty(media)
+    # `!isempty(materials)` for the same reason `trace_pass!` asks it: with no
+    # materials there are no closest-hit shaders, so that path is not taken and
+    # the passes it would have replaced have to stay in the graph.
+    chit_owns_surface = shades_surfaces_inline(accel) && isempty(media) && !isempty(materials)
 
     has_media = !isempty(media)
     if vp.state === nothing ||

@@ -37,6 +37,7 @@ const CONST_SPECTRUM = UInt8(2)   # payload in `rgb`
 const IMAGE          = UInt8(3)   # (slot, idx) → image array in the texture store
 const CHECKER        = UInt8(4)   # (slot, idx) → 1-element CheckerboardTexture array
 const VERTEX_COLOR   = UInt8(5)   # (slot, idx) → (3, n_faces) per-face vertex colours
+const FEM_FIELD      = UInt8(6)   # (slot, idx) → 1-element FEMFieldTexture (see fem.jl)
 end
 
 """
@@ -197,6 +198,8 @@ Resolve a scalar parameter.
         return Raycore.with_texture(_th_proc_float, textures, h.slot, h.idx, textures, tfc)
     elseif k == TexKind.VERTEX_COLOR
         return Raycore.with_texture(_th_vcol_float, textures, h.slot, h.idx, tfc)
+    elseif k == TexKind.FEM_FIELD
+        return Raycore.with_texture(_th_fem_float, textures, h.slot, h.idx, textures, tfc)
     elseif k == TexKind.CONST_SPECTRUM
         return h.rgb.c[1]
     end
@@ -219,6 +222,8 @@ which holds the wavelength sample.
         return Raycore.with_texture(_th_proc_spec, textures, h.slot, h.idx, textures, tfc)
     elseif k == TexKind.VERTEX_COLOR
         return Raycore.with_texture(_th_vcol_spec, textures, h.slot, h.idx, tfc)
+    elseif k == TexKind.FEM_FIELD
+        return Raycore.with_texture(_th_fem_spec, textures, h.slot, h.idx, textures, tfc)
     elseif k == TexKind.CONST_FLOAT
         return RGBSpectrum(h.f, h.f, h.f)
     end

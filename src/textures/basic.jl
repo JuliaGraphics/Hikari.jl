@@ -94,10 +94,60 @@ end
 
 to_texture(c::CheckerboardTexture) = c
 
+"""
+Number of entries in a field texture's colour ramp.
+
+Inline in the struct rather than a second stored array, because a material
+parameter is ONE `TexHandle` and a handle carries one `(slot, idx)`. The
+coefficients get that slot — they scale with the number of cells and a real
+grid has thousands — so the ramp, which does not, rides along inline.
+"""
+const FEM_RAMP_N = 32
+
+"""
+    FEMFieldTexture(coeffs, ramp; vmin, vmax)
+
+The FEM solution as a texture: evaluates the element's own polynomial at the
+hit's reference coordinate and looks the value up in a colour ramp.
+
+A TEXTURE and not a shading path. Writing a colour into the hit would bypass
+the BSDF, the lights, the shadows and the path continuation — an albedo viewer
+rather than a renderer. Bound to any material's parameter, the field composes
+with every BSDF Hikari has, and material dispatch stays `MultiTypeSet`
+untouched.
+
+`VertexColorTexture` is the precedent and the shape is the same: read
+`face_idx` off the hit to pick the data, read the hit's surface coordinate to
+interpolate. What differs is only that a per-face colour is interpolated
+linearly and a field is evaluated — `uv` carries ξ, which the intersection put
+there.
+"""
+struct FEMFieldTexture{C}
+    coeffs::C                                   # FEM_NMONO x ncells → TextureRef
+    ramp::NTuple{FEM_RAMP_N, RGBSpectrum}
+    vmin::Float32
+    vmax::Float32
+end
+
+"""Build one from a coefficient block and any Makie-style colour ramp."""
+function FEMFieldTexture(coeffs, ramp::AbstractVector; vmin = 0, vmax = 1)
+    n = length(ramp)
+    resampled = ntuple(FEM_RAMP_N) do i
+        c = ramp[clamp(round(Int, (i - 1) / (FEM_RAMP_N - 1) * (n - 1)) + 1, 1, n)]
+        c isa RGBSpectrum ? c : RGBSpectrum(Float32(red(c)), Float32(green(c)), Float32(blue(c)))
+    end
+    return FEMFieldTexture(coeffs, resampled, Float32(vmin), Float32(vmax))
+end
+
+
 # Anything that is a spatially-varying texture (as opposed to a raw constant
 # scalar/spectrum value). Use this for "is it a texture?" checks; matching only
 # `Texture` silently misses procedural textures.
-const AnyTexture = Union{Texture, CheckerboardTexture}
+# `FEMFieldTexture` is declared later (fem.jl) but belongs in this union, so it
+# is named by a forward reference rather than by widening the union at its
+# definition site — a check for "is it a texture?" that misses one silently
+# treats it as a constant.
+const AnyTexture = Union{Texture, CheckerboardTexture, FEMFieldTexture}
 
 # Per-face vertex color texture: stores 3 colors per face for barycentric interpolation
 struct VertexColorTexture{T}

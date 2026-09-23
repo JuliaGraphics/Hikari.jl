@@ -18,6 +18,16 @@ function _last_pushed_sbt_offset()
 end
 
 # Single material for entire mesh
+# A material that carries its own geometry contributes ITS triangles, not the
+# caller's. Both spellings, because the generic mesh method above is equally
+# specific on its middle argument and Julia calls that a tie — the same reason
+# `FEMMaterial` has two. A material that can be SOLVED overrides these with a
+# method of its own and never reaches here; `fem.jl` is that case.
+Base.push!(scene::Scene, ::GeometryBasics.Mesh, m::GeneratedGeometry; kw...) =
+    push!(scene, tessellate(m), shadingmaterial(m); kw...)
+Base.push!(scene::Scene, ::Any, m::GeneratedGeometry; kw...) =
+    push!(scene, tessellate(m), shadingmaterial(m); kw...)
+
 function Base.push!(scene::Scene, mesh::GeometryBasics.Mesh, material::Material;
                     transform::Mat4f=Mat4f(I))
     mat_idx = push!(scene, material)
