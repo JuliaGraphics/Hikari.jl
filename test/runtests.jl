@@ -44,6 +44,7 @@ const TEST_FILES = [
     "test_no_lava_references.jl",
     # Same kind of ledger, one layer up: who Hikari asks to wait for the GPU.
     "test_mantle_vocabulary.jl",
+    "test_environment_map_domain.jl",
     "test_empty_scene.jl",
     "materials.jl",
     "type_stability.jl",

@@ -149,9 +149,25 @@ This is pbrt-v4's octahedral/equal-area mapping used for environment maps.
 Reference: Clarberg, "Fast Equal-Area Mapping of the (Hemi)Sphere using SIMD"
 """
 @propagate_inbounds function equal_area_sphere_to_square(d::Vec3f)::Point2f
-    x, y, z = abs(d[1]), abs(d[2]), abs(d[3])
+    x, y, z = abs(d[1]), abs(d[2]), min(abs(d[3]), 1f0)
 
     # Compute the radius r = sqrt(1 - |z|)
+    #
+    # `min(…, 1f0)` on |z|, not a bare `1 - |z|`: pbrt DCHECKs that `d` is
+    # normalised and leans on it, which a GPU cannot afford. A `d` a hair
+    # longer than unit makes `1 - |z|` negative, and `sqrt` of that is a
+    # `DomainError` — on Metal a device-side throw that kills the render loop
+    # and leaves the window up, frozen, looking for all the world like a hang.
+    #
+    # Such a `d` is routine: a conductor builds `wi = -wo + 2(wo·wm)wm` in local
+    # space and `local_to_world`s it, and that round trip lands outside the unit
+    # sphere about once in 1300 reflections. Measured, not supposed — see
+    # `test_environment_map_domain.jl`. Gold surfaced it because a mirror sends
+    # nearly every path to the environment; the same directions reach here from
+    # any material.
+    #
+    # Clamping is also the right ANSWER, not just a guard: |z| ≥ 1 is the pole,
+    # and r = 0 is the pole. For a genuinely unit `d` this changes nothing.
     r = sqrt(1f0 - z)
 
     # Compute the argument to atan (detect a=0 to avoid div-by-zero)

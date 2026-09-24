@@ -28,7 +28,13 @@ p(cos θ) = (1 - g²) / [4π(1 + g² - 2g cos θ)^(3/2)]
 @propagate_inbounds function hg_p(g::Float32, cos_θ::Float32)::Float32
     g2 = g * g
     denom = 1f0 + g2 - 2f0 * g * cos_θ
-    return (1f0 - g2) / (4f0 * Float32(π) * denom * sqrt(denom))
+    # `max(1f-10, denom)` under the `sqrt`, matching `hg_phase_pdf` and
+    # `sample_hg_phase` in `materials/common.jl` — the same formula, which
+    # guarded it and this one did not. `denom` is `(1 ∓ g)²` at grazing
+    # cos θ, so it reaches zero for strongly forward- or back-scattering
+    # media and goes slightly negative in Float32; `sqrt` of that is a
+    # `DomainError`, which on a GPU is a device-side throw, not a NaN.
+    return (1f0 - g2) / (4f0 * Float32(π) * denom * sqrt(max(1f-10, denom)))
 end
 
 @propagate_inbounds hg_p(phase::HGPhaseFunction, cos_θ::Float32) = hg_p(phase.g, cos_θ)
