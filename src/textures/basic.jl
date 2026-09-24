@@ -129,6 +129,16 @@ struct FEMFieldTexture{C}
     vmax::Float32
 end
 
+# A NAME is not a ramp, and saying so beats the `MethodError` this produced.
+# Hikari depends on `Colors` but on no colormap package, so there is nothing here
+# that could turn `:viridis` into colours.
+FEMFieldTexture(coeffs, ramp::Symbol; kw...) = error(
+    "`colormap = :$ramp` is a NAME, and Hikari cannot resolve one: it has no " *
+    "colormap package, only `Colors`. Pass a vector of colours instead — " *
+    "`FEMFieldTexture` resamples whatever length it is to $FEM_RAMP_N. " *
+    "`Hikari.FEM_DEFAULT_RAMP` is one, and with Makie loaded so is " *
+    "`Makie.to_colormap(:$ramp)`.")
+
 """Build one from a coefficient block and any Makie-style colour ramp."""
 function FEMFieldTexture(coeffs, ramp::AbstractVector; vmin = 0, vmax = 1)
     n = length(ramp)

@@ -44,6 +44,10 @@ const TEST_FILES = [
     "test_no_lava_references.jl",
     # Same kind of ledger, one layer up: who Hikari asks to wait for the GPU.
     "test_mantle_vocabulary.jl",
+    # `FEMMaterial`'s public surface: its default constructor, and the question
+    # it has to ask before building geometry the backend may not be able to
+    # trace. Cheap and backend-neutral — it renders nothing.
+    "test_fem_material.jl",
     "test_environment_map_domain.jl",
     "test_empty_scene.jl",
     "materials.jl",

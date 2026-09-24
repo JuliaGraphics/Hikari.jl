@@ -84,7 +84,12 @@ raw device pointer in a fragment shader.
     # indexing one with a runtime `m` is the same
     # `Unsupported ConstantExpr opcode: LLVMICmp` the base corners hit. `Val`
     # makes every `m` a literal, so each `mono[m]` is a field access.
-    return sum(ntuple(m -> coeffs[base + m] * mono[m], Val(FEM_NMONO)))
+    # `@inbounds`: `base` is `(cell-1) * FEM_NMONO` and `m` runs to `FEM_NMONO`, so
+    # the index cannot leave the block — and a bounds check here does not merely cost,
+    # it does not COMPILE in a graphics stage. The check reaches for `kernel_state` to
+    # report the failure, which a compute kernel has and a mesh or vertex stage does
+    # not: `unsupported call to julia.gpu.state_getter`.
+    return @inbounds sum(ntuple(m -> coeffs[base + m] * mono[m], Val(FEM_NMONO)))
 end
 # The monomial basis differentiated, in the same order. `∂/∂a` drops the terms
 # with no `a`, `∂/∂b` those with no `b` — written out for the same reason the
@@ -111,8 +116,13 @@ end
 @inline function eval_poly_grad(coeffs, cell::Integer, a, b)
     da = monomials_da(a, b); db = monomials_db(a, b)
     base = (cell - 1) * FEM_NMONO
-    return (sum(ntuple(m -> coeffs[base + m] * da[m], Val(FEM_NMONO))),
-            sum(ntuple(m -> coeffs[base + m] * db[m], Val(FEM_NMONO))))
+    # `@inbounds` for the reason `eval_poly` carries it: the index is constructed and
+    # cannot leave the block, and the bounds check does not merely cost — it reaches
+    # for `kernel_state` to report a failure, which a mesh or vertex stage does not
+    # have. This is the gradient half, and missing it left the mesh stage failing
+    # after `eval_poly` was already fixed: `surfacenormal` comes through here.
+    return @inbounds (sum(ntuple(m -> coeffs[base + m] * da[m], Val(FEM_NMONO))),
+                      sum(ntuple(m -> coeffs[base + m] * db[m], Val(FEM_NMONO))))
 end
 
 @inline eval_position(cx, cy, cell, a, b) =
@@ -156,7 +166,9 @@ differ only in how finely one of them samples it.
     ny = ta[3]*tb[1] - ta[1]*tb[3]
     nz = ta[1]*tb[2] - ta[2]*tb[1]
     l = sqrt(nx*nx + ny*ny + nz*nz)
-    l < 1e-20 && return Vec3f(0, 0, 1)
+    # `1f-20`: a bare `1e-20` is a Float64 literal and promotes the comparison,
+    # which a device with no double precision refuses.
+    l < 1f-20 && return Vec3f(0, 0, 1)
     return Vec3f(Float32(nx/l), Float32(ny/l), Float32(nz/l))
 end
 
@@ -362,7 +374,12 @@ per bounce. `Float64` coefficients are what the reference comparison wants;
                                    ox, oy, oz, dx, dy, dz, t0, warp)
     if h && Float32(t) < best.t
         commit_intersection!(t)
-        return FEMHit(Float32(t), Float32(a), Float32(b), UInt32(cell))
+        # `cell % UInt32`, not `UInt32(cell)`: the checked conversion can raise
+        # `InexactError`, and building that error reaches for `kernel_state`,
+        # which a graphics stage and a VISIBLE function both lack. `cell` is
+        # `candidate_primitive_index()`, so it is positive and small by
+        # construction; only the unreachable error path differs.
+        return FEMHit(Float32(t), Float32(a), Float32(b), cell % UInt32)
     end
     return best
 end
@@ -473,8 +490,17 @@ The normalized field value at a hit — `uv` carries ξ, `face_idx` carries the 
     # surfacing at whatever is submitted next.
     c = clamp(Int(cell), 1, size(coeffs, 2))
     # Back out of the [0,1] uv to the element's own [-1,1]² — see `fem_uv`.
-    a = Float64(2f0 * uv[1] - 1f0)
-    b = Float64(2f0 * uv[2] - 1f0)
+    #
+    # In the COEFFICIENTS' precision, whatever they are, and not `Float64`. The
+    # field is a polynomial in them, so promoting the parameter promotes the
+    # whole evaluation — and an Apple GPU has no `Float64` at all, so this is
+    # not a precision choice there, it is a kernel that does not compile:
+    # "unsupported use of double value", reported against this line from inside
+    # the integrator. `FEMMaterial` narrows its coefficients to `Float32` for
+    # exactly this reason (see `femcoeffs`), and this line was undoing it.
+    F = eltype(coeffs)
+    a = F(2f0 * uv[1] - 1f0)
+    b = F(2f0 * uv[2] - 1f0)
     v = Float32(eval_poly(coeffs, c, a, b))
     return clamp((v - t.vmin) / (t.vmax - t.vmin + 1f-20), 0f0, 1f0)
 end
@@ -608,7 +634,22 @@ whatever they cached against them still matches.
 femcoeffs(c::AbstractArray{Float32}) = c
 femcoeffs(c::AbstractArray) = Float32.(c)
 
-function FEMMaterial(surface::Material, cx, cy, cf; warp = 0.6, colormap = :viridis,
+"""
+The default field ramp: blue at 0, yellow at 1.
+
+A VECTOR of colours and not a name. `colormap = :viridis` stood here and could
+not work -- `FEMFieldTexture` takes "any Makie-style colour ramp", which is a
+vector, and Hikari depends on `Colors` but on no colormap package, so nothing
+could turn the symbol into colours. The documented `FEMMaterial(cx, cy, cf)`
+therefore failed on its own default; every working caller passed a ramp.
+"""
+const FEM_DEFAULT_RAMP = [RGBSpectrum(0.15f0 + 0.75f0 * t,
+                                      0.15f0 + 0.65f0 * t,
+                                      0.55f0 - 0.45f0 * t)
+                          for t in range(0f0, 1f0; length = 64)]
+
+function FEMMaterial(surface::Material, cx, cy, cf; warp = 0.6,
+                     colormap = FEM_DEFAULT_RAMP,
                      colorrange = extrema(cf), tolerance = 2.0f-2)
     # Float32 deliberately: `femfloat` takes the solve's precision from the
     # coefficients, and a GPU that runs FP64 at 1/16 rate spends the frame in
@@ -705,6 +746,39 @@ function Base.push!(scene::Scene, material::FEMMaterial;
     mi = push!(scene, MediumInterface(femsurface(material)))
     accel = scene.accel
 
+    # ASKED, here, before anything is built, and asked of the ACCEL rather than
+    # the backend. Two different mistakes land on this line and only the accel
+    # can tell them apart:
+    #
+    #   * a backend that builds boxes but cannot trace them — every step below
+    #     succeeds and the failure surfaces much later, as a `MethodError` on
+    #     `candidate_object_ray` inside a shader compile;
+    #   * a SOFTWARE acceleration structure, which holds triangles and has no
+    #     `push!` for a BLAS at all — a `MethodError` on `push!` naming two
+    #     types and no reason.
+    #
+    # `supports_procedural_traversal` answers both: a hardware structure that
+    # traces boxes says yes, and everything else falls to the `::Any` default.
+    Mantle.supports_procedural_traversal(accel) || error("""
+        this scene cannot trace procedural geometry, so a `FEMMaterial` would \
+        render as nothing.
+
+        `Mantle.supports_procedural_traversal` says `false` for \
+        $(nameof(typeof(accel))).
+
+        If that is a SOFTWARE acceleration structure, it holds triangles and \
+        takes no BLAS: build the scene with `Hikari.Scene(; backend, \
+        hw_accel = true)`.
+
+        If it is a hardware one, this backend does not answer the three \
+        candidate verbs `procedural_candidate` is written against — \
+        `candidate_primitive_index`, `candidate_object_ray`, \
+        `commit_intersection!`.
+
+        The raster path is unaffected either way: the same elements draw \
+        through a mesh pipeline (see `Mantle/examples/isubd`), which is the \
+        comparison a `FEMMaterial` scene is usually making anyway.""")
+
     # Per-primitive metadata, the same record a triangle carries.
     # `primitive_index` is the cell, which is what selects the coefficient
     # block — in `FEMFieldTexture`, and in anything else reading `face_idx`.
@@ -722,3 +796,18 @@ function Base.push!(scene::Scene, material::FEMMaterial;
     accel.procedural = FEMElements(todev(cx), todev(cy), todev(cf), e.warp, todev(meta))
     return SceneHandle(scene, mi, handle)
 end
+
+# What the scene HOLDS for an `FEMMaterial` is its surface with the field merged
+# in: `push!` above registers `MediumInterface(femsurface(material))`. An update
+# has to store that same thing. Handed the wrapper, the generic method tried to
+# `convert` it into the surface's own slot — an `FEMMaterial` into a
+# `Vector{ThinDielectric}` for glass — which no surface can accept. RayMakie
+# updates a plot's material through here; in the isubd demo the tolerance slider
+# (a new `FEMMaterial`, same types) did, and the MethodError first froze the
+# traced view and then, on the next switch to RASTER, killed the render loop.
+#
+# The geometry is NOT updated: the elements live in the acceleration structure,
+# and a material update is for what changes in place — the tolerance, which only
+# the raster path reads, and the field ramp.
+update_material!(scene::Scene, idx::UInt32, material::FEMMaterial) =
+    update_material!(scene, idx, femsurface(material))
