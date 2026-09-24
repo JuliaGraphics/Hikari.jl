@@ -46,7 +46,13 @@ push!(scene, AmbientLight(...))
 sync!(scene)  # Build acceleration structure
 ```
 """
-default_accel(backend, ::Val{false}) = TLAS(backend)
+# Typed over `Triangle{TriangleMeta}` while EMPTY, as the hardware default is by
+# its type parameter: an untyped TLAS with no BLAS falls back to
+# `Triangle{UInt32}`, whose metadata has no `medium_interface_idx`, so an empty
+# scene compiled a kernel that could only throw, and Metal refused to compile it.
+# That is every render before the first plot lands, and every one after the last
+# is deleted.
+default_accel(backend, ::Val{false}) = TLAS(backend; primtype = Raycore.Triangle{TriangleMeta})
 # Val{true} defined in hw-rt.jl -> HWTLAS(backend) for any HW-capable backend
 
 function Scene(; backend=KA.CPU(), accel=nothing, hw_accel::Bool=false)
