@@ -118,7 +118,17 @@ end
         if mask_escaped
             row = Int32(((i - 1) % depth_h) + 1)
             col = Int32(((i - 1) ÷ depth_h) + 1)
-            d_row = depth_h - row + Int32(1)  # Y-flip
+            # SAME row as the colour. This read `depth_h - row + 1`, a Y-flip,
+            # so the escaped-ray test for pixel `i` sampled the depth of the
+            # pixel MIRRORED about the horizontal axis — while `src[i]` above is
+            # not mirrored. Colour and alpha therefore came out of this kernel
+            # flipped against each other, which is invisible on a full-frame
+            # render (every pixel is covered) and obvious the moment something is
+            # composited: the silhouette is the subject upside down, offset from
+            # the subject itself. Measured on an animated figure over a
+            # background, IoU(pale region, colour region) was 0.0 unflipped and
+            # 0.28 at rot180.
+            d_row = row
 
             escaped = Int32(0)
             total = Int32(0)
