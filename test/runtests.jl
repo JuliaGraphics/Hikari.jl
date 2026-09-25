@@ -81,6 +81,7 @@ const TEST_FILES = [
     "test_trace_pass_modelled.jl",
     "test_plan_invalidation.jl",
     "test_sample_is_one_run.jl",
+    "test_volpath_state_show.jl",
 ]
 
 # ── pbrt reference suite ────────────────────────────────────────────────────

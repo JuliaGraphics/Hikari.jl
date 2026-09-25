@@ -145,6 +145,16 @@ mutable struct VolPathState{Backend}
     plans::Any                           # VPPlans{...} | nothing
 end
 
+# The default `show` printed every work queue element by element, each one a read
+# of device memory: printing one state (a failing test's operand) ran for longer
+# than 20 minutes. What is worth seeing is its shape and whether it is live.
+function Base.show(io::IO, state::VolPathState)
+    print(io, "VolPathState(", state.width, "×", state.height, ", ", state.num_lights,
+          " lights, max_depth ", state.max_depth, ", ",
+          nallocations(state.memory), " allocations, ",
+          state.plans === nothing ? "no plans" : "plans recorded", ")")
+end
+
 """
     free!(state::VolPathState)
 
