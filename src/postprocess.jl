@@ -74,6 +74,25 @@ const TONEMAP_ACES = UInt8(3)
 const TONEMAP_UNCHARTED2 = UInt8(4)
 const TONEMAP_FILMIC = UInt8(5)
 
+"""
+    tonemap_code(tonemap::Union{Symbol, Nothing}) -> UInt8
+
+The code [`apply_tonemap`](@ref) takes for a `postprocess!` tonemap name, so a
+caller outside the film (a rasteriser drawing into the same picture) applies the
+same curve. An unknown name is an error: it used to mean "no tonemapping", which
+turned a typo into a washed-out picture with nothing to say why.
+"""
+function tonemap_code(tonemap::Union{Symbol, Nothing})
+    tonemap === nothing && return TONEMAP_NONE
+    tonemap === :reinhard && return TONEMAP_REINHARD
+    tonemap === :reinhard_extended && return TONEMAP_REINHARD_EXT
+    tonemap === :aces && return TONEMAP_ACES
+    tonemap === :uncharted2 && return TONEMAP_UNCHARTED2
+    tonemap === :filmic && return TONEMAP_FILMIC
+    throw(ArgumentError("unknown tonemap `:$tonemap`; use :aces, :reinhard, " *
+                        ":reinhard_extended, :uncharted2, :filmic, or `nothing`"))
+end
+
 @propagate_inbounds function apply_tonemap(r::Float32, g::Float32, b::Float32, mode::UInt8, wp::Float32)
     if mode == TONEMAP_REINHARD
         return tonemap_reinhard(r, g, b)
@@ -230,19 +249,7 @@ function postprocess!(film::Film;
     inv_gamma = isnothing(gamma) ? 1.0f0 : 1f0 / Float32(gamma)
     apply_gamma = !isnothing(gamma)
 
-    tonemap_mode = if tonemap === :reinhard
-        TONEMAP_REINHARD
-    elseif tonemap === :reinhard_extended
-        TONEMAP_REINHARD_EXT
-    elseif tonemap === :aces
-        TONEMAP_ACES
-    elseif tonemap === :uncharted2
-        TONEMAP_UNCHARTED2
-    elseif tonemap === :filmic
-        TONEMAP_FILMIC
-    else
-        TONEMAP_NONE
-    end
+    tonemap_mode = tonemap_code(tonemap)
 
     mask_escaped = !isnothing(background)
     bg_r = mask_escaped ? background.r : 0f0

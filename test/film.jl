@@ -31,6 +31,18 @@ end
     Hikari.free!(small_film)  # double free is safe
 end
 
+@testset "tonemap names" begin
+    # One mapping for the film and for a rasteriser drawing into the same picture.
+    @test Hikari.tonemap_code(nothing) == Hikari.TONEMAP_NONE
+    @test Hikari.tonemap_code(:aces) == Hikari.TONEMAP_ACES
+    @test Hikari.tonemap_code(:reinhard) == Hikari.TONEMAP_REINHARD
+    @test Hikari.tonemap_code(:reinhard_extended) == Hikari.TONEMAP_REINHARD_EXT
+    @test Hikari.tonemap_code(:uncharted2) == Hikari.TONEMAP_UNCHARTED2
+    @test Hikari.tonemap_code(:filmic) == Hikari.TONEMAP_FILMIC
+    # A typo used to mean "no tonemapping": a washed-out picture and no error.
+    @test_throws ArgumentError Hikari.tonemap_code(:acse)
+end
+
 @testset "Perspective Camera" begin
     filter = Hikari.LanczosSincFilter(Point2f(4f0), 3f0)
     film = Hikari.Film(
