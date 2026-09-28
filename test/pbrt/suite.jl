@@ -25,7 +25,9 @@ import KernelAbstractions as KA
 
 const SCENES_DIR = joinpath(@__DIR__, "scenes")
 const REFS_DIR   = joinpath(@__DIR__, "references")
-const PBRT_BIN   = get(ENV, "PBRT_BIN", "/sim/Programmieren/VulkanDev/pbrt-v4/build/pbrt")
+# Beside the `dev/` checkouts by default: `VulkanDev/pbrt-v4/build/pbrt`.
+const PBRT_BIN   = get(ENV, "PBRT_BIN",
+                       normpath(joinpath(@__DIR__, "..", "..", "..", "..", "pbrt-v4", "build", "pbrt")))
 
 """Is hardware ray tracing available on the currently-bound Lava device?"""
 function hw_rt_available()

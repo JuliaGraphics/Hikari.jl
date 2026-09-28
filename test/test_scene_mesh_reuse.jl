@@ -1,5 +1,5 @@
 using Test, Hikari, GeometryBasics
-import Lava
+import Mantle
 import KernelAbstractions as KA
 
 function test_scene_mesh_texture_reuse(backend; hw_accel = false)
@@ -23,8 +23,8 @@ end
 
 @testset "Geometry replacement reuses material textures" begin
     test_scene_mesh_texture_reuse(KA.CPU())
-    backend = Lava.LavaBackend()
-    if Lava.vk_context().rt_pipeline_properties === nothing
+    backend = Mantle.defaultbackend()
+    if !Mantle.supports_rt_pipeline(backend)
         @test_skip false
     else
         test_scene_mesh_texture_reuse(backend; hw_accel = true)

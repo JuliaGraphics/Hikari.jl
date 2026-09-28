@@ -1,6 +1,6 @@
 using Test, Hikari, GeometryBasics
 import Adapt
-import Lava
+import Mantle
 import KernelAbstractions as KA
 using Statistics: mean
 
@@ -42,8 +42,8 @@ end
 
 @testset "Auxiliary buffers align with radiance" begin
     test_aux_alignment(KA.CPU())
-    backend = Lava.LavaBackend()
-    if Lava.vk_context().rt_pipeline_properties === nothing
+    backend = Mantle.defaultbackend()
+    if !Mantle.supports_rt_pipeline(backend)
         @test_skip false
     else
         test_aux_alignment(backend; hw_accel = true)
