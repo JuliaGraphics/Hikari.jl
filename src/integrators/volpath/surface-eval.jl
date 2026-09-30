@@ -390,7 +390,8 @@ write/read of two `pixel_samples_direct_*` arrays per bounce — measured as
 
         if !is_black(bsdf_f)
             result = compute_direct_lighting_spectral(
-                work.pi, work.n, work.ns, work.wo, work.beta, work.r_u, work.lambda,
+                # Shadow rays leave from the terminator-safe point, not the hit.
+                work.ps, work.n, work.ns, work.wo, work.beta, work.r_u, work.lambda,
                 light_sample, bsdf_f, bsdf_pdf,
             )
             if result.valid

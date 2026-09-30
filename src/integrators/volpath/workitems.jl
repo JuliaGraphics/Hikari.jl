@@ -102,6 +102,7 @@ struct VPMediumSampleWorkItem
     # If t_max == Inf, these are invalid (ray escaped)
     has_surface_hit::Bool
     hit_pi::Point3f
+    hit_ps::Point3f                 # Where shadow rays leave (see `vp_shadow_point`)
     hit_n::Vec3f
     hit_dpdu::Vec3f                 # Geometric position derivative w.r.t. u
     hit_dpdv::Vec3f                 # Geometric position derivative w.r.t. v
@@ -121,7 +122,7 @@ end
 function VPMediumSampleWorkItem(
     work::VPRayWorkItem,
     t_max::Float32,
-    pi::Point3f, n::Vec3f, dpdu::Vec3f, dpdv::Vec3f,
+    pi::Point3f, ps::Point3f, n::Vec3f, dpdu::Vec3f, dpdv::Vec3f,
     ns::Vec3f, dpdus::Vec3f, dpdvs::Vec3f,
     uv::Point2f, mat_idx::SetKey,
     interface::MediumInterfaceIdx,
@@ -135,7 +136,7 @@ function VPMediumSampleWorkItem(
         work.specular_bounce, work.any_non_specular_bounces,
         work.prev_intr_p, work.prev_intr_n,
         work.medium_idx,
-        true, pi, n, dpdu, dpdv, ns, dpdus, dpdvs, uv, mat_idx, interface,
+        true, pi, ps, n, dpdu, dpdv, ns, dpdus, dpdvs, uv, mat_idx, interface,
         face_idx, bary,
         arealight_flat_idx, triangle_area
     )
@@ -150,7 +151,7 @@ function VPMediumSampleWorkItem(work::VPRayWorkItem)
         work.specular_bounce, work.any_non_specular_bounces,
         work.prev_intr_p, work.prev_intr_n,
         work.medium_idx,
-        false, Point3f(0f0), Vec3f(0f0, 0f0, 1f0), Vec3f(0f0), Vec3f(0f0),
+        false, Point3f(0f0), Point3f(0f0), Vec3f(0f0, 0f0, 1f0), Vec3f(0f0), Vec3f(0f0),
         Vec3f(0f0, 0f0, 1f0), Vec3f(0f0), Vec3f(0f0),
         Point2f(0f0, 0f0), SetKey(), MediumInterfaceIdx(SetKey(), SetKey(), SetKey()),
         UInt32(0), SVector{3, Float32}(0f0, 0f0, 0f0),
@@ -199,6 +200,7 @@ computed on-the-fly during material evaluation using camera.Approximate_dp_dxy()
 struct VPMaterialEvalWorkItem
     # Surface interaction data (matching pbrt-v4 MaterialEvalWorkItem order)
     pi::Point3f                     # Intersection point
+    ps::Point3f                     # Where shadow rays leave (see `vp_shadow_point`)
     n::Vec3f                        # Geometric normal
     dpdu::Vec3f                     # Geometric position derivative w.r.t. u
     dpdv::Vec3f                     # Geometric position derivative w.r.t. v
@@ -358,6 +360,7 @@ struct VPHitSurfaceWorkItem
 
     # Hit geometry (matching pbrt-v4 SurfaceInteraction decomposition)
     pi::Point3f                     # Intersection point
+    ps::Point3f                     # Where shadow rays leave (see `vp_shadow_point`)
     n::Vec3f                        # Geometric normal
     dpdu::Vec3f                     # Geometric position derivative w.r.t. u
     dpdv::Vec3f                     # Geometric position derivative w.r.t. v
@@ -405,7 +408,7 @@ end
 # Constructor from VPRayWorkItem with hit geometry.
 function VPHitSurfaceWorkItem(
     work::VPRayWorkItem,
-    pi::Point3f, n::Vec3f, dpdu::Vec3f, dpdv::Vec3f,
+    pi::Point3f, ps::Point3f, n::Vec3f, dpdu::Vec3f, dpdv::Vec3f,
     ns::Vec3f, dpdus::Vec3f, dpdvs::Vec3f,
     uv::Point2f, mat_idx::SetKey,
     interface::MediumInterfaceIdx,
@@ -413,7 +416,7 @@ function VPHitSurfaceWorkItem(
 )
     VPHitSurfaceWorkItem(
         work.ray,
-        pi, n, dpdu, dpdv, ns, dpdus, dpdvs, uv, mat_idx, interface,
+        pi, ps, n, dpdu, dpdv, ns, dpdus, dpdvs, uv, mat_idx, interface,
         face_idx, bary,
         work.lambda, work.pixel_index,
         work.beta, work.r_u, work.r_l,
@@ -431,7 +434,7 @@ function VPHitSurfaceWorkItem(
 )
     VPHitSurfaceWorkItem(
         work.ray,
-        work.hit_pi, work.hit_n, work.hit_dpdu, work.hit_dpdv,
+        work.hit_pi, work.hit_ps, work.hit_n, work.hit_dpdu, work.hit_dpdv,
         work.hit_ns, work.hit_dpdus, work.hit_dpdvs,
         work.hit_uv, work.hit_material_idx, work.hit_interface,
         work.hit_face_idx, work.hit_bary,
@@ -448,7 +451,7 @@ end
 # (wo and material_idx are computed externally, e.g. after Mix resolution).
 function VPMaterialEvalWorkItem(work::VPHitSurfaceWorkItem, wo::Vec3f, material_idx::SetKey)
     VPMaterialEvalWorkItem(
-        work.pi, work.n, work.dpdu, work.dpdv, work.ray.time,
+        work.pi, work.ps, work.n, work.dpdu, work.dpdv, work.ray.time,
         work.ns, work.dpdus, work.dpdvs, work.uv,
         work.face_idx, work.bary,
         wo, material_idx, work.interface,

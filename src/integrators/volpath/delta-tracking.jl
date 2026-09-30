@@ -259,7 +259,7 @@ end
         # map) — same behaviour as before the per-material split.
         hit_work = VPHitSurfaceWorkItem(
             work.ray,
-            work.hit_pi, work.hit_n, work.hit_dpdu, work.hit_dpdv,
+            work.hit_pi, work.hit_ps, work.hit_n, work.hit_dpdu, work.hit_dpdv,
             work.hit_ns, work.hit_dpdus, work.hit_dpdvs,
             work.hit_uv, resolved_mat_idx, work.hit_interface,
             work.hit_face_idx, work.hit_bary,

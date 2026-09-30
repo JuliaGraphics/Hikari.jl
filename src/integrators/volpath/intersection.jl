@@ -225,6 +225,32 @@ Compute interpolated shading normal from vertex normals.
 end
 
 """
+    vp_shadow_point(primitive, barycentric, p) -> Point3f
+
+Where shadow rays leave a smooth-shaded triangle: `p` pushed out onto the
+tangent planes of the three vertex normals, weighted by the barycentrics
+(Hanika, "Hacking the Shadow Terminator", Ray Tracing Gems II, ch. 4; what
+Cycles does too).
+
+On a coarse mesh with interpolated normals, the shading normal near the
+terminator still faces a light that the flat triangle is already turned away
+from. A shadow ray from `p` itself then runs into the mesh's own neighbouring
+triangles and the whole triangle turns black, in a sawtooth along the
+tessellation. Returns `p` where the triangle has no vertex normals, and where
+`p` already lies above every vertex's tangent plane (concave regions).
+"""
+@propagate_inbounds function vp_shadow_point(primitive, barycentric, p::Point3f)
+    n0 = Vec3f(primitive.normals[1])
+    n1 = Vec3f(primitive.normals[2])
+    n2 = Vec3f(primitive.normals[3])
+    isnan(n0[1]) && return p
+    h0 = max(dot(Vec3f(primitive.vertices[1] - p), n0), 0f0)
+    h1 = max(dot(Vec3f(primitive.vertices[2] - p), n1), 0f0)
+    h2 = max(dot(Vec3f(primitive.vertices[3] - p), n2), 0f0)
+    return Point3f(p + barycentric[1] * h0 * n0 + barycentric[2] * h1 * n1 + barycentric[3] * h2 * n2)
+end
+
+"""
     vp_compute_surface_geometry(primitive, barycentric, ray) -> NamedTuple
 
 Compute all surface geometry needed for material evaluation.
@@ -253,7 +279,7 @@ Returns (pi, n, dpdu, dpdv, ns, dpdus, dpdvs, uv).
     # Shading tangent vectors
     dpdus, dpdvs = vp_compute_shading_tangents(primitive, barycentric, ns, dpdu, dpdv)
 
-    return (pi=pi, n=n, dpdu=dpdu, dpdv=dpdv, ns=ns, dpdus=dpdus, dpdvs=dpdvs, uv=uv)
+    return (pi=pi, ps=vp_shadow_point(primitive, barycentric, pi), n=n, dpdu=dpdu, dpdv=dpdv, ns=ns, dpdus=dpdus, dpdvs=dpdvs, uv=uv)
 end
 
 # ============================================================================
@@ -325,7 +351,7 @@ end
 
             push!(medium_sample_queue, VPMediumSampleWorkItem(
                 work, t_hit,
-                geom.pi, geom.n, geom.dpdu, geom.dpdv,
+                geom.pi, geom.ps, geom.n, geom.dpdu, geom.dpdv,
                 ns_b, dpdus_b, dpdvs_b,
                 geom.uv, mat_idx, mi,
                 primitive.metadata.primitive_index, SVector{3,Float32}(barycentric),
@@ -409,7 +435,7 @@ end
 
         hit_work = VPHitSurfaceWorkItem(
             work,
-            geom.pi, geom.n, geom.dpdu, geom.dpdv,
+            geom.pi, geom.ps, geom.n, geom.dpdu, geom.dpdv,
             ns_b, dpdus_b, dpdvs_b,
             geom.uv, resolved_mat_idx, mi,
             primitive.metadata.primitive_index, SVector{3,Float32}(barycentric),

@@ -62,10 +62,12 @@ end
         cs = CameraSample(pixel, Point2f(0.5f0, 0.5f0), 0f0)
         ray, w = generate_ray(camera, cs)
         if w > 0f0
-            hit, _prim, t, _bary, _icx = Raycore.closest_hit(accel, ray)
+            hit, prim, t, bary, _icx = Raycore.closest_hit(accel, ray)
             if hit
                 depth[idx] = t
-                normal[idx] = Vec3f(0f0, 0f0, 1f0)
+                # The denoiser's normal edge-stop reads this. A constant here
+                # blurred across every silhouette that has no depth jump.
+                normal[idx] = vp_compute_shading_normal(prim, bary, vp_compute_geometric_normal(prim))
                 albedo[idx] = RGB{Float32}(0.8f0, 0.8f0, 0.8f0)
             else
                 depth[idx] = miss_depth

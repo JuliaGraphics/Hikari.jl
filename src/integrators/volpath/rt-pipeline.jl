@@ -119,9 +119,8 @@ end
     bv = rt_hit_bary_v()
     bary = SVector{3,Float32}(1f0 - bu - bv, bu, bv)
 
-    # Look up the triangle from the per-instance flat array.
-    @inbounds tri_idx = Int(accel.offsets[inst_id + UInt32(1)]) + Int(prim_id) + 1
-    @inbounds primitive = accel.triangles[tri_idx]
+    # The hit triangle, moved from its BLAS into world space.
+    primitive = Mantle.hittriangle(accel, UInt32(inst_id), UInt32(prim_id))
 
     # ─── Medium branch: same routing as `vp_trace_and_shade_kernel!`'s top ───
     if has_medium(work.medium_idx)
@@ -142,7 +141,7 @@ end
 
         push!(medium_sample_queue, VPMediumSampleWorkItem(
             work, t_hit,
-            geom.pi, geom.n, geom.dpdu, geom.dpdv,
+            geom.pi, geom.ps, geom.n, geom.dpdu, geom.dpdv,
             ns_b, dpdus_b, dpdvs_b,
             geom.uv, mat_idx, mi,
             primitive.metadata.primitive_index, SVector{3,Float32}(bary),
@@ -198,7 +197,7 @@ end
 
     hit_work = VPHitSurfaceWorkItem(
         work,
-        geom.pi, geom.n, geom.dpdu, geom.dpdv,
+        geom.pi, geom.ps, geom.n, geom.dpdu, geom.dpdv,
         ns_b, dpdus_b, dpdvs_b,
         geom.uv, resolved_mat_idx, mi,
         primitive.metadata.primitive_index, SVector{3,Float32}(bary),
@@ -295,8 +294,7 @@ struct VPClosesthitTyped{T} end
     bv = rt_hit_bary_v()
     bary = SVector{3,Float32}(1f0 - bu - bv, bu, bv)
 
-    @inbounds tri_idx = Int(accel.offsets[inst_id + UInt32(1)]) + Int(prim_id) + 1
-    @inbounds primitive = accel.triangles[tri_idx]
+    primitive = Mantle.hittriangle(accel, UInt32(inst_id), UInt32(prim_id))
 
     # Medium branch — defer to compute kernel that drains medium_sample_queue.
     if has_medium(work.medium_idx)
@@ -316,7 +314,7 @@ struct VPClosesthitTyped{T} end
 
         push!(medium_sample_queue, VPMediumSampleWorkItem(
             work, t_hit,
-            geom.pi, geom.n, geom.dpdu, geom.dpdv,
+            geom.pi, geom.ps, geom.n, geom.dpdu, geom.dpdv,
             ns_b, dpdus_b, dpdvs_b,
             geom.uv, mat_idx, mi,
             primitive.metadata.primitive_index, SVector{3,Float32}(bary),
@@ -364,7 +362,7 @@ struct VPClosesthitTyped{T} end
 
     hit_work = VPHitSurfaceWorkItem(
         work,
-        geom.pi, geom.n, geom.dpdu, geom.dpdv,
+        geom.pi, geom.ps, geom.n, geom.dpdu, geom.dpdv,
         ns_b, dpdus_b, dpdvs_b,
         geom.uv, resolved_mat_idx, mi,
         primitive.metadata.primitive_index, SVector{3,Float32}(bary),
