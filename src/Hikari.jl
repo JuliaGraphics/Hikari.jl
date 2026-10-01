@@ -256,20 +256,13 @@ include("pbrt/scene_builder.jl")
 # 12.8 s for the first `load_pbrt`, 0.04 s for the second, i.e. essentially all
 # of it was first-call latency rather than work.
 #
-# DEVICE-FREE: `build_hikari_scene` defaults to a CPU backend, so this
-# never touches the Vulkan driver — precompilation must not, and a device crash
-# here has poisoned pkgimages before (see Lava's `__init__`).
-#
-# A CPU-backend build cannot specialise the Lava-array half of the builder, so
-# this does not eliminate the cost, it removes the backend-independent part:
-# parsing, material and texture construction, the spectral tables and the BVH.
-# Measured: parse 0.8 s + CPU build 5.3 s up front cuts the subsequent Lava-backed
-# build from 12.8 s to 9.3 s.
+# DEVICE-FREE: the workload never touches the Vulkan driver — precompilation
+# must not, and a device crash here has poisoned pkgimages before (see Lava's
+# `__init__`). So it parses and infers, and builds nothing on a device.
 #
 # `Mantle.@setup_workload`/`@compile_workload`: PrecompileTools' macros re-exported
-# by Mantle (the latter also wrapping the frozen-kernel recording,
-# a no-op here since a CPU build compiles no SPIR-V), which is why Hikari needs
-# no direct PrecompileTools dependency.
+# by Mantle (the latter also wrapping the frozen-kernel recording), which is why
+# Hikari needs no direct PrecompileTools dependency.
 const _PRECOMPILE_SCENE = """
 Film "rgb" "integer xresolution" 16 "integer yresolution" 16
 LookAt 0 -1.2 0.6   0 0 0.5   0 0 1
@@ -289,21 +282,15 @@ include("precompile_statements.jl")
 
 Mantle.@setup_workload begin
     Mantle.@compile_workload "hikari_scene_1" begin
-        pbrt = parse_pbrt_string(_PRECOMPILE_SCENE)
-        # A CPU build specialises the scene builder on Array-backed types that a
-        # Lava-only user never calls, so it is fair to ask whether it is dead
-        # weight. Measured with the precompile statements below already in place:
-        # dropping it costs 0.96 s (load_pbrt 3.24 -> 4.08 s, render 3.70 ->
-        # 3.82 s) and saves 12.4 MB of package image. It stays, because the
-        # backend-independent half it covers -- the parser, materials, textures,
-        # spectral tables -- is on every path, and because the CPU backend is a
-        # real target: it is the reference the pbrt comparisons render against.
-        build_hikari_scene(pbrt; backend = KernelAbstractions.CPU(), samples = 1,
-                           max_depth = nothing, hw_accel = false)
-        # The CPU build cannot reach anything parameterised on `LavaBackend`,
-        # which is where the rest of the time was: ~29 s of Julia inference per
-        # session, 22 s of it in ten signatures. `precompile` infers those
-        # without running them, so this stays device-free.
+        # Parsing is backend-independent and on every path. There is no CPU
+        # build to run here any more: Mantle has no host device, so a scene can
+        # only be built on a GPU backend, and the workload stays device-free.
+        # (Measured when the CPU build was still here: it was worth 0.96 s of
+        # load_pbrt time.)
+        parse_pbrt_string(_PRECOMPILE_SCENE)
+        # What is parameterised on `LavaBackend` is where the time is: ~29 s of
+        # Julia inference per session, 22 s of it in ten signatures. `precompile`
+        # infers those without running them.
         _precompile_statements()
     end
 end

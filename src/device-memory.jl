@@ -37,6 +37,15 @@ mutable struct DeviceMemory
     backend::Any
     owned::Vector{Any}
 end
+"""
+    DeviceMemory()
+
+Memory that belongs to no device: the owner of a host-side template (a `Film`
+before `Film(backend, film)` uploads it). It holds nothing, so `free!` returns
+at once and there is no finalizer.
+"""
+DeviceMemory() = DeviceMemory(nothing, nothing, Any[])
+
 function DeviceMemory(backend)
     mem = DeviceMemory(mantle_device(backend), backend, Any[])
     # The safety net, not the plan. `free!` is still how memory goes back, at a

@@ -97,18 +97,17 @@ function Film(
         filter_table[y+1, x+1] = filter(p)
     end
 
-    # A host film's memory is pooled too, and costs nothing to forget:
-    # `Mantle.Device(HostAPI())` builds a FRESH pool per call, so the whole thing
-    # is reachable only from this film and the GC reclaims it if `free!` is
-    # never reached. On a device the pool is shared and cached, which is what
-    # `retire!` and `Mantle.reclaim!` are for.
-    mem = DeviceMemory(KA.CPU())
+    # The host film is plain arrays: it is the template `Film(backend, film)`
+    # uploads from, and Mantle has no host device to pool them in. Its
+    # `DeviceMemory` owns nothing, so `free!` on it is a no-op and the GC
+    # reclaims the arrays.
+    mem = DeviceMemory()
     pixel_size = (Int(crop_resolution[end]), Int(crop_resolution[begin]))
-    framebuffer = alloc!(mem, RGB{Float32}, pixel_size)
-    albedo = alloc!(mem, RGB{Float32}, pixel_size, RGB{Float32}(0, 0, 0))
-    normal = alloc!(mem, Vec3f, pixel_size, Vec3f(0, 0, 0))
-    depth = alloc!(mem, Float32, pixel_size, 0.0f0)
-    postprocess = alloc!(mem, RGBA{Float32}, pixel_size)
+    framebuffer = zeros(RGB{Float32}, pixel_size)
+    albedo = zeros(RGB{Float32}, pixel_size)
+    normal = zeros(Vec3f, pixel_size)
+    depth = zeros(Float32, pixel_size)
+    postprocess = zeros(RGBA{Float32}, pixel_size)
 
     return Film(
         resolution,
