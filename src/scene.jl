@@ -160,6 +160,19 @@ function Base.push!(scene::Scene, light::Light)
     return key
 end
 
+"""
+    update_light!(scene, key, light)
+
+Replace the light stored under `key` — what `push!(scene.lights, light)`
+returned — in place. The same concrete type only, as every `MultiTypeSet`
+update: a light that moves or dims is this, a different kind of light is not.
+"""
+function update_light!(scene::Scene, key::SetKey, light::Light)
+    Raycore.update!(scene.lights, key, light)
+    notify_scene_changed(scene)
+    return nothing
+end
+
 function Base.push!(scene::Scene, material::Material)
     return push!(scene, MediumInterface(material))
 end
