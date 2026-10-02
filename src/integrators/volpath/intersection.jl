@@ -355,7 +355,7 @@ end
                 ns_b, dpdus_b, dpdvs_b,
                 geom.uv, mat_idx, mi,
                 primitive.metadata.primitive_index, SVector{3,Float32}(barycentric),
-                primitive.metadata.arealight_flat_idx, Raycore.area(primitive)
+                primitive.metadata.arealight_id, Raycore.area(primitive)
             ))
         else
             push!(medium_sample_queue, VPMediumSampleWorkItem(work))
@@ -401,13 +401,18 @@ end
         wo = -ray.d
         resolved_mat_idx = resolve_mix_material(materials, mat_idx, geom.pi, wo, geom.uv)
 
-        # Null-material boundary (pbrt `Material "interface"` / nullptr): no
-        # BSDF, no direct lighting, no emission.  Push a continuation ray
-        # with the medium swap inline — depth NOT incremented (same as
-        # `evaluate_material_inner!`'s null-material skip).
-        if !Raycore.is_valid(resolved_mat_idx) && is_medium_transition(mi)
+        # Null-material surface (pbrt `Material "interface"` / nullptr): no
+        # BSDF, no direct lighting.  Push a continuation ray with the medium
+        # swap inline — depth NOT incremented (same as
+        # `evaluate_material_inner!`'s null-material skip).  An emissive one
+        # (a see-through glowing sheet) adds its emission first, as pbrt-v4's
+        # VolPath adds `isect.Le` before it skips a surface without a BSDF.
+        if !Raycore.is_valid(resolved_mat_idx)
+            push_arealight_hit!(hit_area_light_queue, primitive.metadata.arealight_id,
+                geom.pi, geom.n, geom.uv, wo, work, work.beta, work.r_u, work.r_l,
+                Raycore.area(primitive), t_hit)
             ray_d = -wo
-            new_medium = get_medium_index(mi, ray_d, geom.n)
+            new_medium = null_crossing_medium(mi, work.medium_idx, ray_d, geom.n)
             offset_dir = if dot(ray_d, geom.n) > 0f0; geom.n; else; -geom.n; end
             ray_origin = Point3f(geom.pi + offset_dir * 1f-4)
             new_ray = Raycore.Ray(o=ray_origin, d=ray_d, t_max=Inf32, time=0f0)
@@ -449,7 +454,7 @@ end
         # runs in its own kernel via `hit_area_light_queue`.
         enqueue_after_intersection!(per_material_queue, hit_area_light_queue, materials,
             hit_surface_queue, hit_work,
-            primitive.metadata.arealight_flat_idx, Raycore.area(primitive), t_hit)
+            primitive.metadata.arealight_id, Raycore.area(primitive), t_hit)
         return
     end
     # 16 alpha-bounces exhausted (extremely unlikely): ray absorbed
@@ -525,11 +530,12 @@ while opaque surfaces block it. The final contribution is computed as:
         n = vp_compute_geometric_normal(primitive)
         entering = dot(dir, n) < 0f0
 
-        # A surface only acts as a transparent boundary for shadow rays if it's a
-        # pure medium transition with no BSDF material. Surfaces with a material
-        # (e.g. dielectric glass) block shadow rays — pbrt-v4: result.hit && result.material → T_ray=0.
-        # Refracted-light contributions are captured by explicit path bouncing through the BSDF.
-        is_transmissive = is_medium_transition(mi) && !Raycore.is_valid(mi.material)
+        # A surface is a transparent boundary for shadow rays if it has no BSDF
+        # material: a medium transition, or an emissive sheet. Surfaces with a
+        # material (e.g. dielectric glass) block shadow rays — pbrt-v4:
+        # result.hit && result.material → T_ray=0. Refracted-light contributions
+        # are captured by explicit path bouncing through the BSDF.
+        is_transmissive = !Raycore.is_valid(mi.material)
 
         if !is_transmissive
             # Check alpha for stochastic pass-through (e.g. GLTF BLEND mode foliage)
@@ -579,8 +585,11 @@ while opaque surfaces block it. The final contribution is computed as:
             return (T_ray, r_u, r_l, true)  # Transmittance is zero, no point continuing
         end
 
-        # Update medium based on crossing direction
-        current_medium = get_crossing_medium(mi, entering)
+        # Update medium based on crossing direction, where the surface
+        # separates two media at all
+        if is_medium_transition(mi)
+            current_medium = get_crossing_medium(mi, entering)
+        end
 
         # Move past this surface
         ray_o = Point3f(ray_o + dir * (t_hit + 1f-4))  # Small offset to avoid self-intersection

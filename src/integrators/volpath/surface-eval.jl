@@ -626,8 +626,8 @@ emitter kernel writes only `pixel_L`; the material kernels also write
     num_infinite_lights::Int32, num_bvh_lights::Int32, num_lights::Int32,
 )
     # Le(p, n, uv, wo)
-    light_idx = flat_to_light_index(lights, Int32(work.arealight_flat_idx))
-    Le = with_index(arealight_Le, lights, light_idx,
+    light_key = arealight_key(work.arealight_id)
+    Le = with_index(arealight_Le, lights, light_key,
         lights, rgb2spec_table, work.wo, Vec3f(work.n), work.uv, work.lambda,
     )
     is_black(Le) && return
@@ -639,7 +639,7 @@ emitter kernel writes only `pixel_L`; the material kernels also write
         lightChoicePDF = bvh_pmf(
             bvh_nodes, light_to_bit_trail,
             num_infinite_lights, num_bvh_lights,
-            work.prev_intr_p, work.prev_intr_n, Int32(work.arealight_flat_idx),
+            work.prev_intr_p, work.prev_intr_n, light_flat_index(lights, light_key),
         )
         cos_theta = abs(dot(work.n, work.wo))   # wo = -ray.d → abs(dot(n, -ray.d)) = abs(dot(n, ray.d))
         lightPDF = if cos_theta > 0f0 && work.triangle_area > 0f0

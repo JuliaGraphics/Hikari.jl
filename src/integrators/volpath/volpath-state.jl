@@ -75,7 +75,7 @@ mutable struct VolPathState{Backend}
     # per-material queue push (see `enqueue_after_intersection!`); a dedicated
     # emitter kernel (`vp_handle_emitters!`) drains it between trace and
     # shade. Keeps the per-material kernels free of emission-MIS code +
-    # eliminates the corresponding fields (`arealight_flat_idx`,
+    # eliminates the corresponding fields (`arealight_id`,
     # `triangle_area`, `t_hit`, `prev_intr_p`, `prev_intr_n`) from the path
     # that surface BSDF eval traverses.
     hit_area_light_queue::WorkQueue{VPHitAreaLightWorkItem}

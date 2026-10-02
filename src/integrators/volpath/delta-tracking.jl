@@ -230,13 +230,16 @@ end
             materials, work.hit_material_idx, work.hit_pi, wo, work.hit_uv,
         )
 
-        # Null-material boundary (pbrt `Material "interface"` / nullptr):
-        # no BSDF, no DL, no emission.  Push a continuation ray with the
-        # medium swap inline (depth NOT incremented), same as the
-        # non-medium trace kernel's null-material handling.
-        if !Raycore.is_valid(resolved_mat_idx) && is_medium_transition(work.hit_interface)
+        # Null-material surface (pbrt `Material "interface"` / nullptr):
+        # no BSDF, no DL.  Push a continuation ray with the medium swap
+        # inline (depth NOT incremented), same as the non-medium trace
+        # kernel's null-material handling, emission of an emissive one first.
+        if !Raycore.is_valid(resolved_mat_idx)
+            push_arealight_hit!(hit_area_light_queue, work.hit_arealight_id,
+                work.hit_pi, work.hit_n, work.hit_uv, wo, work, beta, r_u, r_l,
+                work.hit_triangle_area, work.t_max)
             ray_d = -wo
-            new_medium = get_medium_index(work.hit_interface, ray_d, work.hit_n)
+            new_medium = null_crossing_medium(work.hit_interface, work.medium_idx, ray_d, work.hit_n)
             offset_dir = if dot(ray_d, work.hit_n) > 0f0; work.hit_n; else; -work.hit_n; end
             ray_origin = Point3f(work.hit_pi + offset_dir * 1f-4)
             new_ray = Raycore.Ray(o=ray_origin, d=ray_d, t_max=Inf32, time=0f0)
@@ -272,7 +275,7 @@ end
         )
         enqueue_after_intersection!(per_material_queue, hit_area_light_queue, materials,
             hit_surface_queue, hit_work,
-            work.hit_arealight_flat_idx, work.hit_triangle_area, work.t_max)
+            work.hit_arealight_id, work.hit_triangle_area, work.t_max)
     end
     return
 end

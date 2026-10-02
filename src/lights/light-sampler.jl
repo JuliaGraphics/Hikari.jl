@@ -329,6 +329,52 @@ The flat index counts across all typed arrays in order.
 end
 
 # ============================================================================
+# Area-light ids: how an emissive triangle names its light
+# ============================================================================
+#
+# A triangle names its light by `SetKey`, packed into the one UInt32 its
+# `TriangleMeta` has for it: type slot in the top byte, index within the slot
+# below. Not by flat index: the flat order is by type slot, so a light appended
+# to an earlier slot (a constant emitter after a textured one) renumbers every
+# light behind it, and the triangles that stored the old numbers then shine
+# with their neighbour's light. A `SetKey` never moves. 0 means "no light".
+
+const AREALIGHT_VEC_BITS = 24
+
+function pack_arealight(k::SetKey)
+    k.vec_idx < (UInt32(1) << AREALIGHT_VEC_BITS) ||
+        error("more than $(2^AREALIGHT_VEC_BITS - 1) area lights of one type")
+    k.type_idx < (UInt32(1) << (32 - AREALIGHT_VEC_BITS)) || error("too many light types")
+    return (k.type_idx << AREALIGHT_VEC_BITS) | k.vec_idx
+end
+
+@propagate_inbounds arealight_key(id::UInt32) =
+    SetKey(id >> AREALIGHT_VEC_BITS, id & ((UInt32(1) << AREALIGHT_VEC_BITS) - UInt32(1)))
+
+"""
+    light_flat_index(lights, key) -> Int32
+
+The flat index of `key` in the set as it is now: the lengths of the type slots
+before it plus its place in its own. The inverse of `flat_to_light_index`, for
+the flat-indexed light BVH tables.
+"""
+@propagate_inbounds @generated function light_flat_index(
+    lights::Raycore.StaticMultiTypeSet{Data, Textures}, key::SetKey
+) where {Data<:Tuple, Textures}
+    N = length(Data.parameters)
+    branches = [quote
+        if key.type_idx == UInt32($i)
+            return $(foldl((a, j) -> :(Int32(length(lights.data[$j])) + $a), 1:(i-1); init = :(Int32(0)))) +
+                   Int32(key.vec_idx)
+        end
+    end for i in 1:N]
+    return quote
+        $(branches...)
+        return Int32(0)
+    end
+end
+
+# ============================================================================
 # Kernel to estimate light powers in parallel
 # ============================================================================
 

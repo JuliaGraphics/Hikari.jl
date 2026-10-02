@@ -114,7 +114,7 @@ struct VPMediumSampleWorkItem
     hit_interface::MediumInterfaceIdx  # For medium transitions at surface
     hit_face_idx::UInt32              # Triangle face index (for vertex colors)
     hit_bary::SVector{3, Float32}     # Barycentric coordinates (for vertex colors)
-    hit_arealight_flat_idx::UInt32    # Area light flat index (0 = no area light)
+    hit_arealight_id::UInt32    # Area light id (`pack_arealight`, 0 = no area light)
     hit_triangle_area::Float32        # Triangle area (for PDF_Li)
 end
 
@@ -127,7 +127,7 @@ function VPMediumSampleWorkItem(
     uv::Point2f, mat_idx::SetKey,
     interface::MediumInterfaceIdx,
     face_idx::UInt32, bary::SVector{3, Float32},
-    arealight_flat_idx::UInt32, triangle_area::Float32
+    arealight_id::UInt32, triangle_area::Float32
 )
     VPMediumSampleWorkItem(
         work.ray, work.depth, t_max,
@@ -138,7 +138,7 @@ function VPMediumSampleWorkItem(
         work.medium_idx,
         true, pi, ps, n, dpdu, dpdv, ns, dpdus, dpdvs, uv, mat_idx, interface,
         face_idx, bary,
-        arealight_flat_idx, triangle_area
+        arealight_id, triangle_area
     )
 end
 
@@ -273,12 +273,12 @@ can run in its own kernel — see pbrt-v4 `EnqueueWorkAfterIntersection`
 indirect rays" in wavefront/integrator.cpp:540.
 
 Keeping emission MIS in a separate kernel means the material kernels no
-longer carry `arealight_flat_idx`, `triangle_area`, `t_hit`, `prev_intr_p`,
+longer carry `arealight_id`, `triangle_area`, `t_hit`, `prev_intr_p`,
 `prev_intr_n` along the per-material queue path — those fields only matter
 for emission MIS, which now reads them from this dedicated queue instead.
 """
 struct VPHitAreaLightWorkItem
-    arealight_flat_idx::UInt32      # 1-based index into scene.lights (>0 sentinel)
+    arealight_id::UInt32      # Area light id (`pack_arealight`, >0 sentinel)
     pi::Point3f                     # Intersection point
     n::Vec3f                        # Geometric normal
     uv::Point2f                     # Texture coordinates
@@ -399,7 +399,7 @@ struct VPHitSurfaceWorkItem
     # Medium info
     current_medium::SetKey
 
-    # No `arealight_flat_idx`, `triangle_area` or `t_hit`, as in pbrt-v4's own
+    # No `arealight_id`, `triangle_area` or `t_hit`, as in pbrt-v4's own
     # `MaterialEvalWorkItem`: they are emission-MIS-only fields, and
     # `enqueue_after_intersection!` forwards them to `VPHitAreaLightWorkItem`
     # when the hit is on an area light. Saves 12 B per queued item.

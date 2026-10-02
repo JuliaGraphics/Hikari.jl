@@ -123,7 +123,7 @@ function Base.push!(scene::Scene, mesh::GeometryBasics.Mesh,
     end
 
     # Bake a neutral per-face metadata: `medium_interface_idx = 0` marks
-    # "inherit from instance override".  `arealight_flat_idx = 0` —
+    # "inherit from instance override".  `arealight_id = 0` —
     # no per-face area lights (we already rejected emissive materials).
     gb_faces = GeometryBasics.faces(mesh)
     n_faces = length(gb_faces)
@@ -168,13 +168,28 @@ function get_emission_info(m::MediumInterface)
     return get_emission_info(m.material)
 end
 
-# Evaluate emission Le: textured or constant
-evaluate_face_emission(Le::Texture, face_uv) = evaluate_texture(Le, Point2f((Vec2f(face_uv[1]) + Vec2f(face_uv[2]) + Vec2f(face_uv[3])) / 3f0))
+# The emitted radiance a face's light stores.
+#
+# An image texture goes into the lights set ONCE, and every face's light holds
+# the same `TextureRef`, so `arealight_Le` looks the image up at the hit's uv
+# (pbrt-v4's image area light). It used to be sampled at each face centroid,
+# which turned a two-triangle emissive quad into two flat colours. `refs` maps
+# each texture to its stored ref, so the per-face path does not upload one copy
+# per face either.
+function face_emission!(refs::IdDict, lights, Le::Texture)
+    Le.isconst && return Le.constval
+    return get!(() -> Raycore.maybe_convert_field(lights, Le), refs, Le)
+end
 # Emissive stores Le as a handle; area lights are always specified as constants
 # in pbrt (`AreaLightSource "diffuse" "rgb L"`), so `const_spectrum` errors
 # loudly rather than silently registering a black light if that ever changes.
-evaluate_face_emission(Le::TexHandle, face_uv) = const_spectrum(Le)
-evaluate_face_emission(Le, face_uv) = Le
+face_emission!(refs::IdDict, lights, Le::TexHandle) = const_spectrum(Le)
+face_emission!(refs::IdDict, lights, Le) = Le
+
+# A constant that emits nothing registers no light. An image might be dark at
+# one face and bright at the next, so every face of it keeps its light.
+emits_nothing(Le::RGBSpectrum) = luminance(Le) < 1f-4
+emits_nothing(Le) = false
 
 # ============================================================================
 # build_face_meta — constructs TriangleMeta per face, registers area lights
@@ -229,9 +244,8 @@ end
 # `RayDemo/Materials/materials.pbrt`.
 
 """Append the collected `lights`, then stamp each emissive face's `TriangleMeta`
-with the light's flat index. `emissive_faces[k]` is the face that produced the
-k-th light, and the flat index is the set's length before the append plus k —
-`Raycore.append!` assigns exactly that order.
+with its light's id (`pack_arealight` of the key `Raycore.append!` returns for
+it). `emissive_faces[k]` is the face that produced the k-th light.
 
 `face_material` is the material index for a face: one value shared by the whole
 mesh, or one per face."""
@@ -240,11 +254,10 @@ face_material(mat_indices::AbstractVector{UInt32}, face_i::Int) = mat_indices[fa
 
 function flush_face_area_lights!(scene, face_meta, lights, emissive_faces, mat)
     isempty(lights) && return face_meta
-    base = length(scene.lights)
-    append!(scene.lights, lights)
+    keys = append!(scene.lights, lights)
     for (k, face_i) in pairs(emissive_faces)
         face_meta[face_i] = TriangleMeta(face_material(mat, face_i),
-                                         UInt32(face_i), UInt32(base + k))
+                                         UInt32(face_i), pack_arealight(keys[k]))
     end
     return face_meta
 end
@@ -256,9 +269,8 @@ function register_face_area_lights!(scene, mesh, face_meta, mat_idx::UInt32, emi
     has_uv = hasproperty(mesh, :uv)
     # Every face of this mesh shares `emission`, so the emitted-radiance type is
     # fixed and the staging vector can be concrete.
-    Le_type = typeof(evaluate_face_emission(emission.Le,
-                                            SVector(Point2f(0f0), Point2f(1f0, 0f0), Point2f(1f0, 1f0))))
-    lights = DiffuseAreaLight{Le_type}[]
+    Le = face_emission!(IdDict(), scene.lights, emission.Le)
+    lights = DiffuseAreaLight{typeof(Le)}[]
     emissive_faces = Int[]
 
     for (i, face) in enumerate(gb_faces)
@@ -269,8 +281,7 @@ function register_face_area_lights!(scene, mesh, face_meta, mat_idx::UInt32, emi
             SVector(Point2f(0), Point2f(1, 0), Point2f(1, 1))
         end
 
-        Le = evaluate_face_emission(emission.Le, face_uv)
-        if luminance(Le) < 1f-4
+        if emits_nothing(Le)
             face_meta[i] = TriangleMeta(mat_idx, UInt32(i), UInt32(0))
             continue
         end
@@ -304,6 +315,7 @@ function register_face_area_lights!(scene, mesh, face_meta,
     # not fixed across the mesh; `Raycore.append!` groups by stored type anyway.
     lights = DiffuseAreaLight[]
     emissive_faces = Int[]
+    refs = IdDict()
 
     for (i, face) in enumerate(gb_faces)
         emission = get_emission_info(materials[i])
@@ -319,8 +331,8 @@ function register_face_area_lights!(scene, mesh, face_meta,
             SVector(Point2f(0), Point2f(1, 0), Point2f(1, 1))
         end
 
-        Le = evaluate_face_emission(emission.Le, face_uv)
-        if luminance(Le) < 1f-4
+        Le = face_emission!(refs, scene.lights, emission.Le)
+        if emits_nothing(Le)
             face_meta[i] = TriangleMeta(mat_indices[i], UInt32(i), UInt32(0))
             continue
         end

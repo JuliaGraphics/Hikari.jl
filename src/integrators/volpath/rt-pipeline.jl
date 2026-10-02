@@ -145,7 +145,7 @@ end
             ns_b, dpdus_b, dpdvs_b,
             geom.uv, mat_idx, mi,
             primitive.metadata.primitive_index, SVector{3,Float32}(bary),
-            primitive.metadata.arealight_flat_idx, Raycore.area(primitive)
+            primitive.metadata.arealight_id, Raycore.area(primitive)
         ))
         return nothing
     end
@@ -166,10 +166,13 @@ end
     wo = -work.ray.d
     resolved_mat_idx = resolve_mix_material(materials, mat_idx, geom.pi, wo, geom.uv)
 
-    # Null-material boundary.
-    if !Raycore.is_valid(resolved_mat_idx) && is_medium_transition(mi)
+    # Null-material surface: emission first (an emissive sheet), then pass.
+    if !Raycore.is_valid(resolved_mat_idx)
+        push_arealight_hit!(hit_area_light_queue, primitive.metadata.arealight_id,
+            geom.pi, geom.n, geom.uv, wo, work, work.beta, work.r_u, work.r_l,
+            Raycore.area(primitive), t_hit)
         ray_d = -wo
-        new_medium = get_medium_index(mi, ray_d, geom.n)
+        new_medium = null_crossing_medium(mi, work.medium_idx, ray_d, geom.n)
         offset_dir = if dot(ray_d, geom.n) > 0f0; geom.n; else; -geom.n; end
         ray_origin = Point3f(geom.pi + offset_dir * 1f-4)
         new_ray = Raycore.Ray(o=ray_origin, d=ray_d, t_max=Inf32, time=0f0)
@@ -205,7 +208,7 @@ end
 
     enqueue_after_intersection!(per_material_queue, hit_area_light_queue, materials,
         hit_surface_queue, hit_work,
-        primitive.metadata.arealight_flat_idx, Raycore.area(primitive), t_hit)
+        primitive.metadata.arealight_id, Raycore.area(primitive), t_hit)
     return nothing
 end
 
@@ -260,6 +263,58 @@ end
 #   3. `vp_shade_material_kernel!`   — DL + BSDF sample + RR + continuation
 # so the chit fully shades the hit in one pass, eliminating the per-material
 # / emitter post-hoc indirect dispatches.
+
+"""
+    accumulate_arealight_hit!(pixel_L, lights, rgb2spec_table, bvh_nodes,
+        light_to_bit_trail, num_infinite_lights, num_bvh_lights,
+        arealight_id, n, uv, wo, path, beta, r_u, r_l, triangle_area, t_hit)
+
+Add the emission of a hit on an area light (`arealight_id > 0`) to the
+pixel, MIS-weighted against light sampling unless the path is a camera ray or
+came off a specular bounce. `path` is the ray's work item (wavelengths, depth,
+previous interaction, pixel). The per-material closest-hit does this inline
+instead of queueing a `VPHitAreaLightWorkItem`.
+"""
+@propagate_inbounds function accumulate_arealight_hit!(
+    pixel_L, lights, rgb2spec_table,
+    bvh_nodes, light_to_bit_trail, num_infinite_lights::Int32, num_bvh_lights::Int32,
+    arealight_id::UInt32, n, uv::Point2f, wo::Vec3f,
+    path, beta::SpectralRadiance, r_u::SpectralRadiance, r_l::SpectralRadiance,
+    triangle_area::Float32, t_hit::Float32,
+)
+    arealight_id > UInt32(0) || return nothing
+    light_key = arealight_key(arealight_id)
+    Le = with_index(arealight_Le, lights, light_key,
+        lights, rgb2spec_table, wo, Vec3f(n), uv, path.lambda,
+    )
+    is_black(Le) && return nothing
+    contribution = beta * Le
+    final_contrib = if path.depth == Int32(0) || path.specular_bounce
+        contribution / average(r_u)
+    else
+        lightChoicePDF = bvh_pmf(
+            bvh_nodes, light_to_bit_trail,
+            num_infinite_lights, num_bvh_lights,
+            path.prev_intr_p, path.prev_intr_n, light_flat_index(lights, light_key),
+        )
+        cos_theta = abs(dot(Vec3f(n), wo))
+        lightPDF = if cos_theta > 0f0 && triangle_area > 0f0
+            pdf_li = (t_hit * t_hit) / (cos_theta * triangle_area)
+            lightChoicePDF * pdf_li
+        else
+            0f0
+        end
+        mis_denom = average(r_u + r_l * lightPDF)
+        if mis_denom > 1f-10
+            contribution / mis_denom
+        else
+            contribution / average(r_u)
+        end
+    end
+    base_idx = (path.pixel_index - Int32(1)) * Int32(4)
+    accumulate_spectrum!(pixel_L, base_idx, final_contrib)
+    return nothing
+end
 
 struct VPClosesthitTyped{T} end
 
@@ -318,7 +373,7 @@ struct VPClosesthitTyped{T} end
             ns_b, dpdus_b, dpdvs_b,
             geom.uv, mat_idx, mi,
             primitive.metadata.primitive_index, SVector{3,Float32}(bary),
-            primitive.metadata.arealight_flat_idx, Raycore.area(primitive)
+            primitive.metadata.arealight_id, Raycore.area(primitive)
         ))
         return nothing
     end
@@ -332,10 +387,14 @@ struct VPClosesthitTyped{T} end
     wo = -work.ray.d
     resolved_mat_idx = resolve_mix_material(materials, mat_idx, geom.pi, wo, geom.uv)
 
-    # Null-material boundary (medium transition surface).
-    if !Raycore.is_valid(resolved_mat_idx) && is_medium_transition(mi)
+    # Null-material surface: emission first (an emissive sheet), then pass.
+    if !Raycore.is_valid(resolved_mat_idx)
+        accumulate_arealight_hit!(pixel_L, lights, rgb2spec_table,
+            bvh_nodes, light_to_bit_trail, num_infinite_lights, num_bvh_lights,
+            primitive.metadata.arealight_id, geom.n, geom.uv, wo,
+            work, work.beta, work.r_u, work.r_l, Raycore.area(primitive), t_hit)
         ray_d = -wo
-        new_medium = get_medium_index(mi, ray_d, geom.n)
+        new_medium = null_crossing_medium(mi, work.medium_idx, ray_d, geom.n)
         offset_dir = if dot(ray_d, geom.n) > 0f0; geom.n; else; -geom.n; end
         ray_origin = Point3f(geom.pi + offset_dir * 1f-4)
         new_ray = Raycore.Ray(o=ray_origin, d=ray_d, t_max=Inf32, time=0f0)
@@ -369,42 +428,10 @@ struct VPClosesthitTyped{T} end
     )
 
     # Area-light emission MIS (replaces vp_handle_emitters_kernel for this hit).
-    arealight_flat_idx = primitive.metadata.arealight_flat_idx
-    if arealight_flat_idx > UInt32(0)
-        light_idx = flat_to_light_index(lights, Int32(arealight_flat_idx))
-        Le = with_index(arealight_Le, lights, light_idx,
-            lights, rgb2spec_table, wo, Vec3f(hit_work.n), hit_work.uv, hit_work.lambda,
-        )
-        if !is_black(Le)
-            contribution = hit_work.beta * Le
-            final_contrib = if hit_work.depth == Int32(0) || hit_work.specular_bounce
-                contribution / average(hit_work.r_u)
-            else
-                lightChoicePDF = bvh_pmf(
-                    bvh_nodes, light_to_bit_trail,
-                    num_infinite_lights, num_bvh_lights,
-                    hit_work.prev_intr_p, hit_work.prev_intr_n, Int32(arealight_flat_idx),
-                )
-                cos_theta = abs(dot(hit_work.n, wo))
-                triangle_area = Raycore.area(primitive)
-                lightPDF = if cos_theta > 0f0 && triangle_area > 0f0
-                    pdf_li = (t_hit * t_hit) / (cos_theta * triangle_area)
-                    lightChoicePDF * pdf_li
-                else
-                    0f0
-                end
-                r_l = hit_work.r_l * lightPDF
-                mis_denom = average(hit_work.r_u + r_l)
-                if mis_denom > 1f-10
-                    contribution / mis_denom
-                else
-                    contribution / average(hit_work.r_u)
-                end
-            end
-            base_idx = (hit_work.pixel_index - Int32(1)) * Int32(4)
-            accumulate_spectrum!(pixel_L, base_idx, final_contrib)
-        end
-    end
+    accumulate_arealight_hit!(pixel_L, lights, rgb2spec_table,
+        bvh_nodes, light_to_bit_trail, num_infinite_lights, num_bvh_lights,
+        primitive.metadata.arealight_id, hit_work.n, hit_work.uv, wo,
+        hit_work, hit_work.beta, hit_work.r_u, hit_work.r_l, Raycore.area(primitive), t_hit)
 
     # Per-material shading. The SBT routes by the MESH's material type T.
     # For concrete materials, `resolved_mat_idx` still points into T's slot

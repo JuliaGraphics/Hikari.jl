@@ -126,9 +126,15 @@ return an invalid `SetKey()`, so the existing `!is_valid(mi.material)` checks in
 the primary- and shadow-ray paths identify the surface as a null interface and
 skip BSDF sampling.
 
+A null surface with `emission` is a see-through emitter: its emission is added
+where a ray crosses it, then the ray (and every shadow ray) passes on. pbrt-v4
+ignores area lights on `interface` materials; this is what a glowing sheet
+floating in a scene needs.
+
 Usage:
 ```julia
 push!(scene, bounding_mesh, MediumInterface(NullMaterial(); inside=medium))
+glow = MediumInterface(NullMaterial(); emission=Emissive(Le=Texture(img), two_sided=true))
 ```
 """
 struct NullMaterial <: Material end

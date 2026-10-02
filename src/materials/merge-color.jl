@@ -65,6 +65,9 @@ function merge_color_with_material(color_tex, material::CoatedConductor)
     material
 end
 
+# No surface, so nothing for a plot colour to tint.
+merge_color_with_material(color_tex, material::NullMaterial) = material
+
 function merge_color_with_material(color_tex, material::MediumInterface)
     merged_inner = merge_color_with_material(color_tex, material.material)
     MediumInterface(merged_inner; inside=material.inside, outside=material.outside, emission=material.emission)

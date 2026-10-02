@@ -11,7 +11,7 @@ Per-triangle metadata baked into the TLAS.
 struct TriangleMeta
     medium_interface_idx::UInt32  # Index into scene.media_interfaces
     primitive_index::UInt32       # Face index within the mesh (1-based)
-    arealight_flat_idx::UInt32    # Flat index into scene.lights (0 = no area light)
+    arealight_id::UInt32          # Packed SetKey of its light in scene.lights, 0 = none (`pack_arealight`)
 end
 
 # Scene stores lights, accelerator, materials, and media directly.

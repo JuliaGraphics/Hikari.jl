@@ -198,7 +198,7 @@ end
     enqueue_after_intersection!(per_material_queue, hit_area_light_queue,
                                 materials, hit_surface_queue,
                                 hit::VPHitSurfaceWorkItem,
-                                arealight_flat_idx::UInt32,
+                                arealight_id::UInt32,
                                 triangle_area::Float32, t_hit::Float32)
 
 Mirrors pbrt-v4's `EnqueueWorkAfterIntersection`
@@ -206,13 +206,13 @@ Mirrors pbrt-v4's `EnqueueWorkAfterIntersection`
 need two parallel pushes:
 
 * If the hit triangle is part of an area light
-  (`arealight_flat_idx > 0`), push a `VPHitAreaLightWorkItem` so the
+  (`arealight_id > 0`), push a `VPHitAreaLightWorkItem` so the
   dedicated emitter kernel can run MIS for the indirect-ray hit.
 * Always push the hit into `hit_surface_queue` and its index into the
   per-material typed queue — the material kernel will sample direct
   lighting + continuation rays.
 
-`arealight_flat_idx`, `triangle_area`, `t_hit` are passed as separate
+`arealight_id`, `triangle_area`, `t_hit` are passed as separate
 arguments rather than stored on `VPHitSurfaceWorkItem` because they're
 emission-MIS-only — pbrt-v4's `MaterialEvalWorkItem` doesn't carry them
 either.
@@ -223,23 +223,52 @@ either.
     materials,
     hit_surface_queue::WorkQueue{VPHitSurfaceWorkItem},
     hit::VPHitSurfaceWorkItem,
-    arealight_flat_idx::UInt32,
+    arealight_id::UInt32,
     triangle_area::Float32,
     t_hit::Float32,
 )
-    if arealight_flat_idx > UInt32(0)
-        wo = -hit.ray.d
-        push!(hit_area_light_queue, VPHitAreaLightWorkItem(
-            arealight_flat_idx,
-            hit.pi, hit.n, hit.uv, wo,
-            hit.lambda, hit.depth,
-            hit.beta, hit.r_u, hit.r_l,
-            hit.prev_intr_p, hit.prev_intr_n,
-            hit.specular_bounce,
-            hit.pixel_index,
-            triangle_area, t_hit,
-        ))
-    end
+    push_arealight_hit!(hit_area_light_queue, arealight_id,
+        hit.pi, hit.n, hit.uv, -hit.ray.d, hit, hit.beta, hit.r_u, hit.r_l,
+        triangle_area, t_hit)
     push_typed_hit!(per_material_queue, materials, hit_surface_queue, hit)
     return nothing
 end
+
+"""
+    push_arealight_hit!(hit_area_light_queue, arealight_id, pi, n, uv, wo,
+                        path, beta, r_u, r_l, triangle_area, t_hit)
+
+Queue the emission of a hit on an area light (`arealight_id > 0`) for
+`vp_handle_emitters_kernel!`. `path` is the work item the ray belongs to; its
+wavelengths, depth, previous interaction and pixel are what the MIS needs.
+Also called for emissive null-material surfaces, which queue their emission and
+let the ray pass.
+"""
+@propagate_inbounds function push_arealight_hit!(
+    hit_area_light_queue::WorkQueue{VPHitAreaLightWorkItem},
+    arealight_id::UInt32, pi::Point3f, n::Vec3f, uv::Point2f, wo::Vec3f,
+    path, beta::SpectralRadiance, r_u::SpectralRadiance, r_l::SpectralRadiance,
+    triangle_area::Float32, t_hit::Float32,
+)
+    arealight_id > UInt32(0) || return nothing
+    push!(hit_area_light_queue, VPHitAreaLightWorkItem(
+        arealight_id,
+        pi, n, uv, wo,
+        path.lambda, path.depth,
+        beta, r_u, r_l,
+        path.prev_intr_p, path.prev_intr_n,
+        path.specular_bounce,
+        path.pixel_index,
+        triangle_area, t_hit,
+    ))
+    return nothing
+end
+
+"""
+The medium a ray is in after crossing a null-material surface. Only a surface
+that separates two media swaps it: a null surface with the same medium on both
+sides (an emissive sheet, say) leaves the ray in the medium it was in, where
+`get_medium_index` would answer that shared medium, vacuum for a sheet in fog.
+"""
+@propagate_inbounds null_crossing_medium(mi, current::SetKey, d, n) =
+    is_medium_transition(mi) ? get_medium_index(mi, d, n) : current
