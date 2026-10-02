@@ -337,6 +337,16 @@ end
 # ============================================================================
 
 """
+    sunsky_sun_rgb(intensity) -> RGB{Float32}
+
+The sun of a `sunsky_to_envlight` sky: an RGB irradiance with the usual RGB
+light normalisation, slightly warm, at a sun to sky illuminance ratio of about
+5:1 for clear conditions. Exposed so a rasteriser standing in for the tracer
+lights with the same sun.
+"""
+sunsky_sun_rgb(intensity::Real) = (s = 5f0 * Float32(intensity); RGB{Float32}(s, 0.95f0 * s, 0.85f0 * s))
+
+"""
     sunsky_to_envlight(; direction, intensity=1f0, turbidity=2.5f0, ...) -> (EnvironmentLight, SunLight)
 
 Pre-bake the Hosek-Wilkie spectral sky model into an equal-area EnvironmentMap and create
@@ -425,10 +435,7 @@ function sunsky_to_envlight(;
 
     # Sun as separate delta directional light
     # SunLight direction = direction light TRAVELS (away from sun), so negate
-    # Sun:sky illuminance ratio ≈ 5:1 for clear conditions
-    sun_scale = 5f0 * intensity
-    sun_rgb = RGB{Float32}(sun_scale, sun_scale * 0.95f0, sun_scale * 0.85f0)
-    sun_light = SunLight(sun_rgb, -dir)
+    sun_light = SunLight(sunsky_sun_rgb(intensity), -dir)
 
     return env_light, sun_light
 end
