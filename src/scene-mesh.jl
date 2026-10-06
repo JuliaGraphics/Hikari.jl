@@ -104,22 +104,13 @@ function Base.push!(scene::Scene, mesh::GeometryBasics.Mesh,
     # water mark of instance count.
     n = length(materials)
     if reuse_mi_indices === nothing
-        # Push all materials; MultiTypeSet's dirty flag absorbs the batch and
-        # the next `get_static` read triggers a single rebuild.
-        mi_indices = Vector{UInt32}(undef, n)
-        for i in 1:n
-            mi_indices[i] = push!(scene, MediumInterface(materials[i]))
-        end
+        mi_indices = push_interfaces!(scene, materials)
     else
         n_reuse = min(n, length(reuse_mi_indices))
         mi_indices = Vector{UInt32}(undef, n)
-        for i in 1:n_reuse
-            mi_indices[i] = reuse_mi_indices[i]
-            Hikari.update_material!(scene, mi_indices[i], materials[i])
-        end
-        for i in (n_reuse+1):n
-            mi_indices[i] = push!(scene, MediumInterface(materials[i]))
-        end
+        mi_indices[1:n_reuse] .= view(reuse_mi_indices, 1:n_reuse)
+        update_materials!(scene, view(mi_indices, 1:n_reuse), view(materials, 1:n_reuse))
+        mi_indices[(n_reuse+1):n] .= push_interfaces!(scene, view(materials, (n_reuse+1):n))
     end
 
     # Bake a neutral per-face metadata: `medium_interface_idx = 0` marks
@@ -134,6 +125,58 @@ function Base.push!(scene::Scene, mesh::GeometryBasics.Mesh,
                          instance_ids=mi_indices)
     # One SceneHandle per instance, all sharing the same accel handle.
     return [SceneHandle(scene, mi_indices[i], accel_handle) for i in eachindex(mi_indices)]
+end
+
+"""
+    push_interfaces!(scene, materials) -> Vector{UInt32}
+
+`push!(scene, MediumInterface(m))` for every `m` in `materials`, as one batch.
+
+One material object is one interface, however many instances name it (a
+meshscatter in one colour). The interfaces already in the scene are looked up
+in one host copy of `scene.media_interfaces` and the new ones appended in one
+`append!`. Done one at a time, each push ran a device `findfirst` over the
+whole array and grew it by one element, which is quadratic in the instance
+count: 20k instances held 2.7 GB of GPU memory, and 100k could not be built.
+"""
+function push_interfaces!(scene::Scene, materials::AbstractVector{<:Material})
+    keys = IdDict{Material, MediumInterfaceIdx}()
+    wanted = map(m -> get!(() -> interface_key(scene, MediumInterface(m)), keys, m), materials)
+    # The first index of an equal interface, as `findfirst` gave.
+    index = Dict{MediumInterfaceIdx, UInt32}()
+    for (i, mi) in enumerate(Array(scene.media_interfaces))
+        get!(index, mi, UInt32(i))
+    end
+    n0 = length(scene.media_interfaces)
+    fresh = MediumInterfaceIdx[]
+    idx = map(wanted) do mi
+        get!(index, mi) do
+            push!(fresh, mi)
+            UInt32(n0 + length(fresh))
+        end
+    end
+    isempty(fresh) || append!(scene.media_interfaces, fresh)
+    notify_scene_changed(scene)
+    return idx
+end
+
+"""
+    update_materials!(scene, indices, materials)
+
+`update_material!(scene, indices[i], materials[i])` for every `i`, reading
+`scene.media_interfaces` once instead of once per instance.
+"""
+function update_materials!(scene::Scene, indices::AbstractVector{UInt32}, materials::AbstractVector{<:Material})
+    isempty(indices) && return
+    mis = Array(scene.media_interfaces)
+    # Instances sharing one interface (one material for all) update it once.
+    done = Dict{UInt32, Material}()
+    for (idx, m) in zip(indices, materials)
+        get(done, idx, nothing) === m && continue
+        update_material!(scene, mis[idx], m)
+        done[idx] = m
+    end
+    return
 end
 
 # Per-face materials (for MetaMesh with multiple materials)

@@ -185,7 +185,14 @@ end
 
 Base.push!(scene::Scene, ::Nothing) = SetKey()
 
-function Base.push!(scene::Scene, medium::MediumInterface)
+"""
+    interface_key(scene, medium::MediumInterface) -> MediumInterfaceIdx
+
+Push `medium`'s material and both media and return the keys they got: what
+`scene.media_interfaces` stores for it. `push!(scene, ::MediumInterface)` and
+the batched `push_interfaces!` both build interfaces with this.
+"""
+function interface_key(scene::Scene, medium::MediumInterface)
     mat_idx = push!(scene.materials, resolve_material(scene, medium.material))
     # Record the materials-set SetKey of the inner material from this push so
     # `push!(scene, mesh, ::Material)` can read it back without doing a GPU
@@ -194,9 +201,11 @@ function Base.push!(scene::Scene, medium::MediumInterface)
     # collapse to bare scalars), so this is the only place that knows the
     # canonical type_idx for SBT routing.
     _LAST_MAT_SETKEY[] = mat_idx
-    inside_idx = push!(scene, medium.inside)
-    outside_idx = push!(scene, medium.outside)
-    mi = MediumInterfaceIdx(mat_idx, inside_idx, outside_idx)
+    return MediumInterfaceIdx(mat_idx, push!(scene, medium.inside), push!(scene, medium.outside))
+end
+
+function Base.push!(scene::Scene, medium::MediumInterface)
+    mi = interface_key(scene, medium)
     idx = findfirst(x -> mi === x, scene.media_interfaces)
     if idx === nothing
         @allowscalar push!(scene.media_interfaces, mi)
@@ -227,16 +236,17 @@ Invariants:
   the caller is responsible for pairing the release with a `sync!` call:
   this function does not force one.
 """
-function update_material!(scene::Scene, idx::UInt32, new_medium::Medium)
-    mi = @allowscalar scene.media_interfaces[idx]
+update_material!(scene::Scene, idx::UInt32, new) =
+    update_material!(scene, (@allowscalar scene.media_interfaces[idx]), new)
+
+function update_material!(scene::Scene, mi::MediumInterfaceIdx, new_medium::Medium)
     Raycore.update!(scene.media, mi.inside, new_medium)
     # In-place for the common case, but a texture slot can be reallocated on a
     # size mismatch — and a plan names the arrays it was packed with. Drop them.
     notify_scene_changed(scene)
 end
 
-function update_material!(scene::Scene, idx::UInt32, new_material::Material)
-    mi = @allowscalar scene.media_interfaces[idx]
+function update_material!(scene::Scene, mi::MediumInterfaceIdx, new_material::Material)
     Raycore.update!(scene.materials, mi.material, new_material)
     notify_scene_changed(scene)
 end
@@ -251,9 +261,7 @@ end
 # slots independently — each guarded by `Raycore.is_valid` so invalid /
 # unpushed slots (NullMaterial, `inside=nothing`, `outside=nothing`) are
 # silent no-ops.
-function update_material!(scene::Scene, idx::UInt32,
-                          new_mi::MediumInterface)
-    mi = @allowscalar scene.media_interfaces[idx]
+function update_material!(scene::Scene, mi::MediumInterfaceIdx, new_mi::MediumInterface)
     Raycore.is_valid(mi.material) &&
         Raycore.update!(scene.materials, mi.material, new_mi.material)
     if new_mi.inside !== nothing && Raycore.is_valid(mi.inside)
