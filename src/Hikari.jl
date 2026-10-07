@@ -260,9 +260,9 @@ include("pbrt/scene_builder.jl")
 # must not, and a device crash here has poisoned pkgimages before (see Lava's
 # `__init__`). So it parses and infers, and builds nothing on a device.
 #
-# `Mantle.@setup_workload`/`@compile_workload`: PrecompileTools' macros re-exported
-# by Mantle (the latter also wrapping the frozen-kernel recording), which is why
-# Hikari needs no direct PrecompileTools dependency.
+# `Mantle.@setup_workload`/`@compile_workload`: PrecompileTools' macros
+# re-exported by Mantle, which is why Hikari needs no direct PrecompileTools
+# dependency.
 const _PRECOMPILE_SCENE = """
 Film "rgb" "integer xresolution" 16 "integer yresolution" 16
 LookAt 0 -1.2 0.6   0 0 0.5   0 0 1
@@ -281,7 +281,7 @@ Shape "trianglemesh"
 include("precompile_statements.jl")
 
 Mantle.@setup_workload begin
-    Mantle.@compile_workload "hikari_scene_1" begin
+    Mantle.@compile_workload begin
         # Parsing is backend-independent and on every path. There is no CPU
         # build to run here any more: Mantle has no host device, so a scene can
         # only be built on a GPU backend, and the workload stays device-free.

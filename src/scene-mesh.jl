@@ -229,6 +229,52 @@ function update_material!(scene::Scene, handle::SceneHandle, material::Material)
     return nothing
 end
 
+"""
+    Raycore.set_visible!(scene, handles, visible::Bool, materials)
+
+Hide or show pushed meshes: `handles` (a `SceneHandle` or several) with their
+`materials`. No ray hits a hidden mesh and its face lights emit nothing; its
+geometry, material slot and light slots stay where they are, so showing it again
+rebuilds nothing. A mesh's material is what its face lights get their emission
+back from when it is shown; only a mesh with face lights reads it.
+
+Instances that share one geometry handle (a `meshscatter`) are hidden once.
+"""
+function Raycore.set_visible!(scene::Scene, handles::AbstractVector{SceneHandle}, visible::Bool, materials)
+    for geometry in unique(h.geometry for h in handles)
+        Raycore.set_visible!(scene.accel, geometry, visible) ||
+            throw(ArgumentError("set_visible!: a mesh is not in the scene's acceleration structure"))
+    end
+    for (handle, material) in zip(handles, materials)
+        isempty(handle.area_lights) && continue
+        visible ? update_material!(scene, handle, material) :
+                  disable_face_area_lights!(scene, handle.area_lights)
+    end
+    notify_scene_changed(scene)
+    return nothing
+end
+
+Raycore.set_visible!(scene::Scene, handle::SceneHandle, visible::Bool, material) =
+    Raycore.set_visible!(scene, [handle], visible, (material,))
+
+"""
+    delete!(scene, handle::SceneHandle) -> Bool
+
+Take a pushed mesh out of the scene: its geometry, and the light of its emitting
+faces. Deleting only the geometry left the lights in the scene's light set, so a
+deleted lamp went on lighting the room. The light slots are switched off rather
+than freed; a rebuild that is handed them back (`area_lights`) reuses them.
+Returns whether the geometry was still there: instances sharing one (a
+`meshscatter`) are taken out by the first of their handles, and each handle's
+lights go off regardless.
+"""
+function Base.delete!(scene::Scene, handle::SceneHandle)
+    deleted = delete!(scene.accel, handle.geometry)
+    disable_face_area_lights!(scene, handle.area_lights)
+    notify_scene_changed(scene)
+    return deleted
+end
+
 # ============================================================================
 # Emission dispatch — extract emission info from material
 # ============================================================================
