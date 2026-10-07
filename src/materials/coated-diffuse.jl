@@ -753,7 +753,7 @@ channel: the raven demo model paints its feather shapes there — 38% of its map
 fully transparent and 30% of its triangles are partly cut — so giving the bird a
 coat turned every feather card back into a solid quad.
 """
-@propagate_inbounds function get_surface_alpha(mat::CoatedDiffuse, textures, uv::Point2f)
-    refl = eval_handle_spectrum(textures, mat.reflectance, TextureFilterContext(uv))
+@propagate_inbounds function get_surface_alpha(mat::CoatedDiffuse, textures, tfc::TextureFilterContext)
+    refl = eval_handle_spectrum(textures, mat.reflectance, tfc)
     return get_alpha(refl)
 end
