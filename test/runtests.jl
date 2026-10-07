@@ -58,6 +58,7 @@ const TEST_FILES = [
     "denoise.jl",
     "test_aux_alignment.jl",
     "test_scene_mesh_reuse.jl",
+    "test_mesh_emission_update.jl",
     "test_caching_gc_correctness.jl",
     "test_texture_wrap.jl",
     "test_blackbody_emitter_scale.jl",

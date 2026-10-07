@@ -35,7 +35,7 @@ function Base.push!(scene::Scene, mesh::GeometryBasics.Mesh, material::Material;
     mesh_with_meta = GeometryBasics.mesh(mesh; face_meta=GeometryBasics.per_face(face_meta, mesh))
     sbt_offset = _last_pushed_sbt_offset()
     handle = push!(scene.accel, mesh_with_meta, transform; sbt_offset=sbt_offset)
-    return SceneHandle(scene, mat_idx, handle)
+    return SceneHandle(scene, mat_idx, handle, mesh_area_lights(face_meta))
 end
 
 """
@@ -51,8 +51,8 @@ instead of growing `scene.materials` and `scene.media_interfaces` on every
 frame.
 """
 function Base.push!(scene::Scene, mesh::GeometryBasics.Mesh, mat_idx::UInt32,
-                    material::Material; transform::Mat4f=Mat4f(I))
-    face_meta = build_face_meta(scene, mesh, mat_idx, material)
+                    material::Material; transform::Mat4f=Mat4f(I), area_lights=SetKey[])
+    face_meta = build_face_meta(scene, mesh, mat_idx, material; area_lights)
     mesh_with_meta = GeometryBasics.mesh(mesh; face_meta=GeometryBasics.per_face(face_meta, mesh))
     # The interface already names the stored material and therefore its SBT
     # type slot. Converting the raw material just to discover that type stores
@@ -60,7 +60,7 @@ function Base.push!(scene::Scene, mesh::GeometryBasics.Mesh, mat_idx::UInt32,
     mi = @allowscalar scene.media_interfaces[mat_idx]
     sbt_offset = Raycore.is_valid(mi.material) ? mi.material.type_idx - UInt32(1) : UInt32(0)
     handle = push!(scene.accel, mesh_with_meta, transform; sbt_offset=sbt_offset)
-    return SceneHandle(scene, mat_idx, handle)
+    return SceneHandle(scene, mat_idx, handle, mesh_area_lights(face_meta))
 end
 
 """
@@ -195,7 +195,38 @@ function Base.push!(scene::Scene, mesh::GeometryBasics.Mesh, materials::Abstract
     mesh_with_meta = GeometryBasics.mesh(mesh; face_meta=GeometryBasics.per_face(face_meta, mesh))
     handle = push!(scene.accel, mesh_with_meta, transform)
     # Return SceneHandle with first material index (for compatibility)
-    return SceneHandle(scene, first(mat_indices), handle)
+    return SceneHandle(scene, first(mat_indices), handle, mesh_area_lights(face_meta))
+end
+
+mesh_area_lights(face_meta) = unique([arealight_key(m.arealight_id) for m in face_meta if m.arealight_id != 0])
+
+"""
+    update_material!(scene, handle::SceneHandle, material)
+
+Update a retained mesh's surface/media and its existing face emitters. Sampled
+emission reuses the lights' texture slots; shared textures are uploaded once.
+The geometry and acceleration structures are unchanged. Adding an emitter to a
+mesh without emitter slots requires rebuilding that mesh.
+"""
+function update_material!(scene::Scene, handle::SceneHandle, material::Material)
+    emission = get_emission_info(material)
+    if isempty(handle.area_lights)
+        emission === nothing || error("adding mesh emission requires rebuilding its face emitters")
+        return update_material!(scene, handle.interface, material)
+    end
+    lights = map(handle.area_lights) do key
+        old = scene.lights[key]
+        Le = emission === nothing ? old.Le :
+            emission.Le isa Texture && !emission.Le.isconst ? emission.Le :
+            face_emission!(IdDict(), scene.lights, emission.Le)
+        DiffuseAreaLight(old.vertices, old.normal, old.area, old.uv, Le,
+            emission === nothing ? 0f0 : emission.scale,
+            emission === nothing ? old.two_sided : emission.two_sided)
+    end
+    update_face_area_lights!(scene, handle.area_lights, lights)
+    update_material!(scene, handle.interface, material)
+    notify_lights_changed(scene)
+    return nothing
 end
 
 # ============================================================================
@@ -239,7 +270,7 @@ emits_nothing(Le) = false
 # ============================================================================
 
 # Single material
-function build_face_meta(scene, mesh, mat_idx::UInt32, material::Material)
+function build_face_meta(scene, mesh, mat_idx::UInt32, material::Material; area_lights=SetKey[])
     gb_faces = GeometryBasics.faces(mesh)
     n_faces = length(gb_faces)
     face_meta = Vector{TriangleMeta}(undef, n_faces)
@@ -247,11 +278,12 @@ function build_face_meta(scene, mesh, mat_idx::UInt32, material::Material)
     emission = get_emission_info(material)
 
     if isnothing(emission)
+        disable_face_area_lights!(scene, area_lights)
         for i in 1:n_faces
             face_meta[i] = TriangleMeta(mat_idx, UInt32(i), UInt32(0))
         end
     else
-        register_face_area_lights!(scene, mesh, face_meta, mat_idx, emission)
+        register_face_area_lights!(scene, mesh, face_meta, mat_idx, emission; area_lights)
     end
     return face_meta
 end
@@ -295,7 +327,43 @@ mesh, or one per face."""
 face_material(mat_idx::UInt32, ::Int) = mat_idx
 face_material(mat_indices::AbstractVector{UInt32}, face_i::Int) = mat_indices[face_i]
 
-function flush_face_area_lights!(scene, face_meta, lights, emissive_faces, mat)
+function update_face_area_lights!(scene, keys, lights)
+    uploaded = Dict{Any, Any}()
+    for (key, light) in zip(keys, lights)
+        old = scene.lights[key]
+        texturekey = old.Le isa Raycore.TextureRef ? (typeof(old.Le), old.Le.idx) : nothing
+        Le = texturekey === nothing ? light.Le : get(uploaded, texturekey, light.Le)
+        replacement = DiffuseAreaLight(light.vertices, light.normal, light.area, light.uv,
+            Le, light.scale, light.two_sided)
+        Raycore.update!(scene.lights, key, replacement)
+        texturekey === nothing || (uploaded[texturekey] = scene.lights[key].Le)
+    end
+    return nothing
+end
+
+function disable_face_area_lights!(scene, keys)
+    for key in keys
+        old = scene.lights[key]
+        Raycore.update!(scene.lights, key, DiffuseAreaLight(old.vertices, old.normal,
+            old.area, old.uv, old.Le, 0f0, old.two_sided))
+    end
+    isempty(keys) || notify_lights_changed(scene)
+    return nothing
+end
+
+function flush_face_area_lights!(scene, face_meta, lights, emissive_faces, mat; area_lights=SetKey[])
+    if !isempty(area_lights)
+        if length(area_lights) == length(lights)
+            update_face_area_lights!(scene, area_lights, lights)
+            for (k, face_i) in pairs(emissive_faces)
+                face_meta[face_i] = TriangleMeta(face_material(mat, face_i),
+                    UInt32(face_i), pack_arealight(area_lights[k]))
+            end
+            notify_lights_changed(scene)
+            return face_meta
+        end
+        disable_face_area_lights!(scene, area_lights)
+    end
     isempty(lights) && return face_meta
     keys = append!(scene.lights, lights)
     for (k, face_i) in pairs(emissive_faces)
@@ -306,13 +374,14 @@ function flush_face_area_lights!(scene, face_meta, lights, emissive_faces, mat)
 end
 
 # Single material (all faces share one material + emission)
-function register_face_area_lights!(scene, mesh, face_meta, mat_idx::UInt32, emission)
+function register_face_area_lights!(scene, mesh, face_meta, mat_idx::UInt32, emission; area_lights=SetKey[])
     verts = GeometryBasics.coordinates(mesh)
     gb_faces = GeometryBasics.faces(mesh)
     has_uv = hasproperty(mesh, :uv)
     # Every face of this mesh shares `emission`, so the emitted-radiance type is
     # fixed and the staging vector can be concrete.
-    Le = face_emission!(IdDict(), scene.lights, emission.Le)
+    Le = !isempty(area_lights) && emission.Le isa Texture && !emission.Le.isconst ?
+        emission.Le : face_emission!(IdDict(), scene.lights, emission.Le)
     lights = DiffuseAreaLight{typeof(Le)}[]
     emissive_faces = Int[]
 
@@ -344,7 +413,7 @@ function register_face_area_lights!(scene, mesh, face_meta, mat_idx::UInt32, emi
         push!(emissive_faces, i)
     end
 
-    flush_face_area_lights!(scene, face_meta, lights, emissive_faces, mat_idx)
+    flush_face_area_lights!(scene, face_meta, lights, emissive_faces, mat_idx; area_lights)
 end
 
 # Per-face materials (different materials per face, some may be emissive)

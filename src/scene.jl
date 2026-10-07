@@ -138,13 +138,35 @@ end
 Drop every listening integrator's plans. Called where a scene stops being what
 it was: the `push!`/`update_material!` mutators, and `sync!` when it rebuilt.
 """
-function notify_scene_changed(scene::AbstractScene)
+notify_scene_changed(scene::AbstractScene) = notify_listeners(invalidate_plans!, scene)
+
+"""
+    notify_lights_changed(scene)
+
+Tell every listening integrator that a light changed its values in place
+(`update_light!`): the same lights in the same slots, moved, recoloured,
+dimmed. Their plans read the lights from the scene's buffers and stay; what an
+integrator derived from where the lights are is its to refresh, see
+[`refresh_lights!`](@ref).
+"""
+notify_lights_changed(scene::AbstractScene) = notify_listeners(i -> refresh_lights!(i, scene), scene)
+
+"""
+    refresh_lights!(integrator, scene)
+
+Bring what `integrator` derived from the scene's lights up to date after an
+in-place change. An integrator that derives nothing it could refresh drops
+its plans.
+"""
+refresh_lights!(integrator, scene::AbstractScene) = invalidate_plans!(integrator)
+
+function notify_listeners(f, scene::AbstractScene)
     lock(SCENE_LISTENERS_LOCK) do
         e = get(SCENE_LISTENERS, objectid(scene), nothing)
         (e === nothing || e[1].value !== _scene_token(scene)) && return nothing
         v = e[2]
         filter!(w -> w.value !== nothing, v)
-        foreach(w -> invalidate_plans!(w.value), v)
+        foreach(w -> f(w.value), v)
         nothing
     end
     return nothing
@@ -166,10 +188,14 @@ end
 Replace the light stored under `key` — what `push!(scene.lights, light)`
 returned — in place. The same concrete type only, as every `MultiTypeSet`
 update: a light that moves or dims is this, a different kind of light is not.
+
+The slot is written where it lies, so recorded plans, which read the lights
+from that buffer, stay valid: a light following the camera used to throw them
+away and record them again every frame.
 """
 function update_light!(scene::Scene, key::SetKey, light::Light)
     Raycore.update!(scene.lights, key, light)
-    notify_scene_changed(scene)
+    notify_lights_changed(scene)
     return nothing
 end
 
@@ -278,7 +304,10 @@ struct SceneHandle
     scene::Scene
     interface::UInt32 # Index into  scene.media_interfaces
     geometry::TLASHandle # handle for geometry in TLAS
+    area_lights::Vector{SetKey} # Stable emitter slots owned by this mesh
 end
+
+SceneHandle(scene, interface, geometry) = SceneHandle(scene, interface, geometry, SetKey[])
 
 function Base.push!(scene::Scene, mesh::AbstractGeometry, materialidx::UInt32; arealight_indices=nothing)
     handle = push!(scene.accel, mesh, materialidx; arealight_indices=arealight_indices)
