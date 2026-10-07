@@ -130,7 +130,8 @@ end
 
         geom = vp_compute_surface_geometry(primitive, bary, work.ray.o, work.ray.d, t_hit)
 
-        tfc_bump = bump_filter_context(camera, work, geom, samples_per_pixel)
+        tfc_bump = bump_filter_context(camera, work, geom, samples_per_pixel,
+                                   primitive.metadata.primitive_index, SVector{3,Float32}(bary))
         dndu, dndv = vp_compute_normal_derivatives(primitive)
         ns_b, dpdus_b = get_perturbed_shading_frame(materials, mat_idx,
                                                    geom.ns, geom.dpdus,
@@ -164,7 +165,8 @@ end
 
     geom = vp_compute_surface_geometry(primitive, bary, work.ray.o, work.ray.d, t_hit)
     wo = -work.ray.d
-    resolved_mat_idx = resolve_mix_material(materials, mat_idx, geom.pi, wo, geom.uv)
+    resolved_mat_idx = resolve_mix_material(materials, mat_idx, geom.pi, wo,
+        TextureFilterContext(geom.uv, primitive.metadata.primitive_index, SVector{3,Float32}(bary)))
 
     # Null-material surface: emission first (an emissive sheet), then pass.
     if !Raycore.is_valid(resolved_mat_idx)
@@ -189,7 +191,8 @@ end
 
     # True ray differentials on camera rays, camera approximation deeper —
     # pbrt-v4 ComputeDifferentials branches the same way (interaction.cpp:48).
-    tfc_bump = bump_filter_context(camera, work, geom, samples_per_pixel)
+    tfc_bump = bump_filter_context(camera, work, geom, samples_per_pixel,
+                                   primitive.metadata.primitive_index, SVector{3,Float32}(bary))
     dndu, dndv = vp_compute_normal_derivatives(primitive)
     ns_b, dpdus_b = get_perturbed_shading_frame(materials, resolved_mat_idx,
                                                geom.ns, geom.dpdus,
@@ -359,7 +362,8 @@ struct VPClosesthitTyped{T} end
 
         geom = vp_compute_surface_geometry(primitive, bary, work.ray.o, work.ray.d, t_hit)
 
-        tfc_bump = bump_filter_context(camera, work, geom, samples_per_pixel)
+        tfc_bump = bump_filter_context(camera, work, geom, samples_per_pixel,
+                                   primitive.metadata.primitive_index, SVector{3,Float32}(bary))
         dndu, dndv = vp_compute_normal_derivatives(primitive)
         ns_b, dpdus_b = get_perturbed_shading_frame(materials, mat_idx,
                                                    geom.ns, geom.dpdus,
@@ -385,7 +389,8 @@ struct VPClosesthitTyped{T} end
 
     geom = vp_compute_surface_geometry(primitive, bary, work.ray.o, work.ray.d, t_hit)
     wo = -work.ray.d
-    resolved_mat_idx = resolve_mix_material(materials, mat_idx, geom.pi, wo, geom.uv)
+    resolved_mat_idx = resolve_mix_material(materials, mat_idx, geom.pi, wo,
+        TextureFilterContext(geom.uv, primitive.metadata.primitive_index, SVector{3,Float32}(bary)))
 
     # Null-material surface: emission first (an emissive sheet), then pass.
     if !Raycore.is_valid(resolved_mat_idx)
@@ -411,7 +416,8 @@ struct VPClosesthitTyped{T} end
 
     # True ray differentials on camera rays, camera approximation deeper —
     # see the chit-shade comment above.
-    tfc_bump = bump_filter_context(camera, work, geom, samples_per_pixel)
+    tfc_bump = bump_filter_context(camera, work, geom, samples_per_pixel,
+                                   primitive.metadata.primitive_index, SVector{3,Float32}(bary))
     dndu, dndv = vp_compute_normal_derivatives(primitive)
     ns_b, dpdus_b = get_perturbed_shading_frame(materials, resolved_mat_idx,
                                                geom.ns, geom.dpdus,

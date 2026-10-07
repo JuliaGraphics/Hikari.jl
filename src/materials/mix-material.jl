@@ -171,13 +171,13 @@ end
 # ============================================================================
 
 """
-    choose_material(mix::MixMaterial, textures, p::Point3f, wo::Vec3f, uv::Point2f) -> SetKey
+    choose_material(mix::MixMaterial, textures, p::Point3f, wo::Vec3f, tfc) -> SetKey
 
 Choose which sub-material to use at the given hit point.
 Returns the SetKey of the chosen material.
 
 Following pbrt-v4's ChooseMaterial:
-1. Evaluate the amount texture at (uv)
+1. Evaluate the amount texture at the hit (`tfc`: uv, face and barycentrics)
 2. If amount ≤ 0, return material1
 3. If amount ≥ 1, return material2
 4. Otherwise, use deterministic hash to stochastically select
@@ -186,9 +186,9 @@ This function is called at intersection time, before material evaluation.
 """
 @propagate_inbounds function choose_material(
     mix::MixMaterial, ctx::StaticMultiTypeSet,
-    p::Point3f, wo::Vec3f, uv::Point2f
+    p::Point3f, wo::Vec3f, tfc::TextureFilterContext
 )::SetKey
-    amt = eval_handle(ctx, mix.amount, TextureFilterContext(uv))
+    amt = eval_handle(ctx, mix.amount, tfc)
 
     # Early exit for boundary cases
     if amt <= 0f0
@@ -233,12 +233,12 @@ Type-stable dispatch to check if a material is MixMaterial.
 end
 
 # Helper for resolve_mix_material - called with concrete material type
-@propagate_inbounds function choose_material_impl(mat, ctx, p, wo, uv, idx::SetKey)
-    return is_mix_material(mat) ? choose_material(mat, ctx, p, wo, uv) : idx
+@propagate_inbounds function choose_material_impl(mat, ctx, p, wo, tfc, idx::SetKey)
+    return is_mix_material(mat) ? choose_material(mat, ctx, p, wo, tfc) : idx
 end
 
 """
-    resolve_mix_material(materials::StaticMultiTypeSet, idx::SetKey, p, wo, uv) -> SetKey
+    resolve_mix_material(materials::StaticMultiTypeSet, idx::SetKey, p, wo, tfc) -> SetKey
 
 Resolve any MixMaterial chain to get the final material index.
 Handles nested MixMaterials by iterating until a non-mix material is found.
@@ -249,7 +249,7 @@ This should be called at intersection time before creating material work items.
 @propagate_inbounds function resolve_mix_material(
     materials::StaticMultiTypeSet,
     idx::SetKey,
-    p::Point3f, wo::Vec3f, uv::Point2f
+    p::Point3f, wo::Vec3f, tfc::TextureFilterContext
 )::SetKey
     # Iterate to handle nested MixMaterials (up to 8 levels to prevent infinite loops)
     current_idx = idx
@@ -257,7 +257,7 @@ This should be called at intersection time before creating material work items.
         if !is_mix_material_dispatch(materials, current_idx)
             return current_idx
         end
-        current_idx = with_index(choose_material_impl, materials, current_idx, materials, p, wo, uv, current_idx)
+        current_idx = with_index(choose_material_impl, materials, current_idx, materials, p, wo, tfc, current_idx)
     end
     return current_idx
 end

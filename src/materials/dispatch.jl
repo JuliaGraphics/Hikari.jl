@@ -95,9 +95,11 @@ Returns (should_continue::Bool, new_beta::SpectralRadiance).
 end
 
 """
-    get_surface_alpha_dispatch(materials::StaticMultiTypeSet, idx::SetKey, uv::Point2f) -> Float32
+    get_surface_alpha_dispatch(materials::StaticMultiTypeSet, idx::SetKey, tfc) -> Float32
 
-Type-stable dispatch for evaluating surface alpha at a UV point.
+Type-stable dispatch for evaluating surface alpha at a hit. `tfc` is the hit's
+point-sampled `TextureFilterContext(uv, face_idx, bary)`: a vertex-colour alpha
+needs the face, not only the UV.
 Returns alpha ∈ [0, 1] where 0 = fully transparent, 1 = fully opaque.
 """
 @propagate_inbounds function get_surface_alpha_dispatch(

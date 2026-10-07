@@ -187,17 +187,19 @@ convention. Other cameras keep the approximation.
 end
 
 """
-    bump_filter_context(camera, work, geom, samples_per_pixel) -> TextureFilterContext
+    bump_filter_context(camera, work, geom, samples_per_pixel, face_idx, bary) -> TextureFilterContext
 
 The differentials + UV-derivative + context construction that every trace kernel
 needs before perturbing the shading frame. Six call sites across the software and
-hardware paths had this open-coded identically.
+hardware paths had this open-coded identically. `face_idx` and `bary` are the
+hit's: a vertex-colour bump height indexes with them.
 """
-@propagate_inbounds function bump_filter_context(camera, work, geom, samples_per_pixel::Int32)
+@propagate_inbounds function bump_filter_context(camera, work, geom, samples_per_pixel::Int32,
+                                                 face_idx::UInt32, bary::SVector{3, Float32})
     dpdx, dpdy = surface_dp_dxy(camera, work.ray.o, work.ray.d, geom.pi, geom.n,
                                 samples_per_pixel, work.depth)
     dudx, dudy, dvdx, dvdy = compute_uv_derivatives(geom.dpdu, geom.dpdv, dpdx, dpdy)
-    return TextureFilterContext(geom.uv, dudx, dudy, dvdx, dvdy)
+    return TextureFilterContext(geom.uv, dudx, dudy, dvdx, dvdy, face_idx, bary)
 end
 
 """

@@ -742,7 +742,7 @@ end
 # ============================================================================
 
 """
-    get_surface_alpha(mat::CoatedDiffuse, textures, uv) -> Float32
+    get_surface_alpha(mat::CoatedDiffuse, textures, tfc) -> Float32
 
 The cutout alpha of the coat's base texture, so alpha-masked geometry is cut the
 same way it is under [`Diffuse`](@ref).
