@@ -359,7 +359,8 @@ by CIE_Y_integral), then to sRGB for storage.
 - `intensity::Float32 = 1f0`: Overall brightness multiplier (scale parameter, default 1.0)
 - `turbidity::Float32 = 2.5f0`: Atmospheric turbidity (1=clear, 10=hazy)
 - `ground_albedo::RGBSpectrum = RGBSpectrum(0.3f0)`: Ground color below horizon
-- `ground_enabled::Bool = true`: Whether to show ground below horizon
+- `ground_enabled::Bool = true`: Whether to show ground below horizon; without it no light comes from below,
+  for scenes that model their own ground
 - `resolution::Int = 512`: Resolution of equal-area square map
 
 # Returns
@@ -398,12 +399,11 @@ function sunsky_to_envlight(;
             # Convert to world direction via equal-area mapping (Z-up)
             wi = equal_area_square_to_sphere(uv)
 
-            if wi[3] <= 0f0 && ground_enabled
-                sky_data[v_idx, u_idx] = ground_albedo * 0.3f0
+            if wi[3] <= 0f0
+                sky_data[v_idx, u_idx] = ground_enabled ? ground_albedo * 0.3f0 : RGBSpectrum(0f0)
                 continue
             end
 
-            # Zenith angle (clamp to horizon for below-horizon when ground disabled)
             theta = Float64(acos(clamp(wi[3], 0f0, 1f0)))
             # Angle between view direction and sun
             cos_gamma = clamp(dot(wi, dir), -1f0, 1f0)
