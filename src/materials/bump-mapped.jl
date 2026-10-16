@@ -109,20 +109,6 @@ new bumped normal against `ng`, not against the original interpolated `ns`.
     δu == 0f0 && (δu = BUMP_DEFAULT_DELTA)
     δv = 0.5f0 * (abs(tfc.dvdx) + abs(tfc.dvdy))
     δv == 0f0 && (δv = BUMP_DEFAULT_DELTA)
-    # pbrt-v4 materials.h:BumpMap shiftedCtx — the shifted evaluations keep the
-    # original screen-space derivatives so filtered procedural textures see the
-    # same footprint at all three sample points.
-    h0 = _bump_height(bump, materials, tfc)
-    # The face and barycentrics ride along: a vertex-colour height has nothing
-    # else to index with (see `TextureFilterContext(uv, face_idx, bary)`).
-    hu = _bump_height(bump, materials,
-        TextureFilterContext(Point2f(uv[1] + δu, uv[2]), tfc.dudx, tfc.dudy, tfc.dvdx, tfc.dvdy,
-                             tfc.face_idx, tfc.bary))
-    hv = _bump_height(bump, materials,
-        TextureFilterContext(Point2f(uv[1], uv[2] + δv), tfc.dudx, tfc.dudy, tfc.dvdx, tfc.dvdy,
-                             tfc.face_idx, tfc.bary))
-    dhdu = (hu - h0) / δu
-    dhdv = (hv - h0) / δv
 
     # pbrt-v4 materials.h:BumpMap reads `ctx.shading.dpdu`/`dpdv`, NOT the raw
     # geometric partials. For a mesh without vertex tangents those come from
@@ -150,6 +136,17 @@ new bumped normal against `ng`, not against the original interpolated `ns`.
         # Degenerate (dpdu parallel to ns): pbrt falls back to CoordinateSystem.
         ss_s, ts_s = coordinate_system(ns)
     end
+
+    # pbrt-v4 materials.h:BumpMap shiftedCtx — the shifted evaluations keep the
+    # original screen-space derivatives so filtered procedural textures see the
+    # same footprint at all three sample points. The position moves along the
+    # same tangents the frame is built from, so a texture of position has its
+    # gradient taken along the directions it tilts.
+    h0 = _bump_height(bump, materials, tfc)
+    hu = _bump_height(bump, materials, shifted(tfc, Point2f(uv[1] + δu, uv[2]), tfc.p + δu * ss_s))
+    hv = _bump_height(bump, materials, shifted(tfc, Point2f(uv[1], uv[2] + δv), tfc.p + δv * ts_s))
+    dhdu = (hu - h0) / δu
+    dhdv = (hv - h0) / δv
 
     # pbrt-v4 materials.h:BumpMap eq. 9.20
     dpdu_p = ss_s + dhdu * ns + h0 * dndu

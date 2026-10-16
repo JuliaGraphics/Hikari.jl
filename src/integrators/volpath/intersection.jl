@@ -386,7 +386,7 @@ end
         geom = vp_compute_surface_geometry(primitive, barycentric, ray.o, ray.d, t_hit)
         wo = -ray.d
         resolved_mat_idx = resolve_mix_material(materials, mat_idx, geom.pi, wo,
-            TextureFilterContext(geom.uv, primitive.metadata.primitive_index, SVector{3,Float32}(barycentric)))
+            TextureFilterContext(geom.uv, primitive.metadata.primitive_index, SVector{3,Float32}(barycentric), geom.pi))
 
         # Null-material surface (pbrt `Material "interface"` / nullptr): no
         # BSDF, no direct lighting.  Push a continuation ray with the medium
