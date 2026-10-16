@@ -81,12 +81,29 @@ end
 end
 
 @propagate_inbounds function sample_light_spectral(
-    light::SunLight, table::RGBToSpectrumTable, lights, p::Point3f, lambda::Wavelengths, ::Point2f
+    light::SunLight, table::RGBToSpectrumTable, lights, p::Point3f, lambda::Wavelengths, u::Point2f
 )::LightSampleSpectral
-    wi = -light.direction
+    wi = sun_disc_direction(light, u)
     p_light = Point3f(p + 1f6 * wi)
     Li = light.scale * uplift_rgb_illuminant(table, light.i, lambda)
     return LightSampleSpectral(Li, wi, 1f0, p_light, true)
+end
+
+"""
+    sun_disc_direction(light::SunLight, u::Point2f) -> Vec3f
+
+A direction toward a uniformly chosen point of the sun's disc, `light.angular_diameter`
+across. The sun stays a delta light carrying its whole irradiance in each sample; only
+its direction spreads, which is what turns hard shadow edges into penumbrae.
+"""
+@propagate_inbounds function sun_disc_direction(light::SunLight, u::Point2f)
+    centre = -light.direction
+    light.angular_diameter > 0f0 || return centre
+    x, y = coordinate_system(centre)
+    # Sampled in angle, not via cos θ: across the sun, cos θ spans only ~200 Float32 steps.
+    θ = light.angular_diameter / 2f0 * sqrt(u[1])
+    ϕ = 2f0 * Float32(π) * u[2]
+    return normalize(centre * cos(θ) + (x * cos(ϕ) + y * sin(ϕ)) * sin(θ))
 end
 
 @propagate_inbounds function sample_light_spectral(
