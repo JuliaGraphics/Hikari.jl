@@ -250,14 +250,12 @@ where A = [dpdu | dpdv] is a 3x2 matrix.
     dudy = (ata11 * atb0y - ata01 * atb1y) * inv_det
     dvdy = (ata00 * atb1y - ata01 * atb0y) * inv_det
 
-    # Clamp to reasonable values (following pbrt-v4)
-    clamp_val = 1f8
-    dudx = clamp(dudx, -clamp_val, clamp_val)
-    dvdx = clamp(dvdx, -clamp_val, clamp_val)
-    dudy = clamp(dudy, -clamp_val, clamp_val)
-    dvdy = clamp(dvdy, -clamp_val, clamp_val)
-
-    return (dudx, dudy, dvdx, dvdy)
+    # Clamp to reasonable values, and zero a non-finite one, as pbrt-v4 does
+    # (interaction.cpp). `clamp` passes NaN through, and a NaN derivative becomes
+    # the bump map's finite-difference step, so the shifted height samples land
+    # at a NaN uv, whose texel index on the GPU is garbage: the read goes past
+    # the texture into whatever memory follows it.
+    return map(d -> isfinite(d) ? clamp(d, -1f8, 1f8) : 0f0, (dudx, dudy, dvdx, dvdy))
 end
 
 # TextureFilterContext is defined in textures/texture-ref.jl
