@@ -23,22 +23,32 @@ Base.zero(::Type{RGBSpectrum}) = RGBSpectrum(0.0f0, 0.0f0, 0.0f0, 1.0f0)
 #
 # UV convention matches the prior nearest-neighbour version (dim 1 is
 # 1-v, dim 2 is u, repeat wrap via `frac`).
+#
+# No throw path anywhere in here: `Int(::Float32)` (InexactError) and `mod`
+# (DivideError) each become a branch to the kernel's exit on Metal, and with
+# three of these inlined into the trace kernel (a bump map's finite differences)
+# Apple's backend exited threads that never threw: every hit on a bump-mapped
+# leaf card silently vanished in the apartment scene.
 @propagate_inbounds function sample_texture_data(data::AbstractArray{T,N}, uv::Point2f)::T where {T,N}
     u_wrapped = uv[1] - floor(uv[1])
     v_wrapped = uv[2] - floor(uv[2])
-    s = size(data)
+    h = size(data, 1) % Int32
+    w = size(data, 2) % Int32
     # Convert wrapped UV into fractional texel-space coordinates. The 0.5
     # offset puts (0,0) at the centre of texel (1,1) so the bilinear
     # weights cleanly span the four surrounding texels.
-    fx = (1f0 - v_wrapped) * Float32(s[1]) - 0.5f0
-    fy = u_wrapped * Float32(s[2]) - 0.5f0
+    fx = (1f0 - v_wrapped) * Float32(h) - 0.5f0
+    fy = u_wrapped * Float32(w) - 0.5f0
+    (isfinite(fx) & isfinite(fy) & (h > Int32(0)) & (w > Int32(0))) || return zero(T)
     ix = floor(fx); iy = floor(fy)
     tx = fx - ix;   ty = fy - iy
+    i0 = unsafe_trunc(Int32, ix)
+    j0 = unsafe_trunc(Int32, iy)
     # Repeat wrap on the integer indices too (-1 → s, s → 1).
-    row0 = mod(Int(ix),   s[1]) + 1
-    row1 = mod(Int(ix)+1, s[1]) + 1
-    col0 = mod(Int(iy),   s[2]) + 1
-    col1 = mod(Int(iy)+1, s[2]) + 1
+    row0 = wrap_texel(i0, h) + Int32(1)
+    row1 = wrap_texel(i0 + Int32(1), h) + Int32(1)
+    col0 = wrap_texel(j0, w) + Int32(1)
+    col1 = wrap_texel(j0 + Int32(1), w) + Int32(1)
     @inbounds v00 = data[row0, col0]
     @inbounds v10 = data[row1, col0]
     @inbounds v01 = data[row0, col1]
@@ -49,6 +59,10 @@ Base.zero(::Type{RGBSpectrum}) = RGBSpectrum(0.0f0, 0.0f0, 0.0f0, 1.0f0)
     w11 = tx * ty
     return v00 * w00 + v10 * w10 + v01 * w01 + v11 * w11
 end
+
+"""`i` folded into `0:n-1`, for an `i` at most one period outside it, which is all
+the wrapped uv above can produce."""
+@inline wrap_texel(i::Int32, n::Int32) = i < Int32(0) ? i + n : (i >= n ? i - n : i)
 
 # 0-dim arrays are scalar constants - just return the value, no UV sampling
 @propagate_inbounds function sample_texture_data(data::AbstractArray{T,0}, ::Point2f)::T where T
