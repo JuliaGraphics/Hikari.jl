@@ -63,3 +63,29 @@ end
     end
     return (RGB{Float32}(0, 0, 0), Vec3f(0), first_depth)
 end
+
+const GUIDE_GRID = Int32(3)
+
+"""
+    pixel_guides(accel, materials, interfaces, camera, corner, miss_depth) -> (albedo, normal, depth)
+
+The guides of the pixel whose raster corner is `corner`: albedo and normal averaged over a
+`GUIDE_GRID`² grid of rays across it, since OIDN wants them filtered like the image (a single
+centre ray stair-steps every edge the denoiser keeps), and the depth of the centre ray.
+"""
+@inline function pixel_guides(accel, materials, interfaces, camera, corner::Point2f, miss_depth::Float32)
+    r = g = b = 0.0f0
+    normal = Vec3f(0)
+    depth = miss_depth
+    for j in Int32(1):GUIDE_GRID, i in Int32(1):GUIDE_GRID
+        offset = Point2f((i - 0.5f0) / GUIDE_GRID, (j - 0.5f0) / GUIDE_GRID)
+        ray, w = generate_ray(camera, CameraSample(corner + offset, Point2f(0.5f0, 0.5f0), 0.0f0))
+        w > 0.0f0 || continue
+        a, n, d = guide_hit(accel, materials, interfaces, ray, miss_depth)
+        r += a.r; g += a.g; b += a.b
+        normal += n
+        i == j == (GUIDE_GRID + Int32(1)) ÷ Int32(2) && (depth = d)
+    end
+    k = 1.0f0 / Float32(GUIDE_GRID * GUIDE_GRID)
+    return (RGB{Float32}(r * k, g * k, b * k), normal * k, depth)
+end

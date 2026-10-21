@@ -58,17 +58,8 @@ end
         # vp_generate_camera_rays_kernel!. Keep guide buffers aligned with
         # radiance or denoising leaves a vertically mirrored ghost silhouette.
         py = Float32(height - row) + crop_p_min[2]
-        pixel = Point2f(px + 0.5f0, py + 0.5f0)
-        cs = CameraSample(pixel, Point2f(0.5f0, 0.5f0), 0f0)
-        ray, w = generate_ray(camera, cs)
-        if w > 0f0
-            a,n,d=guide_hit(accel,materials,interfaces,ray,miss_depth)
-            depth[idx]=d; normal[idx]=n; albedo[idx]=a
-        else
-            depth[idx] = miss_depth
-            normal[idx] = Vec3f(0f0, 0f0, 0f0)
-            albedo[idx] = RGB{Float32}(0f0, 0f0, 0f0)
-        end
+        albedo[idx], normal[idx], depth[idx] =
+            pixel_guides(accel, materials, interfaces, camera, Point2f(px, py), miss_depth)
     end
 end
 

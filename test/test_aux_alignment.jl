@@ -51,6 +51,30 @@ end
     end
 end
 
+function guide_albedo(backend; hw_accel = false)
+    scene = Hikari.Scene(; backend, hw_accel)
+    object = normal_mesh(GeometryBasics.Tessellation(Sphere(Point3f(0), 0.6f0), 24))
+    push!(scene, object, Hikari.Diffuse(Kd = Hikari.RGBSpectrum(0.9f0)))
+    Hikari.sync!(scene)
+    film = Hikari.Film(Point2f(32, 32))
+    camera = Hikari.PerspectiveCamera(Point3f(0, 0, 3), Point3f(0), film; fov = 45f0)
+    film = Hikari.Film(backend, film)
+    Hikari.fill_aux_buffers!(film, Adapt.adapt(backend, scene), camera)
+    albedo = map(c -> c.r, Array(film.albedo))
+    Hikari.free!(film)
+    return albedo
+end
+
+@testset "Guide albedo is averaged over the pixel" begin
+    backend = Mantle.defaultbackend()
+    for hw_accel in (Mantle.supports_hwtlas(backend) ? (false, true) : (false,))
+        albedo = guide_albedo(backend; hw_accel)
+        coverage = albedo ./ (0.9f0 / Hikari.GUIDE_GRID^2)
+        @test coverage ≈ round.(coverage) atol = 1f-3
+        @test any(a -> 0.05f0 < a < 0.85f0, albedo)
+    end
+end
+
 # One ray through `Hikari.intersect!`, in a kernel: whether it hit, where, the
 # normal there, and the instance's custom index the interaction carries.
 KA.@kernel function intersect_one_kernel!(out, accel, ray)

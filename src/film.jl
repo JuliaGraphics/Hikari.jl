@@ -235,19 +235,8 @@ end
     px = Float32(col) + crop_bounds.p_min[1] - 1f0
     # Match the camera raster orientation used by the rendered framebuffer.
     py = Float32(h - row) + crop_bounds.p_min[2]
-    pixel = Point2f(px + 0.5f0, py + 0.5f0)
-
-    camera_sample = CameraSample(pixel, Point2f(0.5f0), 0f0)
-    ray, ω = generate_ray(camera, camera_sample)
-
-     if ω > 0f0
-        a,n,d=guide_hit(accel,materials,interfaces,ray,miss_depth)
-        albedo[idx]=a;normal[idx]=n;depth[idx]=d
-    else
-        normal[idx] = Vec3f(0f0, 0f0, 0f0)
-        depth[idx] = Inf32
-        albedo[idx] = RGB{Float32}(0f0, 0f0, 0f0)
-    end
+    albedo[idx], normal[idx], depth[idx] =
+        pixel_guides(accel, materials, interfaces, camera, Point2f(px, py), miss_depth)
 end
 
 # ============================================================================
