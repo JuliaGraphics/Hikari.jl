@@ -28,16 +28,22 @@ function test_tiled_majorants()
                 grid.voxels[x+res[1]*(y+res[2]*z)+1]=Float32(1+(x+y+z)%5)
             end
             tiled=H.tiledmajorants(grid)
+            packed=H.packmajorants(grid)
             @test collect(tiled.voxels)==grid.voxels
+            @test collect(packed.voxels)==grid.voxels
             lo=Point3f(-18,-18,-12.2)
             box=H.Bounds3(lo,lo+Vec3f(res)*scale)
             rays=[(Point3f(lo+Vec3f(rand(rng,Float32,3).*Vec3f(res))*scale),normalize(Vec3f(randn(rng,Float32,3)))) for _ in 1:1000]
             append!(rays,[(Point3f(lo+Vec3f(res)*scale*.5f0),Vec3f(d)) for d in ((1,0,0),(-1,0,0),(0,1,0),(0,0,-1),(1,1,1),(-1,-1,-1))])
             for (o,d) in rays
                 a=intervals(grid,box,o,d);b=intervals(tiled,box,o,d)
+                c=intervals(packed,box,o,d)
                 @test a.integral≈b.integral rtol=8f-4 atol=2f-5
                 @test a.distance≈b.distance rtol=2f-4 atol=2f-5
                 @test b.count<=a.count
+                @test c.integral==b.integral
+                @test c.distance==b.distance
+                @test c.count==b.count
             end
         end
     end
