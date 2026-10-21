@@ -26,11 +26,23 @@ struct TextureFilterContext
     dvdy::Float32
     face_idx::UInt32              # Triangle face index (for vertex colors)
     bary::SVector{3, Float32}     # Barycentric coordinates (for vertex colors)
+    p::Point3f                    # World-space hit position (for node textures)
+    n::Vec3f                      # Shading normal (for node textures)
 end
 
+const _TFC_NO_BARY = SVector{3,Float32}(0f0, 0f0, 0f0)
+
 # Default context with no filtering (derivatives = 0)
-TextureFilterContext(uv::Point2f) = TextureFilterContext(uv, 0f0, 0f0, 0f0, 0f0, UInt32(0), SVector{3,Float32}(0f0, 0f0, 0f0))
-TextureFilterContext(uv::Point2f, dudx, dudy, dvdx, dvdy) = TextureFilterContext(uv, dudx, dudy, dvdx, dvdy, UInt32(0), SVector{3,Float32}(0f0, 0f0, 0f0))
+TextureFilterContext(uv::Point2f, p::Point3f = Point3f(0), n::Vec3f = Vec3f(0, 0, 1)) =
+    TextureFilterContext(uv, 0f0, 0f0, 0f0, 0f0, UInt32(0), _TFC_NO_BARY, p, n)
+TextureFilterContext(uv::Point2f, dudx, dudy, dvdx, dvdy, p::Point3f = Point3f(0), n::Vec3f = Vec3f(0, 0, 1)) =
+    TextureFilterContext(uv, dudx, dudy, dvdx, dvdy, UInt32(0), _TFC_NO_BARY, p, n)
+TextureFilterContext(uv::Point2f, dudx, dudy, dvdx, dvdy, face_idx::UInt32, bary::SVector{3, Float32}) =
+    TextureFilterContext(uv, dudx, dudy, dvdx, dvdy, face_idx, bary, Point3f(0), Vec3f(0, 0, 1))
+
+"""The same context evaluated at another surface point, as bump mapping needs for its shifted samples."""
+@inline shifted(tfc::TextureFilterContext, uv::Point2f, p::Point3f) =
+    TextureFilterContext(uv, tfc.dudx, tfc.dudy, tfc.dvdx, tfc.dvdy, tfc.face_idx, tfc.bary, p, tfc.n)
 
 # A hit's point-sampled context: no footprint, but the face and barycentrics a
 # vertex-colour texture indexes with. The contexts above carry face 0, which a
@@ -38,8 +50,8 @@ TextureFilterContext(uv::Point2f, dudx, dudy, dvdx, dvdy) = TextureFilterContext
 # what the intersection-time alpha test and `MixMaterial`'s amount did: the
 # alpha of whatever lay there decided whether the ray passed through, and a quad
 # in vertex colours rendered as the background on Metal (`test_colour_encoding`).
-TextureFilterContext(uv::Point2f, face_idx::UInt32, bary::SVector{3, Float32}) =
-    TextureFilterContext(uv, 0f0, 0f0, 0f0, 0f0, face_idx, bary)
+TextureFilterContext(uv::Point2f, face_idx::UInt32, bary::SVector{3, Float32}, p::Point3f = Point3f(0)) =
+    TextureFilterContext(uv, 0f0, 0f0, 0f0, 0f0, face_idx, bary, p, Vec3f(0, 0, 1))
 
 # ============================================================================
 # Unified Texture Evaluation - Same code path for CPU and GPU

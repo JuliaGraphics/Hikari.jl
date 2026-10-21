@@ -228,7 +228,7 @@ end
         wo = -work.ray.d
         resolved_mat_idx = resolve_mix_material(
             materials, work.hit_material_idx, work.hit_pi, wo,
-            TextureFilterContext(work.hit_uv, work.hit_face_idx, work.hit_bary),
+            TextureFilterContext(work.hit_uv, work.hit_face_idx, work.hit_bary, work.hit_pi),
         )
 
         # Null-material surface (pbrt `Material "interface"` / nullptr):

@@ -199,7 +199,7 @@ hit's: a vertex-colour bump height indexes with them.
     dpdx, dpdy = surface_dp_dxy(camera, work.ray.o, work.ray.d, geom.pi, geom.n,
                                 samples_per_pixel, work.depth)
     dudx, dudy, dvdx, dvdy = compute_uv_derivatives(geom.dpdu, geom.dpdv, dpdx, dpdy)
-    return TextureFilterContext(geom.uv, dudx, dudy, dvdx, dvdy, face_idx, bary)
+    return TextureFilterContext(geom.uv, dudx, dudy, dvdx, dvdy, face_idx, bary, geom.pi, geom.ns)
 end
 
 """
@@ -275,7 +275,7 @@ Uses approximate screen-space derivatives for proper mipmap selection.
     # Compute UV derivatives from position derivatives
     dudx, dudy, dvdx, dvdy = compute_uv_derivatives(work.dpdu, work.dpdv, dpdx, dpdy)
 
-    return TextureFilterContext(work.uv, dudx, dudy, dvdx, dvdy, work.face_idx, work.bary)
+    return TextureFilterContext(work.uv, dudx, dudy, dvdx, dvdy, work.face_idx, work.bary, work.pi, work.ns)
 end
 
 # ============================================================================

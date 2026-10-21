@@ -166,7 +166,7 @@ end
     geom = vp_compute_surface_geometry(primitive, bary, work.ray.o, work.ray.d, t_hit)
     wo = -work.ray.d
     resolved_mat_idx = resolve_mix_material(materials, mat_idx, geom.pi, wo,
-        TextureFilterContext(geom.uv, primitive.metadata.primitive_index, SVector{3,Float32}(bary)))
+        TextureFilterContext(geom.uv, primitive.metadata.primitive_index, SVector{3,Float32}(bary), geom.pi))
 
     # Null-material surface: emission first (an emissive sheet), then pass.
     if !Raycore.is_valid(resolved_mat_idx)
@@ -390,7 +390,7 @@ struct VPClosesthitTyped{T} end
     geom = vp_compute_surface_geometry(primitive, bary, work.ray.o, work.ray.d, t_hit)
     wo = -work.ray.d
     resolved_mat_idx = resolve_mix_material(materials, mat_idx, geom.pi, wo,
-        TextureFilterContext(geom.uv, primitive.metadata.primitive_index, SVector{3,Float32}(bary)))
+        TextureFilterContext(geom.uv, primitive.metadata.primitive_index, SVector{3,Float32}(bary), geom.pi))
 
     # Null-material surface: emission first (an emissive sheet), then pass.
     if !Raycore.is_valid(resolved_mat_idx)
