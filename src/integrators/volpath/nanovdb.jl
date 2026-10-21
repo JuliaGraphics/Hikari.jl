@@ -877,7 +877,7 @@ File layout (standard NanoVDB IO format):
 scalar such as temperature). The float and double transforms are both populated;
 the checksum is explicitly disabled, as supported by NanoVDB.
 
-Hikari's reader scans for the zlib magic and skips the IO header.
+Hikari's reader uses the IO metadata to locate and size the ZIP payload.
 pbrt-v4's nanovdb::io::readGrid reads the segment header first.
 """
 function save_nanovdb(filepath::String, buffer::Vector{UInt8}, metadata::NamedTuple;
@@ -1140,25 +1140,48 @@ function compress_zlib(data::Vector{UInt8})
 end
 
 
-function decompress_nanovdb(compressed_data::Vector{UInt8})
-    # Use Zlib_jll for decompression
-    output_buffer = Vector{UInt8}(undef, 200_000_000)  # 200MB should be enough
-
+function decompress_nanovdb(compressed_data::Vector{UInt8}; expected_size::Union{Int,Nothing}=nothing)
+    expected_size === nothing || expected_size > 0 || throw(ArgumentError("Invalid NanoVDB grid size"))
+    output_buffer = Vector{UInt8}(undef, expected_size === nothing ? 65536 : expected_size)
     z = Ref(ZStream())
-    z[].next_in = pointer(compressed_data)
-    z[].avail_in = length(compressed_data)
-    z[].next_out = pointer(output_buffer)
-    z[].avail_out = length(output_buffer)
-
     ret = ccall((:inflateInit_, Zlib_jll.libz), Cint,
                 (Ref{ZStream}, Cstring, Cint), z, "1.2.11", sizeof(ZStream))
-    ret != 0 && error("inflateInit failed: $ret")
-
-    ret = ccall((:inflate, Zlib_jll.libz), Cint, (Ref{ZStream}, Cint), z, 4)  # Z_FINISH=4
-    decompressed_size = z[].total_out
-    ccall((:inflateEnd, Zlib_jll.libz), Cint, (Ref{ZStream},), z)
-
-    return output_buffer[1:decompressed_size]
+    ret == 0 || error("inflateInit failed: $ret")
+    supplied = 0
+    try
+        while true
+            written = Int(z[].total_out)
+            if written == length(output_buffer)
+                # A small spare byte also lets zlib consume the stream trailer
+                # when the declared size exactly fills the output buffer.
+                capacity = expected_size === nothing ? max(65536,2length(output_buffer)) : expected_size+1
+                capacity > written || error("NanoVDB stream exceeds its declared grid size")
+                resize!(output_buffer,capacity)
+            end
+            previous = (z[].total_in,z[].total_out)
+            GC.@preserve compressed_data output_buffer begin
+                if z[].avail_in == 0 && supplied < length(compressed_data)
+                    count = min(length(compressed_data)-supplied,Int(typemax(Cuint)))
+                    z[].next_in = pointer(compressed_data,supplied+1)
+                    z[].avail_in = Cuint(count)
+                    supplied += count
+                end
+                z[].next_out = pointer(output_buffer,written+1)
+                z[].avail_out = Cuint(min(length(output_buffer)-written,Int(typemax(Cuint))))
+                ret = ccall((:inflate, Zlib_jll.libz), Cint, (Ref{ZStream}, Cint), z, 0)
+            end
+            expected_size === nothing || z[].total_out <= expected_size ||
+                error("NanoVDB stream exceeds its declared grid size")
+            ret == 1 && break # Z_STREAM_END, including checksum/trailer validation
+            ret in (0,-5) || error("Invalid NanoVDB ZIP stream: zlib status $ret")
+            previous != (z[].total_in,z[].total_out) || error("Truncated NanoVDB ZIP stream")
+        end
+        expected_size === nothing || z[].total_out == expected_size || error("NanoVDB grid size differs from its header")
+        resize!(output_buffer,Int(z[].total_out))
+        return output_buffer
+    finally
+        ccall((:inflateEnd, Zlib_jll.libz), Cint, (Ref{ZStream},), z)
+    end
 end
 
 """
@@ -1169,20 +1192,40 @@ Returns raw buffer suitable for GPU upload.
 """
 function parse_nanovdb_buffer(filepath::String)
     nvdb_data = read(filepath)
+    scalar(T,at) = reinterpret(T,nvdb_data[at:at+sizeof(T)-1])[1]
+    length(nvdb_data) >= 192 || error("Truncated NanoVDB file header")
+    scalar(UInt64,1) == 0x304244566f6e614e || error("Unsupported NanoVDB file magic")
+    scalar(UInt16,13) == 1 || error("NanoVDB reader requires a single-grid file")
+    scalar(UInt16,15) == 1 || error("NanoVDB reader requires ZIP compression")
+    scalar(UInt32,49) == 1 || error("NanoVDB reader requires Float grid values")
+    grid_size = Int(scalar(UInt64,17))
+    name_size = Int(scalar(UInt32,153))
+    # Standard IO metadata gives the exact payload location. Searching for a
+    # zlib byte pattern can instead match arbitrary bytes in a name or bounds.
+    payload = 193+name_size
+    payload+7 <= length(nvdb_data) || error("Truncated NanoVDB grid name")
+    compressed_size = Int(scalar(UInt64,payload))
+    0 < compressed_size <= length(nvdb_data)-payload-7 || error("Truncated NanoVDB ZIP payload")
+    buffer = decompress_nanovdb(nvdb_data[payload+8:payload+7+compressed_size];expected_size=grid_size)
 
-    # Find zlib header (0x78 0x9c for default compression)
-    compressed_start = 0
-    for i in 1:min(500, length(nvdb_data)-1)
-        if nvdb_data[i] == 0x78 && nvdb_data[i+1] in (0x01, 0x5e, 0x9c, 0xda)
-            compressed_start = i
-            break
-        end
+    length(buffer) >= NANOVDB_GRIDDATA_SIZE+TREEDATA_SIZE || error("Truncated NanoVDB grid header")
+    raw(T,at) = reinterpret(T,buffer[at:at+sizeof(T)-1])[1]
+    raw(UInt64,1) == 0x304244566f6e614e || error("Invalid NanoVDB grid magic")
+    raw(UInt32,637) == 1 || error("NanoVDB reader requires Float grid values")
+    # Validate every fixed-size range before metadata extraction walks nodes
+    # through raw pointers. Offsets are relative to the TreeData header.
+    tree_start = NANOVDB_GRIDDATA_SIZE+1
+    offsets = ntuple(i -> raw(UInt64,TREEDATA_NODE_OFFSET_START+8(i-1)),4)
+    counts = ntuple(i -> raw(UInt32,TREEDATA_NODE_COUNT_START+4(i-1)),3)
+    for (offset,count,stride) in zip(offsets,counts,(LEAFDATA_SIZE,LOWER_NODE_SIZE,UPPER_NODE_SIZE))
+        UInt128(tree_start)+offset+UInt128(count)*stride-1 <= length(buffer) ||
+            error("Truncated NanoVDB node data")
     end
-    compressed_start == 0 && error("Could not find zlib header in NanoVDB file")
-
-    # Decompress using external zlib
-    compressed_data = nvdb_data[compressed_start:end]
-    buffer = decompress_nanovdb(compressed_data)
+    UInt128(tree_start)+offsets[4]+ROOTDATA_HEADER_SIZE-1 <= length(buffer) || error("Truncated NanoVDB root")
+    root = tree_start+Int(offsets[4])
+    tiles = raw(UInt32,root+ROOTDATA_TABLESIZE_OFFSET)
+    UInt128(root)+ROOTDATA_HEADER_SIZE+UInt128(tiles)*ROOTTILE_SIZE-1 <= length(buffer) ||
+        error("Truncated NanoVDB root tiles")
 
     # Extract metadata
     metadata = extract_nanovdb_metadata(buffer)

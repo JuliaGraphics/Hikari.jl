@@ -1,4 +1,5 @@
 using Test, Hikari, GeometryBasics, Mantle, Adapt, Random
+using LinearAlgebra: dot, norm
 import KernelAbstractions as KA
 using KernelAbstractions: @kernel, @index
 

@@ -50,6 +50,7 @@ const TEST_FILES = [
     "test_fem_material.jl",
     "test_nanofluids.jl",
     "test_nanoleaf_faces.jl",
+    "test_nanofield.jl",
     "test_water_shadow.jl",
     "test_tiled_majorants.jl",
     "test_sparse_majorant.jl",

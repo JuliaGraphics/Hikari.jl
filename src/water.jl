@@ -167,7 +167,7 @@ struct WaterMedium{V,A,M} <: Medium
 end
 
 "The volume fraction a [`NanoTree`](@ref) holds at `p`, trilinear; the tree's words looked up through `media`."
-@inline fraction(media, t::NanoTree, p) = nanosample(t, Raycore.deref(media, t.words), p)
+@inline fraction(media, t::NanoField, p) = nanofield_sample(t, media, p)
 
 "The white scattering of `terms` at `p` (per metre, reduced by the similarity relation)."
 @inline airscattering(media, ::Tuple{}, p) = 0f0
