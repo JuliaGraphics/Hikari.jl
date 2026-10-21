@@ -337,14 +337,50 @@ end
 # ============================================================================
 
 """
-    sunsky_sun_rgb(intensity) -> RGB{Float32}
+    sunsky_sun_rgb(intensity, towards_sun = Vec3f(0, 0, 1); turbidity = 2.5) -> RGB{Float32}
 
 The sun of a `sunsky_to_envlight` sky: an RGB irradiance with the usual RGB
-light normalisation, slightly warm, at a sun to sky illuminance ratio of about
-5:1 for clear conditions. Exposed so a rasteriser standing in for the tracer
-lights with the same sun.
+light normalisation. Overhead it has a luminance of `5 * intensity`, a sun to sky
+illuminance ratio of about 5:1 for clear conditions; lower down its light crosses
+more air and comes through dimmer and redder, and below the horizon there is none.
+Exposed so a rasteriser standing in for the tracer lights with the same sun.
 """
-sunsky_sun_rgb(intensity::Real) = (s = 5f0 * Float32(intensity); RGB{Float32}(s, 0.95f0 * s, 0.85f0 * s))
+function sunsky_sun_rgb(intensity::Real, towards_sun::Vec3f = Vec3f(0, 0, 1); turbidity::Real = 2.5)
+    dir = normalize(towards_sun)
+    dir[3] > 0 || return RGB{Float32}(0, 0, 0)
+    overhead = transmitted_sun_rgb(0.0, turbidity)
+    rgb = transmitted_sun_rgb(acos(Float64(dir[3])), turbidity) .* (5 * intensity / srgb_luminance(overhead))
+    return RGB{Float32}(max.(rgb, 0)...)
+end
+
+const SUN_TEMPERATURE = 5778.0
+
+srgb_luminance(rgb) = 0.2126 * rgb[1] + 0.7152 * rgb[2] + 0.0722 * rgb[3]
+
+"""Linear sRGB of sunlight that reached the ground through the air at `zenith`
+radians, from a black body at the sun's surface temperature."""
+function transmitted_sun_rgb(zenith::Real, turbidity::Real)
+    m = relative_air_mass(zenith)
+    lambdas = collect(360.0:5.0:830.0)
+    spectrum = [planck(nm, SUN_TEMPERATURE) * sun_transmittance(nm, m, turbidity) for nm in lambdas]
+    return Vec{3,Float64}(xyz_to_linear_srgb(Vec3f(spectrum_to_xyz_hosek(lambdas, spectrum)...)))
+end
+
+planck(nm, kelvin) = (μm = nm / 1000; 1 / (μm^5 * (exp(1.4388e4 / (μm * kelvin)) - 1)))
+
+"""Kasten's relative optical air mass for a sun `zenith` radians from straight up, as
+given by Preetham, Shirley and Smits (1999), appendix A.1."""
+relative_air_mass(zenith) = 1 / (cos(zenith) + 0.15 * (93.885 - rad2deg(zenith))^-1.253)
+
+"""The share of direct sunlight at `nm` that crosses `m` air masses, losing light to
+Rayleigh scattering by the air and to haze by Ångström's formula with the turbidity
+fit of Preetham, Shirley and Smits (1999), appendix A.1. Their ozone, mixed gas and
+water vapour bands are left out."""
+function sun_transmittance(nm, m, turbidity)
+    μm = nm / 1000
+    β = 0.04608 * turbidity - 0.04586
+    return exp(-m * (0.008735 * μm^-4.08 + β * μm^-1.3))
+end
 
 """
     sunsky_to_envlight(; direction, intensity=1f0, turbidity=2.5f0, ...) -> (EnvironmentLight, SunLight)
@@ -435,7 +471,7 @@ function sunsky_to_envlight(;
 
     # Sun as separate delta directional light
     # SunLight direction = direction light TRAVELS (away from sun), so negate
-    sun_light = SunLight(sunsky_sun_rgb(intensity), -dir)
+    sun_light = SunLight(sunsky_sun_rgb(intensity, dir; turbidity), -dir)
 
     return env_light, sun_light
 end
