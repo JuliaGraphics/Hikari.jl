@@ -383,6 +383,35 @@ function sun_transmittance(nm, m, turbidity)
 end
 
 """
+    sunsky_sun_rgb(direction; intensity = 1, turbidity = 2.5) -> RGB{Float32}
+
+The sun of a `sunsky_to_envlight` sky, as the Hosek-Wilkie model has it: the solar
+spectrum through `turbidity`'s atmosphere at the elevation of `direction` (towards the
+sun), limb-darkened, integrated over the disc into an irradiance, and converted to RGB
+the way the sky's map is, in the same units. Sun and sky then stand in the proportion
+the model measured, which depends on the sun's height and the haze (the earlier fixed
+5:1 did not). Exposed so a rasteriser standing in for the tracer lights with the same
+sun.
+"""
+function sunsky_sun_rgb(direction::AbstractVector{<:Real}; intensity::Real = 1f0, turbidity::Real = 2.5f0)
+    dir = normalize(Vec3f(direction))
+    dir[3] > 0f0 || return RGB{Float32}(0, 0, 0)
+    elevation = Float64(asin(clamp(dir[3], 0f0, 1f0)))
+    state = HosekState(Float64(turbidity), 0.5, elevation)
+    # The sky's sampling (see `sunsky_to_envlight`): 13 wavelengths from 320 to 720 nm.
+    λs = [320.0 + i * 400.0 / 12 for i in 0:12]
+    # Irradiance: the limb-darkened disc's radiance over its solid angle, ∫ L(γ) 2π sin γ dγ.
+    R = state.solar_radius
+    n = 64
+    E = [sum(hosek_solar_radiance_direct(state, λ, elevation, (k - 0.5) * R / n) * 2π * sin((k - 0.5) * R / n) * R / n
+             for k in 1:n) for λ in λs]
+    x, y, z = spectrum_to_xyz_hosek(λs, E)
+    rgb = xyz_to_linear_srgb(Vec3f(Float32(x), Float32(y), Float32(z)))
+    s = Float32(intensity)
+    return RGB{Float32}(s * max(rgb[1], 0f0), s * max(rgb[2], 0f0), s * max(rgb[3], 0f0))
+end
+
+"""
     sunsky_to_envlight(; direction, intensity=1f0, turbidity=2.5f0, ...) -> (EnvironmentLight, SunLight)
 
 Pre-bake the Hosek-Wilkie spectral sky model into an equal-area EnvironmentMap and create
@@ -471,7 +500,7 @@ function sunsky_to_envlight(;
 
     # Sun as separate delta directional light
     # SunLight direction = direction light TRAVELS (away from sun), so negate
-    sun_light = SunLight(sunsky_sun_rgb(intensity, dir; turbidity), -dir)
+    sun_light = SunLight(sunsky_sun_rgb(dir; intensity, turbidity), -dir)
 
     return env_light, sun_light
 end

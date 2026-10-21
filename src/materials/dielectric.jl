@@ -68,7 +68,7 @@ function Dielectric(;
     Dielectric(
         matparam(Kr), matparam(Kt),
         matparam(u_rough), matparam(v_rough),
-        matparam(index), remap_roughness, TexHandle(bump)
+        matparam(index), remap_roughness, matparam(bump)
     )
 end
 

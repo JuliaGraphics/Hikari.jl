@@ -48,6 +48,11 @@ const TEST_FILES = [
     # it has to ask before building geometry the backend may not be able to
     # trace. Cheap and backend-neutral — it renders nothing.
     "test_fem_material.jl",
+    "test_nanofluids.jl",
+    "test_nanoleaf_faces.jl",
+    "test_water_shadow.jl",
+    "test_tiled_majorants.jl",
+    "test_sparse_majorant.jl",
     "test_environment_map_domain.jl",
     "test_empty_scene.jl",
     "materials.jl",

@@ -175,8 +175,7 @@ end
             Raycore.area(primitive), t_hit)
         ray_d = -wo
         new_medium = null_crossing_medium(mi, work.medium_idx, ray_d, geom.n)
-        offset_dir = if dot(ray_d, geom.n) > 0f0; geom.n; else; -geom.n; end
-        ray_origin = Point3f(geom.pi + offset_dir * 1f-4)
+        ray_origin = offset_surface_origin(geom.pi,geom.n,ray_d)
         new_ray = Raycore.Ray(o=ray_origin, d=ray_d, t_max=Inf32, time=0f0)
         push!(next_ray_queue, VPRayWorkItem(
             new_ray, work.depth,
@@ -400,8 +399,7 @@ struct VPClosesthitTyped{T} end
             work, work.beta, work.r_u, work.r_l, Raycore.area(primitive), t_hit)
         ray_d = -wo
         new_medium = null_crossing_medium(mi, work.medium_idx, ray_d, geom.n)
-        offset_dir = if dot(ray_d, geom.n) > 0f0; geom.n; else; -geom.n; end
-        ray_origin = Point3f(geom.pi + offset_dir * 1f-4)
+        ray_origin = offset_surface_origin(geom.pi,geom.n,ray_d)
         new_ray = Raycore.Ray(o=ray_origin, d=ray_d, t_max=Inf32, time=0f0)
         push!(next_ray_queue, VPRayWorkItem(
             new_ray, work.depth,
@@ -488,7 +486,7 @@ end
     mat_work = VPMaterialEvalWorkItem(hit_work, wo, resolved_mat_idx)
 
     tfc_for_bxdf = compute_texture_filter_context(mat_work, camera, samples_per_pixel)
-    regularize_for_bxdf = do_regularize && hit_work.any_non_specular_bounces
+    regularize_for_bxdf = regularizes(hit_work, media, do_regularize)
     bxdf = get_bxdf(mat, rgb2spec_table, materials, tfc_for_bxdf, hit_work.lambda, regularize_for_bxdf)
 
     # Direct lighting + inline shadow trace + accumulate (typed BSDF eval).
@@ -507,7 +505,7 @@ end
     evaluate_material_inner!(
         bxdf,
         next_ray_queue,
-        mat_work, materials, rgb2spec_table, max_depth,
+        mat_work, materials, media, lights, num_infinite_lights, num_bvh_lights, rgb2spec_table, max_depth,
         do_regularize,
         sobol_rng, sample_idx,
         camera, samples_per_pixel,

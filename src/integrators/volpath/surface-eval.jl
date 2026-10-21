@@ -378,52 +378,70 @@ write/read of two `pixel_samples_direct_*` arrays per bounce — measured as
         rgb2spec_table, lights, light_idx, work.pi, work.lambda, u_light,
     )
 
-    if light_sample.pdf > 0f0 && !is_black(light_sample.Li)
-        tfc = compute_texture_filter_context(work, camera, samples_per_pixel)
-        regularize = do_regularize && work.any_non_specular_bounces
-
+    # The connection to the light, then one shadow ray along it. Under a refracting
+    # surface (a floor under water) the sky is sampled through Snell's window, as at
+    # a scatter event in the water (see `snells_window`); otherwise straight. One
+    # shadow trace for both: with a call in each branch, LLVM filled the trace's
+    # array arguments in 32-bit halves, and on RADV the kernel then read through a
+    # garbage pointer in scenes without metaballs (a GPU page fault, device lost).
+    tfc = compute_texture_filter_context(work, camera, samples_per_pixel)
+    regularize = regularizes(work, media, do_regularize)
+    window_medium = if is_medium_transition(work.interface)
+        get_medium_index(work.interface, light_sample.wi, work.n)
+    else
+        work.current_medium
+    end
+    through_window = light_sample.pdf > 0f0 && !light_sample.is_delta && has_medium(window_medium) &&
+                     Raycore.with_index(is_infinite_light, lights, flat_to_light_index(lights, light_idx))
+    η = through_window ? Raycore.with_index(refracting, media, window_medium) : 0f0
+    if η > 0f0
+        ω_in, jacobian = snells_window(light_sample.wi, η)
+        jacobian > 0f0 || return
+        bsdf_f, bsdf_pdf = evaluate_bsdf_spectral(
+            bxdf, rgb2spec_table, materials,
+            work.wo, ω_in, work.ns, work.dpdus, tfc, work.lambda, regularize,
+        )
+        is_black(bsdf_f) && return
+        Ld = work.beta * bsdf_f * abs(dot(ω_in, work.ns))      # times the sky, found at the end
+        r_u = work.r_u * bsdf_pdf
+        # The sky all the infinite lights make, over the density of their mixture.
+        r_l = work.r_u * (compute_env_light_pdf(lights, light_sample.wi) * light_pmf * jacobian)
+        origin, dir, t_max, medium, refract = work.ps, ω_in, 1f6, window_medium, true
+    else
+        (light_sample.pdf > 0f0 && !is_black(light_sample.Li)) || return
         # Direct call into the concrete material — Julia inlines.
         bsdf_f, bsdf_pdf = evaluate_bsdf_spectral(
             bxdf, rgb2spec_table, materials,
             work.wo, light_sample.wi, work.ns, work.dpdus, tfc, work.lambda, regularize,
         )
-
-        if !is_black(bsdf_f)
-            result = compute_direct_lighting_spectral(
-                # Shadow rays leave from the terminator-safe point, not the hit.
-                work.ps, work.n, work.ns, work.wo, work.beta, work.r_u, work.lambda,
-                light_sample, bsdf_f, bsdf_pdf,
-            )
-            if result.valid
-                scaled_r_l = result.r_l * light_pmf
-
-                shadow_medium = if is_medium_transition(work.interface)
-                    get_medium_index(work.interface, result.ray_direction, work.n)
-                else
-                    work.current_medium
-                end
-
-                # Inline shadow trace + accumulate (opt4 pattern).
-                T_ray, tr_r_u, tr_r_l, visible = trace_shadow_transmittance(
-                    accel, media_interfaces, media, materials, rgb2spec_table,
-                    result.ray_origin, result.ray_direction, result.t_max,
-                    work.lambda, shadow_medium,
-                )
-
-                if visible && !is_black(T_ray)
-                    mis_weight = result.r_u * tr_r_u + scaled_r_l * tr_r_l
-                    mis_denom = average(mis_weight)
-                    if mis_denom > 1f-10
-                        final_L = result.Ld * T_ray / mis_denom
-                        if !is_black(final_L)
-                            base_idx = (work.pixel_index - Int32(1)) * Int32(4)
-                            accumulate_spectrum!(pixel_L, base_idx, final_L)
-                        end
-                    end
-                end
-            end
+        is_black(bsdf_f) && return
+        result = compute_direct_lighting_spectral(
+            # Shadow rays leave from the terminator-safe point, not the hit.
+            work.ps, work.n, work.ns, work.wo, work.beta, work.r_u, work.lambda,
+            light_sample, bsdf_f, bsdf_pdf,
+        )
+        result.valid || return
+        Ld, r_u, r_l = result.Ld, result.r_u, result.r_l * light_pmf
+        medium = if is_medium_transition(work.interface)
+            get_medium_index(work.interface, result.ray_direction, work.n)
+        else
+            work.current_medium
         end
+        origin, dir, t_max, refract = result.ray_origin, result.ray_direction, result.t_max, false
     end
+
+    # Inline shadow trace + accumulate (opt4 pattern).
+    T_ray, tr_r_u, tr_r_l, visible, out = trace_shadow_transmittance(
+        accel, media_interfaces, media, materials, rgb2spec_table,
+        origin, dir, t_max, work.lambda, medium, refract,
+    )
+    (visible && !is_black(T_ray)) || return
+    mis_denom = average(r_u * tr_r_u + r_l * tr_r_l)
+    mis_denom > 1f-10 || return
+    # Through Snell's window the sky is where the shadow ray left (see `snells_window`).
+    sky = refract ? evaluate_escaped_ray_spectral(rgb2spec_table, lights, out, work.lambda) : SpectralRadiance(1f0)
+    final_L = Ld * sky * T_ray / mis_denom
+    is_black(final_L) || accumulate_spectrum!(pixel_L, (work.pixel_index - Int32(1)) * Int32(4), final_L)
     return
 end
 
@@ -434,6 +452,10 @@ carrier, applies Russian roulette, pushes the continuation ray."""
     next_ray_queue,
     work::VPMaterialEvalWorkItem,
     materials,
+    media,
+    lights,
+    num_infinite_lights::Int32,
+    num_bvh_lights::Int32,
     rgb2spec_table,
     max_depth::Int32,
     do_regularize::Bool,
@@ -459,7 +481,7 @@ carrier, applies Russian roulette, pushes the continuation ray."""
     u = Point2f(u_x, u_y)
     rr_sample = sample_1d(sobol_rng, px, py, sample_idx, base_dim + Int32(7))
 
-    regularize = do_regularize && work.any_non_specular_bounces
+    regularize = regularizes(work, media, do_regularize)
     tfc = compute_texture_filter_context(work, camera, samples_per_pixel)
 
     sample = sample_bsdf_spectral(
@@ -498,18 +520,31 @@ carrier, applies Russian roulette, pushes the continuation ray."""
             else
                 work.current_medium
             end
-            offset_dir = if dot(sample.wi, work.n) > 0f0; work.n; else; -work.n; end
-            ray_origin = Point3f(work.pi + offset_dir * 1f-4)
+            ray_origin = offset_surface_origin(work.pi,work.n,sample.wi)
             new_ray = Raycore.Ray(o=ray_origin, d=sample.wi, t_max=Inf32, time=0f0)
             new_lambda = if sample.secondary_terminated
                 terminate_secondary_wavelengths(work.lambda)
             else
                 work.lambda
             end
+            # Out of refracting water through Snell's window, straight from a non-specular
+            # vertex: light sampling there reaches the sky this does, so the path keeps
+            # that vertex's `r_l`, times that sampling's density for its direction
+            # there (see `WINDOWED`).
+            η = has_medium(work.current_medium) ? Raycore.with_index(refracting, media, work.current_medium) : 0f0
+            sky, jacobian = window_sky(-work.wo, η)
+            windowed_out = η > 0f0 && jacobian > 0f0 && is_transmissive(sample.flags) && is_specular(sample.flags) &&
+                           work.interface.shadows > 0f0 && !work.specular_bounce && work.any_non_specular_bounces
+            out_r_l = if windowed_out
+                work.r_l * (infinite_light_pmf(num_infinite_lights, num_bvh_lights) *
+                            compute_env_light_pdf(lights, sky) * jacobian)
+            else
+                new_r_l
+            end
             ray_item = VPRayWorkItem(
                 new_ray, new_depth, new_lambda, work.pixel_index,
-                final_beta, work.r_u, new_r_l,
-                work.pi, work.ns,
+                final_beta, work.r_u, out_r_l,
+                work.pi, windowed_out ? WINDOWED : work.ns,
                 new_eta_scale,
                 is_specular(sample.flags),
                 work.any_non_specular_bounces || !is_specular(sample.flags),
@@ -583,7 +618,7 @@ concern from materials)."""
     # 40-byte `ConductorEvaluated`, eliminating 8-16 redundant
     # `eval_ior_spectral` binary searches per surface hit.
     tfc_for_bxdf = compute_texture_filter_context(mat_work, camera, samples_per_pixel)
-    regularize_for_bxdf = do_regularize && work.any_non_specular_bounces
+    regularize_for_bxdf = regularizes(work, media, do_regularize)
     bxdf = get_bxdf(mat, rgb2spec_table, materials, tfc_for_bxdf, work.lambda, regularize_for_bxdf)
 
     # Direct lighting + inline shadow + accumulate (typed BSDF eval).
@@ -602,7 +637,7 @@ concern from materials)."""
     evaluate_material_inner!(
         bxdf,
         next_ray_queue,
-        mat_work, materials, rgb2spec_table, max_depth,
+        mat_work, materials, media, lights, num_infinite_lights, num_bvh_lights, rgb2spec_table, max_depth,
         do_regularize,
         sobol_rng, sample_idx,
         camera, samples_per_pixel,
@@ -661,4 +696,3 @@ emitter kernel writes only `pixel_L`; the material kernels also write
     accumulate_spectrum!(pixel_L, base_idx, final_contrib)
     return
 end
-

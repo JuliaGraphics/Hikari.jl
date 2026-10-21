@@ -313,10 +313,12 @@ Check if wavelength i has non-zero PDF (should contribute).
 
 
 @propagate_inbounds function accumulate_spectrum!(pixel_L, base_idx::Int32, contrib::SpectralRadiance)
-    Atomix.@atomic pixel_L[base_idx+Int32(1)] += contrib[1]
-    Atomix.@atomic pixel_L[base_idx+Int32(2)] += contrib[2]
-    Atomix.@atomic pixel_L[base_idx+Int32(3)] += contrib[3]
-    Atomix.@atomic pixel_L[base_idx+Int32(4)] += contrib[4]
+    # Independent contributions need atomic addition; the graph orders every
+    # film consumer after these producers, so no inter-location order is needed.
+    Atomix.@atomic :monotonic pixel_L[base_idx+Int32(1)] += contrib[1]
+    Atomix.@atomic :monotonic pixel_L[base_idx+Int32(2)] += contrib[2]
+    Atomix.@atomic :monotonic pixel_L[base_idx+Int32(3)] += contrib[3]
+    Atomix.@atomic :monotonic pixel_L[base_idx+Int32(4)] += contrib[4]
 end
 
 @inline function load(array, index::Integer, ::Type{T}) where T

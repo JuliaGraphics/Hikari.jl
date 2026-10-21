@@ -95,6 +95,15 @@ end
 # ============================================================================
 
 """
+    infinite_light_pmf(num_infinite, num_bvh) -> Float32
+
+The chance [`bvh_sample_light`](@ref) picks any one infinite light: the infinite ones
+share with the BVH as one more, evenly.
+"""
+@inline infinite_light_pmf(num_infinite::Int32, num_bvh::Int32) =
+    1f0 / Float32(num_infinite + (num_bvh > Int32(0) ? Int32(1) : Int32(0)))
+
+"""
     bvh_sample_light(nodes, infinite_indices, num_infinite, num_bvh, p, n, u) -> (Int32, Float32)
 
 Sample a light from the BVH using importance-weighted traversal.
@@ -113,7 +122,7 @@ Following pbrt-v4's BVHLightSampler::Sample (lightsamplers.h:266-320).
 
     # Probability split: infinite vs BVH
     has_bvh = num_bvh > Int32(0)
-    p_infinite = Float32(num_infinite) / Float32(num_infinite + (has_bvh ? Int32(1) : Int32(0)))
+    p_infinite = Float32(num_infinite) * infinite_light_pmf(num_infinite, num_bvh)
 
     if num_infinite > Int32(0) && u < p_infinite
         # Sample infinite light uniformly

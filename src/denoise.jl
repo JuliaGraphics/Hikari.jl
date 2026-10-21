@@ -14,6 +14,14 @@ using StaticArrays
 # =============================================================================
 
 """
+    Denoiser
+
+How [`denoise!`](@ref) cleans a film's noise: [`DenoiseConfig`](@ref), an à-trous
+filter on the GPU, or [`OIDN`](@ref), Intel Open Image Denoise's network.
+"""
+abstract type Denoiser end
+
+"""
     DenoiseConfig
 
 Configuration parameters for the à-trous wavelet denoiser.
@@ -24,7 +32,7 @@ Configuration parameters for the à-trous wavelet denoiser.
 - `sigma_normal`: Normal edge-stopping threshold (angular sensitivity)
 - `sigma_depth`: Depth edge-stopping threshold (distance sensitivity)
 """
-struct DenoiseConfig
+struct DenoiseConfig <: Denoiser
     iterations::Int32       # Number of à-trous iterations (typically 4-5)
     sigma_color::Float32    # Color/luminance edge-stopping
     sigma_normal::Float32   # Normal edge-stopping (higher = more blur across normals)
@@ -310,7 +318,7 @@ function denoise_plan!(film::Film, config::DenoiseConfig)
     # changes the iteration count does not leave a plan and a full-frame scratch
     # behind each time. No wait needed: retiring is safe with its passes still in
     # flight.
-    if cached isa DenoisePlan
+    if cached !== nothing
         free!(cached)
         film.denoise_plan[] = nothing
     end
@@ -364,14 +372,17 @@ end
 end
 
 """
-    denoise!(film::Film; config=DenoiseConfig())
+    denoise!(film::Film; config::Denoiser = DenoiseConfig())
+
+Denoise `film.framebuffer` in place with `config` (see [`Denoiser`](@ref)).
+"""
+denoise!(film::Film; config::Denoiser = DenoiseConfig()) = denoise!(film, config)
+
+"""
+    denoise!(film::Film, config::DenoiseConfig)
 
 Apply edge-avoiding à-trous wavelet denoising to `film.framebuffer` in place.
 Uses `film.normal` and `film.depth` as edge-stopping guides.
-
-# Arguments
-- `film`: Film with framebuffer + aux buffers populated
-- `config`: DenoiseConfig with filter parameters
 
 # Notes
 - Requires `film.normal` and `film.depth` populated (e.g. via `fill_aux_buffers!`).
@@ -379,7 +390,7 @@ Uses `film.normal` and `film.depth` as edge-stopping guides.
 - The plan and its scratch buffer are cached on the film; changing
   `config.iterations` or rendering to a different film rebuilds them.
 """
-function denoise!(film::Film; config::DenoiseConfig=DenoiseConfig())
+function denoise!(film::Film, config::DenoiseConfig)
     config.iterations < Int32(1) && return nothing
     Mantle.run!(denoise_plan!(film, config).plan)
     return nothing

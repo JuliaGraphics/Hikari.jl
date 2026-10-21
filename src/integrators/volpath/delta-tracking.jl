@@ -141,7 +141,8 @@ significantly reducing null scattering events in sparse heterogeneous media.
         iter, T_maj_accum, beta, r_u, r_l, rng_state,
         scatter_queue,
         pixel_L,
-        work, media, medium_idx, table, max_depth
+        work, media, medium_idx, table, max_depth,
+        control(medium, media, table, λ), controlmajorant(medium)
     )
 end
 
@@ -210,6 +211,18 @@ end
     end
 
     if !work.has_surface_hit
+        # A finite tracing horizon is a segment boundary, not an escape.
+        # Dense media can restrict geometry queries to a few mean free paths;
+        # surviving flights continue without adding a scattering vertex.
+        if isfinite(work.ray.t_max)
+            ray = Raycore.Ray(o=Point3f(work.ray.o + work.ray.t_max * ray_d),
+                              d=ray_d, t_max=Inf32, time=work.ray.time)
+            push!(next_ray_queue, VPRayWorkItem(ray, work.depth, work.lambda,
+                work.pixel_index, beta, r_u, r_l, work.prev_intr_p, work.prev_intr_n,
+                work.eta_scale, work.specular_bounce, work.any_non_specular_bounces,
+                work.medium_idx))
+            return
+        end
         # Ray escaped scene (t_max was Infinity)
         # Use deflected direction for environment lookup
         escaped = VPEscapedRayWorkItem(
@@ -241,8 +254,7 @@ end
                 work.hit_triangle_area, work.t_max)
             ray_d = -wo
             new_medium = null_crossing_medium(work.hit_interface, work.medium_idx, ray_d, work.hit_n)
-            offset_dir = if dot(ray_d, work.hit_n) > 0f0; work.hit_n; else; -work.hit_n; end
-            ray_origin = Point3f(work.hit_pi + offset_dir * 1f-4)
+            ray_origin = offset_surface_origin(work.hit_pi,work.hit_n,ray_d)
             new_ray = Raycore.Ray(o=ray_origin, d=ray_d, t_max=Inf32, time=0f0)
             push!(next_ray_queue, VPRayWorkItem(
                 new_ray, work.depth,
@@ -311,17 +323,23 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
     media,
     medium_idx::SetKey,
     rgb2spec_table,
-    max_depth::Int32
+    max_depth::Int32,
+    mc::MediumProperties,
+    c0::Float32
 )
-    # Iterate over majorant segments (bounded for GPU)
-    # For homogeneous media this loops once, for DDA it traverses voxels
-    max_segments = Int32(256)
+    # Bound by the actual grid dimensions. A fixed cap silently skipped the
+    # remainder of long rays through fine whitewater grids.
+    max_segments = majorant_segment_limit(iter)
 
     # Ray state for deflection (mutable during tracking)
     ray_d = work.ray.d
 
     current_iter = iter
     current_rng = rng_state
+    # The stored control bound covers the entire visible spectrum. A path
+    # only carries four wavelengths; tighten that part to those wavelengths.
+    # Residual bounds and the sampled physical coefficients are unchanged.
+    path_control = max_component(σ_t(mc))
     for _ in Int32(1):max_segments
         seg, new_iter, valid = ray_majorant_next(current_iter, media)
         if !valid
@@ -330,13 +348,18 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
         end
         current_iter = new_iter
 
+        if c0 > 0f0
+            residual_bound = max(seg.σ_maj[1]-c0,0f0)
+            seg = RayMajorantSegment(seg.t_min,seg.t_max,SpectralRadiance(residual_bound+path_control))
+        end
+
         # Sample within this segment
         result = sample_segment!(
             seg, T_maj_accum, beta, r_u, r_l, current_rng,
             scatter_queue,
             pixel_L,
             work, media, medium_idx, rgb2spec_table, max_depth,
-            ray_d
+            ray_d, mc, c0 > 0f0 ? path_control : c0
         )
 
         if result.done
@@ -378,10 +401,14 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
     medium_idx::SetKey,
     rgb2spec_table,
     max_depth::Int32,
-    ray_d::Vec3f
+    ray_d::Vec3f,
+    mc::MediumProperties,
+    c0::Float32
 )
     σ_maj = seg.σ_maj
     σ_maj_0 = σ_maj[1]
+    # Whether this segment's majorant has room for any residual (see `control`).
+    has_residual = σ_maj_0 > c0 * 1.0001f0 + 1f-6
 
     # Handle zero-majorant segment (empty voxel)
     if σ_maj_0 < 1f-10
@@ -401,9 +428,10 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
     # Current RNG state (will be updated in loop)
     current_rng = rng_state
 
-    # Inner sampling loop (bounded iterations)
-    max_samples = Int32(1024)
-    for _ in Int32(1):max_samples
+    # Null events do not advance path depth. Continue until the sampled flight
+    # leaves the segment or a real interaction occurs; dropping its tail biases
+    # dense volumes when the majorant is loose.
+    while t < t_max_seg
         # Sample exponential distance using LCG
         current_rng, u = lcg_next(current_rng)
         dt = -log(max(1f-10, 1f0 - u)) / σ_maj_0
@@ -429,7 +457,24 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
 
         # Sample medium properties at interaction point (incremental position)
         p = Point3f(ray_o + ray_d * dt)
-        mp = Raycore.with_index(sample_point, media, medium_idx, media, rgb2spec_table, p, work.lambda)
+
+        # Sample event type using LCG. Decomposition tracking (see `control`): the
+        # control's absorption and scattering come first and need no lookup; the
+        # residual is looked up only past them, and only where it can be.
+        current_rng, u_event = lcg_next(current_rng)
+        # `mp` is the part the event falls in, `σ_known` all of the medium looked at.
+        p_control = (mc.σ_a[1] + mc.σ_s[1]) / σ_maj_0
+        mp, σ_known = if u_event < p_control
+            mc, σ_t(mc)
+        elseif has_residual
+            mr = Raycore.with_index(residual, media, medium_idx, media, rgb2spec_table, p, work.lambda)
+            # The residual's events follow the control's in [0, 1).
+            u_event -= p_control
+            mr, σ_t(mc) + σ_t(mr)
+        else
+            u_event -= p_control
+            MediumProperties(), σ_t(mc)
+        end
 
         # Add emission if present
         if !is_black(mp.Le) && work.depth < max_depth
@@ -443,12 +488,9 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
             end
         end
 
-        # Compute event probabilities
+        # Compute event probabilities (of the part `mp` is, the control's or the residual's)
         p_absorb = mp.σ_a[1] / σ_maj_0
         p_scatter = mp.σ_s[1] / σ_maj_0
-
-        # Sample event type using LCG
-        current_rng, u_event = lcg_next(current_rng)
 
         if u_event < p_absorb
             # === ABSORPTION ===
@@ -487,7 +529,7 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
 
         else
             # === NULL SCATTERING ===
-            σ_n = σ_maj - mp.σ_a - mp.σ_s
+            σ_n = σ_maj - σ_known
             σ_n = SpectralRadiance(max(σ_n[1], 0f0), max(σ_n[2], 0f0), max(σ_n[3], 0f0), max(σ_n[4], 0f0))
 
             pdf = T_maj[1] * σ_n[1]
@@ -511,7 +553,5 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
         end
     end
 
-    # Exceeded max samples within segment
     return SampleTMajResult(beta, r_u, r_l, current_rng, false, ray_d)
 end
-

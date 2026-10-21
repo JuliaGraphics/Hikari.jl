@@ -14,6 +14,7 @@ using KernelAbstractions
 using Raycore
 using Zlib_jll
 using Adapt
+using LazyArtifacts
 using KernelAbstractions: @kernel, @index, @Const
 import KernelAbstractions as KA
 using GPUArraysCore: @allowscalar
@@ -217,6 +218,10 @@ include("lights/spectral-sampling.jl")
 # VolPath volumetric path tracer
 include("integrators/volpath/media.jl")
 include("integrators/volpath/nanovdb.jl")
+include("nanotree.jl")
+include("sparse-majorant.jl")
+include("tiled-majorant.jl")
+include("nanomedium.jl")
 include("integrators/volpath/medium-dispatch.jl")
 include("integrators/volpath/workitems.jl")
 include("integrators/volpath/per_material_queues.jl")
@@ -228,6 +233,9 @@ include("integrators/volpath/intersection.jl")
 # defined there, which is how an FEM element becomes a surface the integrator
 # can shade without a second code path.
 include("fem.jl")
+include("metaballs.jl")
+include("levelset.jl")
+include("water.jl")
 include("integrators/volpath/surface-eval.jl")
 # The sample as Mantle graphs — needs every stage's kernel to exist
 include("integrators/volpath/graph.jl")
@@ -243,6 +251,7 @@ include("postprocess.jl")
 
 # Denoising
 include("denoise.jl")
+include("oidn.jl")
 
 # PBRT file parser
 include("pbrt/tokenizer.jl")

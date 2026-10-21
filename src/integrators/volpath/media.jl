@@ -24,6 +24,10 @@ HGPhaseFunction() = HGPhaseFunction(0f0)
 
 Evaluate Henyey-Greenstein phase function.
 p(cos θ) = (1 - g²) / [4π(1 + g² - 2g cos θ)^(3/2)]
+
+`θ` is the angle between the directions the light travels in before and after, so
+`cos θ = 1` scatters forward. With a path's `wo` pointing back along it, that is
+`dot(-wo, wi)`, not pbrt's `dot(wo, wi)` (pbrt's formula has `+ 2g cos θ`).
 """
 @propagate_inbounds function hg_p(g::Float32, cos_θ::Float32)::Float32
     g2 = g * g
@@ -106,6 +110,109 @@ MediumProperties() = MediumProperties(
 )
 
 @propagate_inbounds σ_t(mp::MediumProperties) = mp.σ_a + mp.σ_s
+
+"""
+    control(medium, media, table, λ) -> MediumProperties
+    controlmajorant(medium) -> Float32
+    residual(medium, media, table, p, λ) -> MediumProperties
+
+A medium split for decomposition tracking (Kutz et al. 2017, "Spectral and
+Decomposition Tracking"): a `control` part that is the same everywhere in the
+medium's bounds, and the `residual` at a point, the rest. The trackers take the
+control's events and its transmittance without looking the medium up, and look up
+the residual only where it can be: in a majorant cell whose bound is more than
+`controlmajorant`, the share of every cell's majorant the control accounts for. By
+default there is no control and the residual is the whole medium.
+"""
+@inline control(::Medium, media, table, λ) = MediumProperties()
+
+"""
+    refracting(medium) -> Float32
+
+The index of refraction of the surface a medium lies under, as water under its
+surface (see [`snells_window`](@ref)), or 0 for a medium light reaches in straight
+lines. Light sampling in a refracting medium samples the sky through Snell's window.
+"""
+@inline refracting(::Medium) = 0f0
+
+# A geometry-query horizon only: it neither changes extinction nor truncates a
+# path. A miss at a finite horizon resumes the same flight in delta-tracking.
+@inline medium_trace_distance(::Medium, media, p) = Inf32
+
+"""
+    snells_window(ω_air, η) -> (ω_in, jacobian)
+
+Light sampling under a refracting surface (see [`refracting`](@ref)). Light from the
+sky reaches a point under water through Snell's window: it enters bent towards the
+normal, all of the sky above into a cone round it. A sky direction `ω_air`, sampled
+as the sky is, is taken to the direction `ω_in` it would arrive along under a flat
+surface (normal +z) of index `η`; the shadow ray goes out along `ω_in`, bends where it
+really meets the surface (`trace_shadow_transmittance` with `refract`) and finds the
+sky in the direction it leaves in. `jacobian` is `dω_air / dω_in = η² cos θ_in / cos θ_air`,
+the density of `ω_in` over that of `ω_air`; 0 below the horizon.
+
+Paths that leave a non-specular vertex into the window, cross the surface and reach
+the sky are the other way to the same light, and the two are weighed by MIS: the light
+sampling with the vertex's own density for its direction, the path with this
+sampling's for its own (see [`window_sky`](@ref), [`WINDOWED`](@ref)).
+"""
+@inline function snells_window(ω::Vec3f, η::Float32)
+    ca = ω[3]
+    ca <= 1f-4 && return (Vec3f(0f0, 0f0, 1f0), 0f0)
+    sa = sqrt(max(0f0, 1f0 - ca * ca))
+    sw = sa / η
+    cw = sqrt(max(0f0, 1f0 - sw * sw))
+    h = sa > 1f-6 ? Vec3f(ω[1] / sa, ω[2] / sa, 0f0) : Vec3f(0f0)
+    return (Vec3f(h[1] * sw, h[2] * sw, cw), η * η * cw / ca)
+end
+
+"""
+    window_sky(ω_in, η) -> (ω_air, jacobian)
+
+The inverse of [`snells_window`](@ref): the sky direction a flat surface of index `η`
+bends `ω_in` (going up through it) into, and `dω_air / dω_in`; 0 outside the window.
+"""
+@inline function window_sky(ω::Vec3f, η::Float32)
+    cw = ω[3]
+    cw <= 0f0 && return (Vec3f(0f0, 0f0, 1f0), 0f0)
+    sw = sqrt(max(0f0, 1f0 - cw * cw))
+    sa = η * sw
+    sa >= 1f0 && return (Vec3f(0f0, 0f0, 1f0), 0f0)
+    ca = sqrt(1f0 - sa * sa)
+    ca <= 1f-4 && return (Vec3f(0f0, 0f0, 1f0), 0f0)
+    h = sw > 1f-6 ? Vec3f(ω[1] / sw, ω[2] / sw, 0f0) : Vec3f(0f0)
+    return (Vec3f(h[1] * sa, h[2] * sa, ca), η * η * cw / ca)
+end
+
+"""
+    WINDOWED
+
+The `prev_intr_n` of a path that left a non-specular vertex in Snell's window and
+crossed the surface (see [`snells_window`](@ref)). Light sampling at that vertex
+reaches the sky it goes to as well, and the crossing put that sampling's density for
+the path's direction into its `r_l`, so the escape handler weighs the sky by MIS with
+the `r_l` as it is. The next vertex sets its own `prev_intr_n`, so the mark lasts
+exactly until the path meets anything. A real one is never zero.
+"""
+const WINDOWED = Vec3f(0f0, 0f0, 0f0)
+"Whether a path's `prev_intr_n` says it is in Snell's window (see [`WINDOWED`](@ref))."
+@inline windowed(n::Vec3f) = n == WINDOWED
+
+"""
+    regularizes(work, media, regularize::Bool) -> Bool
+
+Whether the BSDF at surface hit `work` is regularized: roughened after the path's
+first non-specular bounce, against fireflies. Not a surface that passes shadow rays,
+met from inside a refracting medium: light sampling goes through it exactly (see
+[`snells_window`](@ref)), and roughened, it would let paths count what that counted.
+"""
+@propagate_inbounds function regularizes(work, media, regularize::Bool)
+    (regularize && work.any_non_specular_bounces) || return false
+    (work.interface.shadows > 0f0 && has_medium(work.current_medium)) || return true
+    return Raycore.with_index(refracting, media, work.current_medium) <= 0f0
+end
+@inline controlmajorant(::Medium) = 0f0
+@propagate_inbounds residual(medium::Medium, media, table, p, λ) = sample_point(medium, media, table, p, λ)
 
 # ============================================================================
 # Ray Majorant Segment
@@ -412,7 +519,7 @@ The Bool indicates validity: true = has segment, false = exhausted.
 Since structs are immutable in Julia, this returns a new iterator with updated state.
 Following PBRT-v4's DDAMajorantIterator::Next().
 """
-@inline @propagate_inbounds function dda_next(iter::DDAMajorantIterator{M}, media) where M
+@inline @propagate_inbounds function dda_step(iter::DDAMajorantIterator{M}, media) where M
     t_min = iter.t_min
     t_max = iter.t_max
 
@@ -508,6 +615,20 @@ Following PBRT-v4's DDAMajorantIterator::Next().
     return (seg, new_iter, true)
 end
 
+"Merge adjacent equal majorants, preserving their exact interval and bound."
+@inline @propagate_inbounds function dda_next(iter::DDAMajorantIterator, media)
+    seg, next, valid = dda_step(iter, media)
+    valid || return (seg, next, false)
+    density = majorant_lookup(iter.grid, media, iter.voxel...)
+    while next.t_min < next.t_max
+        v = next.voxel
+        majorant_lookup(next.grid, media, v[1], v[2], v[3]) == density || break
+        following, next, _ = dda_step(next, media)
+        seg = RayMajorantSegment(seg.t_min, following.t_max, seg.σ_maj)
+    end
+    return (seg, next, true)
+end
+
 # ============================================================================
 # Unified Ray Majorant Iterator (GPU-compatible variant type)
 # ============================================================================
@@ -546,6 +667,10 @@ struct RayMajorantIterator{M<:MajorantGrid}
     voxel_limit::NTuple{3, Int32}
     voxel::NTuple{3, Int32}
 end
+
+"Enough segments to cross every grid plane, including ties on edges and corners."
+@inline majorant_segment_limit(iter::RayMajorantIterator) = iter.mode == Int32(2) ?
+    iter.grid_res[1] + iter.grid_res[2] + iter.grid_res[3] + Int32(1) : Int32(1)
 
 # GPU-compatible empty grid constructor for homogeneous media (type placeholder)
 # Uses SVector{1,Float32} which is stored inline (not a heap pointer), so it works on GPU.
@@ -663,7 +788,10 @@ Returns (segment, new_iter, valid) where valid=false means exhausted.
 end
 
 """DDA next implementation (separated for clarity)"""
-@inline @propagate_inbounds function ray_majorant_next_dda(iter::RayMajorantIterator{M}, media) where {M}
+@inline ray_majorant_next_dda(iter::RayMajorantIterator,media) =
+    ray_majorant_next_dda_step(iter,media,majorant_lookup(iter.grid,media,iter.voxel...))
+
+@inline @propagate_inbounds function ray_majorant_next_dda_step(iter::RayMajorantIterator{M}, media, ρ::Float32) where {M}
     t_min = iter.t_min
     t_max = iter.t_max
 
@@ -697,7 +825,6 @@ end
     end
 
     # Get majorant for current voxel
-    ρ = majorant_lookup(iter.grid, media, voxel_x, voxel_y, voxel_z)
     σ_maj = iter.σ_t * ρ
     seg = RayMajorantSegment(t_min, seg_t_max, σ_maj)
 
@@ -765,26 +892,32 @@ MediumInteraction() = MediumInteraction(
 
 
 """
-    HomogeneousMedium
+    HomogeneousMedium(; σ_a, σ_s, Le, g = 0, ior = 0)
 
 A participating medium with constant properties throughout.
 Simplest medium type - majorant equals actual extinction everywhere.
+`ior`: the index of the surface it lies under, for light sampling through Snell's
+window (see [`refracting`](@ref)); 0 for a medium light reaches in straight lines.
 """
 struct HomogeneousMedium <: Medium
     σ_a::RGBSpectrum           # Absorption coefficient (RGB, uplifted at sample time)
     σ_s::RGBSpectrum           # Scattering coefficient (RGB)
     Le::RGBSpectrum            # Emission (RGB)
     g::Float32                 # HG asymmetry parameter
+    ior::Float32               # The index of the surface over it, or 0
 end
 
 function HomogeneousMedium(;
     σ_a::RGBSpectrum = RGBSpectrum(0.01f0),
     σ_s::RGBSpectrum = RGBSpectrum(1f0),
     Le::RGBSpectrum = RGBSpectrum(0f0),
-    g::Float32 = 0f0
+    g::Float32 = 0f0,
+    ior::Real = 0f0,
 )
-    HomogeneousMedium(σ_a, σ_s, Le, g)
+    HomogeneousMedium(σ_a, σ_s, Le, g, Float32(ior))
 end
+
+@inline refracting(medium::HomogeneousMedium) = medium.ior
 
 """Check if medium has emission"""
 @propagate_inbounds is_emissive(m::HomogeneousMedium) = !is_black(m.Le)
@@ -1228,7 +1361,7 @@ This is used to ensure all majorant iterators have consistent types for GPU comp
     # Find first GridMedium or RGBGridMedium in the tuple
     for i in 1:N
         T = M.parameters[i]
-        if T <: GridMedium || T <: RGBGridMedium
+        if hasfield(T, :majorant_grid)
             return :(@inbounds get_template_grid(media[$i]))
         end
     end
@@ -1249,7 +1382,7 @@ end
     for i in 1:N
         ArrayT = Data.parameters[i]
         ElemT = eltype(ArrayT)
-        if ElemT <: GridMedium || ElemT <: RGBGridMedium
+        if hasfield(ElemT, :majorant_grid)
             return :(@inbounds get_template_grid(media.data[$i][1]))
         end
     end

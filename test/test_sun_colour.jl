@@ -24,7 +24,9 @@ end
 @testset "a baked sun-and-sky lights with the sun at its elevation" begin
     dir = normalize(Vec3f(1, 0.5, 0.1))
     _, sun = Hikari.sunsky_to_envlight(direction = dir, turbidity = 3f0, resolution = 8)
-    expected = Hikari.SunLight(Hikari.sunsky_sun_rgb(1.0, dir; turbidity = 3), -dir)
+    # Baked spectral skies use the model's disc-integrated irradiance, in the
+    # same units as the sky, rather than the legacy normalized RGB helper.
+    expected = Hikari.SunLight(Hikari.sunsky_sun_rgb(dir; intensity = 1, turbidity = 3), -dir)
     @test (sun.i.poly, sun.i.scale) == (expected.i.poly, expected.i.scale)
     @test sun.scale == expected.scale
 end

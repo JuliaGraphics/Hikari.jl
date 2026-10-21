@@ -123,8 +123,9 @@ function Base.length(queue::WorkQueue)
 end
 
 @inline function Base.push!(queue::WorkQueue{T}, item::T) where T
-    # Atomically increment size and get index
-    idx = @atomic queue.size[1] += Int32(1)
+    # Reserve a distinct slot. This counter does not publish the payload:
+    # consumers run after the producing graph stage's memory barrier.
+    idx = @atomic :monotonic queue.size[1] += Int32(1)
     # Only store if within bounds
     if idx <= length(queue.items)
         @inbounds queue.items[idx] = item

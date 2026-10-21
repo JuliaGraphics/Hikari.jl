@@ -1,6 +1,22 @@
 # Ray tracing and intersection handling for VolPath
 # Handles ray-scene intersection and classifies results into work queues
 
+"Offset to the outgoing side, including Float32 position error at large coordinates."
+@inline function offset_surface_origin(p::Point3f,n::Vec3f,d::Vec3f)
+    normal=dot(d,n)>0f0 ? n : -n
+    distance=max(1f-4,8f0*eps(Float32)*dot(abs.(p),abs.(normal)))
+    q=p+normal*distance
+    # Round outwards, so an offset never rounds back onto the boundary.
+    Point3f(ntuple(3) do a
+        x=q[a]; s=normal[a]
+        s==0f0 && return x
+        x==0f0 && return s>0f0 ? floatmin(Float32) : -floatmin(Float32)
+        bits=reinterpret(UInt32,x)
+        delta=(x<0f0)==(s<0f0) ? UInt32(1) : typemax(UInt32)
+        reinterpret(Float32,bits+delta)
+    end)
+end
+
 """
     resolve_mi_idx(instance_id, primitive) -> UInt32
 
@@ -400,8 +416,7 @@ end
                 Raycore.area(primitive), t_hit)
             ray_d = -wo
             new_medium = null_crossing_medium(mi, work.medium_idx, ray_d, geom.n)
-            offset_dir = if dot(ray_d, geom.n) > 0f0; geom.n; else; -geom.n; end
-            ray_origin = Point3f(geom.pi + offset_dir * 1f-4)
+            ray_origin = offset_surface_origin(geom.pi,geom.n,ray_d)
             new_ray = Raycore.Ray(o=ray_origin, d=ray_d, t_max=Inf32, time=0f0)
             push!(next_ray_queue, VPRayWorkItem(
                 new_ray, work.depth,
@@ -457,8 +472,9 @@ end
 """
     trace_shadow_transmittance(accel, media_interfaces, media, rgb2spec_table, origin, dir, t_max, lambda, medium_idx)
 
-Trace a shadow ray computing transmittance through media and transmissive boundaries.
-Returns (T_ray, r_u, r_l, visible) where:
+Trace a shadow ray computing transmittance through media and transmissive boundaries;
+with `refract`, bending at surfaces that pass shadow rays (see `snells_window`).
+Returns (T_ray, r_u, r_l, visible, dir) where `dir` is the direction it leaves in and:
 - T_ray: spectral transmittance
 - r_u, r_l: MIS weight accumulators for combining with path weights
 - visible: false if ray hits an opaque surface
@@ -477,7 +493,8 @@ while opaque surfaces block it. The final contribution is computed as:
 # recognises this function's complete lifecycle and lets the @noinline stand.
 @noinline function trace_shadow_transmittance(
     accel, media_interfaces, media, materials, rgb2spec_table,
-    origin::Point3f, dir::Vec3f, t_max::Float32, lambda::Wavelengths, medium_idx::SetKey
+    origin::Point3f, dir::Vec3f, t_max::Float32, lambda::Wavelengths, medium_idx::SetKey,
+    refract::Bool = false
 )
     # Transmittance and MIS weights following pbrt-v4
     T_ray = SpectralRadiance(1f0)
@@ -487,6 +504,7 @@ while opaque surfaces block it. The final contribution is computed as:
     current_medium = medium_idx
     ray_o = origin
     t_remaining = t_max
+    bent = false
 
     # Trace through up to N transmissive/alpha boundaries
     max_bounces = Int32(10)
@@ -509,7 +527,7 @@ while opaque surfaces block it. The final contribution is computed as:
                 r_u = r_u * seg_r_u
                 r_l = r_l * seg_r_l
             end
-            return (T_ray, r_u, r_l, true)  # Visible
+            return (T_ray, r_u, r_l, true, dir)  # Visible
         end
 
         # Hit a surface - look up MediumInterfaceIdx (per-instance override takes priority)
@@ -524,6 +542,33 @@ while opaque surfaces block it. The final contribution is computed as:
         # result.hit && result.material → T_ray=0. Refracted-light contributions
         # are captured by explicit path bouncing through the BSDF.
         is_transmissive = !Raycore.is_valid(mi.material)
+
+        # A surface that passes shadow rays (see `MediumInterface`'s `shadows`): what a
+        # dielectric of that index transmits. With `refract`, the ray bends there as
+        # light does (see `snells_window`), and the radiance it brings back changes
+        # by the square of the indices; without, the refraction is ignored.
+        bend = !is_transmissive && mi.shadows > 0f0 && refract
+        new_dir = dir
+        if !is_transmissive && mi.shadows > 0f0
+            # Through Snell's window light crosses one surface; what crosses more is
+            # the paths' (see `snells_window`).
+            bend && bent && return (SpectralRadiance(0f0), SpectralRadiance(1f0), SpectralRadiance(1f0), false, dir)
+            if refract
+                ns = vp_compute_shading_normal(primitive, barycentric, n)
+                ns = dot(ns, n) < 0f0 ? -ns : ns
+                leaving = dot(dir, ns) > 0f0            # from the inside out
+                η = leaving ? mi.shadows : 1f0 / mi.shadows
+                nf = leaving ? -ns : ns                  # facing the way the ray comes from
+                cos_i = -dot(dir, nf)
+                sin2_t = η * η * max(0f0, 1f0 - cos_i * cos_i)
+                sin2_t >= 1f0 && return (SpectralRadiance(0f0), SpectralRadiance(1f0), SpectralRadiance(1f0), false, dir)
+                new_dir = normalize(η * dir + (η * cos_i - sqrt(1f0 - sin2_t)) * nf)
+                T_ray = T_ray * ((1f0 - fresnel_dielectric(dot(-dir, ns), mi.shadows)) * η * η)
+            else
+                T_ray = T_ray * (1f0 - fresnel_dielectric(dot(dir, n), mi.shadows))
+            end
+            is_transmissive = true
+        end
 
         if !is_transmissive
             # Check alpha for stochastic pass-through (e.g. GLTF BLEND mode foliage)
@@ -556,7 +601,7 @@ while opaque surfaces block it. The final contribution is computed as:
             end
 
             # Opaque surface blocks the ray
-            return (SpectralRadiance(0f0), SpectralRadiance(1f0), SpectralRadiance(1f0), false)
+            return (SpectralRadiance(0f0), SpectralRadiance(1f0), SpectralRadiance(1f0), false, dir)
         end
 
         # Transmissive boundary - compute transmittance up to this point
@@ -571,7 +616,7 @@ while opaque surfaces block it. The final contribution is computed as:
         end
 
         if is_black(T_ray)
-            return (T_ray, r_u, r_l, true)  # Transmittance is zero, no point continuing
+            return (T_ray, r_u, r_l, true, dir)  # Transmittance is zero, no point continuing
         end
 
         # Update medium based on crossing direction, where the surface
@@ -580,13 +625,20 @@ while opaque surfaces block it. The final contribution is computed as:
             current_medium = get_crossing_medium(mi, entering)
         end
 
-        # Move past this surface
-        ray_o = Point3f(ray_o + dir * (t_hit + 1f-4))  # Small offset to avoid self-intersection
+        # Move past this surface, on the side the ray goes on, bent if it bends
+        hit_p = Point3f(ray_o + dir * t_hit)
+        if bend
+            ray_o = offset_surface_origin(hit_p,n,new_dir)
+            dir = new_dir
+            bent = true
+        else
+            ray_o = offset_surface_origin(hit_p,n,dir)
+        end
         t_remaining = t_remaining - t_hit - 1f-4
     end
 
     # Exceeded max bounces - treat as occluded
-    return (SpectralRadiance(0f0), SpectralRadiance(1f0), SpectralRadiance(1f0), false)
+    return (SpectralRadiance(0f0), SpectralRadiance(1f0), SpectralRadiance(1f0), false, dir)
 end
 
 """
@@ -637,7 +689,8 @@ end
     medium, rgb2spec_table, ray, t_max, lambda, origin, dir, media, medium_idx, template_grid
 )
     iter = create_majorant_iterator(medium, rgb2spec_table, ray, t_max, lambda, template_grid)
-    return ratio_tracking_dda(iter, origin, dir, media, medium_idx, rgb2spec_table, lambda)
+    return ratio_tracking_dda(iter, origin, dir, media, medium_idx, rgb2spec_table, lambda,
+                              control(medium, media, rgb2spec_table, lambda), controlmajorant(medium))
 end
 
 """
@@ -647,27 +700,34 @@ Iterates over per-voxel majorant bounds, doing ratio tracking within each segmen
 @propagate_inbounds function ratio_tracking_dda(
     iter::RayMajorantIterator,
     origin::Point3f, dir::Vec3f,
-    media, medium_idx::SetKey, rgb2spec_table, lambda::Wavelengths
+    media, medium_idx::SetKey, rgb2spec_table, lambda::Wavelengths,
+    mc::MediumProperties, c0::Float32
 )
-    T_ray = SpectralRadiance(1f0)
+    iter.mode == Int32(0) && return (SpectralRadiance(1f0), SpectralRadiance(1f0), SpectralRadiance(1f0))
+    # The constant control spans the complete clipped ray. Evaluate its exact
+    # attenuation once: multiplying a polynomial approximation per cell made
+    # transmission depend on grid resolution (6% error over 1024 thin cells).
+    T_ray = exp(-(iter.t_max - iter.t_min) * σ_t(mc))
     r_u = SpectralRadiance(1f0)
     r_l = SpectralRadiance(1f0)
 
     rng = pcg32_init(pbrt_hash(origin), pbrt_hash(dir))
 
     current_iter = iter
-    for _ in Int32(1):Int32(256)  # max DDA segments
+    for _ in Int32(1):majorant_segment_limit(iter)
         seg, new_iter, valid = ray_majorant_next(current_iter, media)
         if !valid
             break
         end
         current_iter = new_iter
 
-        σ_maj = seg.σ_maj
+        # Only the residual is tracked; the control was integrated above.
+        σ_maj = SpectralRadiance(max(seg.σ_maj[1] - c0, 0f0), max(seg.σ_maj[2] - c0, 0f0),
+                                 max(seg.σ_maj[3] - c0, 0f0), max(seg.σ_maj[4] - c0, 0f0))
         σ_maj_0 = σ_maj[1]
 
-        # Empty voxel — transmittance is 1, skip
-        if σ_maj_0 < 1f-10
+        # No residual in this voxel — nothing to track
+        if σ_maj_0 < 1f-6
             continue
         end
 
@@ -675,7 +735,7 @@ Iterates over per-voxel majorant bounds, doing ratio tracking within each segmen
         t_max_seg = seg.t_max
 
         # Ratio tracking within this DDA segment
-        for _ in Int32(1):Int32(100)
+        while t < t_max_seg
             u, rng = pcg32_uniform_f32(rng)
             dt = -log(max(1f-10, 1f0 - u)) / σ_maj_0
             t_sample = t + dt
@@ -693,9 +753,9 @@ Iterates over per-voxel majorant bounds, doing ratio tracking within each segmen
                 break
             end
 
-            # Sample medium properties at interaction point
+            # Sample the residual at the interaction point
             p = Point3f(origin + dir * t_sample)
-            mp = Raycore.with_index(sample_point, media, medium_idx, media, rgb2spec_table, p, lambda)
+            mp = Raycore.with_index(residual, media, medium_idx, media, rgb2spec_table, p, lambda)
 
             # Null-scattering coefficient (clamped non-negative)
             σ_n = σ_maj - mp.σ_a - mp.σ_s
@@ -771,12 +831,13 @@ Handles transmissive boundaries (MediumInterface) by tracing through them.
         media_interfaces,
         media,
         materials,
+        lights,
     )
     # Trace shadow ray, handling transmissive boundaries and alpha pass-through
     # Returns (T_ray, tr_r_u, tr_r_l, visible) following pbrt-v4's TraceTransmittance
-    T_ray, tr_r_u, tr_r_l, visible = trace_shadow_transmittance(
+    T_ray, tr_r_u, tr_r_l, visible, out = trace_shadow_transmittance(
         accel, media_interfaces, media, materials, rgb2spec_table,
-        work.ray.o, work.ray.d, work.t_max, work.lambda, work.medium_idx
+        work.ray.o, work.ray.d, work.t_max, work.lambda, work.medium_idx, work.refract
     )
 
     if visible && !is_black(T_ray)
@@ -788,7 +849,9 @@ Handles transmissive boundaries (MediumInterface) by tracing through them.
         mis_denom = average(mis_weight)
 
         if mis_denom > 1f-10
-            final_L = work.Ld * T_ray / mis_denom
+            # Through Snell's window the sky is where the ray left (see `snells_window`).
+            sky = work.refract ? evaluate_escaped_ray_spectral(rgb2spec_table, lights, out, work.lambda) : SpectralRadiance(1f0)
+            final_L = work.Ld * sky * T_ray / mis_denom
             if !is_black(final_L)
                 # Add to pixel
                 pixel_idx = work.pixel_index
@@ -827,7 +890,11 @@ end
         # depth=0 or specular bounce: L = beta * Le / r_u.Average()
         # Otherwise: L = beta * Le / (r_u + r_l).Average()
         #   where r_l = sum over infinite lights of: work.r_l * bvh_pmf(light) * light.PDF_Li(wi)
-        final_contrib = if work.depth == Int32(0) || work.specular_bounce
+        final_contrib = if windowed(work.prev_intr_n)
+            # Out through Snell's window: `r_l` already holds the light sampling's
+            # density for this path (see `WINDOWED`).
+            contribution / average(work.r_u + work.r_l)
+        elseif work.depth == Int32(0) || work.specular_bounce
             contribution / average(work.r_u)
         else
             # Full MIS: for each infinite light, accumulate r_l weighted by BVH PMF

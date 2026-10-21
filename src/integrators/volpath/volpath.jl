@@ -479,12 +479,12 @@ pbrt-v4's PixelSensor::ToSensorRGB. White balance is handled via the output_matr
 
         # Accumulate weighted RGB (pbrt-v4: pixel.rgbSum[c] += weight * rgb[c])
         rgb_base = (pixel_idx - Int32(1)) * Int32(3)
-        Atomix.@atomic pixel_rgb[rgb_base + Int32(1)] += weight * rgb[1]
-        Atomix.@atomic pixel_rgb[rgb_base + Int32(2)] += weight * rgb[2]
-        Atomix.@atomic pixel_rgb[rgb_base + Int32(3)] += weight * rgb[3]
+        Atomix.@atomic :monotonic pixel_rgb[rgb_base + Int32(1)] += weight * rgb[1]
+        Atomix.@atomic :monotonic pixel_rgb[rgb_base + Int32(2)] += weight * rgb[2]
+        Atomix.@atomic :monotonic pixel_rgb[rgb_base + Int32(3)] += weight * rgb[3]
 
         # Accumulate weight (pbrt-v4: pixel.weightSum += weight)
-        Atomix.@atomic pixel_weight_sum[pixel_idx] += weight
+        Atomix.@atomic :monotonic pixel_weight_sum[pixel_idx] += weight
     end
 end
 

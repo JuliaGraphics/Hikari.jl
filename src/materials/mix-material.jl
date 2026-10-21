@@ -106,6 +106,22 @@ function resolve_material(scene, spec::MixMaterialSpec)
     return MixMaterial(spec.amount, key1, key2)
 end
 
+# The mix's half of `update_surface!` (scene.jl): its sub-materials at the keys it
+# was pushed with, then itself, the amount texture copied into the slot it has.
+function update_surface!(scene::Scene, key::SetKey, spec::MixMaterialSpec)
+    old = scene.materials[key]::MixMaterial
+    update_surface!(scene, old.material1_idx, spec.material1)
+    update_surface!(scene, old.material2_idx, spec.material2)
+    Raycore.update!(scene.materials, key, MixMaterial(spec.amount, old.material1_idx, old.material2_idx))
+    return nothing
+end
+
+function update_material!(scene::Scene, mi::MediumInterfaceIdx, spec::MixMaterialSpec)
+    update_surface!(scene, mi.material, spec)
+    notify_scene_changed(scene)
+    return nothing
+end
+
 # MixMaterial is not directly emissive (emission comes from chosen sub-material)
 is_emissive(::MixMaterial) = false
 

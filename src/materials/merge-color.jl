@@ -68,9 +68,15 @@ end
 # No surface, so nothing for a plot colour to tint.
 merge_color_with_material(color_tex, material::NullMaterial) = material
 
+# A mix is tinted where it is made: both of what it mixes.
+merge_color_with_material(color_tex, material::MixMaterialSpec) =
+    MixMaterialSpec(merge_color_with_material(color_tex, material.material1),
+                    merge_color_with_material(color_tex, material.material2), material.amount)
+
 function merge_color_with_material(color_tex, material::MediumInterface)
     merged_inner = merge_color_with_material(color_tex, material.material)
-    MediumInterface(merged_inner; inside=material.inside, outside=material.outside, emission=material.emission)
+    MediumInterface(merged_inner; inside=material.inside, outside=material.outside, emission=material.emission,
+                    shadows=material.shadows)
 end
 
 # Fallback for unknown material types

@@ -5,6 +5,11 @@
 # Medium Direct Lighting Inner Function
 # ============================================================================
 
+# Light-sampling roulette: retain all early NEE estimates and one quarter at
+# high scattering orders. The participation probability belongs in BOTH MIS
+# densities (including the phase continuation), not just a brightness multiplier.
+@inline medium_light_probability(depth::Int32) = depth < Int32(8) ? 1f0 : 0.25f0
+
 """Inner function for medium direct lighting - can use return statements.
 
 Uses power-weighted light sampling via alias table for better importance sampling
@@ -18,6 +23,7 @@ for the rationale.
     shadow_queue,
     work::VPMediumScatterWorkItem,
     lights,
+    media,
     rgb2spec_table,
     bvh_nodes,
     infinite_light_indices,
@@ -38,6 +44,9 @@ for the rationale.
     py = u_div(pixel_idx_0, sobol_rng.width) + Int32(1)
     base_dim = Int32(6) + Int32(7) * work.depth
     light_select = sample_1d(sobol_rng, px, py, sample_idx, base_dim + Int32(1))
+    participation = medium_light_probability(work.depth)
+    light_select >= participation && return
+    light_select /= participation
     u_light_x, u_light_y = sample_2d(sobol_rng, px, py, sample_idx, base_dim + Int32(3))
     u_light = Point2f(u_light_x, u_light_y)
 
@@ -59,9 +68,31 @@ for the rationale.
         rgb2spec_table, lights, light_idx, work.p, work.lambda, u_light
     )
 
+    # Under a refracting surface the sky is sampled through Snell's window (see
+    # `snells_window`): the shadow ray bends at the surface, and finds the sky's
+    # radiance in the direction it leaves in.
+    η = Raycore.with_index(refracting, media, work.medium_idx)
+    if η > 0f0 && light_sample.pdf > 0f0 && !light_sample.is_delta &&
+       Raycore.with_index(is_infinite_light, lights, flat_to_light_index(lights, light_idx))
+        ω_in, jacobian = snells_window(light_sample.wi, η)
+        jacobian > 0f0 || return
+        phase_val = hg_p(work.g, dot(-work.wo, ω_in))
+        phase_val > 0f0 || return
+        shadow_ray = Raycore.Ray(o = work.p, d = ω_in, t_max = 1f6, time = work.time)
+        push!(shadow_queue, VPShadowRayWorkItem(
+            shadow_ray, 1f6, work.lambda,
+            work.beta * phase_val,                       # times the sky, found at the end
+            work.r_u * phase_val,                        # MIS with the paths into the window
+            # The sky all the infinite lights make, over the density of their mixture.
+            work.r_u * (compute_env_light_pdf(lights, light_sample.wi) * light_pmf * jacobian * participation),
+            work.pixel_index, work.medium_idx, true))
+        return
+    end
+
     if light_sample.pdf > 0f0 && !is_black(light_sample.Li)
         # Evaluate phase function for light direction
-        cos_θ = dot(work.wo, light_sample.wi)
+        # Between the ways the light goes before and after (see `hg_p`): `wo` points back.
+        cos_θ = dot(-work.wo, light_sample.wi)
         phase_val = hg_p(work.g, cos_θ)
 
         if phase_val > 0f0
@@ -76,7 +107,7 @@ for the rationale.
             # r_u = w.r_u * phasePDF
             # r_l = w.r_u * lightPDF
             # Now using power-weighted PMF instead of uniform 1/num_lights
-            light_pdf = light_sample.pdf * light_pmf  # Include light selection probability
+            light_pdf = light_sample.pdf * light_pmf * participation
             phase_pdf = if light_sample.is_delta
                 0f0  # Delta lights have no MIS with phase sampling
             else
@@ -111,7 +142,8 @@ for the rationale.
                 r_u,
                 r_l,
                 work.pixel_index,
-                work.medium_idx  # Shadow ray travels through same medium
+                work.medium_idx,  # Shadow ray travels through same medium
+                false
             )
 
             push!(shadow_queue, shadow_item)
@@ -128,6 +160,7 @@ end
     work,
     shadow_queue,
     lights,
+    media,
     rgb2spec_table,
     bvh_nodes, infinite_light_indices,
     num_infinite_lights::Int32, num_bvh_lights::Int32,
@@ -137,7 +170,7 @@ end
     sample_idx = @inbounds sample_idx_ref[Int32(1)]
     medium_direct_lighting_inner!(
         shadow_queue,
-        work, lights, rgb2spec_table,
+        work, lights, media, rgb2spec_table,
         bvh_nodes, infinite_light_indices,
         num_infinite_lights, num_bvh_lights,
         num_lights,
@@ -159,6 +192,8 @@ Sobol samples are generated inline; see `surface_direct_lighting_inner!`.
     max_depth::Int32,
     sobol_rng,
     sample_idx::Int32,
+    rr_depth::Int32 = Int32(1),
+    media = nothing,
 )
     # Check depth limit
     new_depth = work.depth + Int32(1)
@@ -180,17 +215,23 @@ Sobol samples are generated inline; see `surface_direct_lighting_inner!`.
         # Update throughput
         # For phase functions: f = phase, pdf = phase, so ratio = 1
         # But we need f/pdf for path throughput
-        new_beta = work.beta  # phase/pdf = 1 for importance-sampled HG
+        # Use the same throughput-based roulette as surface paths. Surviving
+        # paths are reweighted, preserving the expectation at high depth limits.
+        rr_sample = sample_1d(sobol_rng, px, py, sample_idx, base_dim + Int32(5))
+        keep, new_beta = russian_roulette_spectral(work.beta, work.r_u, work.eta_scale,
+                                                   new_depth, rr_sample, rr_depth)
+        keep || return
 
         # Update MIS weights
         new_r_u = work.r_u
-        new_r_l = work.r_u / phase_pdf
+        new_r_l = work.r_u * (medium_light_probability(work.depth) / phase_pdf)
 
         # Create continuation ray
         new_ray = Raycore.Ray(
             o = work.p,
             d = wi,
-            t_max = Inf32,
+            t_max = media === nothing ? Inf32 :
+                Raycore.with_index(medium_trace_distance, media, work.medium_idx, media, work.p),
             time = work.time
         )
 
@@ -224,8 +265,9 @@ end
     ray_queue,
     max_depth::Int32,
     sobol_rng, sample_idx_ref,
+    rr_depth::Int32,
+    media,
 )
     sample_idx = @inbounds sample_idx_ref[Int32(1)]
-    medium_scatter_inner!(ray_queue, work, max_depth, sobol_rng, sample_idx)
+    medium_scatter_inner!(ray_queue, work, max_depth, sobol_rng, sample_idx, rr_depth, media)
 end
-

@@ -227,7 +227,7 @@ function interface_key(scene::Scene, medium::MediumInterface)
     # collapse to bare scalars), so this is the only place that knows the
     # canonical type_idx for SBT routing.
     _LAST_MAT_SETKEY[] = mat_idx
-    return MediumInterfaceIdx(mat_idx, push!(scene, medium.inside), push!(scene, medium.outside))
+    return MediumInterfaceIdx(mat_idx, push!(scene, medium.inside), push!(scene, medium.outside), medium.shadows)
 end
 
 function Base.push!(scene::Scene, medium::MediumInterface)
@@ -277,6 +277,18 @@ function update_material!(scene::Scene, mi::MediumInterfaceIdx, new_material::Ma
     notify_scene_changed(scene)
 end
 
+"""
+    update_surface!(scene, key, material)
+
+Overwrite the surface material stored under `key` in `scene.materials`.
+
+A mix arrives in its host form (`MixMaterialSpec`, holding its two materials) but is
+stored by key (`MixMaterial`): each sub-material is updated at the key the mix was
+pushed with, then the mix itself, whose amount texture is copied into the slot it
+already has. A foam mask changed every frame is a copy, not a new texture.
+"""
+update_surface!(scene::Scene, key::SetKey, material::Material) = Raycore.update!(scene.materials, key, material)
+
 # `MediumInterface` is itself a `<:Material`, so plots that use it (e.g. a
 # volume-bounding cube with `MediumInterface(NullMaterial(); inside=medium)`)
 # hit this overload instead of the generic `::Material` one.  Falling through
@@ -288,8 +300,7 @@ end
 # unpushed slots (NullMaterial, `inside=nothing`, `outside=nothing`) are
 # silent no-ops.
 function update_material!(scene::Scene, mi::MediumInterfaceIdx, new_mi::MediumInterface)
-    Raycore.is_valid(mi.material) &&
-        Raycore.update!(scene.materials, mi.material, new_mi.material)
+    Raycore.is_valid(mi.material) && update_surface!(scene, mi.material, new_mi.material)
     if new_mi.inside !== nothing && Raycore.is_valid(mi.inside)
         Raycore.update!(scene.media, mi.inside, new_mi.inside)
     end

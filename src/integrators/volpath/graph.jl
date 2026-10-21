@@ -117,6 +117,10 @@ end
 # The passes
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Scattering leaves a long tail of small queues. A 32-thread group spreads
+# those paths over more SMs than a 256-thread group, without changing sampling.
+volume_workgroupsize() = 32
+
 """Zero every counter the coming round fills. One dispatch for all of them —
 a `fill!` per queue was ~20 commands and their barriers per round."""
 function reset_pass!(g, state::VolPathState, nxt::WorkQueue)
@@ -179,7 +183,7 @@ function medium_sample_pass!(g, state::VolPathState, refs, nxt::WorkQueue)
                           state.max_depth),
                      Mantle.DeviceRange(state.medium_sample_queue.size;
                                         max = Int(state.medium_sample_queue.capacity));
-                     group = DEFAULT_WORKGROUPSIZE, name = "medium-sample")
+                     group = volume_workgroupsize(), name = "medium-sample")
 end
 
 """Direct lighting at a real scatter event. The only producer of shadow rays."""
@@ -187,24 +191,24 @@ function medium_dl_pass!(g, state::VolPathState, refs)
     Mantle.dispatch!(g, workqueue_map_kernel!,
                          (vp_medium_direct_lighting_kernel!,
                           state.medium_scatter_queue, state.shadow_queue,
-                          refs.lights, state.rgb2spec_table,
+                          refs.lights, refs.media, state.rgb2spec_table,
                           state.bvh_nodes, state.infinite_light_indices,
                           state.num_infinite_lights, state.num_bvh_lights,
                           state.num_lights,
                           state.sobol_rng, refs.sample_idx),
                      Mantle.DeviceRange(state.medium_scatter_queue.size;
                                         max = Int(state.medium_scatter_queue.capacity));
-                     group = DEFAULT_WORKGROUPSIZE, name = "medium-dl")
+                     group = volume_workgroupsize(), name = "medium-dl")
 end
 
 """The phase-function bounce out of a scatter event."""
 function medium_scatter_pass!(g, state::VolPathState, refs, nxt::WorkQueue)
     Mantle.dispatch!(g, workqueue_map_kernel!,
                          (vp_medium_scatter_kernel!, state.medium_scatter_queue,
-                          nxt, state.max_depth, state.sobol_rng, refs.sample_idx),
+                          nxt, state.max_depth, state.sobol_rng, refs.sample_idx, state.rr_depth, refs.media),
                      Mantle.DeviceRange(state.medium_scatter_queue.size;
                                         max = Int(state.medium_scatter_queue.capacity));
-                     group = DEFAULT_WORKGROUPSIZE, name = "medium-scatter")
+                     group = volume_workgroupsize(), name = "medium-scatter")
 end
 
 """Rays that hit nothing: the environment lights, with MIS."""
@@ -243,7 +247,7 @@ and a pass is the unit Mantle emits barriers between. A hand-placed
 `concurrent_indirect_group` says the same thing; here it follows from the
 dispatches sharing a pass, and the backend fuses their prepares into one.
 """
-function shade_pass!(g, state::VolPathState, refs, nxt::WorkQueue)
+function shade_pass!(g, state::VolPathState, refs, nxt::WorkQueue; group=DEFAULT_WORKGROUPSIZE)
     for q in state.per_material_queue.queues
         Mantle.dispatch!(g, workqueue_map_kernel!,
                              (vp_shade_material_kernel!, q,
@@ -257,7 +261,7 @@ function shade_pass!(g, state::VolPathState, refs, nxt::WorkQueue)
                               state.sobol_rng, refs.sample_idx,
                               refs.camera, refs.samples_per_pixel, state.rr_depth),
                          Mantle.DeviceRange(q.size; max = Int(q.capacity));
-                         group = DEFAULT_WORKGROUPSIZE, name = "shade")
+                         group, name = "shade")
     end
 end
 
@@ -266,10 +270,10 @@ function shadow_pass!(g, state::VolPathState, refs)
     Mantle.dispatch!(g, workqueue_map_kernel!,
                          (vp_trace_shadow_rays_kernel!, state.shadow_queue,
                           state.pixel_L, state.rgb2spec_table, refs.accel,
-                          refs.media_interfaces, refs.media, refs.materials),
+                          refs.media_interfaces, refs.media, refs.materials, refs.lights),
                      Mantle.DeviceRange(state.shadow_queue.size;
                                         max = Int(state.shadow_queue.capacity));
-                     group = DEFAULT_WORKGROUPSIZE, name = "shadow")
+                     group = volume_workgroupsize(), name = "shadow")
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -298,7 +302,7 @@ function round_passes!(g, state::VolPathState, refs, cur::WorkQueue, nxt::WorkQu
     has_lights && escaped_pass!(g, state, refs)
     if !chit_owns_surface
         has_lights && emitters_pass!(g, state, refs)
-        shade_pass!(g, state, refs, nxt)
+        shade_pass!(g, state, refs, nxt;group=has_media ? volume_workgroupsize() : DEFAULT_WORKGROUPSIZE)
     end
     has_media && has_lights && shadow_pass!(g, state, refs)
     return g

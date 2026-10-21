@@ -26,6 +26,14 @@ in scene.lights, not on the material).
 - `material`: The underlying BSDF material (e.g., Diffuse, Dielectric)
 - `inside`: Medium for inside the surface, or `nothing` for vacuum
 - `outside`: Medium for outside the surface, or `nothing` for vacuum
+- `shadows`: `0` (the default) and the surface blocks shadow rays, as a surface with a
+  BSDF does in pbrt-v4. An index of refraction and shadow rays pass through it, weighted
+  by the Fresnel transmittance of a dielectric of that index, and cross into the medium
+  on the other side, unbent. A water surface needs this: the sun is a delta light only
+  shadow rays reach, and with the surface opaque to them no sunlight ever lit the water
+  inside, which then glowed only from the few paths that happened to refract out to the
+  sky (dark, and very noisy). What is lost is the refraction of the light on its way in,
+  the caustics, as in most production renderers.
 
 # Usage
 ```julia
@@ -41,16 +49,17 @@ struct MediumInterface{M<:Material, I, O, E} <: Material
     inside::I      # Medium or Nothing
     outside::O     # Medium or Nothing
     emission::E    # NamedTuple (Le, scale, two_sided) or Nothing
+    shadows::Float32   # 0: blocks shadow rays; an index of refraction: passes them (see above)
 end
 
 # Convenience constructors
-function MediumInterface(material::M; inside=nothing, outside=nothing, emission=nothing) where {M<:Material}
-    MediumInterface{M, typeof(inside), typeof(outside), typeof(emission)}(material, inside, outside, emission)
+function MediumInterface(material::M; inside=nothing, outside=nothing, emission=nothing, shadows=0f0) where {M<:Material}
+    MediumInterface{M, typeof(inside), typeof(outside), typeof(emission)}(material, inside, outside, emission, Float32(shadows))
 end
 
 function MediumInterface(material::M, medium) where {M<:Material}
     # Same medium on both sides (e.g., object embedded in fog)
-    MediumInterface{M, typeof(medium), typeof(medium), Nothing}(material, medium, medium, nothing)
+    MediumInterface{M, typeof(medium), typeof(medium), Nothing}(material, medium, medium, nothing, 0f0)
 end
 
 # Forward the height field to the wrapped surface material, like every other
@@ -72,16 +81,19 @@ end
 Internal index wrapper with material and medium indices
 for GPU-compatible dispatch. Created during scene building from `MediumInterface`.
 
-# Fields (all SetKey indices)
+# Fields
 - `material`: SetKey into materials container (BSDF material)
 - `inside`: SetKey for inside medium (invalid = vacuum)
 - `outside`: SetKey for outside medium (invalid = vacuum)
+- `shadows`: how shadow rays treat the surface (see `MediumInterface`)
 """
 struct MediumInterfaceIdx
     material::SetKey
     inside::SetKey
     outside::SetKey
+    shadows::Float32
 end
+MediumInterfaceIdx(material::SetKey, inside::SetKey, outside::SetKey) = MediumInterfaceIdx(material, inside, outside, 0f0)
 
 """Check if this interface represents a medium transition"""
 @propagate_inbounds function is_medium_transition(mi::MediumInterfaceIdx)

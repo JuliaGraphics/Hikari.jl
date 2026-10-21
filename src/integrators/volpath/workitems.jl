@@ -145,7 +145,7 @@ end
 # Constructor from VPRayWorkItem for escaped rays (no surface hit)
 function VPMediumSampleWorkItem(work::VPRayWorkItem)
     VPMediumSampleWorkItem(
-        work.ray, work.depth, Inf32,
+        work.ray, work.depth, work.ray.t_max,
         work.lambda, work.beta, work.r_u, work.r_l,
         work.pixel_index, work.eta_scale,
         work.specular_bounce, work.any_non_specular_bounces,
@@ -257,6 +257,7 @@ struct VPShadowRayWorkItem
     r_l::SpectralRadiance           # MIS weight denominator
     pixel_index::Int32
     medium_idx::SetKey         # Medium the shadow ray travels through
+    refract::Bool              # Through Snell's window: bends at surfaces, `Ld` waits for the sky (see `snells_window`)
 end
 
 # ============================================================================

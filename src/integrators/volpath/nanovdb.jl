@@ -473,6 +473,7 @@ end
 # ============================================================================
 
 @propagate_inbounds is_emissive(::NanoVDBMedium) = false
+@inline get_template_grid(medium::NanoVDBMedium) = medium.majorant_grid
 
 @propagate_inbounds function sample_point(
     medium::NanoVDBMedium,
@@ -864,18 +865,27 @@ function build_nanovdb_from_dense(
 end
 
 """
-    save_nanovdb(filepath, buffer, metadata)
+    save_nanovdb(filepath, buffer, metadata; name="density", gridclass=2)
 
 Save a NanoVDB buffer (from `build_nanovdb_from_dense`) to a `.nanovdb` file
 compatible with both Hikari and pbrt-v4.
 
 File layout (standard NanoVDB IO format):
-  [16B segment header][176B MetaData][8B grid name][zlib-compressed grid binary]
+  [16B segment header][176B MetaData][NUL-terminated name][compressed size][zlib grid]
+
+`gridclass` is NanoVDB's class number (2 for fog density, 0 for an unclassified
+scalar such as temperature). The float and double transforms are both populated;
+the checksum is explicitly disabled, as supported by NanoVDB.
 
 Hikari's reader scans for the zlib magic and skips the IO header.
 pbrt-v4's nanovdb::io::readGrid reads the segment header first.
 """
-function save_nanovdb(filepath::String, buffer::Vector{UInt8}, metadata::NamedTuple)
+function save_nanovdb(filepath::String, buffer::Vector{UInt8}, metadata::NamedTuple;
+                      name::AbstractString="density", gridclass::Integer=2)
+    namebytes = collect(codeunits(name))
+    length(namebytes) <= 255 && !any(iszero, namebytes) ||
+        throw(ArgumentError("NanoVDB grid names must contain at most 255 UTF-8 bytes and no NUL"))
+    push!(namebytes, 0x00)
     # NanoVDB constants
     # magic = "NanoVDB0", version encoding = major<<21 | minor<<10 | patch (v32.3.3)
     nanovdb_magic   = UInt64(0x304244566f6e614e)
@@ -892,20 +902,22 @@ function save_nanovdb(filepath::String, buffer::Vector{UInt8}, metadata::NamedTu
     # gridSize(8) name[256] Map(264) worldBBox(48) voxelSize(24)
     # gridClass(4) gridType(4) ...
     write_buf!(full_buffer,   1, nanovdb_magic)                      # mMagic     offset 0
+    write_buf!(full_buffer,   9, typemax(UInt64))                    # checksum explicitly disabled
     write_buf!(full_buffer,  17, nanovdb_version)                    # mVersion   offset 16
     write_buf!(full_buffer,  29, UInt32(1))                          # mGridCount offset 28
     write_buf!(full_buffer,  33, UInt64(length(full_buffer)))        # mGridSize  offset 32
     # mGridName[256] at offset 40 — used by pbrt-v4 after decompression
-    for (i, c) in enumerate(b"density\0")
+    for (i, c) in enumerate(namebytes)
         full_buffer[40 + i] = c
     end
-    write_buf!(full_buffer, 633, UInt32(2))                          # mGridClass offset 632 (FogVolume)
+    write_buf!(full_buffer, 633, UInt32(gridclass))                  # mGridClass offset 632
     write_buf!(full_buffer, 637, UInt32(1))                          # mGridType  offset 636 (Float)
 
     # Map: invMatF (world→index), matF (index→world), vecF (translation)
     inv_mat = metadata.inv_mat
     for (i, v) in enumerate(inv_mat)
         write_buf!(full_buffer, MAP_INVMATF_OFFSET + (i - 1) * 4, Float32(v))
+        write_buf!(full_buffer, MAP_OFFSET + 160 + (i - 1) * 8, Float64(v))
     end
     m = inv_mat
     cof = (m[5]*m[9] - m[6]*m[8], m[3]*m[8] - m[2]*m[9], m[2]*m[6] - m[3]*m[5],
@@ -914,10 +926,14 @@ function save_nanovdb(filepath::String, buffer::Vector{UInt8}, metadata::NamedTu
     det = m[1]*cof[1] + m[2]*cof[4] + m[3]*cof[7]
     for (i, v) in enumerate(cof)
         write_buf!(full_buffer, MAP_OFFSET + (i - 1) * 4, Float32(v / det))
+        write_buf!(full_buffer, MAP_OFFSET + 88 + (i - 1) * 8, Float64(v / det))
     end
     for (i, v) in enumerate(metadata.vec)
         write_buf!(full_buffer, MAP_VECF_OFFSET + (i - 1) * 4, Float32(v))
+        write_buf!(full_buffer, MAP_OFFSET + 232 + (i - 1) * 8, Float64(v))
     end
+    write_buf!(full_buffer, MAP_OFFSET + 84, 1f0)
+    write_buf!(full_buffer, MAP_OFFSET + 256, 1.0)
 
     # worldBBox (6 × Float64) at offset 560
     wmin, wmax = metadata.world_min, metadata.world_max
@@ -948,7 +964,7 @@ function save_nanovdb(filepath::String, buffer::Vector{UInt8}, metadata::NamedTu
     #   gridClass(4) worldBBox(48) indexBBox(24) voxelSize(24) nameSize(4)
     #   nodeCount[4](16) tileCount[3](12) codec(2) padding(2) version(4)
     # Grid name (8B): "density\0"
-    io_hdr = zeros(UInt8, 200)  # 16B segment + 176B MetaData + 8B "density\0"
+    io_hdr = zeros(UInt8, 192 + length(namebytes))
 
     # Segment header at offset 0
     write_buf!(io_hdr,  1, nanovdb_magic)    # magic    offset 0
@@ -961,10 +977,15 @@ function save_nanovdb(filepath::String, buffer::Vector{UInt8}, metadata::NamedTu
     m0 = 17  # MetaData base (1-indexed)
     write_buf!(io_hdr, m0 +   0, UInt64(length(full_buffer)))  # gridSize  offset 0
     write_buf!(io_hdr, m0 +   8, UInt64(8 + length(compressed)))  # fileSize = 8B size prefix + compressed offset 8
-    write_buf!(io_hdr, m0 +  16, UInt64(9184452543000))         # nameKey = stringHash("density") offset 16
+    namekey = UInt64(0)
+    for c in namebytes[1:end-1]
+        overflow = namekey >> 56
+        namekey = namekey * UInt64(67) + UInt64(c) + overflow
+    end
+    write_buf!(io_hdr, m0 +  16, namekey)                      # NanoVDB stringHash(name)
     write_buf!(io_hdr, m0 +  24, UInt64(0))                    # voxelCount offset 24
     write_buf!(io_hdr, m0 +  32, UInt32(1))                    # gridType=Float(1) offset 32
-    write_buf!(io_hdr, m0 +  36, UInt32(2))                    # gridClass=FogVolume(2) offset 36
+    write_buf!(io_hdr, m0 +  36, UInt32(gridclass))
     for (i, v) in enumerate((wmin[1], wmin[2], wmin[3], wmax[1], wmax[2], wmax[3]))
         write_buf!(io_hdr, m0 + 40 + (i-1)*8, Float64(v))     # worldBBox offset 40
     end
@@ -975,7 +996,7 @@ function save_nanovdb(filepath::String, buffer::Vector{UInt8}, metadata::NamedTu
     for (i, v) in enumerate(voxel_size)
         write_buf!(io_hdr, m0 + 112 + (i-1)*8, Float64(v))    # voxelSize offset 112
     end
-    write_buf!(io_hdr, m0 + 136, UInt32(8))                    # nameSize=8 ("density\0") offset 136
+    write_buf!(io_hdr, m0 + 136, UInt32(length(namebytes)))
     for (i, n) in enumerate((metadata.leaf_count, metadata.lower_count, metadata.upper_count, 1))
         write_buf!(io_hdr, m0 + 140 + (i-1)*4, UInt32(n))     # nodeCount[4] offset 140
     end
@@ -984,7 +1005,7 @@ function save_nanovdb(filepath::String, buffer::Vector{UInt8}, metadata::NamedTu
     write_buf!(io_hdr, m0 + 172, nanovdb_version)              # version  offset 172
 
     # Grid name "density\0" (8 bytes) at bytes 193-200
-    for (i, c) in enumerate(b"density\0")
+    for (i, c) in enumerate(namebytes)
         io_hdr[192 + i] = c
     end
 
