@@ -1,4 +1,16 @@
 """
+    load_frame_data(path)
+
+Load losslessly compressed Julia frame data for file-series nodes. Frame data contains
+geometry/optical parameters; GPU contexts, screens and integrators are never saved.
+Native volume fields can remain separate `.nvdb` inputs loaded by `load_nanotree`.
+"""
+function load_frame_data end
+
+"Write frame data as a losslessly compressed Julia stream."
+function save_frame_data end
+
+"""
     load_nanotree(path; backend=nothing)
 
 Read a ZIP-compressed Float NanoVDB grid into a `NanoTree`. With `backend=nothing`

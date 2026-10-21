@@ -212,6 +212,15 @@ end
 
 Adapt.@adapt_structure WaterMedium
 
+"Change only the time of a medium whose air fields share conservative pair bounds."
+function with_blend_weight(m::WaterMedium, weight::Real)
+    air = map(m.air) do term
+        field, coefficient = term
+        (field isa NanoBlend ? with_blend_weight(field,weight) : field,coefficient)
+    end
+    return WaterMedium(m.spectra,m.from,m.step,m.n,m.g,m.base,air,m.ior,m.bounds,m.majorant_grid)
+end
+
 @inline get_template_grid(m::WaterMedium) = m.majorant_grid
 @propagate_inbounds is_emissive(::WaterMedium) = false
 

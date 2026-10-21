@@ -6,6 +6,7 @@ authors = ["Anton Smirnov <tonysmn97@gmail.com>", "Simon Danisch <sdanisch@proto
 [deps]
 Adapt = "79e6a3ab-5dfb-504d-930d-738a2a938a0e"
 Atomix = "a9b6321e-bd34-4604-b9c9-b65b8de01458"
+CodecZstd = "6b39b394-51ab-5f42-8807-6242bab2b4c2"
 FileIO = "5789e2e9-d7fb-5bc7-8068-2c6fae9b9549"
 GPUArraysCore = "46192b85-c4d5-4398-a991-12ede77f4527"
 GeometryBasics = "5c1252a2-5f33-56bf-86c9-59e7332b4326"
@@ -18,12 +19,14 @@ LazyArtifacts = "4af54fe1-eca0-43a8-85a7-787d91b784e3"
 ProgressMeter = "92933f4c-e287-5a05-a399-4b506db050ca"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 RandomNumbers = "e6cf234a-135c-5ec9-84dd-332b85af5143"
+Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
 Raycore = "afc56b53-c9a9-482a-a956-d1d800e05559"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 StructArrays = "09ab397b-f2b6-538f-b94a-2f83cf4a842a"
 Zlib_jll = "83775a58-1f1d-513f-b197-d71354ab007a"
 
 [compat]
+CodecZstd = "0.8"
 Adapt = "4.4.0"
 FileIO = "1.16"
 GPUArraysCore = "0.2.0"
