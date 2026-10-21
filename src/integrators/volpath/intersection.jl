@@ -330,6 +330,7 @@ end
     camera = @inbounds camera_ref[Int32(1)]
     # ─── Medium ray: trace and defer all shading to the medium pipeline ───
     if has_medium(work.medium_idx)
+        work=prepare_medium_work(work,media)
         hit, primitive, t_hit, barycentric, instance_id = Raycore.closest_hit(accel, work.ray)
 
         if hit

@@ -40,6 +40,23 @@ struct VPRayWorkItem
     medium_idx::SetKey         # Current medium (0 = vacuum)
 end
 
+"Prepare a curved chord before either hardware or software intersection."
+@propagate_inbounds function prepare_medium_work(work::VPRayWorkItem, media)
+    has_medium(work.medium_idx) || return work
+    ray=work.ray
+    h=Raycore.with_index(medium_step_limit,media,work.medium_idx,ray.o,ray.d)
+    isfinite(h) || return work
+    d=Raycore.with_index(medium_start_direction,media,work.medium_idx,ray.o,ray.d,h)
+    # A curved transport step is valid only over this chord. Querying geometry
+    # beyond it is unnecessary (and feeds an unbounded ray to HW traversal
+    # despite having a finite integration interval). A miss still goes through
+    # the medium continuation, which re-intersects from the next endpoint.
+    chord=Raycore.Ray(o=ray.o,d=d,t_min=ray.t_min,t_max=min(ray.t_max,h),time=ray.time)
+    VPRayWorkItem(chord,work.depth,work.lambda,work.pixel_index,
+        work.beta,work.r_u,work.r_l,work.prev_intr_p,work.prev_intr_n,
+        work.eta_scale,work.specular_bounce,work.any_non_specular_bounces,work.medium_idx)
+end
+
 function VPRayWorkItem(
     ray::Raycore.Ray,
     lambda::Wavelengths,

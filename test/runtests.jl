@@ -60,6 +60,7 @@ const TEST_FILES = [
     "test_environment_map_domain.jl",
     "test_empty_scene.jl",
     "materials.jl",
+    "test_curved_transport.jl",
     "type_stability.jl",
     "film.jl",
     "gpu_compat.jl",

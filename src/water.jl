@@ -274,6 +274,7 @@ end
 
 @propagate_inbounds residual(m::WaterMedium, media, table::RGBToSpectrumTable, p::Point3f, λ::Wavelengths)::MediumProperties =
     MediumProperties(SpectralRadiance(0f0), SpectralRadiance(airscattering(media, m.air, p)), SpectralRadiance(0f0), 0f0)
+@propagate_inbounds residual(m::WaterMedium, media, table, p, λ, d) = residual(m, media, table, p, λ)
 
 @propagate_inbounds function get_majorant(m::WaterMedium, table::RGBToSpectrumTable, ray::Raycore.Ray,
                                           t_min::Float32, t_max::Float32, λ::Wavelengths)::RayMajorantSegment

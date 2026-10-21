@@ -57,6 +57,7 @@ import Mantle: RayTracingPipeline, trace_rays_indirect!
     sample_idx = @inbounds sample_idx_ref[Int32(1)]
     lid = rt_launch_id_x()
     @inbounds work = work_queue.items[Int(lid) + 1]
+    work=prepare_medium_work(work,media)
     ray = work.ray
 
     # SER pattern (pbrt-v4 OptiX):
@@ -109,6 +110,7 @@ end
     camera = @inbounds camera_ref[Int32(1)]
     lid = rt_launch_id_x()
     @inbounds work = work_queue.items[Int(lid) + 1]
+    work=prepare_medium_work(work,media)
 
     # Hit info from RT intrinsics.
     t_hit = rt_ray_tmax()
@@ -239,6 +241,7 @@ end
     sample_idx = @inbounds sample_idx_ref[Int32(1)]
     lid = rt_launch_id_x()
     @inbounds work = work_queue.items[Int(lid) + 1]
+    work=prepare_medium_work(work,media)
     if has_medium(work.medium_idx)
         push!(medium_sample_queue, VPMediumSampleWorkItem(work))
     else
@@ -342,6 +345,7 @@ struct VPClosesthitTyped{T} end
     camera = @inbounds camera_ref[Int32(1)]
     lid = rt_launch_id_x()
     @inbounds work = work_queue.items[Int(lid) + 1]
+    work=prepare_medium_work(work,media)
 
     t_hit = rt_ray_tmax()
     prim_id = rt_primitive_id()

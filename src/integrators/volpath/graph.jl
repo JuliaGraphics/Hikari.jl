@@ -495,6 +495,17 @@ mutable struct VPPlans{P,S,F}
     finalize::F
 end
 
+# Deep curved transport can keep a few paths live for hundreds of rounds.
+# Bound the work in any one GPU submission without reducing the path budget.
+struct ChunkedSamplePlan{S,R,A,C}
+    setup::S
+    rounds::R
+    accumulate::A
+    counter::C
+    hostcounter::Vector{Int32}
+    batches::Int
+end
+
 """
     PerRun{C <: Camera}
 
@@ -544,7 +555,19 @@ A function barrier, and the whole reason it exists: `VolPathState.plans` is
 read through it is dynamic. One dynamic call here makes `plans.sample` concrete
 inside, where the `run!` is a static call on a `Plan{D}`.
 """
-runsample!(plans::VPPlans) = Mantle.run!(plans.sample)
+runsample!(plans::VPPlans) = run_sample_plan!(plans.sample)
+run_sample_plan!(p::Mantle.Plan) = Mantle.run!(p)
+function run_sample_plan!(p::ChunkedSamplePlan)
+    Mantle.run!(p.setup)
+    for _ in 1:p.batches
+        Mantle.run!(p.rounds)
+        Mantle.waitidle(p.rounds.graph.dev)
+        copyto!(p.hostcounter,p.counter)
+        p.hostcounter[1]==0 && break
+    end
+    Mantle.run!(p.accumulate)
+    nothing
+end
 
 """
     storechanged!(perrun, camera, initial_medium, filter_params)
@@ -603,20 +626,45 @@ with, so the first sample compares against it and stores nothing.
 writes the command buffers, and `run!` does it on the first run. A caller who
 wants that cost outside a timing loop calls `Mantle.record!` on each of
 [`allplans`](@ref) first.
+
+Deep medium budgets divisible by 64 use bounded submissions: setup and the
+sample-index increment happen once, the same round graph runs up to the FULL
+budget in 64-round batches, and accumulation happens once. This avoids keeping
+a long curved-transport workload in one GPU submission. Ordinary short paths
+retain their single-graph fast path.
 """
 function build_plans(backend, state::VolPathState, framebuffer, refs, perrun::PerRun,
                      max_depth::Int32;
                      chit_owns_surface::Bool, has_media::Bool, has_lights::Bool)
     dev = mantle_device(backend)
-    g = sample_graph(dev, state, refs, max_depth;
-                     chit_owns_surface, has_media, has_lights)
+    if has_media && max_depth>=128 && max_depth%64==0
+        head=Mantle.Graph(dev)
+        Mantle.dispatch!(head,vp_next_sample_kernel!,(refs.sample_idx,),1;
+                         group=1,name="next sample")
+        setup_passes!(head,state,refs,state.ray_queue_a)
+        body=Mantle.Graph(dev)
+        Mantle.repeat!(body,32;while_nonzero=state.ray_queue_a.size) do _
+            rounds_passes!(body,state,refs,2;chit_owns_surface,has_media,has_lights)
+        end
+        tail=Mantle.Graph(dev)
+        accumulate_passes!(tail,state,refs)
+        sample=ChunkedSamplePlan(Mantle.record!(Mantle.Plan(head)),
+            Mantle.record!(Mantle.Plan(body)),Mantle.record!(Mantle.Plan(tail)),
+            state.ray_queue_a.size,zeros(Int32,1),Int(max_depth)÷64)
+    else
+        g = sample_graph(dev, state, refs, max_depth;
+                         chit_owns_surface, has_media, has_lights)
+        sample=Mantle.record!(Mantle.Plan(g))
+    end
     # Recorded here, once: `run!` submits the recording and never records.
-    return VPPlans(framebuffer, perrun, Mantle.record!(Mantle.Plan(g)),
+    return VPPlans(framebuffer, perrun, sample,
                    Mantle.record!(Mantle.Plan(finalize_graph(dev, state, framebuffer))))
 end
 
 """Every plan of a sample, in the order a sample runs them."""
-allplans(p::VPPlans) = (p.sample, p.finalize)
+sampleplans(p::Mantle.Plan)=(p,)
+sampleplans(p::ChunkedSamplePlan)=(p.setup,p.rounds,p.accumulate)
+allplans(p::VPPlans) = (sampleplans(p.sample)..., p.finalize)
 
 # On recording, which `build_plans` above can do up front.
 #
