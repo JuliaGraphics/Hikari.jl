@@ -61,6 +61,7 @@ const TEST_FILES = [
     "test_empty_scene.jl",
     "materials.jl",
     "test_curved_transport.jl",
+    "test_synchrotron.jl",
     "type_stability.jl",
     "film.jl",
     "gpu_compat.jl",

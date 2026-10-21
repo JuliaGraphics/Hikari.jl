@@ -62,6 +62,10 @@ abstract type Material end
 abstract type Integrator end
 abstract type Medium end
 
+include("synchrotron.jl")
+public radiative_volume, EmissionParams, MagneticEtaNe, RhoNe,
+    synchrotron_jν, synchrotron_αν
+
 """
     abstract type GeneratedGeometry <: Material
 
