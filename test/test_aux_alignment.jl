@@ -51,27 +51,31 @@ end
     end
 end
 
-function guide_albedo(backend; hw_accel = false)
+function emitter_beauty_and_guide(backend; hw_accel = false)
     scene = Hikari.Scene(; backend, hw_accel)
-    object = normal_mesh(GeometryBasics.Tessellation(Sphere(Point3f(0), 0.6f0), 24))
-    push!(scene, object, Hikari.Diffuse(Kd = Hikari.RGBSpectrum(0.9f0)))
+    object = normal_mesh(GeometryBasics.Tessellation(Sphere(Point3f(0), 0.6f0), 64))
+    push!(scene, object, Hikari.Emissive(; Le = (1, 1, 1), scale = 1, two_sided = true))
     Hikari.sync!(scene)
-    film = Hikari.Film(Point2f(32, 32))
+    filter = Hikari.GaussianFilter()
+    film = Hikari.Film(Point2f(32, 32); filter)
     camera = Hikari.PerspectiveCamera(Point3f(0, 0, 3), Point3f(0), film; fov = 45f0)
     film = Hikari.Film(backend, film)
+    Hikari.clear!(film)
+    integrator = Hikari.VolPath(; samples = 256, max_depth = 1, hw_accel, filter)
+    integrator(scene, film, camera)
     Hikari.fill_aux_buffers!(film, Adapt.adapt(backend, scene), camera)
-    albedo = map(c -> c.r, Array(film.albedo))
+    luminance = map(c -> c.r + c.g + c.b, Array(film.framebuffer))
+    albedo = map(c -> c.g, Array(film.albedo))
     Hikari.free!(film)
-    return albedo
+    close(integrator)
+    return luminance ./ maximum(luminance), albedo
 end
 
-@testset "Guide albedo is averaged over the pixel" begin
+@testset "Guide albedo is filtered like the image" begin
     backend = Mantle.defaultbackend()
     for hw_accel in (Mantle.supports_hwtlas(backend) ? (false, true) : (false,))
-        albedo = guide_albedo(backend; hw_accel)
-        coverage = albedo ./ (0.9f0 / Hikari.GUIDE_GRID^2)
-        @test coverage ≈ round.(coverage) atol = 1f-3
-        @test any(a -> 0.05f0 < a < 0.85f0, albedo)
+        coverage, albedo = emitter_beauty_and_guide(backend; hw_accel)
+        @test maximum(abs.(albedo .- coverage)) < 0.05f0
     end
 end
 

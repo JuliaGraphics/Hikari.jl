@@ -43,7 +43,7 @@ end
 # on `aux_rays`/`aux_results` scratch buffers.
 @kernel inbounds = true function hw_fill_aux_kernel!(
     depth, normal, albedo,
-    @Const(camera), @Const(crop_p_min),
+    @Const(camera), @Const(filter), filter_data,
     @Const(miss_depth::Float32),
     @Const(width::Int32), @Const(height::Int32),
     accel, materials, interfaces,
@@ -53,19 +53,15 @@ end
         h = height
         row = Int32(((idx - Int32(1)) % h) + Int32(1))
         col = Int32(((idx - Int32(1)) ÷ h) + Int32(1))
-        px = Float32(col) + crop_p_min[1] - 1f0
-        # Film rows run downward; camera raster y runs upward, as in
-        # vp_generate_camera_rays_kernel!. Keep guide buffers aligned with
-        # radiance or denoising leaves a vertically mirrored ghost silhouette.
-        py = Float32(height - row) + crop_p_min[2]
         albedo[idx], normal[idx], depth[idx] =
-            pixel_guides(accel, materials, interfaces, camera, Point2f(px, py), miss_depth)
+            pixel_guides(accel, materials, interfaces, camera, filter, filter_data, pixel_centre(row, col, h), miss_depth)
     end
 end
 
 function fill_aux_buffers!(film::Film, scene::Scene{<:AdaptedAccel}, camera;
                            has_infinite_lights::Bool=false,
-                           cull_mask::UInt32=UInt32(0xFF))
+                           cull_mask::UInt32=UInt32(0xFF),
+                           filter::GPUFilterParams=film.filter_params)
     hwtlas = scene.accel.hwtlas
     hwtlas === nothing && return nothing  # Adapt has not run; nothing to trace
     Raycore.n_instances(hwtlas) == 0 && return nothing
@@ -79,7 +75,7 @@ function fill_aux_buffers!(film::Film, scene::Scene{<:AdaptedAccel}, camera;
                                            # will strip hwtlas at kernel-arg time
     hw_fill_aux_kernel!(backend)(
         film.depth, film.normal, film.albedo,
-        camera, film.crop_bounds.p_min,
+        camera, filter, Adapt.adapt(backend, GPUFilterSamplerData(filter)),
         miss_depth, Int32(w), Int32(h),
         accel,scene.materials,scene.media_interfaces; ndrange=n)
     Mantle.waitidle(mantle_device(backend))

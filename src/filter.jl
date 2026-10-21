@@ -631,15 +631,18 @@ struct GPUFilterSamplerData{V<:AbstractVector{Float32}, M<:AbstractMatrix{Float3
     func_integral::Float32
 end
 
+sampled_analytically(filter::AbstractFilter) = filter isa BoxFilter || filter isa TriangleFilter
+sampled_analytically(params::GPUFilterParams) = params.filter_type in (Int32(1), Int32(2))
+
+filter_radius(params::GPUFilterParams) = params.radius
+
 """
-Build GPU-compatible filter sampler data from a filter.
+Build GPU-compatible filter sampler data from a filter, or from the `GPUFilterParams` a film
+or integrator keeps of one.
 Returns nothing for Box/Triangle filters (they use analytical sampling).
 """
-function GPUFilterSamplerData(filter::AbstractFilter)
-    # Box and Triangle use analytical sampling
-    if filter isa BoxFilter || filter isa TriangleFilter
-        return nothing
-    end
+function GPUFilterSamplerData(filter::Union{AbstractFilter, GPUFilterParams})
+    sampled_analytically(filter) && return nothing
 
     r = filter_radius(filter)
     # Use 32 samples per unit radius (matching pbrt-v4)

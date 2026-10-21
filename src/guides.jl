@@ -64,28 +64,32 @@ end
     return (RGB{Float32}(0, 0, 0), Vec3f(0), first_depth)
 end
 
-const GUIDE_GRID = Int32(3)
+const GUIDE_GRID = Int32(9)
 
 """
-    pixel_guides(accel, materials, interfaces, camera, corner, miss_depth) -> (albedo, normal, depth)
+    pixel_guides(accel, materials, interfaces, camera, filter, filter_data, centre, miss_depth) -> (albedo, normal, depth)
 
-The guides of the pixel whose raster corner is `corner`: albedo and normal averaged over a
-`GUIDE_GRID`² grid of rays across it, since OIDN wants them filtered like the image (a single
-centre ray stair-steps every edge the denoiser keeps), and the depth of the centre ray.
+The guides of the pixel at raster position `centre`: albedo and normal over a `GUIDE_GRID`²
+stratified set of rays through `filter`'s samples, weighted as the image weights them, since
+OIDN wants the guides filtered like the image, and the depth of the middle ray.
 """
-@inline function pixel_guides(accel, materials, interfaces, camera, corner::Point2f, miss_depth::Float32)
-    r = g = b = 0.0f0
+@inline function pixel_guides(accel, materials, interfaces, camera, filter, filter_data, centre::Point2f, miss_depth::Float32)
+    r = g = b = weights = 0.0f0
     normal = Vec3f(0)
     depth = miss_depth
+    middle = (GUIDE_GRID + Int32(1)) ÷ Int32(2)
     for j in Int32(1):GUIDE_GRID, i in Int32(1):GUIDE_GRID
-        offset = Point2f((i - 0.5f0) / GUIDE_GRID, (j - 0.5f0) / GUIDE_GRID)
-        ray, w = generate_ray(camera, CameraSample(corner + offset, Point2f(0.5f0, 0.5f0), 0.0f0))
-        w > 0.0f0 || continue
+        u = Point2f((i - 0.5f0) / GUIDE_GRID, (j - 0.5f0) / GUIDE_GRID)
+        fs = filter_sample(filter, filter_data, u)
+        ray, ω = generate_ray(camera, CameraSample(centre + fs.p, Point2f(0.5f0, 0.5f0), 0.0f0))
+        ω > 0.0f0 || continue
         a, n, d = guide_hit(accel, materials, interfaces, ray, miss_depth)
-        r += a.r; g += a.g; b += a.b
-        normal += n
-        i == j == (GUIDE_GRID + Int32(1)) ÷ Int32(2) && (depth = d)
+        w = fs.weight
+        r += w * a.r; g += w * a.g; b += w * a.b
+        normal += w * n
+        weights += w
+        i == j == middle && (depth = d)
     end
-    k = 1.0f0 / Float32(GUIDE_GRID * GUIDE_GRID)
+    k = weights > 0.0f0 ? 1.0f0 / weights : 0.0f0
     return (RGB{Float32}(r * k, g * k, b * k), normal * k, depth)
 end
