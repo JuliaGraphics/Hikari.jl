@@ -1,5 +1,6 @@
 using Test
 using Hikari
+using Random
 using GeometryBasics: Point2f
 
 # Regression: `sample_texture_data` must not clamp UVs outside [0,1] to the edge
@@ -86,6 +87,34 @@ end
     # we're not clamp-to-edge'd to the border cell is "more than one
     # full-row's worth": 5 distinct values is well past the pre-fix bug.
     @test length(vals) >= 5
+end
+
+@testset "sample_texture_data matches the mod-based reference and never throws" begin
+    function reference(data, uv)
+        u_wrapped = uv[1] - floor(uv[1])
+        v_wrapped = uv[2] - floor(uv[2])
+        s = size(data)
+        fx = (1f0 - v_wrapped) * Float32(s[1]) - 0.5f0
+        fy = u_wrapped * Float32(s[2]) - 0.5f0
+        ix = floor(fx); iy = floor(fy)
+        tx = fx - ix;   ty = fy - iy
+        row0 = mod(Int(ix), s[1]) + 1; row1 = mod(Int(ix) + 1, s[1]) + 1
+        col0 = mod(Int(iy), s[2]) + 1; col1 = mod(Int(iy) + 1, s[2]) + 1
+        w00 = (1f0 - tx) * (1f0 - ty); w10 = tx * (1f0 - ty); w01 = (1f0 - tx) * ty; w11 = tx * ty
+        return data[row0, col0] * w00 + data[row1, col0] * w10 + data[row0, col1] * w01 + data[row1, col1] * w11
+    end
+    data = reshape(Float32.(1:35), 5, 7)
+    rng = Random.MersenneTwister(1)
+    for _ in 1:2000
+        uv = Point2f(20 * rand(rng, Float32) - 10, 20 * rand(rng, Float32) - 10)
+        @test Hikari.sample_texture_data(data, uv) == reference(data, uv)
+    end
+    for uv in (Point2f(0, 0), Point2f(1, 1), Point2f(-1f-9, 1f-9), Point2f(0.99999994f0, -0.99999994f0))
+        @test Hikari.sample_texture_data(data, uv) == reference(data, uv)
+    end
+    @test Hikari.sample_texture_data(data, Point2f(NaN32, 0.5f0)) == 0f0
+    @test Hikari.sample_texture_data(data, Point2f(0.5f0, Inf32)) == 0f0
+    @test Hikari.sample_texture_data(zeros(Float32, 0, 0), Point2f(0.5f0, 0.5f0)) == 0f0
 end
 
 end  # @testset

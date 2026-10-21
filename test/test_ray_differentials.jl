@@ -134,3 +134,9 @@ end
         @test norm(approx) / norm(truth) ≈ 1 atol = 0.05
     end
 end
+
+@testset "uv derivatives: non-finite ones are zeroed, large ones clamped" begin
+    dpdu, dpdv = Vec3f(1, 0, 0), Vec3f(0, 1, 0)
+    @test Hikari.compute_uv_derivatives(dpdu, dpdv, Vec3f(NaN32, 0, 0), Vec3f(0, Inf32, 0)) == (0f0, 0f0, 0f0, 0f0)
+    @test Hikari.compute_uv_derivatives(dpdu, dpdv, Vec3f(2f9, 0, 0), Vec3f(0, 0.5f0, 0)) == (1f8, 0f0, 0f0, 0.5f0)
+end
