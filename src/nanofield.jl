@@ -40,6 +40,13 @@ end
 resolve_nanotree(tree::NanoTree)=tree
 resolve_nanotree(input::DeferredNanoTree)=read(input)
 
+"Release decoded host voxels after a consumer has finished copying them; keep the file revision."
+function release_nanotree!(input::DeferredNanoTree)
+    input.tree=nothing
+    return input
+end
+release_nanotree!(tree::NanoTree)=tree
+
 "Copy only the native node words, without an intermediate byte-sized grid copy."
 nanotree_words(buffer,first,last)=copy(reinterpret(UInt32,view(buffer,first:last)))
 

@@ -19,6 +19,12 @@ end
         @test read(input).words==tree.words
         @test read(input)===Hikari.resolve_nanotree(input)
         @test Hikari.resolve_nanotree(tree)===tree
+        original=read(input)
+        @test Hikari.release_nanotree!(input)===input
+        @test input.tree===nothing
+        @test read(input)!==original
+        @test read(input).words==original.words
+        Hikari.release_nanotree!(input)
         open(io->write(io,UInt8(0)),path,"a")
         @test_throws ErrorException read(input)
         rm(path)
