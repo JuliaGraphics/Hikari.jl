@@ -132,6 +132,9 @@ function Hikari.radiative_volume(path::AbstractString; mass_unit, black_hole_mas
     # infall is not where absorption peaks. Convex interpolation bounds both
     # alpha and |v| by the maxima of the same eight corners.
     slab_bounds=zeros(Float32,resolution-1)
+    # EmissionParams.p is dynamically typed. Resolve this invariant once,
+    # rather than boxing arithmetic and exponentiation in every grid cell.
+    majorant_exponent = Float32((ep.p+2)/4)
     Threads.@threads for k in 1:resolution-1
         bound=0f0
         @inbounds for iy in 1:resolution-1, ix in 1:resolution-1
@@ -142,7 +145,7 @@ function Hikari.radiative_volume(path::AbstractString; mass_unit, black_hole_mas
                 v2max=max(v2max,sum(abs2,v))
             end
             vmax=sqrt(v2max)
-            bound=max(bound,amax*((1+vmax)/(1-vmax))^Float32((ep.p+2)/4))
+            bound=max(bound,amax*((1+vmax)/(1-vmax))^majorant_exponent)
         end
         slab_bounds[k]=bound
     end
