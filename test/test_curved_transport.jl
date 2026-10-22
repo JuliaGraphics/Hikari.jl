@@ -76,3 +76,42 @@ end
     @test Hikari.sample_point(fog,nothing,table,ray.o,wl,ray.d) ==
           Hikari.sample_point(fog,nothing,table,ray.o,wl)
 end
+
+# The same chord through a majorant GRID: several segments, each of null events
+# only. Bending stays once per chord, at its end, whatever the voxel count.
+struct CurvedGridFixture <: Hikari.Medium
+    majorant_grid::Hikari.MajorantGrid{Vector{Float32}}
+end
+Hikari.medium_step_limit(::CurvedGridFixture,p::Point3f,d::Vec3f) = 0.25f0
+Hikari.medium_start_direction(::CurvedGridFixture,p,d,h) = rotate_transport(d,h/2)
+Hikari.medium_end_direction(::CurvedGridFixture,p,d,h,t) = rotate_transport(d,t-h/2)
+Hikari.sample_point(::CurvedGridFixture,media,table,p::Point3f,wl::Hikari.Wavelengths,d::Vec3f) =
+    Hikari.MediumProperties(Hikari.SpectralRadiance(0),Hikari.SpectralRadiance(0),Hikari.SpectralRadiance(0),0f0)
+Hikari.get_template_grid(m::CurvedGridFixture) = m.majorant_grid
+Hikari.create_majorant_iterator(m::CurvedGridFixture,table::Hikari.RGBToSpectrumTable,
+    ray::Raycore.Ray,tmax::Float32,wl::Hikari.Wavelengths,::Hikari.MajorantGrid) =
+    Hikari.RayMajorantIterator(Hikari.create_dda_iterator(m.majorant_grid,
+        Hikari.Bounds3(Point3f(-1f-3,-1,-1),Point3f(0.3f0,1,1)),ray.o,ray.d,0f0,tmax,Hikari.SpectralRadiance(1)))
+
+@testset "Curved chord through a majorant grid bends once" begin
+    table=Hikari.get_srgb_table()
+    wl=Hikari.sample_wavelengths_visible(0.3f0)
+    key=Raycore.SetKey(UInt32(1),UInt32(1))
+    ray=Raycore.Ray(o=Point3f(0),d=Vec3f(1,0,0))
+    unit=Hikari.SpectralRadiance(1)
+    grid=Hikari.MajorantGrid(fill(40f0,4),Vec{3,Int32}(4,1,1))
+    medium=CurvedGridFixture(grid)
+    media=Raycore.StaticMultiTypeSet(([medium],),())
+    @test Hikari.get_template_grid_from_tuple(media) === grid
+    @test Hikari.get_template_grid_from_tuple((Hikari.HomogeneousMedium(),medium)) === grid
+    @test Hikari.get_template_grid_from_tuple((Hikari.HomogeneousMedium(),)) == Hikari.EmptyMajorantGrid()
+    physical=Hikari.VPRayWorkItem(ray,wl,Int32(1);medium_idx=key)
+    chord=Hikari.prepare_medium_work(physical,media)
+    work=Hikari.VPMediumSampleWorkItem(chord)
+    result=Hikari.sample_with_iterator_helper(medium,table,chord.ray,Inf32,wl,
+        unit,unit,unit,unit,UInt64(2),nothing,zeros(Float32,4),work,media,key,Int32(8),grid)
+    @test result.ray_o ≈ Point3f(0.25f0*chord.ray.d)
+    @test result.ray_d ≈ rotate_transport(ray.d,0.25f0)
+    @test result.retrace && !result.done
+    @test result.beta == unit
+end

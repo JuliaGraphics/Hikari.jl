@@ -372,6 +372,13 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
     # Ray state for deflection (mutable during tracking)
     ray_d = work.ray.d
     ray_o = work.ray.o
+    # A curved medium's chord is ONE straight line, bent once at its end: every
+    # segment samples along the chord's direction, and only the last segment's
+    # end point and direction leave the loop. Carrying an intermediate segment's
+    # end direction into the next one bent the chord at every voxel boundary of
+    # a majorant grid and moved its later samples off the chord.
+    curved = Raycore.with_index(medium_step_limit, media, medium_idx, work.ray.o, work.ray.d) < Inf32
+    end_d = ray_d
 
     current_iter = iter
     current_rng = rng_state
@@ -411,13 +418,14 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
         r_u = result.r_u
         r_l = result.r_l
         current_rng = result.rng_state
-        ray_d = result.ray_d
+        end_d = result.ray_d
+        ray_d = curved ? work.ray.d : result.ray_d
         ray_o = result.ray_o
         # T_maj_accum is reset to 1.0 inside sample_segment! after interactions
         T_maj_accum = SpectralRadiance(1f0)
     end
 
-    return SampleTMajResult(beta, r_u, r_l, current_rng, false, ray_d, ray_o, false)
+    return SampleTMajResult(beta, r_u, r_l, current_rng, false, end_d, ray_o, false)
 end
 
 """
