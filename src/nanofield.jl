@@ -40,6 +40,9 @@ end
 resolve_nanotree(tree::NanoTree)=tree
 resolve_nanotree(input::DeferredNanoTree)=read(input)
 
+"Copy only the native node words, without an intermediate byte-sized grid copy."
+nanotree_words(buffer,first,last)=copy(reinterpret(UInt32,view(buffer,first:last)))
+
 """
     load_nanotree(path; backend=nothing)
 
@@ -66,7 +69,7 @@ function load_nanotree(path::AbstractString; backend=nothing)
         throw(ArgumentError("Unsupported NanoVDB node layout"))
     stop = meta.leaf_offset + Int(meta.leaf_count) * LEAFDATA_SIZE - 1
     stop <= length(buffer) || throw(ArgumentError("Truncated NanoVDB leaves"))
-    words = copy(reinterpret(UInt32, buffer[meta.root_offset:stop]))
+    words = nanotree_words(buffer,meta.root_offset,stop)
     voxel = Float32(1 / scale)
     lo = Point3f(meta.vec) .- Vec3f(0.5f0 * voxel)
     background = wordfloat(words, Int32(ROOTDATA_BACKGROUND_OFFSET ÷ 4))

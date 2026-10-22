@@ -27,6 +27,19 @@ end
     end
 end
 
+@testset "Native word extraction allocates only its returned word buffer" begin
+    payload=32*1024*1024
+    buffer=zeros(UInt8,736+payload)
+    buffer[737]=0x19;buffer[end]=0x70
+    Hikari.nanotree_words(UInt8[1,2,3,4],1,4)
+    result=Ref{Any}()
+    allocated=@allocated result[]=Hikari.nanotree_words(buffer,737,length(buffer))
+    @test allocated<payload+1024*1024
+    @test result[] isa Vector{UInt32}
+    @test first(result[])==UInt32(0x19)
+    @test last(result[])==UInt32(0x70000000)
+end
+
 @kernel function nanofield_stored_samples!(out, media, field, points)
     i = @index(Global)
     out[i] = Hikari.nanofield_sample(field, media, points[i])
