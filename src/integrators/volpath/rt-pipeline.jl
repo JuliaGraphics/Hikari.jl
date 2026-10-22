@@ -11,9 +11,8 @@
 # closest-hit shaders via SBT, etc. all hook in at the chit boundary.
 #
 # Both `closest_hit` and `miss` receive the same BDA argument signature as
-# the raygen (queues, materials, etc.) — see Lava's
-# `RayTracingPipeline(... chit_miss_take_args=true)` switch.  Both stages
-# look up their work item via `work_queue.items[rt_launch_id_x() + 1]`.
+# the raygen (queues, materials, etc.). Both stages look up their work item via
+# `work_queue.items[rt_launch_id_x() + 1]`.
 
 # The DEVICE-side intrinsics are Lava's — they are what a shader body calls, and
 # the compiler is what lowers them. The PIPELINE that dispatches them is Mantle's,
@@ -30,7 +29,7 @@
 # imports `Mantle: HWTLAS, AdaptedAccel` and nothing else, which is what runs on
 # Metal.
 import Mantle
-import Mantle: RayTracingPipeline, trace_rays_indirect!
+import Mantle: RayTracingPipeline
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Raygen: pull the ray work item, fire `traceRay`, let chit/miss do the work.
@@ -569,7 +568,6 @@ function vp_rt_pipeline(materials::Raycore.StaticMultiTypeSet{Data}) where {Data
             closest_hit = chits,
             miss        = vp_miss_escape,
             payload_type = :f32_7,
-            chit_miss_take_args = true,
         )
         _VP_RT_PIPELINES[Data] = p
     end
