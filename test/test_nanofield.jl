@@ -118,6 +118,24 @@ test_nanofield()
     # The former fixed200MB buffer silently returned a truncated field here.
     large = zeros(UInt8,200_000_017)
     large[end] = 0xa7
-    restored = Hikari.decompress_nanovdb(Hikari.compress_zlib(large);expected_size=length(large))
+    Hikari.compress_zlib(UInt8[0])
+    packed = Ref{Vector{UInt8}}()
+    allocated = @allocated packed[] = Hikari.compress_zlib(large)
+    @test allocated < 32*1024*1024
+    restored = Hikari.decompress_nanovdb(packed[];expected_size=length(large))
     @test restored == large
+end
+
+@testset "ZIP compression spans arbitrary input and output chunk boundaries" begin
+    for n in (0,1,4095,4096,4097,100_003)
+        original=rand(MersenneTwister(n),UInt8,n)
+        for chunk in (1,257,4096)
+            io=IOBuffer()
+            count=Hikari.compress_zlib!(io,
+                (view(original,1:n÷2),view(original,n÷2+1:n));chunk_bytes=chunk)
+            compressed=take!(io)
+            @test count==length(compressed)
+            @test Hikari.decompress_nanovdb(compressed)==original
+        end
+    end
 end

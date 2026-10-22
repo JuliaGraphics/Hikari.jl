@@ -880,7 +880,7 @@ the checksum is explicitly disabled, as supported by NanoVDB.
 Hikari's reader uses the IO metadata to locate and size the ZIP payload.
 pbrt-v4's nanovdb::io::readGrid reads the segment header first.
 """
-function save_nanovdb(filepath::String, buffer::Vector{UInt8}, metadata::NamedTuple;
+function save_nanovdb(filepath::String, buffer::AbstractVector{UInt8}, metadata::NamedTuple;
                       name::AbstractString="density", gridclass::Integer=2)
     namebytes = collect(codeunits(name))
     length(namebytes) <= 255 && !any(iszero, namebytes) ||
@@ -892,10 +892,10 @@ function save_nanovdb(filepath::String, buffer::Vector{UInt8}, metadata::NamedTu
     nanovdb_version = UInt32((32 << 21) | (3 << 10) | 3)
 
     header_size = NANOVDB_GRIDDATA_SIZE + TREEDATA_SIZE  # 672 + 64 = 736
-    full_buffer = zeros(UInt8, header_size + length(buffer))
-
-    # Copy node data after GridData+TreeData header
-    copyto!(full_buffer, header_size + 1, buffer, 1, length(buffer))
+    grid_bytes = header_size + length(buffer)
+    # Only the header is assembled. Nodes stream into the same ZIP payload,
+    # avoiding several full-grid copies for multi-gigabyte sparse fields.
+    full_buffer = zeros(UInt8, header_size)
 
     # ---- GridData fields (offsets from NanoVDB.h:2184, 1-indexed) ----
     # magic(8) checksum(8) version(4) flags(4) gridIndex(4) gridCount(4)
@@ -905,7 +905,7 @@ function save_nanovdb(filepath::String, buffer::Vector{UInt8}, metadata::NamedTu
     write_buf!(full_buffer,   9, typemax(UInt64))                    # checksum explicitly disabled
     write_buf!(full_buffer,  17, nanovdb_version)                    # mVersion   offset 16
     write_buf!(full_buffer,  29, UInt32(1))                          # mGridCount offset 28
-    write_buf!(full_buffer,  33, UInt64(length(full_buffer)))        # mGridSize  offset 32
+    write_buf!(full_buffer,  33, UInt64(grid_bytes))                 # mGridSize  offset 32
     # mGridName[256] at offset 40 — used by pbrt-v4 after decompression
     for (i, c) in enumerate(namebytes)
         full_buffer[40 + i] = c
@@ -956,8 +956,6 @@ function save_nanovdb(filepath::String, buffer::Vector{UInt8}, metadata::NamedTu
         write_buf!(full_buffer, TREEDATA_NODE_COUNT_START + (i-1)*4, UInt32(n))
     end
 
-    compressed = compress_zlib(full_buffer)
-
     # ---- NanoVDB IO file format header (pbrt-v4 nanovdb::io::readGrid compatibility) ----
     # Segment header (16B): magic(8) version(4) gridCount(2) codec(2)
     # MetaData (176B): gridSize(8) fileSize(8) nameKey(8) voxelCount(8) gridType(4)
@@ -975,8 +973,7 @@ function save_nanovdb(filepath::String, buffer::Vector{UInt8}, metadata::NamedTu
     # MetaData at offset 16 (1-indexed byte 17)
     # MetaData field offsets are relative to MetaData start (offset 16 in file)
     m0 = 17  # MetaData base (1-indexed)
-    write_buf!(io_hdr, m0 +   0, UInt64(length(full_buffer)))  # gridSize  offset 0
-    write_buf!(io_hdr, m0 +   8, UInt64(8 + length(compressed)))  # fileSize = 8B size prefix + compressed offset 8
+    write_buf!(io_hdr, m0 +   0, UInt64(grid_bytes))       # gridSize offset 0
     namekey = UInt64(0)
     for c in namebytes[1:end-1]
         overflow = namekey >> 56
@@ -1010,11 +1007,20 @@ function save_nanovdb(filepath::String, buffer::Vector{UInt8}, metadata::NamedTu
     end
 
     # ZIP format: 8-byte compressed size prefix, then compressed data (required by nanovdb::io)
-    compressed_size_prefix = reinterpret(UInt8, [UInt64(length(compressed))])
-    open(filepath, "w") do io
+    temporary, io = mktemp(dirname(abspath(filepath)))
+    try
         write(io, io_hdr)
-        write(io, compressed_size_prefix)
-        write(io, compressed)
+        write(io, UInt64(0))
+        compressed_size = compress_zlib!(io, (full_buffer, buffer))
+        write_buf!(io_hdr, m0 + 8, UInt64(8 + compressed_size))
+        seekstart(io)
+        write(io, io_hdr)
+        write(io, UInt64(compressed_size))
+        close(io)
+        mv(temporary, filepath; force=true)
+    finally
+        isopen(io) && close(io)
+        isfile(temporary) && rm(temporary)
     end
 
     return nothing
@@ -1119,24 +1125,50 @@ ZStream() = ZStream(
 )
 
 
-function compress_zlib(data::Vector{UInt8})
-    out_buf = Vector{UInt8}(undef, length(data) + div(length(data), 100) + 1024)
-
+function compress_zlib!(io::IO, parts; chunk_bytes::Int=4*1024*1024)
+    0 < chunk_bytes <= typemax(Cuint) || throw(ArgumentError("Invalid ZIP chunk size"))
+    input = Vector{UInt8}(undef, chunk_bytes)
+    output = similar(input)
     z = Ref(ZStream())
-    z[].next_in = pointer(data)
-    z[].avail_in = length(data)
-    z[].next_out = pointer(out_buf)
-    z[].avail_out = length(out_buf)
-
     ret = ccall((:deflateInit_, Zlib_jll.libz), Cint,
         (Ref{ZStream}, Cint, Cstring, Cint), z, 6, "1.2.11", sizeof(ZStream))
     ret != 0 && error("deflateInit failed: $ret")
+    try
+        GC.@preserve input output begin
+            for part in parts, first in 1:chunk_bytes:length(part)
+                n = min(chunk_bytes, length(part)-first+1)
+                copyto!(input, 1, part, first, n)
+                z[].next_in = pointer(input)
+                z[].avail_in = Cuint(n)
+                while z[].avail_in > 0
+                    z[].next_out = pointer(output)
+                    z[].avail_out = Cuint(chunk_bytes)
+                    ret = ccall((:deflate, Zlib_jll.libz), Cint, (Ref{ZStream}, Cint), z, 0)
+                    ret == 0 || error("ZIP compression failed: $ret")
+                    write(io, view(output, 1:chunk_bytes-Int(z[].avail_out)))
+                end
+            end
+            z[].next_in = C_NULL
+            z[].avail_in = 0
+            while true
+                z[].next_out = pointer(output)
+                z[].avail_out = Cuint(chunk_bytes)
+                ret = ccall((:deflate, Zlib_jll.libz), Cint, (Ref{ZStream}, Cint), z, 4)
+                ret in (0,1) || error("ZIP compression finalization failed: $ret")
+                write(io, view(output, 1:chunk_bytes-Int(z[].avail_out)))
+                ret == 1 && break
+            end
+        end
+        return Int(z[].total_out)
+    finally
+        ccall((:deflateEnd, Zlib_jll.libz), Cint, (Ref{ZStream},), z)
+    end
+end
 
-    ret = ccall((:deflate, Zlib_jll.libz), Cint, (Ref{ZStream}, Cint), z, 4)  # Z_FINISH=4
-    compressed_size = z[].total_out
-    ccall((:deflateEnd, Zlib_jll.libz), Cint, (Ref{ZStream},), z)
-
-    return out_buf[1:compressed_size]
+function compress_zlib(data::AbstractVector{UInt8})
+    io = IOBuffer()
+    compress_zlib!(io, (data,))
+    return take!(io)
 end
 
 

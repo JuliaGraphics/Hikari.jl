@@ -438,7 +438,7 @@ The grid as a `.nvdb` file (see `save_nanovdb`): its words, which are NanoVDB's 
 bytes, behind the grid's header.
 """
 function save_nanovdb(path::String, t::NanoTree; name::AbstractString="density", gridclass::Integer=2)
-    bytes = Vector{UInt8}(reinterpret(UInt8, Array(t.words)))
+    bytes = reinterpret(UInt8, Array(t.words))
     h = Float64(t.voxel)
     meta = (world_min = Tuple(Float32.(t.lo .+ Vec3f(t.imin) .* t.voxel)), world_max = Tuple(Float32.(t.lo .+ Vec3f(t.imax) .* t.voxel)),
             inv_mat = (Float32(1 / h), 0f0, 0f0, 0f0, Float32(1 / h), 0f0, 0f0, 0f0, Float32(1 / h)),
