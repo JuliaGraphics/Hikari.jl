@@ -30,8 +30,59 @@ end
 end
 
 function Raycore.maybe_convert_field(set::Raycore.MultiTypeSet,v::PackedMajorantValues)
+    if !(set.backend isa KA.CPU)
+        tiled=device_tiledmajorants(MajorantGrid(v,v.res),set.backend)
+        return Raycore.maybe_convert_field(set,tiled.voxels)
+    end
     PackedMajorantValues(Raycore.maybe_convert_field(set,v.fine),
         Raycore.maybe_convert_field(set,v.tiles),Raycore.maybe_convert_field(set,v.offsets),v.res,v.tile_res)
+end
+
+@kernel inbounds=true function unpack_majorant_cells!(destination,source,first::Int32,n::Int32)
+    local_index=@index(Global)
+    if local_index<=n
+        index=first+Int32(local_index)
+        q=index-Int32(1)
+        x=q%source.res[1]
+        y=(q÷source.res[1])%source.res[2]
+        z=q÷(source.res[1]*source.res[2])
+        destination[index]=packed_majorant_value(source,nothing,x,y,z)
+    end
+end
+
+"Expand compact host bounds directly into reusable device tiles, preserving every cell."
+function device_tiledmajorants(grid::MajorantGrid{<:PackedMajorantValues},backend;reuse=nothing)
+    count=prod(Int.(grid.res))
+    count<=typemax(Int32) || error("Device auxiliary grid exceeds Int32 cell indexing")
+    source=Adapt.adapt(backend,grid.voxels)
+    fine=reuse===nothing ? KA.allocate(backend,Float32,count) : reuse.voxels.fine
+    length(fine)==count || throw(ArgumentError("Reusable majorant extent differs"))
+    tiles=if reuse===nothing
+        source.tiles
+    else
+        copyto!(reuse.voxels.tiles,source.tiles)
+        reuse.voxels.tiles
+    end
+    chunk=8*1024*1024
+    GC.@preserve source fine tiles begin
+        for first in 0:chunk:count-1
+            n=min(chunk,count-first)
+            unpack_majorant_cells!(backend,256)(fine,source,Int32(first),Int32(n);ndrange=n)
+        end
+        KA.synchronize(backend)
+    end
+    return MajorantGrid(TiledMajorantValues(fine,tiles,grid.res,source.tile_res),grid.res)
+end
+
+function Raycore.update_item(set::Raycore.MultiTypeSet,old::TiledMajorantValues,new::PackedMajorantValues)
+    if old.res!=new.res
+        tiled=device_tiledmajorants(MajorantGrid(new,new.res),set.backend)
+        return Raycore.update_item(set,old,tiled.voxels)
+    end
+    fine,tiles=Raycore.deref(set,old.fine),Raycore.deref(set,old.tiles)
+    reuse=MajorantGrid(TiledMajorantValues(fine,tiles,old.res,old.tile_res),old.res)
+    device_tiledmajorants(MajorantGrid(new,new.res),set.backend;reuse)
+    return old
 end
 function Raycore.update_item(set::Raycore.MultiTypeSet,old::PackedMajorantValues,new::PackedMajorantValues)
     PackedMajorantValues(Raycore.update_item(set,old.fine,new.fine),

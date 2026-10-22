@@ -53,6 +53,7 @@ const TEST_FILES = [
     "test_nanofield.jl",
     "test_frame_data.jl",
     "test_packed_majorants.jl",
+    "test_packed_water_tracking.jl",
     "test_water_shadow.jl",
     "test_tiled_majorants.jl",
     "test_sparse_majorant.jl",
