@@ -51,6 +51,43 @@ end
     end
 end
 
+function emitter_beauty_and_guide(backend; hw_accel = false, guide_kwargs...)
+    scene = Hikari.Scene(; backend, hw_accel)
+    object = normal_mesh(GeometryBasics.Tessellation(Sphere(Point3f(0), 0.6f0), 64))
+    push!(scene, object, Hikari.Emissive(; Le = (1, 1, 1), scale = 1, two_sided = true))
+    Hikari.sync!(scene)
+    filter = Hikari.GaussianFilter()
+    film = Hikari.Film(Point2f(32, 32); filter)
+    camera = Hikari.PerspectiveCamera(Point3f(0, 0, 3), Point3f(0), film; fov = 45f0)
+    film = Hikari.Film(backend, film)
+    Hikari.clear!(film)
+    integrator = Hikari.VolPath(; samples = 256, max_depth = 1, hw_accel, filter)
+    integrator(scene, film, camera)
+    Hikari.fill_aux_buffers!(film, Adapt.adapt(backend, scene), camera; guide_kwargs...)
+    luminance = map(c -> c.r + c.g + c.b, Array(film.framebuffer))
+    albedo = map(c -> c.g, Array(film.albedo))
+    hits = Float32.(isfinite.(Array(film.depth)))
+    Hikari.free!(film)
+    close(integrator)
+    return luminance ./ maximum(luminance), albedo, hits
+end
+
+@testset "Guide albedo is filtered like the image" begin
+    backend = Mantle.defaultbackend()
+    for hw_accel in (Mantle.supports_hwtlas(backend) ? (false, true) : (false,))
+        coverage, albedo, _ = emitter_beauty_and_guide(backend; hw_accel)
+        @test maximum(abs.(albedo .- coverage)) < 0.05f0
+    end
+end
+
+@testset "One guide ray per pixel with grid = 1" begin
+    backend = Mantle.defaultbackend()
+    for hw_accel in (Mantle.supports_hwtlas(backend) ? (false, true) : (false,))
+        _, albedo, hits = emitter_beauty_and_guide(backend; hw_accel, grid = 1)
+        @test albedo == hits
+    end
+end
+
 # One ray through `Hikari.intersect!`, in a kernel: whether it hit, where, the
 # normal there, and the instance's custom index the interaction carries.
 KA.@kernel function intersect_one_kernel!(out, accel, ray)

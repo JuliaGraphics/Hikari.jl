@@ -198,56 +198,49 @@ const MISS_DEPTH = 1.0f30
 missed(depth::Real) = depth >= MISS_DEPTH
 
 """
-    fill_aux_buffers!(film, scene, camera; has_infinite_lights=false)
+    fill_aux_buffers!(film, scene, camera; has_infinite_lights=false, filter=film.filter_params, grid=GUIDE_GRID)
 
 Fill auxiliary buffers (albedo, normal, depth) by tracing primary rays.
-These are used by `denoise!` for edge-aware filtering.
+These are used by `denoise!` for edge-aware filtering. `filter` is the pixel filter the image
+was rendered with (the integrator's), which the albedo and normal are filtered with too, over
+`grid`² rays per pixel. `grid = 1` is one ray per pixel, for a camera that is still moving.
 """
-function fill_aux_buffers!(film::Film, scene, camera; has_infinite_lights::Bool=false)
+function fill_aux_buffers!(film::Film, scene, camera; has_infinite_lights::Bool=false,
+                           filter::GPUFilterParams=film.filter_params, grid::Integer=GUIDE_GRID)
     albedo = film.albedo
     normal = film.normal
     depth = film.depth
-    resolution = film.resolution
-    crop_bounds = film.crop_bounds
     miss_depth = has_infinite_lights ? MISS_DEPTH : Inf32
 
     backend = KA.get_backend(albedo)
     # Adapt the acceleration structure for kernel dispatch (TLAS -> StaticTLAS)
     accel = Adapt.adapt(backend, scene.accel)
+    filter_data = Adapt.adapt(backend, GPUFilterSamplerData(filter))
     kernel! = aux_buffer_kernel!(backend)
     kernel!(
         albedo, normal, depth,
-        resolution, crop_bounds,
-        accel, camera, miss_depth, Adapt.adapt(backend,scene.materials), Adapt.adapt(backend,scene.media_interfaces);
+        accel, camera, filter, filter_data, miss_depth, Int32(grid), Adapt.adapt(backend,scene.materials), Adapt.adapt(backend,scene.media_interfaces);
         ndrange = length(albedo)
     )
     Mantle.waitidle(mantle_device(backend))
     return film
 end
 
-@kernel inbounds=true function aux_buffer_kernel!(albedo, normal, depth, resolution, crop_bounds, accel, camera, miss_depth::Float32,materials,interfaces)
+"""
+The raster position of the centre of film pixel (`row`, `col`), as `vp_generate_camera_rays_kernel!`
+places it: film rows run downward, camera raster y runs upward. Guides off by even one pixel
+from the radiance leave the denoiser a halo on one side of every edge.
+"""
+@inline pixel_centre(row, col, height) = Point2f(Float32(col) - 0.5f0, Float32(height - row) + 0.5f0)
+
+@kernel inbounds=true function aux_buffer_kernel!(albedo, normal, depth, accel, camera, filter, filter_data, miss_depth::Float32, grid::Int32, materials, interfaces)
     idx = @index(Global)
 
     h, _ = size(albedo)
     row = ((idx - 1) % h) + 1
     col = ((idx - 1) ÷ h) + 1
-
-    px = Float32(col) + crop_bounds.p_min[1] - 1f0
-    # Match the camera raster orientation used by the rendered framebuffer.
-    py = Float32(h - row) + crop_bounds.p_min[2]
-    pixel = Point2f(px + 0.5f0, py + 0.5f0)
-
-    camera_sample = CameraSample(pixel, Point2f(0.5f0), 0f0)
-    ray, ω = generate_ray(camera, camera_sample)
-
-     if ω > 0f0
-        a,n,d=guide_hit(accel,materials,interfaces,ray,miss_depth)
-        albedo[idx]=a;normal[idx]=n;depth[idx]=d
-    else
-        normal[idx] = Vec3f(0f0, 0f0, 0f0)
-        depth[idx] = Inf32
-        albedo[idx] = RGB{Float32}(0f0, 0f0, 0f0)
-    end
+    albedo[idx], normal[idx], depth[idx] =
+        pixel_guides(accel, materials, interfaces, camera, filter, filter_data, pixel_centre(row, col, h), miss_depth, grid)
 end
 
 # ============================================================================
