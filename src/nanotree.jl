@@ -400,7 +400,7 @@ function NanoTree(origins::AbstractVector{Vec{3,Int32}}, values::AbstractVector{
     hlowerid = cumsum(hflags) .* hflags
     nlower = Int(maximum(hlowerid))
     lowerid = Mantle.devicearray(backend, hlowerid)
-    lowerorigin = KA.allocate(backend, Vec{3,Int32}, nlower)
+    lowerorigin = Mantle.devicearray(backend, Vec{3,Int32}, nlower)
     nt_lowerorigins_kernel!(backend, 256)(lowerorigin, lowerid, dupperorigin; ndrange = length(lowerid))
     leafof = KA.zeros(backend, Int32, nlower * 4096)
     nt_mapleaves_kernel!(backend, 256)(leafof, dupperid, lowerid, origins, u0, nu; ndrange = n)

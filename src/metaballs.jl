@@ -64,9 +64,9 @@ function Metaballs(points::AbstractVector{<:Point3}, radius::Real; iso::Real, st
         sorted[next[c]] = p
         next[c] += Int32(1)
     end
-    dpoints = KA.allocate(backend, Point3f, length(sorted)); copyto!(dpoints, sorted)
-    dstart = KA.allocate(backend, Int32, length(cellstart)); copyto!(dstart, cellstart)
-    class = KA.allocate(backend, UInt8, ncells)
+    dpoints = Mantle.devicearray(backend, Point3f, length(sorted)); copyto!(dpoints, sorted)
+    dstart = Mantle.devicearray(backend, Int32, length(cellstart)); copyto!(dstart, cellstart)
+    class = Mantle.devicearray(backend, UInt8, ncells)
     balls = Metaballs(dpoints, dstart, class, lo, dims, R, Float32(iso), Float32(step), nothing)
     mb = Metaballs(dpoints, dstart, class, lo, dims, R, Float32(iso), Float32(step), kernelshapes(anisotropy, balls, backend))
     # A launch per `chunk` cells, each its own submission. Where particles fill only a
@@ -126,8 +126,8 @@ Adapt.@adapt_structure KernelShapes
 kernelshapes(::Nothing, mb, backend) = nothing
 function kernelshapes(a::Anisotropic, mb::Metaballs, backend)
     n = length(mb.points)
-    shapes = KA.allocate(backend, Mat3f, n)
-    scales = KA.allocate(backend, Float32, n)
+    shapes = Mantle.devicearray(backend, Mat3f, n)
+    scales = Mantle.devicearray(backend, Float32, n)
     n > 0 && kernelshape_kernel!(backend)(shapes, scales, mb, a.ratio, a.neighbours; ndrange = n)
     return KernelShapes(shapes, scales)
 end
@@ -569,7 +569,7 @@ function tessellate(m::MetaballSurface)
     backend = KA.get_backend(mb.class)
     class = Array(mb.class)
     cells = Int32[c - 1 for c in eachindex(class) if class[c] == METABALL_SURFACE]
-    pts = KA.allocate(backend, Point3f, length(cells)); nrm = KA.allocate(backend, Vec3f, length(cells))
+    pts = Mantle.devicearray(backend, Point3f, length(cells)); nrm = Mantle.devicearray(backend, Vec3f, length(cells))
     isempty(cells) || surfacesplat_kernel!(backend)(pts, nrm, Mantle.devicearray(backend, cells), mb; ndrange = length(cells))
     P = Array(pts); N = Array(nrm)
     h = 0.75f0 * mb.radius
@@ -802,7 +802,7 @@ function Base.push!(scene::Scene, m::MetaballSurface, mi::UInt32; transform = Ma
     handle = push!(accel, blas, transform; instance_id = UInt32(0))
     dcells = Mantle.devicearray(accel.backend, cells)
     k = Int(m.lattice) + 1
-    bricks = KA.allocate(accel.backend, Float32, length(cells) * k^3)
+    bricks = Mantle.devicearray(accel.backend, Float32, length(cells) * k^3)
     isempty(cells) || fieldbricks_kernel!(accel.backend)(bricks, dcells, balls, m.lattice; ndrange = length(bricks))
     accel.procedural = MetaballElements(balls, dcells, bricks, m.lattice, UInt32(mi), m.region, m.tile)
     return SceneHandle(scene, mi, handle)
@@ -1005,7 +1005,7 @@ function AeratedMedium(foam::AbstractVector{<:Point3}, bubbles::AbstractVector{<
     perblob = 1f0 / (WYVILL_VOLUME * R^3)
     particles = AirParticles(Mantle.devicearray(backend, sorted), Mantle.devicearray(backend, sortedw),
                              Mantle.devicearray(backend, cellstart), lo, dims, R, perblob)
-    dsamples = KA.allocate(backend, Vec2f, length(cells) * per)
+    dsamples = Mantle.devicearray(backend, Vec2f, length(cells) * per)
     isempty(cells) || airbricks_kernel!(backend)(dsamples, Mantle.devicearray(backend, cells), particles, Int32(lattice);
                                                  ndrange = length(cells) * per)
     samples = Array(dsamples)

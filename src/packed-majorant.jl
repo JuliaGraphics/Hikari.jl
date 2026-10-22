@@ -55,7 +55,7 @@ function device_tiledmajorants(grid::MajorantGrid{<:PackedMajorantValues},backen
     count=prod(Int.(grid.res))
     count<=typemax(Int32) || error("Device auxiliary grid exceeds Int32 cell indexing")
     source=Adapt.adapt(backend,grid.voxels)
-    fine=reuse===nothing ? KA.allocate(backend,Float32,count) : reuse.voxels.fine
+    fine=reuse===nothing ? Mantle.devicearray(backend,Float32,count) : reuse.voxels.fine
     length(fine)==count || throw(ArgumentError("Reusable majorant extent differs"))
     tiles=if reuse===nothing
         source.tiles
@@ -69,7 +69,7 @@ function device_tiledmajorants(grid::MajorantGrid{<:PackedMajorantValues},backen
             n=min(chunk,count-first)
             unpack_majorant_cells!(backend,256)(fine,source,Int32(first),Int32(n);ndrange=n)
         end
-        KA.synchronize(backend)
+        Mantle.waitidle(mantle_device(backend))
     end
     return MajorantGrid(TiledMajorantValues(fine,tiles,grid.res,source.tile_res),grid.res)
 end
