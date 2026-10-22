@@ -9,6 +9,24 @@ import Hikari.Adapt as Adapt
     out[i] = Hikari.nanofield_sample(field, nothing, points[i])
 end
 
+@testset "Surface file nodes decode on demand and reject changed revisions" begin
+    mktempdir() do directory
+        path=joinpath(directory,"surface.nvdb")
+        tree=Hikari.NanoTree([Vec{3,Int32}(0)],ones(Float32,512),Point3f(0),.1f0;backend=KA.CPU())
+        Hikari.save_nanovdb(path,tree)
+        input=Hikari.defer_nanotree(path)
+        @test input.tree===nothing
+        @test read(input).words==tree.words
+        @test read(input)===Hikari.resolve_nanotree(input)
+        @test Hikari.resolve_nanotree(tree)===tree
+        open(io->write(io,UInt8(0)),path,"a")
+        @test_throws ErrorException read(input)
+        rm(path)
+        @test_throws ErrorException read(input)
+        @test_throws ErrorException Hikari.defer_nanotree(path)
+    end
+end
+
 @kernel function nanofield_stored_samples!(out, media, field, points)
     i = @index(Global)
     out[i] = Hikari.nanofield_sample(field, media, points[i])

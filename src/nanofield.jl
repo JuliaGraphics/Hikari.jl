@@ -10,6 +10,36 @@ function load_frame_data end
 "Write frame data as a losslessly compressed Julia stream."
 function save_frame_data end
 
+"A native file input decoded only when its consumer needs the field."
+mutable struct DeferredNanoTree
+    path::String
+    stamp::Tuple{Float64,Int}
+    tree::Union{Nothing,NanoTree}
+end
+
+"Keep a native input's address without decoding its voxels; `read` resolves it once."
+function defer_nanotree(path::AbstractString)
+    path=abspath(path)
+    isfile(path) || error("Missing NanoVDB input: $path")
+    return DeferredNanoTree(path,(mtime(path),filesize(path)),nothing)
+end
+
+function Base.read(input::DeferredNanoTree)
+    isfile(input.path) || error("Missing NanoVDB input: $(input.path)")
+    (mtime(input.path),filesize(input.path))==input.stamp ||
+        error("NanoVDB input changed; evaluate its file node again: $(input.path)")
+    if input.tree===nothing
+        tree=load_nanotree(input.path)
+        (mtime(input.path),filesize(input.path))==input.stamp ||
+            error("NanoVDB input changed while decoding: $(input.path)")
+        input.tree=tree
+    end
+    return input.tree::NanoTree
+end
+
+resolve_nanotree(tree::NanoTree)=tree
+resolve_nanotree(input::DeferredNanoTree)=read(input)
+
 """
     load_nanotree(path; backend=nothing)
 
