@@ -47,8 +47,18 @@ function release_nanotree!(input::DeferredNanoTree)
 end
 release_nanotree!(tree::NanoTree)=tree
 
-"Copy only the native node words, without an intermediate byte-sized grid copy."
-nanotree_words(buffer,first,last)=copy(reinterpret(UInt32,view(buffer,first:last)))
+"Keep native words as an owning view of the decoded grid, without a full-grid copy."
+nanotree_words(buffer,first,last)=reinterpret(UInt32,view(buffer,first:last))
+
+const NativeNanoWords=Base.ReinterpretArray{UInt32,1,UInt8,
+    SubArray{UInt8,1,Vector{UInt8},Tuple{UnitRange{Int}},true},false}
+
+function Raycore.maybe_convert_field(set::Raycore.MultiTypeSet,words::NativeNanoWords)
+    # Texture tables require a dense device pointer, not an adapted host-view
+    # wrapper. The upload reads this contiguous host span without collecting it.
+    data=set.backend isa KA.CPU ? words : Mantle.devicearray(set.backend,words)
+    return Raycore.store_texture(set,data)
+end
 
 """
     load_nanotree(path; backend=nothing)

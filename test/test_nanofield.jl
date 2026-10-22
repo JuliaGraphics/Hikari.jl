@@ -33,15 +33,16 @@ end
     end
 end
 
-@testset "Native word extraction allocates only its returned word buffer" begin
+@testset "Native words retain their decoded buffer without copying it" begin
     payload=32*1024*1024
     buffer=zeros(UInt8,736+payload)
     buffer[737]=0x19;buffer[end]=0x70
     Hikari.nanotree_words(UInt8[1,2,3,4],1,4)
     result=Ref{Any}()
     allocated=@allocated result[]=Hikari.nanotree_words(buffer,737,length(buffer))
-    @test allocated<payload+1024*1024
-    @test result[] isa Vector{UInt32}
+    @test allocated<1024*1024
+    @test result[] isa Base.ReinterpretArray
+    @test pointer(result[])==Ptr{UInt32}(pointer(buffer,737))
     @test first(result[])==UInt32(0x19)
     @test last(result[])==UInt32(0x70000000)
 end
@@ -76,6 +77,16 @@ function test_nanofield(; backend=nothing)
             if backend !== nothing
                 uploaded = Hikari.load_nanotree(path;backend)
                 @test Array(uploaded.words) == a.words
+                # Host file views must also work through ordinary medium
+                # conversion, not just the reader's direct-upload keyword.
+                set=RC.MultiTypeSet(backend)
+                key=push!(set,Hikari.NanoGridMedium(loaded;majorant_res=(7,8,9)))
+                stored=set[key]
+                device_points=Adapt.adapt(backend,points)
+                output=Mantle.devicearray(backend,Float32,length(points))
+                nanofield_stored_samples!(backend,64)(output,Adapt.adapt(backend,set.static),
+                    stored.density,device_points;ndrange=length(points))
+                @test maximum(abs.(Array(output).-Hikari.nanofield_sample.(Ref(loaded),nothing,points)))<=2f-6
             end
             original = read(path)
             write(path,original[1:end-3])
