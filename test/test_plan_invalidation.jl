@@ -83,3 +83,31 @@ _fbmean(film) = mean(Float32(c.r) for c in Array(film.framebuffer))
     @test vp.state.plans !== nothing
     @test vp.state.plans !== plans3
 end
+
+@testset "an in-place material update keeps the plans" begin
+    backend = Mantle.defaultbackend()
+    scene = Hikari.Scene(; backend=backend)
+    sphere = normal_mesh(Tesselation(Sphere(GeometryBasics.Point3f(0, 0, 0), 0.5f0), 8))
+    handle = push!(scene, sphere, Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.7f0, 0.4f0, 0.4f0)))
+    push!(scene, Hikari.PointLight(GeometryBasics.Point3f(0, -2, 3), Hikari.RGBSpectrum(30f0)))
+    Hikari.sync!(scene)
+    res = 16
+    film = Hikari.Film(backend, Hikari.Film(GeometryBasics.Point2f(res, res)))
+    vp = Hikari.VolPath(samples=1, max_depth=2)
+    cam = _inv_camera(film, 0f0)
+
+    Hikari.render!(vp, scene, film, cam)
+    plans = vp.state.plans
+    m1 = _fbmean(film)
+    @test m1 > 0
+
+    # A new value in the same slot is a write into the buffers the plans were
+    # packed with: the same plans answer…
+    Hikari.update_material!(scene, handle, Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0f0)))
+    @test vp.state.plans === plans
+    Hikari.render!(vp, scene, film, cam)
+    @test vp.state.plans === plans
+    # …and they read the new value: the second sample of a black sphere halves
+    # the average. Plans that still saw the old albedo would keep it near `m1`.
+    @test _fbmean(film) < 0.75f0 * m1
+end

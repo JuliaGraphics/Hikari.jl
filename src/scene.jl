@@ -265,17 +265,26 @@ Invariants:
 update_material!(scene::Scene, idx::UInt32, new) =
     update_material!(scene, (@allowscalar scene.media_interfaces[idx]), new)
 
-function update_material!(scene::Scene, mi::MediumInterfaceIdx, new_medium::Medium)
-    Raycore.update!(scene.media, mi.inside, new_medium)
-    # In-place for the common case, but a texture slot can be reallocated on a
-    # size mismatch — and a plan names the arrays it was packed with. Drop them.
-    notify_scene_changed(scene)
+"""
+    updating_in_place!(f, scene)
+
+Run the slot update `f` and keep the recorded plans unless it moved a buffer.
+An update writes into the slot buffers the plans were packed with, so they stay
+right; only one that had to store a new texture or move one (a reshape past
+capacity) bumps a set's `layout`, and only that drops them.
+"""
+function updating_in_place!(f, scene::Scene)
+    before = (scene.materials.layout, scene.media.layout)
+    f()
+    (scene.materials.layout, scene.media.layout) == before || notify_scene_changed(scene)
+    return nothing
 end
 
-function update_material!(scene::Scene, mi::MediumInterfaceIdx, new_material::Material)
-    Raycore.update!(scene.materials, mi.material, new_material)
-    notify_scene_changed(scene)
-end
+update_material!(scene::Scene, mi::MediumInterfaceIdx, new_medium::Medium) =
+    updating_in_place!(() -> Raycore.update!(scene.media, mi.inside, new_medium), scene)
+
+update_material!(scene::Scene, mi::MediumInterfaceIdx, new_material::Material) =
+    updating_in_place!(() -> Raycore.update!(scene.materials, mi.material, new_material), scene)
 
 """
     update_surface!(scene, key, material)
@@ -300,15 +309,15 @@ update_surface!(scene::Scene, key::SetKey, material::Material) = Raycore.update!
 # unpushed slots (NullMaterial, `inside=nothing`, `outside=nothing`) are
 # silent no-ops.
 function update_material!(scene::Scene, mi::MediumInterfaceIdx, new_mi::MediumInterface)
-    Raycore.is_valid(mi.material) && update_surface!(scene, mi.material, new_mi.material)
-    if new_mi.inside !== nothing && Raycore.is_valid(mi.inside)
-        Raycore.update!(scene.media, mi.inside, new_mi.inside)
+    updating_in_place!(scene) do
+        Raycore.is_valid(mi.material) && update_surface!(scene, mi.material, new_mi.material)
+        if new_mi.inside !== nothing && Raycore.is_valid(mi.inside)
+            Raycore.update!(scene.media, mi.inside, new_mi.inside)
+        end
+        if new_mi.outside !== nothing && Raycore.is_valid(mi.outside)
+            Raycore.update!(scene.media, mi.outside, new_mi.outside)
+        end
     end
-    if new_mi.outside !== nothing && Raycore.is_valid(mi.outside)
-        Raycore.update!(scene.media, mi.outside, new_mi.outside)
-    end
-    notify_scene_changed(scene)
-    return nothing
 end
 
 struct SceneHandle
