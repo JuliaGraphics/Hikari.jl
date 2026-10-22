@@ -99,9 +99,11 @@ function Hikari.radiative_volume(path::AbstractString; mass_unit, black_hole_mas
             theta = acos(clamp(z/rg, -1, 1))
             phi = atan(y,x)
             taper = 1 - clamp((r-11f0)/3f0, 0f0, 1f0)^2 * (3 - 2clamp((r-11f0)/3f0, 0f0, 1f0))
-            j[ix,iy,k] = Float32(max(G.sample_field(snap, native_j, x,y,z), 0) * taper)
-            alpha[ix,iy,k] = Float32(max(G.sample_field(snap, native_a, x,y,z), 0) * taper * rs_cm)
-            u = G.sample_field(snap, snap.velrel, x,y,z)
+            # Keep the module binding constant inside the threaded closure.
+            # Capturing local `G::Module` makes every voxel lookup dynamic.
+            j[ix,iy,k] = Float32(max(GRMHDSnapshots.sample_field(snap, native_j, x,y,z), 0) * taper)
+            alpha[ix,iy,k] = Float32(max(GRMHDSnapshots.sample_field(snap, native_a, x,y,z), 0) * taper * rs_cm)
+            u = GRMHDSnapshots.sample_field(snap, snap.velrel, x,y,z)
             # Relative velocity -> orthonormal Eulerian frame (a=0), then a
             # radial Lorentz boost into the local STATIC Schwarzschild frame.
             ur, ut, up = u[1]*sqrt(1+2/rg), rg*u[2], rg*sin(theta)*u[3]
