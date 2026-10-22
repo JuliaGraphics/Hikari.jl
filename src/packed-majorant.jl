@@ -1,5 +1,42 @@
 # The same uniform-tile walk as TiledMajorantValues, without retaining a dense
 # copy of the empty/constant cells. Every nonuniform 8³ tile stays Float32.
+mutable struct SparseMajorantValues <: AbstractVector{Float32}
+    res::Vec{3,Int32}
+    tile_res::Vec{3,Int32}
+    background::Float32
+    blocks::Dict{Int,Vector{Float32}}
+end
+SparseMajorantValues(res)=SparseMajorantValues(res,(res .+ Int32(7)) .>> Int32(3),0f0,Dict{Int,Vector{Float32}}())
+Base.size(v::SparseMajorantValues)=(prod(Int.(v.res)),)
+Base.IndexStyle(::Type{SparseMajorantValues})=IndexLinear()
+function Base.fill!(v::SparseMajorantValues,value)
+    empty!(v.blocks);v.background=Float32(value);v
+end
+@inline function sparse_majorant_address(v,i)
+    q=Int(i)-1
+    x=q%v.res[1];y=(q÷v.res[1])%v.res[2];z=q÷(Int(v.res[1])*v.res[2])
+    tile=(x>>3)+v.tile_res[1]*((y>>3)+v.tile_res[2]*(z>>3))+1
+    local_index=(x&7)+8*((y&7)+8*(z&7))+1
+    return tile,local_index
+end
+@inline function Base.getindex(v::SparseMajorantValues,i::Integer)
+    @boundscheck checkbounds(v,i)
+    tile,index=sparse_majorant_address(v,i)
+    block=get(v.blocks,tile,nothing)
+    return block===nothing ? v.background : block[index]
+end
+@inline function Base.setindex!(v::SparseMajorantValues,value,i::Integer)
+    @boundscheck checkbounds(v,i)
+    tile,index=sparse_majorant_address(v,i)
+    block=get(v.blocks,tile,nothing)
+    if block===nothing
+        value==v.background && return v
+        block=fill(v.background,512);v.blocks[tile]=block
+    end
+    block[index]=value
+    return v
+end
+
 struct PackedMajorantValues{F,T,O} <: AbstractVector{Float32}
     fine::F
     tiles::T
@@ -90,6 +127,10 @@ function Raycore.update_item(set::Raycore.MultiTypeSet,old::PackedMajorantValues
 end
 
 @inline uniform_majorant_tile(v,x,y,z) = NaN32
+@inline function uniform_majorant_tile(v::SparseMajorantValues,x,y,z)
+    tile=x+v.tile_res[1]*(y+v.tile_res[2]*z)+1
+    return haskey(v.blocks,tile) ? NaN32 : v.background
+end
 @inline function uniform_majorant_tile(v::Union{TiledMajorantValues,PackedMajorantValues},x,y,z)
     @inbounds return v.tiles[x+v.tile_res[1]*(y+v.tile_res[2]*z)+1]
 end
@@ -134,6 +175,15 @@ function packmajorants(grid::MajorantGrid)
     return build_packed_majorants(res,sample,uniform)
 end
 packmajorants(grid::MajorantGrid{<:PackedMajorantValues}) = grid
+
+"Add an independently bounded field without materializing empty cells."
+function addmajorants(a::MajorantGrid{<:PackedMajorantValues},b::MajorantGrid{<:PackedMajorantValues},scale::Float32)
+    a.res==b.res || throw(ArgumentError("Majorant grid resolutions differ"))
+    va,vb=a.voxels,b.voxels
+    sample(x,y,z)=packed_majorant_value(va,nothing,x,y,z)+scale*packed_majorant_value(vb,nothing,x,y,z)
+    uniform(x,y,z)=uniform_majorant_tile(va,x,y,z)+scale*uniform_majorant_tile(vb,x,y,z)
+    return build_packed_majorants(a.res,sample,uniform)
+end
 
 "The exact cellwise maximum, retaining uniform tiles without expanding a dense grid."
 function maxmajorants(a::MajorantGrid{<:PackedMajorantValues},b::MajorantGrid{<:PackedMajorantValues})

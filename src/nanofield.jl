@@ -118,11 +118,12 @@ function nanobounds(t::NanoBlend)
     return Bounds3(Point3f(min.(a.p_min,b.p_min)), Point3f(max.(a.p_max,b.p_max)))
 end
 
-function nanomajorant(t::NanoBlend, bounds::Bounds3, res::Vec{3,Int32}; tight::Bool=true)
-    a = nanomajorant(t.a, bounds, res; tight)
-    b = nanomajorant(t.b, bounds, res; tight)
+function nanomajorant(t::NanoBlend, bounds::Bounds3, res::Vec{3,Int32}; tight::Bool=true,sparse::Bool=false)
+    a = nanomajorant(t.a, bounds, res; tight,sparse)
+    b = nanomajorant(t.b, bounds, res; tight,sparse)
     # Bound every possible weight for this pair. The acceleration data can stay
     # unchanged while a keyframed weight moves in either direction.
+    sparse && return maxmajorants(a,b)
     a.voxels .= max.(a.voxels, b.voxels)
     return a
 end

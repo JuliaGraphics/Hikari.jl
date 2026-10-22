@@ -175,13 +175,13 @@ end
     first(terms)[2] * max(fraction(media, first(terms)[1], p), 0f0) + airscattering(media, Base.tail(terms), p)
 
 function validate_water_majorants(layout)
-    layout in (:dense,:tiled) && return nothing
+    layout in (:dense,:tiled,:packed) && return nothing
     layout === :native && throw(ArgumentError("Native auxiliary majorants were retired: full-scene traversal is slower on NVIDIA and loses the AMD device. Use :dense; physical density fields remain NanoVDB."))
-    throw(ArgumentError("majorants must be :dense or :tiled"))
+    throw(ArgumentError("majorants must be :dense, :tiled or :packed"))
 end
 
 function WaterMedium(water::Union{Seawater,Nothing}; air = (), bounds::Bounds3, cell = 0.4f0, from = 360, to = 830, step = 5,
-                     ior = 1.34f0, majorants=:dense, majorant_factor::Integer=1, backend)
+                     ior = 1.34f0, majorants=:dense, majorant_factor::Integer=1,field_majorants=nothing, backend)
     validate_water_majorants(majorants)
     majorant_factor>=1 || throw(ArgumentError("majorant_factor must be positive"))
     λs = from:step:to
@@ -199,6 +199,17 @@ function WaterMedium(water::Union{Seawater,Nothing}; air = (), bounds::Bounds3, 
     # Neither the medium extent nor its sampled density/spectra changes.
     actualbounds = Bounds3(lo, lo .+ Vec3f(dims) .* Float32(cell))
     dims = dims .* Int32(majorant_factor)
+    if majorants===:packed
+        grid=build_packed_majorants(dims,(x,y,z)->base,(x,y,z)->base)
+        for (tree,σ) in terms
+            key=(tree,actualbounds,dims)
+            field=field_majorants===nothing ? nanomajorant(tree,actualbounds,dims;sparse=true) :
+                get!(() -> nanomajorant(tree,actualbounds,dims;sparse=true),field_majorants,key)
+            grid=addmajorants(grid,field,σ)
+        end
+        return WaterMedium(vcat(σa,σs),Float32(from),Float32(step),Int32(length(λs)),g,base,terms,
+            Float32(ior),actualbounds,grid)
+    end
     grid = MajorantGrid(dims, Vector{Float32})
     fill!(grid.voxels, base)
     for (tree, σ) in terms

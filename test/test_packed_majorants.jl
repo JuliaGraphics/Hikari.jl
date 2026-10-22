@@ -95,3 +95,38 @@ function test_packed_majorants(;backend=nothing)
     end
 end
 test_packed_majorants()
+
+@testset "Sparse construction matches dense auxiliary bounds cell for cell" begin
+    rng=MersenneTwister(417)
+    origins=Vec{3,Int32}[Vec{3,Int32}(0),Vec{3,Int32}(8,0,0),Vec{3,Int32}(-8,8,0)]
+    values=rand(rng,Float32,512length(origins))
+    values[1:3:end].=0f0
+    a=Hikari.NanoTree(origins,values,Point3f(-.2),.07f0;backend=KA.CPU())
+    b=Hikari.NanoTree(origins,reverse(values),Point3f(-.1),.07f0;backend=KA.CPU())
+    box=Hikari.Bounds3(Point3f(-1),Point3f(2))
+    for dims in ((33,17,9),(32,24,16)),tight in (false,true)
+        res=Vec{3,Int32}(dims)
+        for field in (a,Hikari.NanoBlend(a,b,.25f0))
+            dense=Hikari.nanomajorant(field,box,res;tight)
+            packed=Hikari.nanomajorant(field,box,res;tight,sparse=true)
+            @test collect(packed.voxels)==dense.voxels
+        end
+    end
+    cache=IdDict{Any,Any}()
+    for water in (nothing,Hikari.Seawater())
+        kwargs=(;air=((a,.001f0,.85f0),(b,.002f0,.8f0)),bounds=box,
+            cell=.3f0,majorant_factor=2,backend=KA.CPU())
+        dense=Hikari.WaterMedium(water;kwargs...,majorants=:dense)
+        packed=Hikari.WaterMedium(water;kwargs...,majorants=:packed,field_majorants=cache)
+        @test collect(packed.majorant_grid.voxels)==dense.majorant_grid.voxels
+    end
+    @test length(cache)==2
+    res=Vec{3,Int32}(884,884,574)
+    sparse=Hikari.SparseMajorantValues(res)
+    fill!(sparse,.3f0)
+    sparse[end]=2f0
+    packed=Hikari.packmajorants(Hikari.MajorantGrid(sparse,res))
+    @test length(sparse.blocks)==1
+    @test length(packed.voxels.fine)<=513
+    @test packed.voxels[end]==2f0
+end

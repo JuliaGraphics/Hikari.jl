@@ -60,8 +60,8 @@ Conservative maxima of a nonnegative, trilinearly sampled grid in `res` cells of
 `bounds`. A leaf contributes its maximum wherever its interpolation support reaches.
 Overlapping leaves of one field take a maximum; independent fields can then be added.
 """
-function nanomajorant(t::NanoTree, bounds::Bounds3, res::Vec{3,Int32}; tight::Bool=true)
-    grid = MajorantGrid(res, Vector{Float32})
+function nanomajorant(t::NanoTree, bounds::Bounds3, res::Vec{3,Int32}; tight::Bool=true,sparse::Bool=false)
+    grid = sparse ? MajorantGrid(SparseMajorantValues(res),res) : MajorantGrid(res, Vector{Float32})
     fill!(grid.voxels, max(0f0, t.background))
     lo = Point3f(bounds.p_min)
     cell = Vec3f(bounds.p_max - bounds.p_min) ./ Vec3f(res)
@@ -104,7 +104,7 @@ function nanomajorant(t::NanoTree, bounds::Bounds3, res::Vec{3,Int32}; tight::Bo
             grid.voxels[idx] = max(grid.voxels[idx], top)
         end
     end
-    return grid
+    return sparse ? packmajorants(grid) : grid
 end
 Adapt.@adapt_structure NanoTree
 
