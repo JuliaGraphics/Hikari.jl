@@ -67,19 +67,20 @@ end
 const GUIDE_GRID = Int32(9)
 
 """
-    pixel_guides(accel, materials, interfaces, camera, filter, filter_data, centre, miss_depth) -> (albedo, normal, depth)
+    pixel_guides(accel, materials, interfaces, camera, filter, filter_data, centre, miss_depth, grid) -> (albedo, normal, depth)
 
-The guides of the pixel at raster position `centre`: albedo and normal over a `GUIDE_GRID`²
+The guides of the pixel at raster position `centre`: albedo and normal over a `grid`²
 stratified set of rays through `filter`'s samples, weighted as the image weights them, since
 OIDN wants the guides filtered like the image, and the depth of the middle ray.
 """
-@inline function pixel_guides(accel, materials, interfaces, camera, filter, filter_data, centre::Point2f, miss_depth::Float32)
+@inline function pixel_guides(accel, materials, interfaces, camera, filter, filter_data, centre::Point2f,
+                              miss_depth::Float32, grid::Int32)
     r = g = b = weights = 0.0f0
     normal = Vec3f(0)
     depth = miss_depth
-    middle = (GUIDE_GRID + Int32(1)) ÷ Int32(2)
-    for j in Int32(1):GUIDE_GRID, i in Int32(1):GUIDE_GRID
-        u = Point2f((i - 0.5f0) / GUIDE_GRID, (j - 0.5f0) / GUIDE_GRID)
+    middle = (grid + Int32(1)) ÷ Int32(2)
+    for j in Int32(1):grid, i in Int32(1):grid
+        u = Point2f((i - 0.5f0) / grid, (j - 0.5f0) / grid)
         fs = filter_sample(filter, filter_data, u)
         ray, ω = generate_ray(camera, CameraSample(centre + fs.p, Point2f(0.5f0, 0.5f0), 0.0f0))
         ω > 0.0f0 || continue

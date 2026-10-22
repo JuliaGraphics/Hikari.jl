@@ -198,14 +198,15 @@ const MISS_DEPTH = 1.0f30
 missed(depth::Real) = depth >= MISS_DEPTH
 
 """
-    fill_aux_buffers!(film, scene, camera; has_infinite_lights=false, filter=film.filter_params)
+    fill_aux_buffers!(film, scene, camera; has_infinite_lights=false, filter=film.filter_params, grid=GUIDE_GRID)
 
 Fill auxiliary buffers (albedo, normal, depth) by tracing primary rays.
 These are used by `denoise!` for edge-aware filtering. `filter` is the pixel filter the image
-was rendered with (the integrator's), which the albedo and normal are filtered with too.
+was rendered with (the integrator's), which the albedo and normal are filtered with too, over
+`grid`² rays per pixel. `grid = 1` is one ray per pixel, for a camera that is still moving.
 """
 function fill_aux_buffers!(film::Film, scene, camera; has_infinite_lights::Bool=false,
-                           filter::GPUFilterParams=film.filter_params)
+                           filter::GPUFilterParams=film.filter_params, grid::Integer=GUIDE_GRID)
     albedo = film.albedo
     normal = film.normal
     depth = film.depth
@@ -218,7 +219,7 @@ function fill_aux_buffers!(film::Film, scene, camera; has_infinite_lights::Bool=
     kernel! = aux_buffer_kernel!(backend)
     kernel!(
         albedo, normal, depth,
-        accel, camera, filter, filter_data, miss_depth, Adapt.adapt(backend,scene.materials), Adapt.adapt(backend,scene.media_interfaces);
+        accel, camera, filter, filter_data, miss_depth, Int32(grid), Adapt.adapt(backend,scene.materials), Adapt.adapt(backend,scene.media_interfaces);
         ndrange = length(albedo)
     )
     Mantle.waitidle(mantle_device(backend))
@@ -232,14 +233,14 @@ from the radiance leave the denoiser a halo on one side of every edge.
 """
 @inline pixel_centre(row, col, height) = Point2f(Float32(col) - 0.5f0, Float32(height - row) + 0.5f0)
 
-@kernel inbounds=true function aux_buffer_kernel!(albedo, normal, depth, accel, camera, filter, filter_data, miss_depth::Float32,materials,interfaces)
+@kernel inbounds=true function aux_buffer_kernel!(albedo, normal, depth, accel, camera, filter, filter_data, miss_depth::Float32, grid::Int32, materials, interfaces)
     idx = @index(Global)
 
     h, _ = size(albedo)
     row = ((idx - 1) % h) + 1
     col = ((idx - 1) ÷ h) + 1
     albedo[idx], normal[idx], depth[idx] =
-        pixel_guides(accel, materials, interfaces, camera, filter, filter_data, pixel_centre(row, col, h), miss_depth)
+        pixel_guides(accel, materials, interfaces, camera, filter, filter_data, pixel_centre(row, col, h), miss_depth, grid)
 end
 
 # ============================================================================
