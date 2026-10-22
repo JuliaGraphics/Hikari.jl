@@ -1,5 +1,14 @@
 using Test,Hikari,GeometryBasics,Random,LinearAlgebra
 
+@testset "Converted auxiliary bounds remain printable in error reports" begin
+    set=Hikari.Raycore.MultiTypeSet(Hikari.KA.CPU())
+    grid=Hikari.tiledmajorants(Hikari.MajorantGrid(ones(Float32,512),Vec{3,Int32}(8)))
+    stored=set[push!(set,grid)]
+    @test occursin("TiledMajorantValues",repr(stored))
+    @test occursin("TextureRef",repr(stored))
+    @test occursin("TextureRef",sprint(show,MIME"text/plain"(),stored.voxels))
+end
+
 function test_tiled_majorants()
     H=Hikari
     rng=MersenneTwister(210215)

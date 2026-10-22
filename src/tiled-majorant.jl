@@ -10,6 +10,12 @@ end
 Adapt.@adapt_structure TiledMajorantValues
 Base.size(v::TiledMajorantValues) = (Int(prod(v.res)),)
 Base.IndexStyle(::Type{<:TiledMajorantValues}) = IndexLinear()
+function Base.show(io::IO,v::TiledMajorantValues)
+    # Converted fields contain TextureRefs, which cannot be indexed on the
+    # host. Error formatting must not try to enumerate a device-side grid.
+    print(io,"TiledMajorantValues(",Tuple(v.res),", ",typeof(v.fine),", ",typeof(v.tiles),")")
+end
+Base.show(io::IO,::MIME"text/plain",v::TiledMajorantValues)=show(io,v)
 @inline Base.getindex(v::TiledMajorantValues,i::Int) = v.fine[i]
 function Raycore.maybe_convert_field(set::Raycore.MultiTypeSet,v::TiledMajorantValues)
     TiledMajorantValues(Raycore.maybe_convert_field(set,v.fine),
