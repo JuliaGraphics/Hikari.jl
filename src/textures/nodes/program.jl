@@ -77,6 +77,10 @@ const BRICK          = UInt32(1) << 17
 const VECTOR_MATH    = UInt32(1) << 18
 const RANGE          = UInt32(1) << 19
 const MIX            = UInt32(1) << 20
+const MATH_TRIG      = UInt32(1) << 21
+const MATH_POWER     = UInt32(1) << 22
+const MATH_ROUND     = UInt32(1) << 23
+const MATH_COMPARE   = UInt32(1) << 24
 end
 
 """
@@ -86,7 +90,7 @@ stack takes thread memory, so a larger one than needed slows the heavier nodes d
 """
 const NODE_STACK = 128
 const NODE_STACK_SIZES = (16, 32, 64, 128)
-const STACK_SHIFT = 24
+const STACK_SHIFT = 30
 
 @inline _stack_size(F::UInt32) = 16 << Int((F >> STACK_SHIFT) & 0x3)
 _stack_bits(used::Int) = UInt32(findfirst(>=(used), NODE_STACK_SIZES) - 1) << STACK_SHIFT

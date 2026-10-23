@@ -138,7 +138,9 @@ const _OP_FEATURES = Dict(
 function _features(c::NodeCore)
     f = get(_OP_FEATURES, c.op, UInt32(0))
     dims, kind = c.mode
-    if c.op == NodeOp.MIX && c.mode[1] != BlendType.MIX
+    if c.op == NodeOp.MATH
+        f |= _math_group(c.mode[1])
+    elseif c.op == NodeOp.MIX && c.mode[1] != BlendType.MIX
         f |= NodeFeature.BLEND
     elseif c.op == NodeOp.NOISE
         dims != 0x03 && (f |= NodeFeature.NOISE_DIMS)

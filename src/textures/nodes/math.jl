@@ -96,53 +96,71 @@ end
 @inline _truncate(a::Float32) = a >= 0f0 ? floor(a) : ceil(a)
 @inline _b2f(b::Bool) = ifelse(b, 1f0, 0f0)
 
-"""Blender's Math node on scalars, or per component on vectors."""
-@inline function _math(op::UInt8, a::T, b::T, c::T) where {T <: Union{Float32, Vec3f}}
+"""Blender's Math node on scalars, or per component on vectors; the groups the program uses only."""
+@inline function _math(ins::NodeInstr, op::UInt8, a::T, b::T, c::T) where {T <: Union{Float32, Vec3f}}
     M = MathOp
-    op == M.MULTIPLY       && return a .* b
-    op == M.ADD            && return a + b
-    op == M.SUBTRACT       && return a - b
-    op == M.SINE           && return sin.(a)
-    op == M.COSINE         && return cos.(a)
-    op == M.DIVIDE         && return _safe_divide.(a, b)
-    op == M.MULTIPLY_ADD   && return a .* b + c
-    op == M.POWER          && return _safe_pow.(a, b)
-    op == M.LOGARITHM      && return _safe_log.(a, b)
-    op == M.SQRT           && return _safe_sqrt.(a)
-    op == M.INVERSE_SQRT   && return _inverse_sqrt.(a)
-    op == M.ABSOLUTE       && return abs.(a)
-    op == M.EXPONENT       && return exp.(a)
-    op == M.MINIMUM        && return min.(a, b)
-    op == M.MAXIMUM        && return max.(a, b)
-    op == M.LESS_THAN      && return _b2f.(a .< b)
-    op == M.GREATER_THAN   && return _b2f.(a .> b)
-    op == M.SIGN           && return _compatible_sign.(a)
-    op == M.COMPARE        && return _compare.(a, b, c)
-    op == M.SMOOTH_MIN     && return _smoothmin.(a, b, c)
-    op == M.SMOOTH_MAX     && return -_smoothmin.(-a, -b, c)
-    op == M.ROUND          && return floor.(a .+ 0.5f0)
-    op == M.FLOOR          && return floor.(a)
-    op == M.CEIL           && return ceil.(a)
-    op == M.TRUNCATE       && return _truncate.(a)
-    op == M.FRACTION       && return a - floor.(a)
-    op == M.MODULO         && return _safe_modulo.(a, b)
-    op == M.FLOORED_MODULO && return _safe_floored_modulo.(a, b)
-    op == M.WRAP           && return _wrap.(a, b, c)
-    op == M.SNAP           && return floor.(_safe_divide.(a, b)) .* b
-    op == M.PINGPONG       && return _pingpong.(a, b)
-    op == M.SINE           && return sin.(a)
-    op == M.COSINE         && return cos.(a)
-    op == M.TANGENT        && return tan.(a)
-    op == M.ARCSINE        && return asin.(clamp.(a, -1f0, 1f0))
-    op == M.ARCCOSINE      && return acos.(clamp.(a, -1f0, 1f0))
-    op == M.ARCTANGENT     && return atan.(a)
-    op == M.ARCTAN2        && return _compatible_atan2.(a, b)
-    op == M.SINH           && return sinh.(a)
-    op == M.COSH           && return cosh.(a)
-    op == M.TANH           && return tanh.(a)
-    op == M.RADIANS        && return a * Float32(π / 180)
-    op == M.DEGREES        && return a * Float32(180 / π)
+    op == M.MULTIPLY     && return a .* b
+    op == M.ADD          && return a + b
+    op == M.SUBTRACT     && return a - b
+    op == M.DIVIDE       && return _safe_divide.(a, b)
+    op == M.MULTIPLY_ADD && return a .* b + c
+    op == M.MINIMUM      && return min.(a, b)
+    op == M.MAXIMUM      && return max.(a, b)
+    op == M.ABSOLUTE     && return abs.(a)
+    if _has(ins, NodeFeature.MATH_TRIG)
+        op == M.SINE       && return sin.(a)
+        op == M.COSINE     && return cos.(a)
+        op == M.TANGENT    && return tan.(a)
+        op == M.ARCSINE    && return asin.(clamp.(a, -1f0, 1f0))
+        op == M.ARCCOSINE  && return acos.(clamp.(a, -1f0, 1f0))
+        op == M.ARCTANGENT && return atan.(a)
+        op == M.ARCTAN2    && return _compatible_atan2.(a, b)
+        op == M.SINH       && return sinh.(a)
+        op == M.COSH       && return cosh.(a)
+        op == M.TANH       && return tanh.(a)
+        op == M.RADIANS    && return a * Float32(π / 180)
+        op == M.DEGREES    && return a * Float32(180 / π)
+    end
+    if _has(ins, NodeFeature.MATH_POWER)
+        op == M.POWER        && return _safe_pow.(a, b)
+        op == M.LOGARITHM    && return _safe_log.(a, b)
+        op == M.SQRT         && return _safe_sqrt.(a)
+        op == M.INVERSE_SQRT && return _inverse_sqrt.(a)
+        op == M.EXPONENT     && return exp.(a)
+    end
+    if _has(ins, NodeFeature.MATH_ROUND)
+        op == M.ROUND          && return floor.(a .+ 0.5f0)
+        op == M.FLOOR          && return floor.(a)
+        op == M.CEIL           && return ceil.(a)
+        op == M.TRUNCATE       && return _truncate.(a)
+        op == M.FRACTION       && return a - floor.(a)
+        op == M.MODULO         && return _safe_modulo.(a, b)
+        op == M.FLOORED_MODULO && return _safe_floored_modulo.(a, b)
+        op == M.WRAP           && return _wrap.(a, b, c)
+        op == M.SNAP           && return floor.(_safe_divide.(a, b)) .* b
+        op == M.PINGPONG       && return _pingpong.(a, b)
+        op == M.SIGN           && return _compatible_sign.(a)
+    end
+    if _has(ins, NodeFeature.MATH_COMPARE)
+        op == M.LESS_THAN    && return _b2f.(a .< b)
+        op == M.GREATER_THAN && return _b2f.(a .> b)
+        op == M.COMPARE      && return _compare.(a, b, c)
+        op == M.SMOOTH_MIN   && return _smoothmin.(a, b, c)
+        op == M.SMOOTH_MAX   && return -_smoothmin.(-a, -b, c)
+    end
     return zero(a)
+end
+
+"""The `NodeFeature` group a Math operation needs beyond the core arithmetic, or 0."""
+function _math_group(op::UInt8)
+    M = MathOp
+    op in (M.SINE, M.COSINE, M.TANGENT, M.ARCSINE, M.ARCCOSINE, M.ARCTANGENT, M.ARCTAN2, M.SINH, M.COSH, M.TANH,
+           M.RADIANS, M.DEGREES) && return NodeFeature.MATH_TRIG
+    op in (M.POWER, M.LOGARITHM, M.SQRT, M.INVERSE_SQRT, M.EXPONENT) && return NodeFeature.MATH_POWER
+    op in (M.ROUND, M.FLOOR, M.CEIL, M.TRUNCATE, M.FRACTION, M.MODULO, M.FLOORED_MODULO, M.WRAP, M.SNAP, M.PINGPONG,
+           M.SIGN) && return NodeFeature.MATH_ROUND
+    op in (M.LESS_THAN, M.GREATER_THAN, M.COMPARE, M.SMOOTH_MIN, M.SMOOTH_MAX) && return NodeFeature.MATH_COMPARE
+    return UInt32(0)
 end
 
 @inline function _safe_normalize(a::Vec3f)

@@ -285,7 +285,9 @@ const CYCLES_VALUES = [
         features(g) = typeof(Hikari.compile_nodes(g, _ -> (1, 1))).parameters[1].parameters[1]
         p = xyz()
         F = Hikari.NodeFeature
-        @test features(sin(p.x) * 2) & ~(UInt32(0x3) << Hikari.STACK_SHIFT) == 0
+        @test features(p.x * 2 + 1) & ~(UInt32(0x3) << Hikari.STACK_SHIFT) == 0
+        @test features(sin(p.x) * 2) & ~(UInt32(0x3) << Hikari.STACK_SHIFT) == F.MATH_TRIG
+        @test features(floor(p) + sqrt(p)) & (F.MATH_ROUND | F.MATH_POWER | F.MATH_TRIG) == F.MATH_ROUND | F.MATH_POWER
         @test features(noise(p)) & (F.NOISE | F.NOISE_DIMS | F.NOISE_TYPES | F.VORONOI) == F.NOISE
         @test features(noise(p; dimensions = 4, type = :ridged_multifractal)) & (F.NOISE_DIMS | F.NOISE_TYPES) == F.NOISE_DIMS | F.NOISE_TYPES
         @test features(voronoi(p; feature = :smooth_f1)) & (F.VORONOI | F.VORONOI_SMOOTH | F.VORONOI_EDGE) == F.VORONOI | F.VORONOI_SMOOTH

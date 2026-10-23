@@ -11,9 +11,9 @@ const _RAMP_DATA = Int32(cld(RAMP_TABLE_SIZE, RAMP_ENTRIES_PER_DATA))
     op = ins.op
     if op == NodeOp.MATH
         result = if _bit(ins.outwide, 1)
-            _math(ins.mode[1], _v(s, ins, 1), _v(s, ins, 2), _v(s, ins, 3))
+            _math(ins, ins.mode[1], _v(s, ins, 1), _v(s, ins, 2), _v(s, ins, 3))
         else
-            _splat(_math(ins.mode[1], _f(s, ins, 1), _f(s, ins, 2), _f(s, ins, 3)))
+            _splat(_math(ins, ins.mode[1], _f(s, ins, 1), _f(s, ins, 2), _f(s, ins, 3)))
         end
         s = _store(s, ins, result)
     elseif op == NodeOp.CONST
@@ -114,7 +114,7 @@ call site would multiply the kernel's size.
 @noinline function eval_nodes(prog::AbstractVector{NodeInstr{F}}, textures, tfc::TextureFilterContext) where {F}
     s = _new_stack(Val(_stack_size(F)))
     i = Int32(1)
-    n = Int32(length(prog))
+    n = length(prog) % Int32
     @inbounds while i <= n
         ins = prog[i]
         ins.op == NodeOp.RESULT && return _v(s, ins, 1)
