@@ -168,7 +168,7 @@ include("textures/mapping.jl")
 include("textures/basic.jl")
 include("textures/texture-ref.jl")
 include("textures/tex-handle.jl")
-include("textures/nodes.jl")
+include("textures/nodes/nodes.jl")
 include("textures/environment_map.jl")
 
 # Spectral rendering support
