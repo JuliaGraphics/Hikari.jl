@@ -210,6 +210,18 @@ Resolve a scalar parameter.
 end
 
 """
+    eval_handle_alpha(textures, h, tfc) -> Float32
+
+The alpha of a colour parameter. Alpha is asked for at every candidate hit of every ray, shadow
+rays included, and a node program carries none, so it is not run for it.
+"""
+@propagate_inbounds function eval_handle_alpha(textures, h::TexHandle, tfc::TextureFilterContext)
+    h.kind == TexKind.NODES && return 1f0
+    return get_alpha(eval_handle_spectrum(textures, h, tfc))
+end
+@propagate_inbounds eval_handle_alpha(textures, h, tfc::TextureFilterContext) = get_alpha(eval_handle_spectrum(textures, h, tfc))
+
+"""
     eval_handle_spectrum(textures, h::TexHandle, tfc) -> RGBSpectrum
 
 Resolve a colour parameter to RGB. Uplifting to spectral stays with the caller,
