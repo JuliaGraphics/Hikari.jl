@@ -66,6 +66,83 @@ end
 # emission_contribution_grid, which is a density per *proper* volume.
 Hikari.image_contribution_grid(snap::GRMHDSnapshots.GRMHDSnapshot, ep::EmissionParams) = emission_contribution_grid(snap, ep) .* volume_ratio(snap)
 
+# The fluid's Cartesian velocity in the local static Schwarzschild frame, from
+# the relative-velocity primitive `u` at (rg, θ, φ), rg in r_g (a = 0), capped
+# at 0.999c. Relative velocity -> orthonormal Eulerian frame, then a radial
+# Lorentz boost into the static frame. On and inside the horizon there is no
+# static frame: everything falls in at c, the limit the boost reaches at rg = 2.
+function static_velocity(u, rg, theta, phi)
+    st, ct = sincos(theta); sp, cp = sincos(phi)
+    rg <= 2 && return -0.999f0 * SVector{3,Float32}(st*cp, st*sp, ct)
+    ur, ut, up = u[1]*sqrt(1+2/rg), rg*u[2], rg*st*u[3]
+    gamma = sqrt(1+ur^2+ut^2+up^2)
+    vr, vt, vp = ur/gamma, ut/gamma, up/gamma
+    bn = -2/rg
+    den = 1+bn*vr
+    vr = (vr+bn)/den
+    vt *= sqrt(1-bn^2)/den
+    vp *= sqrt(1-bn^2)/den
+    v = SVector{3,Float32}(vr*st*cp + vt*ct*cp - vp*sp,
+              vr*st*sp + vt*ct*sp + vp*cp, vr*ct - vt*st)
+    return v * min(1f0, 0.999f0/max(sqrt(sum(abs2,v)), 1f-8))
+end
+
+function load_radiative_snapshot(path, mass_unit, black_hole_mass)
+    isfinite(mass_unit) && mass_unit>0 || throw(ArgumentError("mass_unit must be positive CGS grams"))
+    isfinite(black_hole_mass) && black_hole_mass>0 || throw(ArgumentError("black_hole_mass must be positive CGS grams"))
+    isfile(path) || error("Missing GRMHD snapshot: $path; fetch the declared sequence before rendering")
+    snap = GRMHDSnapshots.load_snapshot(path; M_unit = mass_unit, MBH = black_hole_mass)
+    iszero(snap.spin) || error("This medium's transport requires a spin-zero snapshot")
+    return snap
+end
+
+# Exposure is a display choice, not a fitted flux measurement: emissivity keeps
+# its relative physical values, scaled by `normalization` or its own peak.
+function normalize_emissivity!(j, normalization)
+    peak = maximum(j)
+    peak > 0 || error("GRMHD snapshot has no emitting plasma in the scene")
+    reference = isnothing(normalization) ? peak : normalization
+    isfinite(reference) && reference > 0 || error("Invalid emissivity normalization")
+    j ./= reference
+    return peak
+end
+
+function Hikari.native_radiative_volume(path::AbstractString; mass_unit, black_hole_mass,
+                                        fade = (11f0, 14f0), normalization = nothing,
+                                        emission_params = Hikari.EmissionParams())
+    inner, outer = Float32.(fade)
+    0 < inner < outer || throw(ArgumentError("fade must be two increasing positive radii"))
+    snap = load_radiative_snapshot(path, mass_unit, black_hole_mass)
+    radii = snap.r_prof ./ 2
+    steps = diff(log.(radii))
+    all(s -> isapprox(s, steps[1]; rtol = 1e-6), steps) ||
+        error("Native sampling needs a log-uniform radial grid")
+    nr = findfirst(>=(outer), radii)
+    nr === nothing && error("The snapshot grid ends inside the fade")
+    native_j = Hikari.emissivity_grid(snap, emission_params)
+    native_a = Hikari.absorption_grid(snap, emission_params)
+    nphi, ntheta = size(snap.rho, 1), size(snap.rho, 2)
+    j = zeros(Float32, nphi, ntheta, nr)
+    alpha = similar(j)
+    velocity = similar(j, SVector{3,Float32})
+    rs_cm = 2GRMHDSnapshots.lunit(snap)
+    Threads.@threads for i in 1:nr
+        s = clamp((radii[i]-inner)/(outer-inner), 0, 1)
+        taper = 1 - s^2*(3 - 2s)
+        for jt in 1:ntheta, k in 1:nphi
+            j[k,jt,i] = Float32(max(native_j[k,jt,i], 0) * taper)
+            alpha[k,jt,i] = Float32(max(native_a[k,jt,i], 0) * taper * rs_cm)
+            velocity[k,jt,i] = static_velocity(snap.velrel[k,jt,i], 2radii[i], snap.th_grid[i,jt],
+                                               snap.φ0 + (k-1)*snap.dφ)
+        end
+    end
+    peak = normalize_emissivity!(j, normalization)
+    return (; density=j, absorption=alpha, velocity, theta=Float32.(snap.th_grid[1:nr, :]),
+            log_r0=Float32(log(radii[1])), dlog_r=Float32(steps[1]),
+            phi0=Float32(snap.φ0), dphi=Float32(snap.dφ),
+            path=abspath(path), normalization, emissivity_peak=peak, extent=Float32(radii[nr]))
+end
+
 # Cartesian snapshot preparation shared by file-backed editor inputs and scenes.
 # Coordinates and extent are in Schwarzschild radii (2 r_g).
 function Hikari.radiative_volume(path::AbstractString; mass_unit, black_hole_mass,
@@ -73,12 +150,8 @@ function Hikari.radiative_volume(path::AbstractString; mass_unit, black_hole_mas
                                  emission_params=Hikari.EmissionParams())
     resolution>=2 || throw(ArgumentError("volume resolution must be at least two"))
     isfinite(extent) && extent>1.025 || throw(ArgumentError("invalid volume extent"))
-    isfinite(mass_unit) && mass_unit>0 || throw(ArgumentError("mass_unit must be positive CGS grams"))
-    isfinite(black_hole_mass) && black_hole_mass>0 || throw(ArgumentError("black_hole_mass must be positive CGS grams"))
     G = GRMHDSnapshots
-    isfile(path) || error("Missing GRMHD snapshot: $path; fetch the declared sequence before rendering")
-    snap = G.load_snapshot(path; M_unit = mass_unit, MBH = black_hole_mass)
-    iszero(snap.spin) || error("This medium's transport requires a spin-zero snapshot")
+    snap = load_radiative_snapshot(path, mass_unit, black_hole_mass)
     ep = emission_params
     native_j = Hikari.emissivity_grid(snap, ep)
     native_a = Hikari.absorption_grid(snap, ep)
@@ -104,29 +177,11 @@ function Hikari.radiative_volume(path::AbstractString; mass_unit, black_hole_mas
             j[ix,iy,k] = Float32(max(GRMHDSnapshots.sample_field(snap, native_j, x,y,z), 0) * taper)
             alpha[ix,iy,k] = Float32(max(GRMHDSnapshots.sample_field(snap, native_a, x,y,z), 0) * taper * rs_cm)
             u = GRMHDSnapshots.sample_field(snap, snap.velrel, x,y,z)
-            # Relative velocity -> orthonormal Eulerian frame (a=0), then a
-            # radial Lorentz boost into the local STATIC Schwarzschild frame.
-            ur, ut, up = u[1]*sqrt(1+2/rg), rg*u[2], rg*sin(theta)*u[3]
-            gamma = sqrt(1+ur^2+ut^2+up^2)
-            vr, vt, vp = ur/gamma, ut/gamma, up/gamma
-            bn = -2/rg
-            den = 1+bn*vr
-            vr = (vr+bn)/den
-            vt *= sqrt(1-bn^2)/den
-            vp *= sqrt(1-bn^2)/den
-            st, ct = sincos(theta); sp, cp = sincos(phi)
-            v = SVector{3,Float32}(vr*st*cp + vt*ct*cp - vp*sp,
-                      vr*st*sp + vt*ct*sp + vp*cp, vr*ct - vt*st)
-            velocity[ix,iy,k] = v * min(1f0, 0.999f0/max(sqrt(sum(abs2,v)), 1f-8))
+            velocity[ix,iy,k] = static_velocity(u, rg, theta, phi)
         end
     end
-    # Exposure is a display choice, not a fitted flux measurement. Preserve
-    # relative physical emissivity; absorption retains the stated CGS units.
-    peak = maximum(j)
-    peak > 0 || error("GRMHD snapshot has no emitting plasma in the scene")
-    reference = isnothing(normalization) ? peak : normalization
-    isfinite(reference) && reference > 0 || error("Invalid emissivity normalization")
-    j ./= reference
+    # Absorption retains the stated CGS units.
+    peak = normalize_emissivity!(j, normalization)
     # Bound each trilinear cell jointly. Multiplying the GLOBAL densest cell
     # by the GLOBAL fastest cell is safe but grossly pessimistic: the fastest
     # infall is not where absorption peaks. Convex interpolation bounds both
