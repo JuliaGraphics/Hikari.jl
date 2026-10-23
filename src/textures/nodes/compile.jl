@@ -124,14 +124,42 @@ end
 
 _pad(xs, n, fill) = ntuple(i -> i <= length(xs) ? xs[i] : fill, n)
 
+const _OP_FEATURES = Dict(
+    NodeOp.HSV => NodeFeature.COLOR, NodeOp.GAMMA => NodeFeature.COLOR, NodeOp.BRIGHT_CONTRAST => NodeFeature.COLOR,
+    NodeOp.INVERT => NodeFeature.COLOR, NodeOp.RGB_TO_BW => NodeFeature.COLOR, NodeOp.SEPARATE_COLOR => NodeFeature.COLOR,
+    NodeOp.COMBINE_COLOR => NodeFeature.COLOR, NodeOp.RAMP => NodeFeature.RAMP, NodeOp.MAPPING => NodeFeature.VECTOR,
+    NodeOp.VECTOR_ROTATE => NodeFeature.VECTOR, NodeOp.IMAGE => NodeFeature.IMAGE, NodeOp.NOISE => NodeFeature.NOISE,
+    NodeOp.VORONOI => NodeFeature.VORONOI, NodeOp.WHITE_NOISE => NodeFeature.WHITE_NOISE, NodeOp.WAVE => NodeFeature.WAVE,
+    NodeOp.GRADIENT => NodeFeature.GRADIENT, NodeOp.MAGIC => NodeFeature.MAGIC, NodeOp.CHECKER => NodeFeature.CHECKER,
+    NodeOp.BRICK => NodeFeature.BRICK, NodeOp.VECTOR_MATH => NodeFeature.VECTOR_MATH, NodeOp.AFFINE_ROW => NodeFeature.VECTOR,
+    NodeOp.MIX => NodeFeature.MIX, NodeOp.CLAMP => NodeFeature.RANGE, NodeOp.MAP_RANGE => NodeFeature.RANGE)
+
+"""The `NodeFeature` bits the interpreter needs to run node `c`."""
+function _features(c::NodeCore)
+    f = get(_OP_FEATURES, c.op, UInt32(0))
+    dims, kind = c.mode
+    if c.op == NodeOp.MIX && c.mode[1] != BlendType.MIX
+        f |= NodeFeature.BLEND
+    elseif c.op == NodeOp.NOISE
+        dims != 0x03 && (f |= NodeFeature.NOISE_DIMS)
+        kind != NoiseType.FBM && (f |= NodeFeature.NOISE_TYPES)
+    elseif c.op == NodeOp.VORONOI
+        dims != 0x03 && (f |= NodeFeature.VORONOI_DIMS)
+        kind == VoronoiFeature.SMOOTH_F1 && (f |= NodeFeature.VORONOI_SMOOTH)
+        kind in (VoronoiFeature.DISTANCE_TO_EDGE, VoronoiFeature.N_SPHERE_RADIUS) && (f |= NodeFeature.VORONOI_EDGE)
+    end
+    return f
+end
+
 """
-    compile_nodes(root, store_image) -> Vector{NodeInstr}
+    compile_nodes(root, store_image) -> Vector{NodeInstr{F}}
 
 Linearize the graph and place every value on the stack by liveness.
 `store_image(data)` returns the `(slot, idx)` an image input lives at.
 """
 function compile_nodes(root::TexNode, store_image)
     order = _topological(getfield(root, :core))
+    features = mapreduce(_features, |, order; init = UInt32(0))
     position = IdDict{NodeCore, Int}(c => i for (i, c) in enumerate(order))
     last_use = Dict{Tuple{Int, Int}, Int}()
     for (i, c) in enumerate(order), x in c.inputs
@@ -142,7 +170,8 @@ function compile_nodes(root::TexNode, store_image)
 
     free = trues(NODE_STACK)
     offset = Dict{Tuple{Int, Int}, Int}()
-    program = NodeInstr[]
+    instructions = []
+    used = 0
     for (i, c) in enumerate(order)
         args = UInt8[]
         wide = UInt16(0)
@@ -169,6 +198,7 @@ function compile_nodes(root::TexNode, store_image)
         for (j, w) in enumerate(c.widths)
             if haskey(last_use, (i, j))
                 offset[(i, j)] = _allocate!(free, w)
+                used = max(used, offset[(i, j)] + w - 1)
                 push!(outs, UInt8(offset[(i, j)]))
                 w == 3 && (outwide |= UInt8(1) << (j - 1))
             else
@@ -180,20 +210,21 @@ function compile_nodes(root::TexNode, store_image)
             slot, idx = store_image(c.data)
             kt = Base.setindex(Base.setindex(kt, reinterpret(Float32, Int32(slot)), 9), reinterpret(Float32, Int32(idx)), 10)
         end
-        push!(program, NodeInstr(c.op, c.mode, _pad(outs, NODE_OUTS, NO_SLOT), outwide, _pad(args, NODE_ARGS, NO_SLOT), wide, kt))
-        c.data isa Vector{Float32} && append!(program, _data_instructions(c.data))
+        push!(instructions, (c.op, c.mode, _pad(outs, NODE_OUTS, NO_SLOT), outwide, _pad(args, NODE_ARGS, NO_SLOT), wide, kt))
+        c.data isa Vector{Float32} && append!(instructions, _data_instructions(c.data))
     end
     result_offset = UInt8(offset[root_key])
     result_wide = _width(root) == 3 ? UInt16(1) : UInt16(0)
-    push!(program, NodeInstr(NodeOp.RESULT, (0x00, 0x00, 0x00), _pad(UInt8[], NODE_OUTS, NO_SLOT), 0x00,
-                             _pad([result_offset], NODE_ARGS, NO_SLOT), result_wide, _pad(Float32[], NODE_ARGS, 0f0)))
-    return program
+    push!(instructions, (NodeOp.RESULT, (0x00, 0x00, 0x00), _pad(UInt8[], NODE_OUTS, NO_SLOT), 0x00,
+                         _pad([result_offset], NODE_ARGS, NO_SLOT), result_wide, _pad(Float32[], NODE_ARGS, 0f0)))
+    F = features | _stack_bits(used)
+    return [NodeInstr{F}(fields...) for fields in instructions]
 end
 
 """Floats carried inline after the instruction that reads them, `NODE_ARGS` to an instruction."""
 _data_instructions(data::Vector{Float32}) =
-    [NodeInstr(NodeOp.DATA, (0x00, 0x00, 0x00), _pad(UInt8[], NODE_OUTS, NO_SLOT), 0x00, _pad(UInt8[], NODE_ARGS, NO_SLOT),
-               UInt16(0), _pad(chunk, NODE_ARGS, 0f0))
+    [(NodeOp.DATA, (0x00, 0x00, 0x00), _pad(UInt8[], NODE_OUTS, NO_SLOT), 0x00, _pad(UInt8[], NODE_ARGS, NO_SLOT),
+      UInt16(0), _pad(chunk, NODE_ARGS, 0f0))
      for chunk in Iterators.partition(data, NODE_ARGS)]
 
 @inline matparam(x::TexNode) = x
@@ -213,15 +244,15 @@ _stored_array(dhv::Raycore.MultiTypeSet, AT, idx) =
 """
     update_item(dhv, old::TexHandle, new::TexNode)
 
-Overwrite the program `old` names when the new one has the same length, which
-is the case whenever only a graph's parameters change, so tweaking them does
-not take a new slot on every update.
+Overwrite the program `old` names when the new one has the same length and node
+families, which is the case whenever only a graph's parameters change, so
+tweaking them does not take a new slot on every update.
 """
 function Raycore.update_item(dhv::Raycore.MultiTypeSet, old::TexHandle, new::TexNode)
     old.kind == TexKind.NODES || return device_param(dhv, new)
     AT = dhv.texture_order[old.slot]
     program = _compile_into(dhv, new)
-    length(program) == length(_stored_array(dhv, AT, old.idx)) || return device_param(dhv, new)
+    eltype(program) === eltype(AT) && length(program) == length(_stored_array(dhv, AT, old.idx)) || return device_param(dhv, new)
     ref = Raycore.TextureRef{AT, eltype(AT), ndims(AT), Int(old.slot)}(Int(old.idx))
     Raycore.copyto_texture!(dhv, ref, program)
     return old

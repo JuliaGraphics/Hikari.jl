@@ -76,8 +76,8 @@ const _NO_VORONOI = VoronoiOutput(0f0, Vec3f(0), Vec4f(0))
 @inline _cell_color(cell::NTuple{4, Int32}) = (h = _hash_int_to_float(cell); Vec3f(h[1], h[2], h[3]))
 
 """
-A loop the compiler keeps rolled. Scanning 3^4 or 5^4 cells unrolled, for every feature and
-dimension, makes the kernel too large for Metal's compiler to finish in reasonable time.
+A loop the compiler keeps rolled. Smooth F1 scans 5^3 or 5^4 cells, which unrolled make the
+kernel too large for Metal's compiler to finish in reasonable time.
 """
 macro rolled(loop)
     loop.args[2] = Expr(:block, loop.args[2], Expr(:loopinfo, (Symbol("llvm.loop.unroll.disable"),)))
@@ -103,7 +103,7 @@ function _voronoi_f1(params::VoronoiParams, coord::Vec{N, Float32}) where {N}
     min_distance = floatmax(Float32)
     target_offset = ntuple(_ -> Int32(0), Val(N))
     target_position = Vec{N, Float32}(0)
-    @rolled for k in Int32(0):_cell_count(Val(N), Int32(1)) - Int32(1)
+    for k in Int32(0):_cell_count(Val(N), Int32(1)) - Int32(1)
         offset = _cell_offset(k, Int32(1), Val(N))
         point = _point(offset, cell, params)
         d = _voronoi_distance_bound(point, local_position, params)
@@ -145,7 +145,7 @@ function _voronoi_f2(params::VoronoiParams, coord::Vec{N, Float32}) where {N}
     zero_offset = ntuple(_ -> Int32(0), Val(N))
     offset1, offset2 = zero_offset, zero_offset
     position1 = position2 = Vec{N, Float32}(0)
-    @rolled for k in Int32(0):_cell_count(Val(N), Int32(1)) - Int32(1)
+    for k in Int32(0):_cell_count(Val(N), Int32(1)) - Int32(1)
         offset = _cell_offset(k, Int32(1), Val(N))
         point = _point(offset, cell, params)
         d = _voronoi_distance(point, local_position, params)
@@ -166,7 +166,7 @@ function _voronoi_distance_to_edge(params::VoronoiParams, coord::Vec{N, Float32}
     cell = _cell_int(cell_f)
     to_closest = Vec{N, Float32}(0)
     min_distance = floatmax(Float32)
-    @rolled for k in Int32(0):_cell_count(Val(N), Int32(1)) - Int32(1)
+    for k in Int32(0):_cell_count(Val(N), Int32(1)) - Int32(1)
         to_point = _point(_cell_offset(k, Int32(1), Val(N)), cell, params) - local_position
         d = dot(to_point, to_point)
         if d < min_distance
@@ -174,7 +174,7 @@ function _voronoi_distance_to_edge(params::VoronoiParams, coord::Vec{N, Float32}
         end
     end
     min_distance = floatmax(Float32)
-    @rolled for k in Int32(0):_cell_count(Val(N), Int32(1)) - Int32(1)
+    for k in Int32(0):_cell_count(Val(N), Int32(1)) - Int32(1)
         to_point = _point(_cell_offset(k, Int32(1), Val(N)), cell, params) - local_position
         perpendicular = to_point - to_closest
         if dot(perpendicular, perpendicular) > 0.0001f0
@@ -191,7 +191,7 @@ function _voronoi_n_sphere_radius(params::VoronoiParams, coord::Vec{N, Float32})
     closest = Vec{N, Float32}(0)
     closest_offset = ntuple(_ -> Int32(0), Val(N))
     min_distance = floatmax(Float32)
-    @rolled for k in Int32(0):_cell_count(Val(N), Int32(1)) - Int32(1)
+    for k in Int32(0):_cell_count(Val(N), Int32(1)) - Int32(1)
         offset = _cell_offset(k, Int32(1), Val(N))
         point = _point(offset, cell, params)
         d = dot(point - local_position, point - local_position)
@@ -201,7 +201,7 @@ function _voronoi_n_sphere_radius(params::VoronoiParams, coord::Vec{N, Float32})
     end
     min_distance = floatmax(Float32)
     closest_to_closest = Vec{N, Float32}(0)
-    @rolled for k in Int32(0):_cell_count(Val(N), Int32(1)) - Int32(1)
+    for k in Int32(0):_cell_count(Val(N), Int32(1)) - Int32(1)
         neighbour = _cell_offset(k, Int32(1), Val(N))
         all(iszero, neighbour) && continue
         offset = _add(neighbour, closest_offset)
@@ -308,18 +308,18 @@ end
 
 # ── Fractal Voronoi ─────────────────────────────────────────────────────────
 
-@inline function _voronoi_octave(params::VoronoiParams, coord)
+@inline function _voronoi_octave(params::VoronoiParams, coord, smooth::Bool)
     params.feature == VoronoiFeature.F2 && return _voronoi_f2(params, coord)
-    params.feature == VoronoiFeature.SMOOTH_F1 && params.smoothness != 0f0 && return _voronoi_smooth_f1(params, coord)
+    smooth && params.feature == VoronoiFeature.SMOOTH_F1 && params.smoothness != 0f0 && return _voronoi_smooth_f1(params, coord)
     return _voronoi_f1(params, coord)
 end
 
-function _fractal_voronoi(params::VoronoiParams, coord)
+function _fractal_voronoi(params::VoronoiParams, coord, smooth::Bool)
     amplitude, max_amplitude, scale = 1f0, 0f0, 1f0
     distance, color, position = 0f0, Vec3f(0), Vec4f(0)
     zero_input = params.detail == 0f0 || params.roughness == 0f0
     for i in Int32(0):_to_int(ceil(params.detail))
-        octave = _voronoi_octave(params, coord * scale)
+        octave = _voronoi_octave(params, coord * scale, smooth)
         if zero_input
             max_amplitude = 1f0
             distance, color, position = octave.distance, octave.color, octave.position
@@ -382,22 +382,24 @@ end
     _voronoi_distance(Vec{N, Float32}(0), Vec{N, Float32}(0.5f0 + 0.5f0 * params.randomness), params)
 
 """Blender's Voronoi Texture: distance, colour, position, w and radius."""
-@noinline function _voronoi_node(ins::NodeInstr, coord::Vec3f, w::Float32, scale, detail, roughness, lacunarity,
+function _voronoi_node(ins::NodeInstr, coord::Vec3f, w::Float32, scale, detail, roughness, lacunarity,
                        smoothness, exponent, randomness)
     dims, feature, packed = ins.mode
     metric, normalize = packed & 0x0f, packed >> 4 == 0x01
     params = VoronoiParams(scale, clamp(detail, 0f0, 15f0), clamp(roughness, 0f0, 1f0), lacunarity,
                            clamp(smoothness / 2f0, 0f0, 0.5f0), exponent, clamp(randomness, 0f0, 1f0), 0f0,
                            normalize, feature, metric)
-    return _with_dims(dims, coord * scale, w * scale) do co
-        if feature == VoronoiFeature.DISTANCE_TO_EDGE
+    edges = _has(ins, NodeFeature.VORONOI_EDGE)
+    return _with_dims(dims, coord * scale, w * scale, _has(ins, NodeFeature.VORONOI_DIMS)) do co
+        if edges && feature == VoronoiFeature.DISTANCE_TO_EDGE
             p = _with_max_distance(params, 0.5f0 + 0.5f0 * params.randomness)
             return (_fractal_voronoi_distance_to_edge(p, co), Vec3f(0), Vec4f(0), 0f0)
-        elseif feature == VoronoiFeature.N_SPHERE_RADIUS
+        elseif edges && feature == VoronoiFeature.N_SPHERE_RADIUS
             return (0f0, Vec3f(0), Vec4f(0), _voronoi_n_sphere_radius(params, co))
         end
         f2 = feature == VoronoiFeature.F2 ? 2f0 : 1f0
-        out = _fractal_voronoi(_with_max_distance(params, _max_distance(params, co) * f2), co)
+        out = _fractal_voronoi(_with_max_distance(params, _max_distance(params, co) * f2), co,
+                               _has(ins, NodeFeature.VORONOI_SMOOTH))
         return (out.distance, out.color, out.position, 0f0)
     end
 end

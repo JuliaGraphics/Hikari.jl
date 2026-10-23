@@ -95,7 +95,9 @@ end
     return value
 end
 
-@inline function _noise_select(p, type::UInt8, normalize::Bool, detail, roughness, lacunarity, offset, gain)
+@inline function _noise_select(p, type::UInt8, normalize::Bool, detail, roughness, lacunarity, offset, gain,
+                               all_types::Bool = true)
+    all_types || return _noise_fbm(p, detail, roughness, lacunarity, normalize)
     type == NoiseType.MULTIFRACTAL        && return _noise_multi_fractal(p, detail, roughness, lacunarity)
     type == NoiseType.HYBRID_MULTIFRACTAL && return _noise_hybrid_multi_fractal(p, detail, roughness, lacunarity, offset, gain)
     type == NoiseType.RIDGED_MULTIFRACTAL && return _noise_ridged_multi_fractal(p, detail, roughness, lacunarity, offset, gain)
@@ -121,30 +123,32 @@ end
 
 """Blender's Noise Texture at `co` (already scaled): its `fac` and, if `want_color`, its colour."""
 @inline function _noise_texture(co, type::UInt8, normalize::Bool, want_color::Bool,
-                                detail, roughness, lacunarity, offset, gain, distortion)
+                                detail, roughness, lacunarity, offset, gain, distortion, all_types::Bool)
     p = _distorted(co, distortion)
-    value = _noise_select(p, type, normalize, detail, roughness, lacunarity, offset, gain)
+    value = _noise_select(p, type, normalize, detail, roughness, lacunarity, offset, gain, all_types)
     want_color || return (value, Vec3f(value, 0f0, 0f0))
     n = Float32(_ndims(co))
-    c2 = _noise_select(p + _random_offset(p, n), type, normalize, detail, roughness, lacunarity, offset, gain)
-    c3 = _noise_select(p + _random_offset(p, n + 1f0), type, normalize, detail, roughness, lacunarity, offset, gain)
+    c2 = _noise_select(p + _random_offset(p, n), type, normalize, detail, roughness, lacunarity, offset, gain, all_types)
+    c3 = _noise_select(p + _random_offset(p, n + 1f0), type, normalize, detail, roughness, lacunarity, offset, gain, all_types)
     return (value, Vec3f(value, c2, c3))
 end
 
-"""A point of `dims` dimensions from a 3D vector and a fourth coordinate `w`."""
-@inline function _with_dims(f, dims::UInt8, v::Vec3f, w::Float32)
+"""A point of `dims` dimensions from a 3D vector and a fourth coordinate `w`; always 3D unless `all_dims`."""
+@inline function _with_dims(f, dims::UInt8, v::Vec3f, w::Float32, all_dims::Bool = true)
+    all_dims || return f(v)
     dims == 0x01 && return f(w)
     dims == 0x02 && return f(Vec2f(v[1], v[2]))
     dims == 0x04 && return f(Vec4f(v[1], v[2], v[3], w))
     return f(v)
 end
 
-@noinline function _noise_node(ins::NodeInstr, v::Vec3f, w::Float32, scale::Float32, detail::Float32, roughness::Float32,
+function _noise_node(ins::NodeInstr, v::Vec3f, w::Float32, scale::Float32, detail::Float32, roughness::Float32,
                      lacunarity::Float32, offset::Float32, gain::Float32, distortion::Float32)
     dims, type, normalize = ins.mode
     detail = clamp(detail, 0f0, 15f0)
     roughness = max(roughness, 0f0)
-    return _with_dims(dims, v * scale, w * scale) do co
-        _noise_texture(co, type, normalize == 0x01, _wants(ins, 2), detail, roughness, lacunarity, offset, gain, distortion)
+    return _with_dims(dims, v * scale, w * scale, _has(ins, NodeFeature.NOISE_DIMS)) do co
+        _noise_texture(co, type, normalize == 0x01, _wants(ins, 2), detail, roughness, lacunarity, offset, gain, distortion,
+                       _has(ins, NodeFeature.NOISE_TYPES))
     end
 end

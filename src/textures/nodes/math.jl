@@ -96,11 +96,14 @@ end
 @inline _truncate(a::Float32) = a >= 0f0 ? floor(a) : ceil(a)
 @inline _b2f(b::Bool) = ifelse(b, 1f0, 0f0)
 
-@inline function _math(op::UInt8, a::Vec3f, b::Vec3f, c::Vec3f)
+"""Blender's Math node on scalars, or per component on vectors."""
+@inline function _math(op::UInt8, a::T, b::T, c::T) where {T <: Union{Float32, Vec3f}}
     M = MathOp
+    op == M.MULTIPLY       && return a .* b
     op == M.ADD            && return a + b
     op == M.SUBTRACT       && return a - b
-    op == M.MULTIPLY       && return a .* b
+    op == M.SINE           && return sin.(a)
+    op == M.COSINE         && return cos.(a)
     op == M.DIVIDE         && return _safe_divide.(a, b)
     op == M.MULTIPLY_ADD   && return a .* b + c
     op == M.POWER          && return _safe_pow.(a, b)
@@ -139,7 +142,7 @@ end
     op == M.TANH           && return tanh.(a)
     op == M.RADIANS        && return a * Float32(π / 180)
     op == M.DEGREES        && return a * Float32(180 / π)
-    return Vec3f(0)
+    return zero(a)
 end
 
 @inline function _safe_normalize(a::Vec3f)

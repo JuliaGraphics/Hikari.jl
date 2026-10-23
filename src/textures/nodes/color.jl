@@ -169,7 +169,7 @@ end
 @noinline function _mix_node(ins::NodeInstr, t::Vec3f, a::Vec3f, b::Vec3f)
     blend, clamp_factor, clamp_result = ins.mode
     t = clamp_factor == 0x01 ? clamp.(t, 0f0, 1f0) : t
-    result = blend == BlendType.MIX ? (Vec3f(1) - t) .* a + t .* b : _blend(blend, t[1], a, b)
+    result = blend != BlendType.MIX && _has(ins, NodeFeature.BLEND) ? _blend(blend, t[1], a, b) : (Vec3f(1) - t) .* a + t .* b
     return clamp_result == 0x01 ? clamp.(result, 0f0, 1f0) : result
 end
 

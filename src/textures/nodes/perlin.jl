@@ -72,11 +72,10 @@ end
 @inline _noise_scale(::Vec3f) = 0.9820f0
 @inline _noise_scale(::Vec4f) = 0.8344f0
 
+"""`rem(x, 100000)`, skipping the division for the coordinates that need none."""
+@inline _wrap_1e5(x::Float32) = abs(x) < 100000f0 ? x : rem(x, 100000f0) + ifelse(abs(x) >= 1f6, 0.5f0, 0f0)
+
 """Signed Perlin noise in about [-1, 1], repeating every 100000 to keep its precision."""
-@inline function _snoise(p)
-    correction = 0.5f0 .* ifelse.(abs.(p) .>= 1f6, 1f0, 0f0)
-    q = rem.(p, 100000f0) .+ correction
-    return _noise_scale(p) * _perlin(q)
-end
+@inline _snoise(p) = _noise_scale(p) * _perlin(_wrap_1e5.(p))
 
 @inline _unoise(p) = 0.5f0 * _snoise(p) + 0.5f0

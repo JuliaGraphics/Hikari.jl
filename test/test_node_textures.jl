@@ -281,6 +281,26 @@ const CYCLES_VALUES = [
         @test at(shared.color + shared, x) ≈ at(shared.color, x) + at(shared, x)
     end
 
+    @testset "programs carry the node families and stack they use" begin
+        features(g) = typeof(Hikari.compile_nodes(g, _ -> (1, 1))).parameters[1].parameters[1]
+        p = xyz()
+        F = Hikari.NodeFeature
+        @test features(sin(p.x) * 2) & ~(UInt32(0x3) << Hikari.STACK_SHIFT) == 0
+        @test features(noise(p)) & (F.NOISE | F.NOISE_DIMS | F.NOISE_TYPES | F.VORONOI) == F.NOISE
+        @test features(noise(p; dimensions = 4, type = :ridged_multifractal)) & (F.NOISE_DIMS | F.NOISE_TYPES) == F.NOISE_DIMS | F.NOISE_TYPES
+        @test features(voronoi(p; feature = :smooth_f1)) & (F.VORONOI | F.VORONOI_SMOOTH | F.VORONOI_EDGE) == F.VORONOI | F.VORONOI_SMOOTH
+        @test features(mix((1, 0, 0), (0, 0, 1), p.x; blend = :screen)) & (F.MIX | F.BLEND) == F.MIX | F.BLEND
+        @test Hikari._stack_size(features(sin(p.x))) == 16
+        terms = [sin(p * k) for k in 1:12]
+        @test Hikari._stack_size(features(reduce(+, terms) + reduce(+, [t * t for t in terms]))) == 64
+    end
+
+    @testset "alpha does not run a node program" begin
+        store = Raycore.MultiTypeSet(CPU())
+        handle = device_param(store, xyz().x * 0)
+        @test Hikari.eval_handle_alpha(host_static(store), handle, TextureFilterContext(Point2f(0), Point3f(1, 0, 0))) == 1f0
+    end
+
     @testset "bump mapping moves the position" begin
         store = Raycore.MultiTypeSet(CPU())
         slope = 0.5f0
