@@ -182,7 +182,7 @@ _channel_maxes(img) = (
         @test m.r > 0.1f0
         @test m.g > 0.1f0
         @test m.b > 0.1f0
-        @test !Mantle.device_lost(Mantle.ctxof(backend.dispatch_bq))
+        @test !Mantle.device_lost(Mantle.deviceof(backend.dispatch_bq))
     end
 
     # ── 5. HW-path render: each instance shows its own color ────────────────
@@ -213,12 +213,12 @@ _channel_maxes(img) = (
         # their per-instance custom_indices are distinct nonzero overrides.
         @test length(scene.accel.blas_list) == 2
         @test Raycore.n_instances(scene.accel) == 5
-        @test length(scene.accel.instance_batches) == 2
-        @test scene.accel.instance_batches[1].n == 1
-        @test scene.accel.instance_batches[2].n == 4
-        @test scene.accel.instance_batches[2].blas === scene.accel.blas_list[2]
-        sphere_records = Array(scene.accel.instance_batches[2].instance_buf)
-        overrides = UInt32[(r.custom_index_and_mask & 0x00FFFFFF) for r in sphere_records[1:4]]
+        @test length(scene.accel.instances) == 2
+        @test scene.accel.instances[1].n == 1
+        @test scene.accel.instances[2].n == 4
+        @test scene.accel.instances[2].blas === scene.accel.blas_list[2]
+        sphere_records = Array(scene.accel.instances[2].records)
+        overrides = UInt32[(r.id & 0x00FFFFFF) for r in sphere_records[1:4]]
         @test all(o != UInt32(0) for o in overrides)
         @test length(Set(overrides)) == 4
 
@@ -230,7 +230,7 @@ _channel_maxes(img) = (
         @test m.r > 0.1f0
         @test m.g > 0.1f0
         @test m.b > 0.1f0
-        @test !Mantle.device_lost(Mantle.ctxof(backend.dispatch_bq))
+        @test !Mantle.device_lost(Mantle.deviceof(backend.dispatch_bq))
     end
 
     # ── 6. Rapid push/delete cycles — no BLAS growth ────────────────────────

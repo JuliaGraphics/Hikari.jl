@@ -15,8 +15,8 @@ using KernelAbstractions: @kernel, @index
     d = Hikari.mantle_device(backend)
 
     @test d === Hikari.mantle_device(backend)          # cached, not rebuilt
-    @test d.ctx === Mantle.vk_context()                  # the context Hikari renders on
-    @test d.bq === Mantle.batchqueue(Mantle.Device())        # and its queue, not a new one
+    @test d === Mantle.vk_context()                      # the device Hikari renders on
+    @test d.default_bq === Mantle.batchqueue(Mantle.Device())  # and its queue, not a new one
 end
 
 @testset "a graph can read Hikari's own buffers" begin
