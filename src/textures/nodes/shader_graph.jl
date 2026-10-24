@@ -43,7 +43,20 @@ end
 
 ShaderGraph(shader::ShaderNode) = ShaderGraph(closure_cores(shader))
 
+_constant(x, value) = x isa Real && Float32(x) == Float32(value)
+
+"""Whether a shader emits light: an emission closure, or a Principled BSDF whose emission strength is not zero."""
+has_emission(g::ShaderGraph) =
+    any(c -> (c.op == NodeOp.CLOSURE && c.mode[1] == ClosureKind.EMISSION) ||
+             (c.op == NodeOp.PRINCIPLED && !_constant(c.inputs[31], 0)), g.closures)
+
+"""Whether a shader lets light through unrefracted: a transparent closure, or a Principled BSDF whose alpha is not one."""
+has_transparency(g::ShaderGraph) =
+    any(c -> (c.op == NodeOp.CLOSURE && c.mode[1] == ClosureKind.TRANSPARENT) ||
+             (c.op == NodeOp.PRINCIPLED && !_constant(c.inputs[6], 1)), g.closures)
+
 function device_param(dhv, g::ShaderGraph)
+    store_lookup_tables!(dhv)
     program = compile_shader(g.closures, data -> (ref = Raycore.store_texture(dhv, data); (texref_slot(ref), ref.idx)))
     ref = Raycore.store_texture(dhv, program)
     return TexHandle(TexKind.NODES, 0f0, _TH_ZERO, Int32(texref_slot(ref)), Int32(ref.idx))

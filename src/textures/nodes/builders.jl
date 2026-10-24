@@ -32,7 +32,7 @@ export uv, xyz, normal, constant, combine, mix, smoothstep, fract, greater, less
        vector_math, map_range, color_ramp, hsv, gamma, bright_contrast, invert, rgb_to_bw, separate_color,
        combine_color, vector_rotate, noise, voronoi, white_noise, wave, gradient, magic, checker, brick,
        image_texture, rotation_matrix, principled_bsdf, diffuse_bsdf, glossy_bsdf, metallic_bsdf, translucent_bsdf,
-       mix_shader, add_shader, bump
+       glass_bsdf, sheen_bsdf, transparent_bsdf, emission, mix_shader, add_shader, bump, radial_tangent
 
 const NodeLike = Union{TexNode, Real, Tuple{Real, Real, Real}, Colorant, AbstractVector{<:Real}}
 
@@ -461,46 +461,97 @@ end
 
 # ── Shaders ─────────────────────────────────────────────────────────────────
 
+"""The tangent Blender gives an anisotropic BSDF without one: around the Z axis, `(-y, x, 0)` of the position."""
+radial_tangent() = (p = xyz(); combine(-p.y, p.x, 0))
+
 """
-    principled_bsdf(; base_color = (0.8, 0.8, 0.8), metallic = 0, roughness = 0.5, ior = 1.5, normal = normal(),
-                    specular_ior_level = 0.5, specular_tint = (1, 1, 1), coat_weight = 0, coat_roughness = 0.03,
-                    coat_ior = 1.5, coat_tint = (1, 1, 1), coat_normal = normal)
+    principled_bsdf(; base_color = (0.8, 0.8, 0.8), metallic = 0, roughness = 0.5, ior = 1.5, alpha = 1,
+                    normal = normal(), diffuse_roughness = 0, subsurface_weight = 0, subsurface_radius = (1, 0.2, 0.1),
+                    subsurface_scale = 0.05, subsurface_ior = 1.4, subsurface_anisotropy = 0, specular_ior_level = 0.5,
+                    specular_tint = (1, 1, 1), anisotropic = 0, anisotropic_rotation = 0, tangent = radial_tangent(),
+                    transmission_weight = 0, transmission_dispersion_scale = 0, transmission_dispersion_abbe_number = 20,
+                    coat_weight = 0, coat_roughness = 0.03, coat_ior = 1.5, coat_tint = (1, 1, 1), coat_normal = normal,
+                    sheen_weight = 0, sheen_roughness = 0.5, sheen_tint = (1, 1, 1), emission_color = (1, 1, 1),
+                    emission_strength = 0, thin_film_thickness = 0, thin_film_ior = 1.33, thin_wall = false)
 
-Blender's Principled BSDF: a diffuse base under a dielectric specular layer, blended towards a
-metal by `metallic`, under a clear coat of `coat_weight`. Subsurface, transmission, sheen,
-anisotropy, thin film and emission are not supported yet.
+Blender's Principled BSDF with every input it has, laid out as Cycles does: transparency, sheen
+and coat over the metal, transmission and the specular layer over the diffuse base. With
+`thin_wall`, transmission and subsurface are those of a surface with no thickness. The default `tangent`
+is Blender's, radial around the Z axis (here the world's, Blender's is the object's). Subsurface scattering is approximated by a diffuse lobe: the
+radius, scale, IOR and anisotropy inputs are accepted but do not change it yet.
 """
-principled_bsdf(; base_color::NodeLike = (0.8, 0.8, 0.8), metallic::NodeLike = 0, roughness::NodeLike = 0.5,
-                ior::NodeLike = 1.5, normal::NodeLike = TextureNodes.normal(), specular_ior_level::NodeLike = 0.5,
-                specular_tint::NodeLike = (1, 1, 1), coat_weight::NodeLike = 0, coat_roughness::NodeLike = 0.03,
-                coat_ior::NodeLike = 1.5, coat_tint::NodeLike = (1, 1, 1), coat_normal::NodeLike = normal) =
-    bsdf(NodeOp.PRINCIPLED, 0x00, base_color, metallic, roughness, ior, normal, specular_ior_level, specular_tint,
-         coat_weight, coat_roughness, coat_ior, coat_tint, coat_normal)
+function principled_bsdf(; base_color::NodeLike = (0.8, 0.8, 0.8), metallic::NodeLike = 0, roughness::NodeLike = 0.5,
+                         ior::NodeLike = 1.5, alpha::NodeLike = 1, normal::NodeLike = TextureNodes.normal(),
+                         diffuse_roughness::NodeLike = 0, subsurface_weight::NodeLike = 0,
+                         subsurface_radius::NodeLike = (1, 0.2, 0.1), subsurface_scale::NodeLike = 0.05,
+                         subsurface_ior::NodeLike = 1.4, subsurface_anisotropy::NodeLike = 0,
+                         specular_ior_level::NodeLike = 0.5, specular_tint::NodeLike = (1, 1, 1),
+                         anisotropic::NodeLike = 0, anisotropic_rotation::NodeLike = 0,
+                         tangent::NodeLike = radial_tangent(),
+                         transmission_weight::NodeLike = 0, transmission_dispersion_scale::NodeLike = 0,
+                         transmission_dispersion_abbe_number::NodeLike = 20, coat_weight::NodeLike = 0,
+                         coat_roughness::NodeLike = 0.03, coat_ior::NodeLike = 1.5, coat_tint::NodeLike = (1, 1, 1),
+                         coat_normal::NodeLike = normal, sheen_weight::NodeLike = 0, sheen_roughness::NodeLike = 0.5,
+                         sheen_tint::NodeLike = (1, 1, 1), emission_color::NodeLike = (1, 1, 1),
+                         emission_strength::NodeLike = 0, thin_film_thickness::NodeLike = 0,
+                         thin_film_ior::NodeLike = 1.33, thin_wall::Union{Bool, NodeLike} = false)
+    return bsdf(NodeOp.PRINCIPLED, 0x00, base_color, metallic, roughness, ior, alpha, normal, diffuse_roughness,
+                subsurface_weight, subsurface_radius, subsurface_scale, subsurface_ior, subsurface_anisotropy,
+                specular_ior_level, specular_tint, anisotropic, anisotropic_rotation, tangent, transmission_weight,
+                transmission_dispersion_scale, transmission_dispersion_abbe_number, coat_weight, coat_roughness,
+                coat_ior, coat_tint, coat_normal, sheen_weight, sheen_roughness, sheen_tint, emission_color,
+                emission_strength, thin_film_thickness, thin_film_ior, thin_wall isa Bool ? Float32(thin_wall) : thin_wall)
+end
 
-"""    diffuse_bsdf(; color = (0.8, 0.8, 0.8), normal = normal())
+"""    diffuse_bsdf(; color = (0.8, 0.8, 0.8), roughness = 0, normal = normal())
 
-Blender's Diffuse BSDF, Lambertian (its Oren-Nayar roughness is not supported yet)."""
-diffuse_bsdf(; color::NodeLike = (0.8, 0.8, 0.8), normal::NodeLike = TextureNodes.normal()) =
-    bsdf(NodeOp.CLOSURE, ClosureKind.DIFFUSE, color, 0, normal)
+Blender's Diffuse BSDF: Lambertian, or Cycles' energy-preserving Oren-Nayar with `roughness`."""
+diffuse_bsdf(; color::NodeLike = (0.8, 0.8, 0.8), roughness::NodeLike = 0, normal::NodeLike = TextureNodes.normal()) =
+    bsdf(NodeOp.CLOSURE, ClosureKind.DIFFUSE, color, roughness, normal)
 
-"""    glossy_bsdf(; color = (0.8, 0.8, 0.8), roughness = 0.5, normal = normal())
+"""    glossy_bsdf(; color = (0.8, 0.8, 0.8), roughness = 0.5, anisotropy = 0, rotation = 0, normal = normal(), tangent = (0, 0, 0))
 
-Blender's Glossy BSDF with the GGX distribution: a microfacet reflection tinted by `color` at every angle."""
-glossy_bsdf(; color::NodeLike = (0.8, 0.8, 0.8), roughness::NodeLike = 0.5, normal::NodeLike = TextureNodes.normal()) =
-    bsdf(NodeOp.CLOSURE, ClosureKind.GLOSSY, color, roughness, normal)
+Blender's Glossy BSDF with the multiscatter GGX distribution: a microfacet reflection tinted by `color` at every angle."""
+glossy_bsdf(; color::NodeLike = (0.8, 0.8, 0.8), roughness::NodeLike = 0.5, anisotropy::NodeLike = 0,
+            rotation::NodeLike = 0, normal::NodeLike = TextureNodes.normal(), tangent::NodeLike = radial_tangent()) =
+    bsdf(NodeOp.CLOSURE, ClosureKind.GLOSSY, color, roughness, anisotropy, rotation, normal, tangent)
 
-"""    metallic_bsdf(; base_color = (0.617, 0.577, 0.540), edge_tint = (0.695, 0.726, 0.770), roughness = 0.5, normal = normal())
+"""    metallic_bsdf(; base_color = (0.617, 0.577, 0.540), edge_tint = (0.695, 0.726, 0.770), roughness = 0.5, anisotropy = 0, rotation = 0, normal = normal(), tangent = (0, 0, 0))
 
 Blender's Metallic BSDF with the F82 Tint Fresnel."""
 metallic_bsdf(; base_color::NodeLike = (0.617, 0.577, 0.540), edge_tint::NodeLike = (0.695, 0.726, 0.770),
-              roughness::NodeLike = 0.5, normal::NodeLike = TextureNodes.normal()) =
-    bsdf(NodeOp.CLOSURE, ClosureKind.METALLIC, base_color, edge_tint, roughness, normal)
+              roughness::NodeLike = 0.5, anisotropy::NodeLike = 0, rotation::NodeLike = 0,
+              normal::NodeLike = TextureNodes.normal(), tangent::NodeLike = radial_tangent()) =
+    bsdf(NodeOp.CLOSURE, ClosureKind.METALLIC, base_color, edge_tint, roughness, anisotropy, rotation, normal, tangent)
+
+"""    glass_bsdf(; color = (1, 1, 1), roughness = 0, ior = 1.5, normal = normal())
+
+Blender's Glass BSDF: GGX reflection and refraction, both tinted by `color`."""
+glass_bsdf(; color::NodeLike = (1, 1, 1), roughness::NodeLike = 0, ior::NodeLike = 1.5,
+           normal::NodeLike = TextureNodes.normal()) =
+    bsdf(NodeOp.CLOSURE, ClosureKind.GLASS, color, roughness, ior, normal)
 
 """    translucent_bsdf(; color = (0.8, 0.8, 0.8), normal = normal())
 
 Blender's Translucent BSDF: diffuse light through the surface."""
 translucent_bsdf(; color::NodeLike = (0.8, 0.8, 0.8), normal::NodeLike = TextureNodes.normal()) =
     bsdf(NodeOp.CLOSURE, ClosureKind.TRANSLUCENT, color, normal)
+
+"""    sheen_bsdf(; color = (0.8, 0.8, 0.8), roughness = 0.5, normal = normal())
+
+Blender's Sheen BSDF with the microfiber distribution."""
+sheen_bsdf(; color::NodeLike = (0.8, 0.8, 0.8), roughness::NodeLike = 0.5, normal::NodeLike = TextureNodes.normal()) =
+    bsdf(NodeOp.CLOSURE, ClosureKind.SHEEN, color, roughness, normal)
+
+"""    transparent_bsdf(; color = (1, 1, 1))
+
+Blender's Transparent BSDF: light passes through unrefracted, by `color` (averaged to a coverage)."""
+transparent_bsdf(; color::NodeLike = (1, 1, 1)) = bsdf(NodeOp.CLOSURE, ClosureKind.TRANSPARENT, color)
+
+"""    emission(; color = (1, 1, 1), strength = 1)
+
+Blender's Emission: radiance `strength` times `color`, found by the paths that hit it (it is not a light for direct lighting)."""
+emission(; color::NodeLike = (1, 1, 1), strength::NodeLike = 1) = bsdf(NodeOp.CLOSURE, ClosureKind.EMISSION, color, strength)
 
 """    mix_shader(fac, a, b)
 

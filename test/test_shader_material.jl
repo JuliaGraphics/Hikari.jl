@@ -11,7 +11,7 @@ using Mantle
 using Statistics: mean
 
 static_textures(store) =
-    Raycore.StaticMultiTypeSet((), Tuple(filter(a -> typeof(a) === T, store.texture_gpu_arrays) for T in store.texture_order))
+    Raycore.StaticMultiTypeSet((), Tuple(T[a for a in store.texture_gpu_arrays if typeof(a) === T] for T in store.texture_order))
 
 function closures(shader; p = Point3f(0), n = Vec3f(0, 0, 1), wo = Vec3f(0, 0, 1),
                   dpdx = Vec3f(1f-3, 0, 0), dpdy = Vec3f(0, 1f-3, 0))
@@ -47,23 +47,34 @@ end
     @testset "a metallic principled BSDF is one F82 tint closure" begin
         c = only(closures(principled_bsdf(base_color = (0.9, 0.6, 0.2), metallic = 1, roughness = 0.4)))
         @test (c.lobe, c.fresnel) == (Lobe.MICROFACET, Fresnel.F82_TINT)
-        @test c.f0 ≈ Vec3f(0.9, 0.6, 0.2)
-        @test c.alpha ≈ 0.16f0
+        @test c.c1 ≈ Vec3f(0.9, 0.6, 0.2)
+        @test c.alpha_x ≈ c.alpha_y ≈ 0.16f0
     end
 
     @testset "the specular layer of a principled BSDF takes its reflection from the diffuse" begin
-        specular, diffuse = closures(principled_bsdf(base_color = (0.8, 0.8, 0.8), roughness = 0.3))
-        @test (specular.lobe, specular.fresnel) == (Lobe.MICROFACET, Fresnel.DIELECTRIC)
-        @test specular.f0 ≈ Vec3f(0.04)
+        specular, diffuse = closures(principled_bsdf(base_color = (0.8, 0.8, 0.8), roughness = 0))
+        @test (specular.lobe, specular.fresnel) == (Lobe.MICROFACET, Fresnel.SCHLICK)
+        @test specular.c1 ≈ Vec3f(0.04)
         @test diffuse.lobe == Lobe.DIFFUSE
-        @test diffuse.weight ≈ Vec3f(0.8 * 0.96)
+        @test diffuse.weight ≈ Vec3f(0.8 * 0.96) rtol = 1e-3
     end
 
     @testset "a coat takes its reflection from the layers under it" begin
-        coat, specular, diffuse = closures(principled_bsdf(base_color = (0.8, 0.8, 0.8), coat_weight = 1))
-        @test coat.alpha ≈ 0.03f0^2
-        @test specular.weight ≈ Vec3f(0.96)
-        @test diffuse.weight ≈ Vec3f(0.8 * 0.96 * 0.96)
+        coat, specular, diffuse = closures(principled_bsdf(base_color = (0.8, 0.8, 0.8), roughness = 0, coat_weight = 1,
+                                                           coat_roughness = 0))
+        @test (coat.fresnel, coat.alpha_x) == (Fresnel.DIELECTRIC, 0f0)
+        @test specular.weight ≈ Vec3f(0.96) rtol = 1e-3
+        @test diffuse.weight ≈ Vec3f(0.8 * 0.96 * 0.96) rtol = 1e-3
+    end
+
+    @testset "subsurface is a random walk closure with the radius scaled" begin
+        cs = closures(principled_bsdf(base_color = (0.9, 0.6, 0.5), roughness = 0.4, subsurface_weight = 1,
+                                      subsurface_radius = (1, 0.5, 0.25), subsurface_scale = 0.1))
+        sss = only(filter(c -> c.lobe == Lobe.SUBSURFACE, cs))
+        @test sss.c1 ≈ Vec3f(0.9, 0.6, 0.5)
+        @test sss.c2 ≈ Vec3f(0.1, 0.05, 0.025)
+        @test sss.alpha_x ≈ 0.16f0
+        @test !any(c -> c.lobe == Lobe.DIFFUSE, cs)
     end
 
     @testset "a bump on a linear height tilts the normal by its slope" begin

@@ -620,6 +620,8 @@ concern from materials)."""
     regularize_for_bxdf = regularizes(work, media, do_regularize)
     bxdf = material_bxdf(mat, rgb2spec_table, materials, mat_work, camera, samples_per_pixel,
                          work.lambda, regularize_for_bxdf)
+    add_emission!(pixel_L, bxdf, mat_work)
+    bxdf, mat_work = subsurface_scatter(bxdf, mat_work, accel, sample_idx)
 
     # Direct lighting + inline shadow + accumulate (typed BSDF eval).
     surface_direct_lighting_inner!(
