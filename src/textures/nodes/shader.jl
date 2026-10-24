@@ -1,7 +1,10 @@
-# Ported from Blender Cycles v5.2.1: intern/cycles/kernel/svm/closure.h,
-# displace.h, and kernel/closure/bsdf_microfacet.h, bsdf_util.h, bsdf_sheen.h, bsdf_oren_nayar.h.
-# Copyright 2011-2022 Blender Foundation. SPDX-License-Identifier: Apache-2.0. Modified: rewritten
-# in Julia; the thin film is evaluated per wavelength by the Airy sum. See LICENSES/Apache-2.0.txt.
+# Ported from Blender Cycles v5.2.1: intern/cycles/kernel/svm/closure.h, displace.h and
+# kernel/closure/bsdf_sheen.h, bsdf_oren_nayar.h, copyright 2011-2022 Blender Foundation,
+# SPDX-License-Identifier: Apache-2.0; and kernel/closure/bsdf_microfacet.h, bsdf_util.h, adapted
+# by Cycles from Open Shading Language, copyright 2009-2010 Sony Pictures Imageworks Inc., et al.
+# All Rights Reserved, copyright 2011-2022 Blender Foundation, SPDX-License-Identifier: BSD-3-Clause.
+# Modified: rewritten in Julia; the thin film is evaluated per wavelength by the Airy sum. See
+# LICENSES/Apache-2.0.txt and LICENSES/BSD-3-Clause.txt.
 
 # ============================================================================
 # Shader programs: node programs that end in closures, as Cycles' SVM does

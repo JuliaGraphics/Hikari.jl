@@ -1,7 +1,9 @@
-# Ported from Blender Cycles v5.2.1: intern/cycles/kernel/closure/
-# bsdf_microfacet.h, bsdf_sheen.h, bsdf_oren_nayar.h. Copyright 2011-2022 Blender Foundation.
-# SPDX-License-Identifier: Apache-2.0. Modified: rewritten in Julia, spectral. See
-# LICENSES/Apache-2.0.txt.
+# Ported from Blender Cycles v5.2.1: intern/cycles/kernel/closure/bsdf_sheen.h,
+# bsdf_oren_nayar.h, copyright 2011-2022 Blender Foundation, SPDX-License-Identifier: Apache-2.0;
+# and bsdf_microfacet.h, adapted by Cycles from Open Shading Language, copyright 2009-2010 Sony
+# Pictures Imageworks Inc., et al. All Rights Reserved, copyright 2011-2022 Blender Foundation,
+# SPDX-License-Identifier: BSD-3-Clause. Modified: rewritten in Julia, spectral. See
+# LICENSES/Apache-2.0.txt and LICENSES/BSD-3-Clause.txt.
 
 # ============================================================================
 # ShaderMaterial: a material that is a shader graph
@@ -130,7 +132,7 @@ end
     return _uplift(table, c / m, lambda) * m
 end
 
-"""OpenPBR's dispersion, as Cycles' `bsdf_glass_ior`: the Cauchy IOR at `lambda` nm through the d line's `ior`."""
+"""OpenPBR's dispersion: the Cauchy IOR at `lambda` nm through the d line's `ior` and the Abbe number."""
 @inline function _dispersed_ior(ior::Float32, inv_abbe::Float32, lambda::Float32)
     inside = ior < 1f0
     n = inside ? 1f0 / ior : ior
