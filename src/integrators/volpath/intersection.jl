@@ -484,6 +484,16 @@ Following pbrt-v4's TraceTransmittance: transmissive surfaces (MediumInterface) 
 while opaque surfaces block it. The final contribution is computed as:
     Ld * T_ray / average(path_r_u * r_u + path_r_l * r_l)
 """
+@propagate_inbounds trace_shadow_transmittance(accel, args...) =
+    traverses_by_linked_call(accel) ? _trace_shadow_transmittance(accel, args...) :
+                                      _trace_shadow_transmittance_outlined(accel, args...)
+
+# Metal's `AdaptedAccel` carries `scene`, the argument buffer its linked MSL
+# traversal reads, so the traversal is a call already. Outlining around that
+# call doubles the call boundary, and it made renders 1.6x slower on an M1 Pro.
+traverses_by_linked_call(accel) = false
+traverses_by_linked_call(accel::Mantle.AdaptedAccel) = !isnothing(accel.scene)
+
 # @noinline: this is a self-contained ray-query lifecycle (init+proceed+get
 # all internal via Raycore.closest_hit). Keeping it as a separate OpFunction
 # in SPIR-V gives the call site its own register frame so the surrounding
@@ -492,7 +502,9 @@ while opaque surfaces block it. The final contribution is computed as:
 # specializations pinned at 255 regs / ~1 KB spill on RTX 4000 Ada.
 # Lava's refined `incomplete_rayquery` rule (compilation.jl, 2026-06-04)
 # recognises this function's complete lifecycle and lets the @noinline stand.
-@noinline function trace_shadow_transmittance(
+@noinline _trace_shadow_transmittance_outlined(args...) = _trace_shadow_transmittance(args...)
+
+@inline function _trace_shadow_transmittance(
     accel, media_interfaces, media, materials, rgb2spec_table,
     origin::Point3f, dir::Vec3f, t_max::Float32, lambda::Wavelengths, medium_idx::SetKey,
     refract::Bool = false
