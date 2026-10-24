@@ -79,11 +79,35 @@ end
 """How many closures a shader can produce at a hit: what its closure list holds room for."""
 closure_capacity(g::ShaderGraph) = clamp(sum(_closures_of, g.closures; init = 0), 1, MAX_CLOSURES)
 
-function device_param(dhv, g::ShaderGraph)
+function _store_shader(dhv, g::ShaderGraph)
     store_lookup_tables!(dhv)
     program = compile_shader(g.closures, data -> (ref = Raycore.store_texture(dhv, data); (texref_slot(ref), ref.idx)))
-    ref = Raycore.store_texture(dhv, program)
+    return program, Raycore.store_texture(dhv, program)
+end
+
+function device_param(dhv, g::ShaderGraph)
+    _, ref = _store_shader(dhv, g)
     return TexHandle(TexKind.NODES, 0f0, _TH_ZERO, Int32(texref_slot(ref)), Int32(ref.idx))
+end
+
+"""
+A shader's program on the device: its index among the stored programs of its type, and in its type
+the features it runs, so a kernel finds the program without branching over every type stored.
+"""
+struct ShaderProgram{F}
+    idx::Int32
+end
+
+function shader_program(dhv, g::ShaderGraph)
+    program, ref = _store_shader(dhv, g)
+    return _shader_program(program, Int32(ref.idx))
+end
+_shader_program(::AbstractVector{NodeInstr{F}}, idx::Int32) where {F} = ShaderProgram{F}(idx)
+
+"""The programs stored with the features of `p`, found by their element type."""
+@generated function shader_programs(textures::Raycore.StaticMultiTypeSet{D, Tex}, ::ShaderProgram{F}) where {D, Tex, F}
+    slot = findfirst(T -> eltype(eltype(T)) === NodeInstr{F}, Tex.parameters)
+    return :(@inbounds textures.textures[$slot])
 end
 
 """

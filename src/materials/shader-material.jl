@@ -13,9 +13,10 @@
 A material made of a shader graph, as Blender's Material Output takes one: BSDF nodes such as
 [`principled_bsdf`](@ref TextureNodes.principled_bsdf), combined by `mix_shader` and
 `add_shader`, with node textures and `bump` at any of their inputs. The graph is compiled to one
-program, so graphs differ only in what the type says they use: transparency, subsurface
-scattering and emission, whose code is compiled only into the kernels of shaders that have them,
-and how many closures they can produce at once, which is what each hit holds room for.
+program, so graphs differ only in what the type says they use: the node features of the program,
+transparency, subsurface scattering and emission, whose code is compiled only into the kernels of
+shaders that have them, and how many closures they can produce at once, which is what each hit
+holds room for.
 """
 struct ShaderMaterial{ProgT, Transparent, Subsurface, Emissive, Capacity} <: Material
     program::ProgT
@@ -27,8 +28,10 @@ function ShaderMaterial(shader::ShaderNode)
                           closure_capacity(graph)}(graph)
 end
 
-to_device_material(dhv, mat::ShaderMaterial{P, T, S, E, N}) where {P, T, S, E, N} =
-    ShaderMaterial{TexHandle, T, S, E, N}(device_param(dhv, mat.program))
+function to_device_material(dhv, mat::ShaderMaterial{P, T, S, E, N}) where {P, T, S, E, N}
+    program = shader_program(dhv, mat.program)
+    return ShaderMaterial{typeof(program), T, S, E, N}(program)
+end
 
 """The closures `mat`'s program produces at the hit `sc`."""
 @propagate_inbounds eval_shader_handle(textures, mat::ShaderMaterial{P, T, S, E, N}, sc::ShaderContext) where {P, T, S, E, N} =
@@ -78,6 +81,8 @@ end
 
 @propagate_inbounds eval_shader_handle(textures, h::TexHandle, sc::ShaderContext, capacity::Val) =
     Raycore.with_texture(_th_shader, textures, h.slot, h.idx, textures, sc, capacity)
+@propagate_inbounds eval_shader_handle(textures, p::ShaderProgram, sc::ShaderContext, capacity::Val) =
+    eval_shader(shader_programs(textures, p)[p.idx], textures, sc, capacity)
 
 """
     material_bxdf(mat, table, textures, work, camera, samples_per_pixel, lambda, regularize)

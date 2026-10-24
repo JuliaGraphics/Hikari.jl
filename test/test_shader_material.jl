@@ -100,6 +100,17 @@ end
         @test length(closures(principled_bsdf(metallic = 0.5, coat_weight = 1))) == 4
     end
 
+    @testset "a device shader reads only programs of its own type" begin
+        store = Raycore.MultiTypeSet(CPU())
+        plain = Hikari.to_device_material(store, Hikari.ShaderMaterial(diffuse_bsdf(color = (0.2, 0.4, 0.6))))
+        noisy = Hikari.to_device_material(store, Hikari.ShaderMaterial(diffuse_bsdf(color = noise(xyz()).color)))
+        @test typeof(plain.program) == Hikari.ShaderProgram{0x00000000}
+        @test typeof(noisy.program) == Hikari.ShaderProgram{Hikari.NodeFeature.NOISE}
+        sc = Hikari.ShaderContext(TextureFilterContext(Point2f(0), Point3f(0), Vec3f(0, 0, 1)), Vec3f(0, 0, 1),
+                                  Vec3f(0), Vec3f(0), Vec3f(1, 0, 0), Vec3f(0, 0, 1))
+        @test Hikari.eval_shader_handle(static_textures(store), plain, sc).closures[1].weight ≈ Vec3f(0.2, 0.4, 0.6)
+    end
+
     @testset "a bump on a linear height tilts the normal by its slope" begin
         c = only(closures(diffuse_bsdf(normal = bump(xyz().x; distance = 0.5))))
         @test c.n ≈ normalize(Vec3f(-0.5, 0, 1))
