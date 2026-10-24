@@ -16,9 +16,10 @@ static_textures(store) =
 function closures(shader; p = Point3f(0), n = Vec3f(0, 0, 1), wo = Vec3f(0, 0, 1),
                   dpdx = Vec3f(1f-3, 0, 0), dpdy = Vec3f(0, 1f-3, 0))
     store = Raycore.MultiTypeSet(CPU())
-    handle = device_param(store, Hikari.ShaderGraph(shader))
+    graph = Hikari.ShaderGraph(shader)
+    handle = device_param(store, graph)
     sc = Hikari.ShaderContext(TextureFilterContext(Point2f(0), p, n), wo, dpdx, dpdy, Vec3f(1, 0, 0), n)
-    cl = Hikari.eval_shader_handle(static_textures(store), handle, sc)
+    cl = Hikari.eval_shader_handle(static_textures(store), handle, sc, Val(Hikari.closure_capacity(graph)))
     return collect(cl.closures[1:cl.count])
 end
 
@@ -75,6 +76,28 @@ end
         @test sss.c2 ≈ Vec3f(0.1, 0.05, 0.025)
         @test sss.alpha_x ≈ 0.16f0
         @test !any(c -> c.lobe == Lobe.DIFFUSE, cs)
+    end
+
+    @testset "the material type says what a shader uses" begin
+        flags(m::Hikari.ShaderMaterial{P, T, S, E}) where {P, T, S, E} = (T, S, E)
+        @test flags(Hikari.ShaderMaterial(principled_bsdf())) == (false, false, false)
+        @test flags(Hikari.ShaderMaterial(principled_bsdf(alpha = 0.5))) == (true, false, false)
+        @test flags(Hikari.ShaderMaterial(principled_bsdf(subsurface_weight = 1))) == (false, true, false)
+        @test flags(Hikari.ShaderMaterial(principled_bsdf(subsurface_weight = 1, thin_wall = true))) == (false, false, false)
+        @test flags(Hikari.ShaderMaterial(principled_bsdf(emission_strength = xyz().x))) == (false, false, true)
+        @test flags(Hikari.ShaderMaterial(mix_shader(0.5, diffuse_bsdf(), transparent_bsdf()))) == (true, false, false)
+    end
+
+    @testset "a shader holds room for as many closures as its graph can produce" begin
+        capacity(shader) = Hikari.closure_capacity(Hikari.ShaderGraph(shader))
+        @test capacity(principled_bsdf()) == 2
+        @test capacity(principled_bsdf(metallic = 1)) == 1
+        @test capacity(principled_bsdf(metallic = 1, coat_weight = 1)) == 2
+        @test capacity(principled_bsdf(coat_weight = xyz().x, transmission_weight = 1, thin_wall = true)) == 5
+        @test capacity(mix_shader(0.5, diffuse_bsdf(), transparent_bsdf())) == 1
+        @test capacity(add_shader(principled_bsdf(sheen_weight = 1, subsurface_weight = 1, transmission_weight = 1),
+                                  principled_bsdf(coat_weight = 1))) == 8
+        @test length(closures(principled_bsdf(metallic = 0.5, coat_weight = 1))) == 4
     end
 
     @testset "a bump on a linear height tilts the normal by its slope" begin

@@ -13,19 +13,26 @@
 A material made of a shader graph, as Blender's Material Output takes one: BSDF nodes such as
 [`principled_bsdf`](@ref TextureNodes.principled_bsdf), combined by `mix_shader` and
 `add_shader`, with node textures and `bump` at any of their inputs. The graph is compiled to one
-program, so every graph is the same material type. `emissive` and `transparent` say whether the
-graph has emission or transparency, which only then cost a hit anything.
+program, so graphs differ only in what the type says they use: transparency, subsurface
+scattering and emission, whose code is compiled only into the kernels of shaders that have them,
+and how many closures they can produce at once, which is what each hit holds room for.
 """
-struct ShaderMaterial{ProgT} <: Material
+struct ShaderMaterial{ProgT, Transparent, Subsurface, Emissive, Capacity} <: Material
     program::ProgT
-    emissive::Bool
-    transparent::Bool
 end
 
 function ShaderMaterial(shader::ShaderNode)
     graph = ShaderGraph(shader)
-    return ShaderMaterial(graph, has_emission(graph), has_transparency(graph))
+    return ShaderMaterial{ShaderGraph, has_transparency(graph), has_subsurface(graph), has_emission(graph),
+                          closure_capacity(graph)}(graph)
 end
+
+to_device_material(dhv, mat::ShaderMaterial{P, T, S, E, N}) where {P, T, S, E, N} =
+    ShaderMaterial{TexHandle, T, S, E, N}(device_param(dhv, mat.program))
+
+"""The closures `mat`'s program produces at the hit `sc`."""
+@propagate_inbounds eval_shader_handle(textures, mat::ShaderMaterial{P, T, S, E, N}, sc::ShaderContext) where {P, T, S, E, N} =
+    eval_shader_handle(textures, mat.program, sc, Val(N))
 
 """A closure at the path's wavelengths, and its share of the BSDF's samples."""
 struct SpectralClosure
@@ -49,11 +56,14 @@ end
 SpectralClosure() = SpectralClosure(0x00, 0x00, SpectralRadiance(0f0), SpectralRadiance(0f0), SpectralRadiance(0f0),
                                     SpectralRadiance(0f0), Vec3f(0, 0, 1), Vec3f(0), 0f0, 0f0, 1f0, 1f0, 0f0, 0f0, 0f0)
 
-"""The closures a shader produced at a hit, sampled and evaluated as one BSDF, and what the hit emits."""
-struct ClosureBSDF
+"""
+The closures a shader produced at a hit, sampled and evaluated as one BSDF, and what the hit emits.
+`Subsurface` and `Emissive` are the shader's, so a BSDF without them carries no code for them.
+"""
+struct ClosureBSDF{N, Subsurface, Emissive}
     count::Int32
     total_sample_weight::Float32
-    closures::NTuple{MAX_CLOSURES, SpectralClosure}
+    closures::NTuple{N, SpectralClosure}
     lambda::Wavelengths
     emission::SpectralRadiance
     dispersive::Bool
@@ -66,8 +76,8 @@ end
     return ShaderContext(tfc, work.wo, dpdx, dpdy, work.dpdus, work.n)
 end
 
-@propagate_inbounds eval_shader_handle(textures, h::TexHandle, sc::ShaderContext) =
-    Raycore.with_texture(_th_shader, textures, h.slot, h.idx, textures, sc)
+@propagate_inbounds eval_shader_handle(textures, h::TexHandle, sc::ShaderContext, capacity::Val) =
+    Raycore.with_texture(_th_shader, textures, h.slot, h.idx, textures, sc, capacity)
 
 """
     material_bxdf(mat, table, textures, work, camera, samples_per_pixel, lambda, regularize)
@@ -85,11 +95,12 @@ end
                                   lambda::Wavelengths, regularize::Bool) =
     material_bxdf(mi.material, table, textures, work, camera, samples_per_pixel, lambda, regularize)
 
-@propagate_inbounds function material_bxdf(mat::ShaderMaterial, table, textures, work, camera,
-                                           samples_per_pixel::Int32, lambda::Wavelengths, regularize::Bool)
+@propagate_inbounds function material_bxdf(mat::ShaderMaterial{P, T, S, E, N}, table, textures, work, camera,
+                                           samples_per_pixel::Int32, lambda::Wavelengths,
+                                           regularize::Bool) where {P, T, S, E, N}
     sc = shader_context(work, camera, samples_per_pixel)
-    cl = eval_shader_handle(textures, mat.program, sc)
-    return closure_bsdf(cl, table, lambda, regularize)
+    cl = eval_shader_handle(textures, mat, sc)
+    return closure_bsdf(Val(S), Val(E), cl, table, lambda, regularize)
 end
 
 """
@@ -99,7 +110,7 @@ Add what the surface at `work` emits towards the path. Only a shader emits this 
 emitters are area lights, which the emitter kernel handles.
 """
 @inline add_emission!(pixel_L, bsdf, work) = nothing
-@propagate_inbounds function add_emission!(pixel_L, bsdf::ClosureBSDF, work)
+@propagate_inbounds function add_emission!(pixel_L, bsdf::ClosureBSDF{N, S, true}, work) where {N, S}
     is_black(bsdf.emission) && return nothing
     L = work.beta * bsdf.emission / average(work.r_u)
     accumulate_spectrum!(pixel_L, (work.pixel_index - Int32(1)) * Int32(4), L)
@@ -140,18 +151,20 @@ end
                            sample_weight)
 end
 
-@propagate_inbounds function closure_bsdf(cl::ClosureList, table, lambda::Wavelengths, regularize::Bool)
+@propagate_inbounds function closure_bsdf(::Val{S}, ::Val{E}, cl::ClosureList{N}, table, lambda::Wavelengths,
+                                          regularize::Bool) where {S, E, N}
     alpha = 1f0 - _avg(cl.transparency)
     scale = alpha > 1f-6 ? 1f0 / alpha : 0f0
-    dispersive = reduce(|, ntuple(k -> Int32(k) <= cl.count && cl.closures[k].inv_abbe > 0f0, Val(MAX_CLOSURES)))
-    sample_weights = ntuple(k -> Int32(k) <= cl.count ? cl.closures[k].sample_weight : 0f0, Val(MAX_CLOSURES))
-    closures = ntuple(Val(MAX_CLOSURES)) do k
+    dispersive = reduce(|, ntuple(k -> Int32(k) <= cl.count && cl.closures[k].inv_abbe > 0f0, Val(N)))
+    sample_weights = ntuple(k -> Int32(k) <= cl.count ? cl.closures[k].sample_weight : 0f0, Val(N))
+    closures = ntuple(Val(N)) do k
         Int32(k) <= cl.count || return SpectralClosure()
         _spectral_closure(cl.closures[k], scale, sample_weights[k], table, lambda, regularize)
     end
-    emission = _max(cl.emission) > 0f0 ? uplift_rgb_illuminant(table, RGBSpectrum(cl.emission...), lambda) / D65_PHOTOMETRIC :
+    emission = E && _max(cl.emission) > 0f0 ?
+               uplift_rgb_illuminant(table, RGBSpectrum(cl.emission[1], cl.emission[2], cl.emission[3]), lambda) / D65_PHOTOMETRIC :
                SpectralRadiance(0f0)
-    return ClosureBSDF(cl.count, sum(sample_weights), closures, lambda, emission, dispersive)
+    return ClosureBSDF{N, S, E}(cl.count, sum(sample_weights), closures, lambda, emission, dispersive)
 end
 
 # ── Lobes, in a frame around the closure's own normal ──────────────────────
@@ -398,14 +411,14 @@ end
 
 # ── Alpha and guides ────────────────────────────────────────────────────────
 
-@propagate_inbounds function get_surface_alpha(mat::ShaderMaterial, textures, tfc::TextureFilterContext)
-    mat.transparent || return 1f0
+@propagate_inbounds get_surface_alpha(::ShaderMaterial{P, false}, textures, tfc::TextureFilterContext) where {P} = 1f0
+@propagate_inbounds function get_surface_alpha(mat::ShaderMaterial{P, true}, textures, tfc::TextureFilterContext) where {P}
     sc = ShaderContext(tfc, tfc.n, Vec3f(0), Vec3f(0), Vec3f(0), tfc.n)
-    return clamp(1f0 - _avg(eval_shader_handle(textures, mat.program, sc).transparency), 0f0, 1f0)
+    return clamp(1f0 - _avg(eval_shader_handle(textures, mat, sc).transparency), 0f0, 1f0)
 end
 
 @propagate_inbounds guide_material(mat::ShaderMaterial, materials, tfc, ::Val{D}) where {D} =
-    guide_rgb(closure_albedo(eval_shader_handle(materials, mat.program,
+    guide_rgb(closure_albedo(eval_shader_handle(materials, mat,
                                                 ShaderContext(tfc, tfc.n, Vec3f(0), Vec3f(0), Vec3f(0), tfc.n))))
 
 """The colour the closures reflect in all, for the denoiser's albedo guide."""

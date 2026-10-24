@@ -23,7 +23,7 @@ returns a BSDF of no closures, which ends the path.
 """
 @inline subsurface_scatter(bsdf, work, accel, sample_idx) = (bsdf, work)
 
-@propagate_inbounds function subsurface_scatter(bsdf::ClosureBSDF, work, accel, sample_idx::Int32)
+@propagate_inbounds function subsurface_scatter(bsdf::ClosureBSDF{N, true}, work, accel, sample_idx::Int32) where {N}
     k = _subsurface_index(bsdf)
     k == Int32(0) && return (bsdf, work)
     sss = _closure_at(bsdf.closures, k)
@@ -34,8 +34,8 @@ returns a BSDF of no closures, which ends the path.
     if u >= pick
         rest = total - sss.sample_weight
         rest > 0f0 || return (_no_bsdf(bsdf), work)
-        closures = ntuple(i -> Int32(i) == k ? _without_samples(bsdf.closures[i]) : bsdf.closures[i], Val(MAX_CLOSURES))
-        reduced = ClosureBSDF(bsdf.count, rest, closures, bsdf.lambda, bsdf.emission, bsdf.dispersive)
+        closures = ntuple(i -> Int32(i) == k ? _without_samples(bsdf.closures[i]) : bsdf.closures[i], Val(N))
+        reduced = typeof(bsdf)(bsdf.count, rest, closures, bsdf.lambda, bsdf.emission, bsdf.dispersive)
         return (reduced, _with_beta(work, work.beta * (total / rest)))
     end
     return _random_walk(sss, bsdf, work, accel, rng, total / sss.sample_weight)
@@ -53,14 +53,14 @@ end
     SpectralClosure(c.lobe, c.fresnel, c.weight, c.c1, c.c2, c.c3, c.n, c.t, c.alpha_x, c.alpha_y, c.ior, c.energy,
                     c.p1, c.p2, 0f0)
 
-@inline _no_bsdf(bsdf::ClosureBSDF) = ClosureBSDF(Int32(0), 0f0, bsdf.closures, bsdf.lambda, bsdf.emission, false)
+@inline _no_bsdf(bsdf::ClosureBSDF) = typeof(bsdf)(Int32(0), 0f0, bsdf.closures, bsdf.lambda, SpectralRadiance(0f0), false)
 
 """A diffuse BSDF of weight one around `n`: what leaves an object where a subsurface walk gets out of it."""
-@inline function _exit_bsdf(bsdf::ClosureBSDF, n::Vec3f)
+@inline function _exit_bsdf(bsdf::ClosureBSDF{N}, n::Vec3f) where {N}
     exit = SpectralClosure(Lobe.DIFFUSE, Fresnel.NONE, SpectralRadiance(1f0), SpectralRadiance(1f0), SpectralRadiance(1f0),
                            SpectralRadiance(1f0), n, Vec3f(0), 0f0, 0f0, 1f0, 1f0, 0f0, 0f0, 1f0)
-    closures = ntuple(i -> i == 1 ? exit : SpectralClosure(), Val(MAX_CLOSURES))
-    return ClosureBSDF(Int32(1), 1f0, closures, bsdf.lambda, SpectralRadiance(0f0), false)
+    closures = ntuple(i -> i == 1 ? exit : SpectralClosure(), Val(N))
+    return typeof(bsdf)(Int32(1), 1f0, closures, bsdf.lambda, SpectralRadiance(0f0), false)
 end
 
 @inline _with_beta(w::VPMaterialEvalWorkItem, beta::SpectralRadiance) =

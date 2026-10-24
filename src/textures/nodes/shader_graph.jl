@@ -55,6 +55,30 @@ has_transparency(g::ShaderGraph) =
     any(c -> (c.op == NodeOp.CLOSURE && c.mode[1] == ClosureKind.TRANSPARENT) ||
              (c.op == NodeOp.PRINCIPLED && !_constant(c.inputs[6], 1)), g.closures)
 
+"""Whether a shader scatters below its surface: a Principled BSDF with subsurface weight and no thin wall."""
+has_subsurface(g::ShaderGraph) =
+    any(c -> c.op == NodeOp.PRINCIPLED && !_constant(c.inputs[9], 0) && !_constant(c.inputs[34], 1), g.closures)
+
+_zero(x) = _constant(x, 0)
+_one(x) = _constant(x, 1)
+
+"""The most closures one closure node of a shader can produce at a hit."""
+function _closures_of(c::NodeCore)
+    c.op == NodeOp.CLOSURE && return c.mode[1] in (ClosureKind.TRANSPARENT, ClosureKind.EMISSION) ? 0 : 1
+    i = c.inputs
+    thin_wall = !_zero(i[34])
+    sheen = _zero(i[27]) ? 0 : 1
+    coat = _zero(i[22]) ? 0 : 1
+    metal = _zero(i[3]) ? 0 : 1
+    _one(i[3]) && return sheen + coat + metal
+    transmission = _zero(i[19]) ? 0 : thin_wall ? 2 : 1
+    subsurface = _zero(i[9]) ? 0 : thin_wall ? 2 : 1
+    return sheen + coat + metal + transmission + 1 + subsurface + 1
+end
+
+"""How many closures a shader can produce at a hit: what its closure list holds room for."""
+closure_capacity(g::ShaderGraph) = clamp(sum(_closures_of, g.closures; init = 0), 1, MAX_CLOSURES)
+
 function device_param(dhv, g::ShaderGraph)
     store_lookup_tables!(dhv)
     program = compile_shader(g.closures, data -> (ref = Raycore.store_texture(dhv, data); (texref_slot(ref), ref.idx)))

@@ -46,7 +46,7 @@ const SCHLICK     = UInt8(2)
 const DIELECTRIC  = UInt8(3)
 end
 
-"""The most closures one shader produces at a hit; past it, further closures are dropped."""
+"""The most closures a shader's list holds; a shader holds as many as its graph can produce, up to this."""
 const MAX_CLOSURES = 8
 const CLOSURE_WEIGHT_CUTOFF = 1f-5
 const THIN_FILM_THICKNESS_CUTOFF = 0.1f0
@@ -104,20 +104,20 @@ _closure(lobe, weight, n; fresnel = Fresnel.NONE, c1 = Vec3f(1), c2 = Vec3f(1), 
     RGBClosure(lobe, fresnel, weight, c1, c2, c3, n, t, alpha_x, alpha_y, ior, energy, p1, p2, inv_abbe, sample_weight)
 
 """The closures of a hit, the light it emits and how much of it is see-through."""
-struct ClosureList
+struct ClosureList{N}
     count::Int32
-    closures::NTuple{MAX_CLOSURES, RGBClosure}
+    closures::NTuple{N, RGBClosure}
     emission::Vec3f
     transparency::Vec3f
 end
 
-ClosureList() = ClosureList(Int32(0), ntuple(_ -> RGBClosure(), Val(MAX_CLOSURES)), Vec3f(0), Vec3f(0))
+ClosureList{N}() where {N} = ClosureList(Int32(0), ntuple(_ -> RGBClosure(), Val(N)), Vec3f(0), Vec3f(0))
 
 # Written and read by selects: a runtime index into a tuple is refused by the SPIR-V emitter.
-@noinline function _push(cl::ClosureList, c::RGBClosure)
-    (cl.count >= MAX_CLOSURES || _max(c.weight) <= CLOSURE_WEIGHT_CUTOFF || !(c.sample_weight > 0f0)) && return cl
+@noinline function _push(cl::ClosureList{N}, c::RGBClosure) where {N}
+    (cl.count >= N || _max(c.weight) <= CLOSURE_WEIGHT_CUTOFF || !(c.sample_weight > 0f0)) && return cl
     n = cl.count + Int32(1)
-    return ClosureList(n, ntuple(k -> ifelse(Int32(k) == n, c, cl.closures[k]), Val(MAX_CLOSURES)), cl.emission,
+    return ClosureList(n, ntuple(k -> ifelse(Int32(k) == n, c, cl.closures[k]), Val(N)), cl.emission,
                        cl.transparency)
 end
 
@@ -724,10 +724,10 @@ const _PRINCIPLED_ARGS = Int32(3)
 Run a compiled shader program at a hit: the closures it produces. Not inlined, for the reason
 `eval_nodes` is not.
 """
-@noinline function eval_shader(prog::AbstractVector{NodeInstr{F}}, textures, sc::ShaderContext) where {F}
+@noinline function eval_shader(prog::AbstractVector{NodeInstr{F}}, textures, sc::ShaderContext, ::Val{N}) where {F, N}
     lut = lookup_tables(textures)
     s = _new_stack(Val(_stack_size(F)))
-    cl = ClosureList()
+    cl = ClosureList{N}()
     i = Int32(1)
     n = length(prog) % Int32
     @inbounds while i <= n
@@ -753,5 +753,5 @@ Run a compiled shader program at a hit: the closures it produces. Not inlined, f
     return cl
 end
 
-@propagate_inbounds _th_shader(prog::AbstractVector{<:NodeInstr}, textures, sc) = eval_shader(prog, textures, sc)
-@propagate_inbounds _th_shader(prog, textures, sc) = ClosureList()
+@propagate_inbounds _th_shader(prog::AbstractVector{<:NodeInstr}, textures, sc, capacity::Val) = eval_shader(prog, textures, sc, capacity)
+@propagate_inbounds _th_shader(prog, textures, sc, ::Val{N}) where {N} = ClosureList{N}()
