@@ -14,11 +14,11 @@ static_textures(store) =
     Raycore.StaticMultiTypeSet((), Tuple(T[a for a in store.texture_gpu_arrays if typeof(a) === T] for T in store.texture_order))
 
 function closures(shader; p = Point3f(0), n = Vec3f(0, 0, 1), wo = Vec3f(0, 0, 1),
-                  dpdx = Vec3f(1f-3, 0, 0), dpdy = Vec3f(0, 1f-3, 0))
+                  dpdx = Vec3f(1f-3, 0, 0), dpdy = Vec3f(0, 1f-3, 0), tangent_sign = 1f0)
     store = Raycore.MultiTypeSet(CPU())
     graph = Hikari.ShaderGraph(shader)
     handle = device_param(store, graph)
-    sc = Hikari.ShaderContext(TextureFilterContext(Point2f(0), p, n), wo, dpdx, dpdy, Vec3f(1, 0, 0), n)
+    sc = Hikari.ShaderContext(TextureFilterContext(Point2f(0), p, n), wo, dpdx, dpdy, Vec3f(1, 0, 0), n, tangent_sign)
     cl = Hikari.eval_shader_handle(static_textures(store), handle, sc, Val(Hikari.closure_capacity(graph)))
     return collect(cl.closures[1:cl.count])
 end
@@ -107,7 +107,7 @@ end
         @test typeof(plain.program) == Hikari.ShaderProgram{0x00000000}
         @test typeof(noisy.program) == Hikari.ShaderProgram{Hikari.NodeFeature.NOISE}
         sc = Hikari.ShaderContext(TextureFilterContext(Point2f(0), Point3f(0), Vec3f(0, 0, 1)), Vec3f(0, 0, 1),
-                                  Vec3f(0), Vec3f(0), Vec3f(1, 0, 0), Vec3f(0, 0, 1))
+                                  Vec3f(0), Vec3f(0), Vec3f(1, 0, 0), Vec3f(0, 0, 1), 1f0)
         @test Hikari.eval_shader_handle(static_textures(store), plain, sc).closures[1].weight ≈ Vec3f(0.2, 0.4, 0.6)
     end
 
@@ -119,6 +119,24 @@ end
         @test Hikari._bump_shadowing(true, tilted, ns, normalize(Vec3f(-1, 0, 0.2))) == 0f0
         @test Hikari._bump_shadowing(false, tilted, ns, normalize(Vec3f(-1, 0, 0.2))) == 0f0
         @test Hikari._bump_shadowing(false, tilted, ns, normalize(Vec3f(1, 0, 1))) == 1f0
+    end
+
+    @testset "a tangent space normal map tilts the normal along the tangent frame" begin
+        mapped(colour; kw...) = only(closures(diffuse_bsdf(normal = normal_map(colour; kw...)))).n
+        @test mapped((0.5, 0.5, 1.0)) ≈ Vec3f(0, 0, 1)
+        @test mapped((0.75, 0.5, 1.0)) ≈ normalize(Vec3f(0.5, 0, 1))
+        @test mapped((0.5, 0.75, 1.0)) ≈ normalize(Vec3f(0, 0.5, 1))
+        @test only(closures(diffuse_bsdf(normal = normal_map((0.5, 0.75, 1.0))); tangent_sign = -1f0)).n ≈
+              normalize(Vec3f(0, -0.5, 1))
+        @test mapped((0.5, 0.75, 1.0); invert_green = true) ≈ normalize(Vec3f(0, -0.5, 1))
+        @test mapped((0.75, 0.5, 0.5); strength = 0.5) ≈ normalize(Vec3f(0.25, 0, 0.5))
+        @test mapped((0.75, 0.5, 1.0); strength = 0) ≈ Vec3f(0, 0, 1)
+    end
+
+    @testset "a world space normal map is the normal its colour encodes" begin
+        @test only(closures(diffuse_bsdf(normal = normal_map((1.0, 0.5, 0.5); space = :world)))).n ≈ Vec3f(1, 0, 0)
+        @test only(closures(diffuse_bsdf(normal = normal_map((0.5, 0.5, 0.0); space = :blender_world)))).n ≈
+              Vec3f(0, 0, 1)
     end
 
     @testset "a bump on a linear height tilts the normal by its slope" begin

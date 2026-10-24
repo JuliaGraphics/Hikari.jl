@@ -55,6 +55,7 @@ const POSITION_DX     = UInt8(38)
 const POSITION_DY     = UInt8(39)
 const UV_DX           = UInt8(40)
 const UV_DY           = UInt8(41)
+const NORMAL_MAP      = UInt8(42)
 end
 
 """

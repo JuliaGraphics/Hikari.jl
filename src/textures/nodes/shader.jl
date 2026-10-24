@@ -57,7 +57,8 @@ const THIN_FILM_THICKNESS_CUTOFF = 0.1f0
 """
 What a shader program reads besides the texture inputs: where the hit is seen from, the
 position's screen-space differentials (for bump), the shading tangent and the geometric normal,
-both facing outwards.
+both facing outwards, and the handedness of the tangent frame the uv map makes: 1 where the
+bitangent `ns × dpdus` runs along increasing v, -1 where the uv map is mirrored.
 """
 struct ShaderContext
     tfc::TextureFilterContext
@@ -66,6 +67,7 @@ struct ShaderContext
     dpdy::Vec3f
     dpdus::Vec3f
     ng::Vec3f
+    tangent_sign::Float32
 end
 
 """
@@ -711,6 +713,35 @@ end
     return BUMP_DEFAULT_DELTA * t, BUMP_DEFAULT_DELTA * cross(sc.tfc.n, t)
 end
 
+# ── Normal map ──────────────────────────────────────────────────────────────
+
+const NORMAL_MAP_TANGENT = 0x00
+const NORMAL_MAP_WORLD = 0x02
+const NORMAL_MAP_BLENDER_WORLD = 0x04
+
+"""
+Blender's Normal Map node, as Cycles' `svm_node_normal_map`: the colour's normal in the frame of
+the shading tangent, the bitangent of the uv map's handedness and the shading normal, or in
+world space. Strength scales the tangent space normal, and interpolates towards the shading
+normal in world space.
+"""
+@inline function _normal_map(s, ins::NodeInstr, sc::ShaderContext)
+    c = 2f0 .* (_v(s, ins, 1) .- 0.5f0)
+    c = ins.mode[2] == 0x01 ? Vec3f(c[1], -c[2], c[3]) : c
+    strength = _f(s, ins, 2)
+    n = sc.tfc.n
+    if ins.mode[1] == NORMAL_MAP_TANGENT
+        t = _unit(sc.dpdus - dot(sc.dpdus, n) * n, coordinate_system(n)[1])
+        b = sc.tangent_sign * cross(n, t)
+        tilted = Vec3f(c[1] * strength, c[2] * strength, 1f0 + (c[3] - 1f0) * clamp(strength, 0f0, 1f0))
+        return _unit(tilted[1] * t + tilted[2] * b + tilted[3] * n, n)
+    end
+    c = ins.mode[1] == NORMAL_MAP_BLENDER_WORLD ? Vec3f(c[1], -c[2], -c[3]) : c
+    mapped = _unit(c, n)
+    strength == 1f0 && return mapped
+    return _unit(n + (mapped - n) * max(strength, 0f0), n)
+end
+
 @inline function _shifted_leaf(op::UInt8, s, ins::NodeInstr, sc::ShaderContext)
     fw = ins.k[1]
     dpdx, dpdy = _bump_differentials(sc)
@@ -746,6 +777,8 @@ Run a compiled shader program at a hit: the closures it produces. Not inlined, f
             skip = _PRINCIPLED_ARGS
         elseif op == NodeOp.BUMP
             s = _store(s, ins, _bump(s, ins, sc))
+        elseif op == NodeOp.NORMAL_MAP
+            s = _store(s, ins, _normal_map(s, ins, sc))
         elseif NodeOp.POSITION_DX <= op <= NodeOp.UV_DY
             s = _store(s, ins, _shifted_leaf(op, s, ins, sc))
         else

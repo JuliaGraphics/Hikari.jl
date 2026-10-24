@@ -32,7 +32,7 @@ export uv, xyz, normal, constant, combine, mix, smoothstep, fract, greater, less
        vector_math, map_range, color_ramp, hsv, gamma, bright_contrast, invert, rgb_to_bw, separate_color,
        combine_color, vector_rotate, noise, voronoi, white_noise, wave, gradient, magic, checker, brick,
        image_texture, rotation_matrix, principled_bsdf, diffuse_bsdf, glossy_bsdf, metallic_bsdf, translucent_bsdf,
-       glass_bsdf, sheen_bsdf, transparent_bsdf, emission, mix_shader, add_shader, bump, radial_tangent
+       glass_bsdf, sheen_bsdf, transparent_bsdf, emission, mix_shader, add_shader, bump, normal_map, radial_tangent
 
 const NodeLike = Union{TexNode, Real, Tuple{Real, Real, Real}, Colorant, AbstractVector{<:Real}}
 
@@ -578,6 +578,22 @@ function bump(height::NodeLike; strength::NodeLike = 1, distance::NodeLike = 0.0
     fw = Float32(filter_width)
     h_dx, h_dy = h isa TexNode ? (shifted_graph(h, :dx, fw), shifted_graph(h, :dy, fw)) : (h, h)
     return node(NodeOp.BUMP, (h, h_dx, h_dy, strength, distance, normal, fw), (3,); mode = (invert, 0, 0))
+end
+
+const NORMAL_MAP_SPACES = Dict(:tangent => 0x00, :world => 0x02, :blender_world => 0x04)
+
+"""
+    normal_map(color; strength = 1, space = :tangent, invert_green = false)
+
+Blender's Normal Map node: the normal a normal map's `color` encodes, for a shader's `normal`
+input. In `:tangent` space the colour is read in the frame of the uv map's tangent, bitangent and
+the shading normal (OpenGL convention: green along increasing v; `invert_green` reads DirectX
+maps); `:world` and `:blender_world` take it as a world space normal. Object space is not
+supported.
+"""
+function normal_map(color::NodeLike; strength::NodeLike = 1, space::Symbol = :tangent, invert_green::Bool = false)
+    return node(NodeOp.NORMAL_MAP, (color, strength), (3,);
+                mode = (setting(NORMAL_MAP_SPACES, space, "normal map space"), invert_green, 0))
 end
 
 end

@@ -154,7 +154,7 @@ function _features(c::NodeCore)
 end
 
 const _SHADER_OPS = (NodeOp.CLOSURE, NodeOp.PRINCIPLED, NodeOp.BUMP, NodeOp.POSITION_DX, NodeOp.POSITION_DY,
-                     NodeOp.UV_DX, NodeOp.UV_DY)
+                     NodeOp.UV_DX, NodeOp.UV_DY, NodeOp.NORMAL_MAP)
 
 """
     compile_nodes(root, store_image) -> Vector{NodeInstr{F}}
@@ -165,7 +165,7 @@ Linearize the graph and place every value on the stack by liveness.
 function compile_nodes(root::TexNode, store_image)
     order = _topological([getfield(root, :core)])
     any(c -> c.op in _SHADER_OPS, order) &&
-        error("a texture cannot use `bump` or a shader node; give the bump to a shader's `normal` input")
+        error("a texture cannot use `bump`, `normal_map` or a shader node; give the normal to a shader's `normal` input")
     return _compile(order, root, store_image)
 end
 

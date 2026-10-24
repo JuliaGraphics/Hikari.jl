@@ -78,7 +78,8 @@ end
     dpdx, dpdy = approximate_dp_dxy(work.pi, work.n, camera, samples_per_pixel)
     dudx, dudy, dvdx, dvdy = compute_uv_derivatives(work.dpdu, work.dpdv, dpdx, dpdy)
     tfc = TextureFilterContext(work.uv, dudx, dudy, dvdx, dvdy, work.face_idx, work.bary, work.pi, work.ns)
-    return ShaderContext(tfc, work.wo, dpdx, dpdy, work.dpdus, work.n)
+    tangent_sign = dot(cross(work.ns, work.dpdus), work.dpdv) < 0f0 ? -1f0 : 1f0
+    return ShaderContext(tfc, work.wo, dpdx, dpdy, work.dpdus, work.n, tangent_sign)
 end
 
 @propagate_inbounds eval_shader_handle(textures, h::TexHandle, sc::ShaderContext, capacity::Val) =
@@ -442,13 +443,13 @@ end
 
 @propagate_inbounds get_surface_alpha(::ShaderMaterial{P, false}, textures, tfc::TextureFilterContext) where {P} = 1f0
 @propagate_inbounds function get_surface_alpha(mat::ShaderMaterial{P, true}, textures, tfc::TextureFilterContext) where {P}
-    sc = ShaderContext(tfc, tfc.n, Vec3f(0), Vec3f(0), Vec3f(0), tfc.n)
+    sc = ShaderContext(tfc, tfc.n, Vec3f(0), Vec3f(0), Vec3f(0), tfc.n, 1f0)
     return clamp(1f0 - _avg(eval_shader_handle(textures, mat, sc).transparency), 0f0, 1f0)
 end
 
 @propagate_inbounds guide_material(mat::ShaderMaterial, materials, tfc, ::Val{D}) where {D} =
     guide_rgb(closure_albedo(eval_shader_handle(materials, mat,
-                                                ShaderContext(tfc, tfc.n, Vec3f(0), Vec3f(0), Vec3f(0), tfc.n))))
+                                                ShaderContext(tfc, tfc.n, Vec3f(0), Vec3f(0), Vec3f(0), tfc.n, 1f0))))
 
 """The colour the closures reflect in all, for the denoiser's albedo guide."""
 @inline function closure_albedo(cl::ClosureList)
