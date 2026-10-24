@@ -30,6 +30,20 @@ function ShaderMaterial(shader::ShaderNode)
                           closure_capacity(graph)}(graph)
 end
 
+"""
+    bind_mesh(mesh, material) -> (mesh, material)
+
+The mesh and material to push for `material` on `mesh`: for a shader that reads mesh attributes,
+the mesh in triangles and the shader with the attributes of its corners; otherwise both as they
+are. `push!(scene, mesh, material)` does this; call it yourself to update a material in a slot.
+"""
+bind_mesh(mesh::GeometryBasics.Mesh, material::Material) = (mesh, material)
+function bind_mesh(mesh::GeometryBasics.Mesh, mat::ShaderMaterial{ShaderGraph, T, S, E, N}) where {T, S, E, N}
+    isempty(_attribute_cores(mat.program)) && return (mesh, mat)
+    triangles = GeometryBasics.mesh(GeometryBasics.expand_faceviews(mesh); facetype = GLTriangleFace)
+    return (triangles, ShaderMaterial{ShaderGraph, T, S, E, N}(bind_attributes(mat.program, triangles)))
+end
+
 function to_device_material(dhv, mat::ShaderMaterial{P, T, S, E, N}) where {P, T, S, E, N}
     program = shader_program(dhv, mat.program)
     return ShaderMaterial{typeof(program), T, S, E, N}(program)
@@ -79,7 +93,8 @@ end
     dudx, dudy, dvdx, dvdy = compute_uv_derivatives(work.dpdu, work.dpdv, dpdx, dpdy)
     tfc = TextureFilterContext(work.uv, dudx, dudy, dvdx, dvdy, work.face_idx, work.bary, work.pi, work.ns)
     tangent_sign = dot(cross(work.ns, work.dpdus), work.dpdv) < 0f0 ? -1f0 : 1f0
-    return ShaderContext(tfc, work.wo, dpdx, dpdy, work.dpdus, work.n, tangent_sign)
+    p_camera, window = camera_coordinates(camera, work.pi)
+    return ShaderContext(tfc, work.wo, dpdx, dpdy, work.dpdus, work.n, tangent_sign, p_camera, window)
 end
 
 @propagate_inbounds eval_shader_handle(textures, h::TexHandle, sc::ShaderContext, capacity::Val) =
@@ -443,13 +458,13 @@ end
 
 @propagate_inbounds get_surface_alpha(::ShaderMaterial{P, false}, textures, tfc::TextureFilterContext) where {P} = 1f0
 @propagate_inbounds function get_surface_alpha(mat::ShaderMaterial{P, true}, textures, tfc::TextureFilterContext) where {P}
-    sc = ShaderContext(tfc, tfc.n, Vec3f(0), Vec3f(0), Vec3f(0), tfc.n, 1f0)
+    sc = ShaderContext(tfc, tfc.n, Vec3f(0), Vec3f(0), Vec3f(0), tfc.n, 1f0, Vec3f(0), Point2f(0))
     return clamp(1f0 - _avg(eval_shader_handle(textures, mat, sc).transparency), 0f0, 1f0)
 end
 
 @propagate_inbounds guide_material(mat::ShaderMaterial, materials, tfc, ::Val{D}) where {D} =
     guide_rgb(closure_albedo(eval_shader_handle(materials, mat,
-                                                ShaderContext(tfc, tfc.n, Vec3f(0), Vec3f(0), Vec3f(0), tfc.n, 1f0))))
+                                                ShaderContext(tfc, tfc.n, Vec3f(0), Vec3f(0), Vec3f(0), tfc.n, 1f0, Vec3f(0), Point2f(0)))))
 
 """The colour the closures reflect in all, for the denoiser's albedo guide."""
 @inline function closure_albedo(cl::ClosureList)

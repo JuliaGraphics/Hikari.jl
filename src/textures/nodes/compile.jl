@@ -40,6 +40,7 @@ const _OUTPUT_NAMES = Dict{UInt8, Vector{Symbol}}(
     NodeOp.MAGIC       => [:color, :fac],
     NodeOp.CHECKER     => [:color, :fac],
     NodeOp.BRICK       => [:color, :fac],
+    NodeOp.ATTRIBUTE   => [:color, :fac],
 )
 
 const _SWIZZLE_LETTERS = Dict('x' => 0x01, 'y' => 0x02, 'z' => 0x03, 'r' => 0x01, 'g' => 0x02, 'b' => 0x03)
@@ -132,7 +133,9 @@ const _OP_FEATURES = Dict(
     NodeOp.VORONOI => NodeFeature.VORONOI, NodeOp.WHITE_NOISE => NodeFeature.WHITE_NOISE, NodeOp.WAVE => NodeFeature.WAVE,
     NodeOp.GRADIENT => NodeFeature.GRADIENT, NodeOp.MAGIC => NodeFeature.MAGIC, NodeOp.CHECKER => NodeFeature.CHECKER,
     NodeOp.BRICK => NodeFeature.BRICK, NodeOp.VECTOR_MATH => NodeFeature.VECTOR_MATH, NodeOp.AFFINE_ROW => NodeFeature.VECTOR,
-    NodeOp.MIX => NodeFeature.MIX, NodeOp.CLAMP => NodeFeature.RANGE, NodeOp.MAP_RANGE => NodeFeature.RANGE)
+    NodeOp.MIX => NodeFeature.MIX, NodeOp.CLAMP => NodeFeature.RANGE, NodeOp.MAP_RANGE => NodeFeature.RANGE,
+    NodeOp.ATTRIBUTE => NodeFeature.ATTRIBUTE, NodeOp.ATTRIBUTE_DX => NodeFeature.ATTRIBUTE,
+    NodeOp.ATTRIBUTE_DY => NodeFeature.ATTRIBUTE)
 
 """The `NodeFeature` bits the interpreter needs to run node `c`."""
 function _features(c::NodeCore)
@@ -153,8 +156,11 @@ function _features(c::NodeCore)
     return f
 end
 
+const _ATTRIBUTE_OPS = (NodeOp.ATTRIBUTE, NodeOp.ATTRIBUTE_DX, NodeOp.ATTRIBUTE_DY)
+
 const _SHADER_OPS = (NodeOp.CLOSURE, NodeOp.PRINCIPLED, NodeOp.BUMP, NodeOp.POSITION_DX, NodeOp.POSITION_DY,
-                     NodeOp.UV_DX, NodeOp.UV_DY, NodeOp.NORMAL_MAP)
+                     NodeOp.UV_DX, NodeOp.UV_DY, NodeOp.NORMAL_MAP, NodeOp.ATTRIBUTE, NodeOp.ATTRIBUTE_DX,
+                     NodeOp.ATTRIBUTE_DY, NodeOp.CAMERA, NodeOp.WINDOW, NodeOp.REFLECTION)
 
 """
     compile_nodes(root, store_image) -> Vector{NodeInstr{F}}
@@ -165,7 +171,8 @@ Linearize the graph and place every value on the stack by liveness.
 function compile_nodes(root::TexNode, store_image)
     order = _topological([getfield(root, :core)])
     any(c -> c.op in _SHADER_OPS, order) &&
-        error("a texture cannot use `bump`, `normal_map` or a shader node; give the normal to a shader's `normal` input")
+        error("a texture cannot use `bump`, `normal_map`, mesh attributes, texture coordinates other than uv or a " *
+              "shader node; use them in a shader graph")
     return _compile(order, root, store_image)
 end
 
@@ -230,8 +237,8 @@ function _compile(order::Vector{NodeCore}, root, store_image)
         chunks = collect(Iterators.partition(eachindex(args), NODE_ARGS))
         first_chunk = isempty(chunks) ? Int[] : collect(first(chunks))
         kt = _pad(k[first_chunk], NODE_ARGS, 0f0)
-        if c.op == NodeOp.IMAGE
-            slot, idx = store_image(c.data)
+        if c.op == NodeOp.IMAGE || (c.op in _ATTRIBUTE_OPS && c.data isa BoundAttribute)
+            slot, idx = store_image(c.op == NodeOp.IMAGE ? c.data : c.data.corners)
             kt = Base.setindex(Base.setindex(kt, reinterpret(Float32, Int32(slot)), 9), reinterpret(Float32, Int32(idx)), 10)
         end
         push!(instructions, (c.op, c.mode, _pad(outs, NODE_OUTS, NO_SLOT), outwide, _pad(args[first_chunk], NODE_ARGS, NO_SLOT),

@@ -16,6 +16,8 @@ struct MatrixCamera <: Camera
     dx_camera::Vec3f
     dy_camera::Vec3f
     A::Float32
+    """Camera space to the image's window, 0 to 1 from the bottom left (homogeneous)."""
+    camera_to_window::Mat4f
 end
 
 """
@@ -54,7 +56,7 @@ function MatrixCamera(view::Mat4f, projection::Mat4f, resolution::Point2f)
     p = (p_min[1:2] ./ p_min[3]) - (p_max[1:2] ./ p_max[3])
     A = abs(p[1] * p[2])
 
-    MatrixCamera(core, raster_to_camera, dx_camera, dy_camera, A)
+    MatrixCamera(core, raster_to_camera, dx_camera, dy_camera, A, (inv_bounds * offset).m * projection)
 end
 
 """
@@ -86,7 +88,7 @@ function MatrixCamera(view::Mat4f, projection::Mat4f, resolution::Point2f, scree
     p = (p_min[1:2] ./ p_min[3]) - (p_max[1:2] ./ p_max[3])
     A = abs(p[1] * p[2])
 
-    MatrixCamera(core, raster_to_camera, dx_camera, dy_camera, A)
+    MatrixCamera(core, raster_to_camera, dx_camera, dy_camera, A, (inv_bounds * offset).m * projection)
 end
 
 # Convenience: accept Mat4d (Makie stores matrices as Float64)

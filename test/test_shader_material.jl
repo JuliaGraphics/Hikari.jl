@@ -3,7 +3,9 @@ using Hikari
 using Hikari.TextureNodes
 using Hikari: TextureFilterContext, RGBSpectrum, device_param, Lobe, Fresnel, NodeOp
 using GeometryBasics
-using GeometryBasics: Point2f, Point3f, Vec3f
+using GeometryBasics: Point2f, Point3f, Vec3f, Vec2f, GLTriangleFace, QuadFace
+using Hikari: SVector
+using Colors: RGB
 using KernelAbstractions: CPU
 using LinearAlgebra
 using Raycore
@@ -18,8 +20,21 @@ function closures(shader; p = Point3f(0), n = Vec3f(0, 0, 1), wo = Vec3f(0, 0, 1
     store = Raycore.MultiTypeSet(CPU())
     graph = Hikari.ShaderGraph(shader)
     handle = device_param(store, graph)
-    sc = Hikari.ShaderContext(TextureFilterContext(Point2f(0), p, n), wo, dpdx, dpdy, Vec3f(1, 0, 0), n, tangent_sign)
+    sc = Hikari.ShaderContext(TextureFilterContext(Point2f(0), p, n), wo, dpdx, dpdy, Vec3f(1, 0, 0), n, tangent_sign,
+                              Vec3f(0), Point2f(0))
     cl = Hikari.eval_shader_handle(static_textures(store), handle, sc, Val(Hikari.closure_capacity(graph)))
+    return collect(cl.closures[1:cl.count])
+end
+
+"""The closures of `shader` bound to `mesh`, at face `face` and barycentrics `bary`, the uv there moving by `duv` per pixel."""
+function closures_on(mesh, shader; face = 1, bary = (1 / 3, 1 / 3, 1 / 3), n = Vec3f(0, 0, 1), wo = Vec3f(0, 0, 1),
+                     uv = Point2f(0), duv = (0f0, 0f0, 0f0, 0f0), dpdx = Vec3f(1f-3, 0, 0), dpdy = Vec3f(0, 1f-3, 0))
+    store = Raycore.MultiTypeSet(CPU())
+    _, material = Hikari.bind_mesh(mesh, Hikari.ShaderMaterial(shader))
+    handle = device_param(store, material.program)
+    tfc = TextureFilterContext(uv, duv..., UInt32(face), SVector{3, Float32}(bary), Point3f(0), n)
+    sc = Hikari.ShaderContext(tfc, wo, dpdx, dpdy, Vec3f(1, 0, 0), n, 1f0, Vec3f(0), Point2f(0))
+    cl = Hikari.eval_shader_handle(static_textures(store), handle, sc, Val(Hikari.closure_capacity(material.program)))
     return collect(cl.closures[1:cl.count])
 end
 
@@ -107,7 +122,7 @@ end
         @test typeof(plain.program) == Hikari.ShaderProgram{0x00000000}
         @test typeof(noisy.program) == Hikari.ShaderProgram{Hikari.NodeFeature.NOISE}
         sc = Hikari.ShaderContext(TextureFilterContext(Point2f(0), Point3f(0), Vec3f(0, 0, 1)), Vec3f(0, 0, 1),
-                                  Vec3f(0), Vec3f(0), Vec3f(1, 0, 0), Vec3f(0, 0, 1), 1f0)
+                                  Vec3f(0), Vec3f(0), Vec3f(1, 0, 0), Vec3f(0, 0, 1), 1f0, Vec3f(0), Point2f(0))
         @test Hikari.eval_shader_handle(static_textures(store), plain, sc).closures[1].weight ≈ Vec3f(0.2, 0.4, 0.6)
     end
 
@@ -137,6 +152,47 @@ end
         @test only(closures(diffuse_bsdf(normal = normal_map((1.0, 0.5, 0.5); space = :world)))).n ≈ Vec3f(1, 0, 0)
         @test only(closures(diffuse_bsdf(normal = normal_map((0.5, 0.5, 0.0); space = :blender_world)))).n ≈
               Vec3f(0, 0, 1)
+    end
+
+    @testset "a mesh attribute is interpolated over the hit's triangle" begin
+        tri = GeometryBasics.Mesh(Point3f[(0, 0, 0), (1, 0, 0), (0, 1, 0)], [GLTriangleFace(1, 2, 3)];
+                                  paint = Vec3f[(0.2, 0, 0), (0, 0.4, 0), (0, 0, 0.6)],
+                                  color = [RGB{Float32}(1, 0, 0), RGB{Float32}(0.5, 0.5, 0.5), RGB{Float32}(0, 0, 1)])
+        weight(shader; kw...) = only(closures_on(tri, shader; kw...)).weight
+        @test weight(diffuse_bsdf(color = attribute(:paint).color); bary = (0.5, 0.25, 0.25)) ≈ Vec3f(0.1, 0.1, 0.15)
+        @test weight(diffuse_bsdf(color = attribute(:paint).fac); bary = (1, 0, 0)) ≈ Vec3f(0.2 / 3)
+        @test weight(diffuse_bsdf(color = attribute(:color).color); bary = (0, 1, 0)) ≈ Vec3f(0.21404114)
+        @test isempty(closures_on(tri, diffuse_bsdf(color = attribute(:missing).color)))
+    end
+
+    @testset "a quad's second triangle reads its own corners" begin
+        quad = GeometryBasics.Mesh(Point3f[(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)], [QuadFace(1, 2, 3, 4)];
+                                   paint = Vec3f[(1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 1)])
+        corners = [only(closures_on(quad, diffuse_bsdf(color = attribute(:paint).color); face = 2, bary = b)).weight
+                   for b in ((1, 0, 0), (0, 1, 0), (0, 0, 1))]
+        @test Set(corners) == Set([Vec3f(1, 0, 0), Vec3f(0, 0, 1), Vec3f(1, 1, 1)])
+    end
+
+    @testset "generated and object coordinates are the mesh's own positions" begin
+        tri = GeometryBasics.Mesh(Point3f[(1, 2, 3), (3, 2, 3), (1, 6, 4)], [GLTriangleFace(1, 2, 3)])
+        coordinate(which) = only(closures_on(tri, diffuse_bsdf(color = getproperty(texture_coordinate(), which));
+                                             bary = (0, 1, 0))).weight
+        @test coordinate(:object) ≈ Vec3f(3, 2, 3)
+        @test coordinate(:generated) ≈ Vec3f(1, 0, 0)
+    end
+
+    @testset "reflection coordinates mirror the view about the normal" begin
+        reflected(wo) = only(closures(diffuse_bsdf(color = texture_coordinate().reflection * 0.5 + 0.5); wo)).weight
+        @test reflected(Vec3f(0, 0, 1)) ≈ Vec3f(0.5, 0.5, 1)
+        @test reflected(normalize(Vec3f(1, 0, 1))) ≈ Vec3f(0.5 - 0.5 / sqrt(2), 0.5, 0.5 + 0.5 / sqrt(2))
+    end
+
+    @testset "a bump on a linear attribute tilts the normal by its slope" begin
+        tri = GeometryBasics.Mesh(Point3f[(0, 0, 0), (1, 0, 0), (0, 1, 0)], [GLTriangleFace(1, 2, 3)];
+                                  uv = Vec2f[(0, 0), (1, 0), (0, 1)], height = Float32[0, 1, 0])
+        c = only(closures_on(tri, diffuse_bsdf(normal = bump(attribute(:height).fac; distance = 0.5));
+                             uv = Point2f(0.25, 0.25), duv = (1f-3, 0f0, 0f0, 1f-3)))
+        @test c.n ≈ normalize(Vec3f(-0.5, 0, 1))
     end
 
     @testset "a bump on a linear height tilts the normal by its slope" begin

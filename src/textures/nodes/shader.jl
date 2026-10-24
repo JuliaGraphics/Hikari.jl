@@ -57,8 +57,9 @@ const THIN_FILM_THICKNESS_CUTOFF = 0.1f0
 """
 What a shader program reads besides the texture inputs: where the hit is seen from, the
 position's screen-space differentials (for bump), the shading tangent and the geometric normal,
-both facing outwards, and the handedness of the tangent frame the uv map makes: 1 where the
-bitangent `ns × dpdus` runs along increasing v, -1 where the uv map is mirrored.
+both facing outwards, the handedness of the tangent frame the uv map makes (1 where the
+bitangent `ns × dpdus` runs along increasing v, -1 where the uv map is mirrored), and where the
+hit is in the camera's space and on the image, for texture coordinates.
 """
 struct ShaderContext
     tfc::TextureFilterContext
@@ -68,6 +69,8 @@ struct ShaderContext
     dpdus::Vec3f
     ng::Vec3f
     tangent_sign::Float32
+    p_camera::Vec3f
+    window::Point2f
 end
 
 """
@@ -742,6 +745,43 @@ normal in world space.
     return _unit(n + (mapped - n) * max(strength, 0f0), n)
 end
 
+# ── Mesh attributes ─────────────────────────────────────────────────────────
+
+"""
+The attribute an `ATTRIBUTE` instruction reads at the hit, or at the hit moved by a filter width
+of a screen-space differential for a bump's `ATTRIBUTE_DX` and `ATTRIBUTE_DY`. Unbound, it is 0.
+"""
+@inline function _attribute(textures, ins::NodeInstr, sc::ShaderContext)
+    slot, idx = reinterpret(Int32, ins.k[9]), reinterpret(Int32, ins.k[10])
+    slot > Int32(0) || return Vec3f(0)
+    tfc = sc.tfc
+    fw = ins.k[1]
+    duv = ins.op == NodeOp.ATTRIBUTE_DX ? Vec2f(fw * tfc.dudx, fw * tfc.dvdx) :
+          ins.op == NodeOp.ATTRIBUTE_DY ? Vec2f(fw * tfc.dudy, fw * tfc.dvdy) : Vec2f(0)
+    return Raycore.with_texture(_corner_attribute, textures, slot, idx, tfc.face_idx, tfc.bary, duv)
+end
+
+"""
+An attribute stored per triangle as its three corner values and the corners' uv: the corners
+mixed by the barycentrics `bary`, moved by as much as the uv moves by `duv`.
+"""
+@propagate_inbounds function _corner_attribute(corners::AbstractVector{Vec3f}, face::UInt32, bary, duv::Vec2f)
+    triangles = length(corners) ÷ 6
+    (face >= UInt32(1) && triangles > 0) || return Vec3f(0)
+    base = 6 * (min(Int(face), triangles) - 1)
+    a1, a2, a3 = corners[base + 1], corners[base + 2], corners[base + 3]
+    value = bary[1] * a1 + bary[2] * a2 + bary[3] * a3
+    duv == Vec2f(0) && return value
+    t1, t2, t3 = corners[base + 4], corners[base + 5], corners[base + 6]
+    e2, e3 = Vec2f(t2[1] - t1[1], t2[2] - t1[2]), Vec2f(t3[1] - t1[1], t3[2] - t1[2])
+    det = e2[1] * e3[2] - e3[1] * e2[2]
+    abs(det) > 1f-12 || return value
+    db2 = (duv[1] * e3[2] - e3[1] * duv[2]) / det
+    db3 = (e2[1] * duv[2] - duv[1] * e2[2]) / det
+    return value + db2 * (a2 - a1) + db3 * (a3 - a1)
+end
+@propagate_inbounds _corner_attribute(_, face::UInt32, bary, duv::Vec2f) = Vec3f(0)
+
 @inline function _shifted_leaf(op::UInt8, s, ins::NodeInstr, sc::ShaderContext)
     fw = ins.k[1]
     dpdx, dpdy = _bump_differentials(sc)
@@ -779,6 +819,16 @@ Run a compiled shader program at a hit: the closures it produces. Not inlined, f
             s = _store(s, ins, _bump(s, ins, sc))
         elseif op == NodeOp.NORMAL_MAP
             s = _store(s, ins, _normal_map(s, ins, sc))
+        elseif _has(ins, NodeFeature.ATTRIBUTE) && NodeOp.ATTRIBUTE <= op <= NodeOp.ATTRIBUTE_DY
+            a = _attribute(textures, ins, sc)
+            s = _store(s, ins, a, _splat((a[1] + a[2] + a[3]) / 3f0))
+        elseif op == NodeOp.CAMERA
+            s = _store(s, ins, sc.p_camera)
+        elseif op == NodeOp.WINDOW
+            s = _store(s, ins, Vec3f(sc.window[1], sc.window[2], 0f0))
+        elseif op == NodeOp.REFLECTION
+            facing = _closure_normal(sc.tfc.n, sc)
+            s = _store(s, ins, 2f0 * dot(facing, sc.wo) * facing - sc.wo)
         elseif NodeOp.POSITION_DX <= op <= NodeOp.UV_DY
             s = _store(s, ins, _shifted_leaf(op, s, ins, sc))
         else

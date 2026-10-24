@@ -56,6 +56,12 @@ const POSITION_DY     = UInt8(39)
 const UV_DX           = UInt8(40)
 const UV_DY           = UInt8(41)
 const NORMAL_MAP      = UInt8(42)
+const ATTRIBUTE       = UInt8(43)
+const ATTRIBUTE_DX    = UInt8(44)
+const ATTRIBUTE_DY    = UInt8(45)
+const CAMERA          = UInt8(46)
+const WINDOW          = UInt8(47)
+const REFLECTION      = UInt8(48)
 end
 
 """
@@ -90,6 +96,7 @@ const MATH_TRIG      = UInt32(1) << 21
 const MATH_POWER     = UInt32(1) << 22
 const MATH_ROUND     = UInt32(1) << 23
 const MATH_COMPARE   = UInt32(1) << 24
+const ATTRIBUTE      = UInt32(1) << 25
 end
 
 """

@@ -32,7 +32,8 @@ export uv, xyz, normal, constant, combine, mix, smoothstep, fract, greater, less
        vector_math, map_range, color_ramp, hsv, gamma, bright_contrast, invert, rgb_to_bw, separate_color,
        combine_color, vector_rotate, noise, voronoi, white_noise, wave, gradient, magic, checker, brick,
        image_texture, rotation_matrix, principled_bsdf, diffuse_bsdf, glossy_bsdf, metallic_bsdf, translucent_bsdf,
-       glass_bsdf, sheen_bsdf, transparent_bsdf, emission, mix_shader, add_shader, bump, normal_map, radial_tangent
+       glass_bsdf, sheen_bsdf, transparent_bsdf, emission, mix_shader, add_shader, bump, normal_map, radial_tangent,
+       attribute, texture_coordinate
 
 const NodeLike = Union{TexNode, Real, Tuple{Real, Real, Real}, Colorant, AbstractVector{<:Real}}
 
@@ -66,6 +67,30 @@ uv() = node(NodeOp.UV, (), (3,))
 xyz() = node(NodeOp.POSITION, (), (3,))
 """Shading normal (world space)."""
 normal() = node(NodeOp.NORMAL, (), (3,))
+
+"""
+    attribute(name)
+
+Blender's Attribute node in a shader: the mesh's vertex attribute `name` interpolated over the
+hit's triangle, as `.color` (also the vector, the first output) and `.fac` (its average). The
+mesh pushed with the shader's material supplies it: a vertex attribute of the `GeometryBasics`
+mesh such as `:color`, with colours read as sRGB and turned linear like Blender's byte colours,
+numbers and vectors as they are. `:generated`, `:object` and `:object_normal` are the
+coordinates `texture_coordinate` names. A mesh without the attribute reads 0.
+"""
+attribute(name::Union{Symbol, AbstractString}) = node(NodeOp.ATTRIBUTE, (), (3, 1); data = Symbol(name))
+
+"""
+    texture_coordinate()
+
+Blender's Texture Coordinate node in a shader, its outputs by name: `generated` (the position in
+the mesh's bounding box, 0 to 1), `normal` (the object space normal), `uv`, `object` (the object
+space position), `camera` (camera space, `z` along the view), `window` (the position on the image,
+0 to 1 from the bottom left) and `reflection` (the mirrored view direction, world space).
+"""
+texture_coordinate() = (generated = attribute(:generated), normal = vector_math(:normalize, attribute(:object_normal).color),
+                        uv = uv(), object = attribute(:object).color, camera = node(NodeOp.CAMERA, (), (3,)),
+                        window = node(NodeOp.WINDOW, (), (3,)), reflection = node(NodeOp.REFLECTION, (), (3,)))
 
 # ── Math ────────────────────────────────────────────────────────────────────
 
