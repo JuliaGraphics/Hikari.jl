@@ -111,6 +111,16 @@ end
         @test Hikari.eval_shader_handle(static_textures(store), plain, sc).closures[1].weight ≈ Vec3f(0.2, 0.4, 0.6)
     end
 
+    @testset "a closure tilted off the smooth normal is shadowed as in Cycles" begin
+        ns, tilted = Vec3f(0, 0, 1), normalize(Vec3f(1, 0, 1))
+        @test Hikari._bump_shadowing(true, ns, ns, normalize(Vec3f(1, 0, 1))) == 1f0
+        @test Hikari._bump_shadowing(true, tilted, ns, ns) == 1f0
+        @test Hikari._bump_shadowing(true, tilted, ns, normalize(Vec3f(1, 0, 1))) ≈ 1 / (1 + (sqrt(1.125) - 1) / 2)
+        @test Hikari._bump_shadowing(true, tilted, ns, normalize(Vec3f(-1, 0, 0.2))) == 0f0
+        @test Hikari._bump_shadowing(false, tilted, ns, normalize(Vec3f(-1, 0, 0.2))) == 0f0
+        @test Hikari._bump_shadowing(false, tilted, ns, normalize(Vec3f(1, 0, 1))) == 1f0
+    end
+
     @testset "a bump on a linear height tilts the normal by its slope" begin
         c = only(closures(diffuse_bsdf(normal = bump(xyz().x; distance = 0.5))))
         @test c.n ≈ normalize(Vec3f(-0.5, 0, 1))

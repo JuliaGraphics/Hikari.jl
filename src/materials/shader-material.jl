@@ -1,4 +1,4 @@
-# Ported from Blender Cycles v5.2.1: intern/cycles/kernel/closure/bsdf_sheen.h,
+# Ported from Blender Cycles v5.2.1: intern/cycles/kernel/closure/bsdf.h, bsdf_sheen.h,
 # bsdf_oren_nayar.h, copyright 2011-2022 Blender Foundation, SPDX-License-Identifier: Apache-2.0;
 # and bsdf_microfacet.h, adapted by Cycles from Open Shading Language, copyright 2009-2010 Sony
 # Pictures Imageworks Inc., et al. All Rights Reserved, copyright 2011-2022 Blender Foundation,
@@ -340,16 +340,38 @@ end
     return (wi, SpectralRadiance(0f0), 0f0, refract ? BXDF_GLOSSY_TRANSMISSION : BXDF_GLOSSY_REFLECTION, eta)
 end
 
+_is_diffuse(lobe::UInt8) = lobe == Lobe.DIFFUSE || lobe == Lobe.OREN_NAYAR || lobe == Lobe.SHEEN || lobe == Lobe.TRANSLUCENT
+
+"""
+Cycles' `bump_shadowing_term` with Bump Map Correction, for a closure whose normal `n` a bump or
+normal map tilted off the smooth shading normal `ns`: no light where `wi` is on the other side of
+the smooth surface than `n` says, and for diffuse closures the GGX shadowing of a microsurface as
+rough as the tilt, which keeps the bumps from lighting up past the terminator.
+"""
+@inline function _bump_shadowing(diffuse::Bool, n::Vec3f, ns::Vec3f, wi::Vec3f)
+    n == ns && return 1f0
+    cos_si, cos_sn = dot(ns, wi), dot(ns, n)
+    cos_si * cos_sn * dot(n, wi) < 0f0 && return 0f0
+    diffuse || return 1f0
+    cos_i, cos_d = abs(cos_si), abs(cos_sn)
+    (cos_d >= 1f0 || cos_i >= 1f0) && return 1f0
+    cos_i < 1f-6 && return 0f0
+    alpha2 = clamp(0.125f0 * (1f0 / cos_d^2 - 1f0), 0f0, 1f0)
+    return 1f0 / (1f0 + 0.5f0 * (sqrt(1f0 + alpha2 * (1f0 / cos_i^2 - 1f0)) - 1f0))
+end
+
 """
 `f` of closure `c` in Hikari's convention, which leaves the cosine to the integrator and takes it
-with the shading normal `ns`: the lobe's own cosine, with its normal, over that one.
+with the shading normal `ns`: the lobe's own cosine, with its normal, over that one, and the
+shadowing of a normal tilted off `ns`.
 """
 @propagate_inbounds function _closure_f(c::SpectralClosure, wo::Vec3f, wi::Vec3f, ns::Vec3f, lambda::Wavelengths)
     n, t, b = _frame(c, wo)
-    f, pdf = _lobe_eval(c, world_to_local(wo, n, t, b), world_to_local(wi, n, t, b), lambda)
+    shadowing = _bump_shadowing(_is_diffuse(c.lobe), n, ns, wi)
     cos_s = abs(dot(wi, ns))
-    cos_s > 1f-7 || return (SpectralRadiance(0f0), 0f0)
-    return (f * (abs(dot(wi, n)) / cos_s), pdf)
+    (shadowing > 0f0 && cos_s > 1f-7) || return (SpectralRadiance(0f0), 0f0)
+    f, pdf = _lobe_eval(c, world_to_local(wo, n, t, b), world_to_local(wi, n, t, b), lambda)
+    return (f * (shadowing * abs(dot(wi, n)) / cos_s), pdf)
 end
 
 @propagate_inbounds function _mixture(bsdf::ClosureBSDF, wo::Vec3f, wi::Vec3f, ns::Vec3f)
