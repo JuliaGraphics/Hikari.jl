@@ -83,6 +83,7 @@ const TEST_FILES = [
     "test_ray_differentials.jl",
     "test_checkerboard_texture.jl",
     "test_node_textures.jl",
+    "test_shader_material.jl",
     "test_const_texture_value.jl",
     "test_workqueue.jl",
     "test_hw_sw_parity.jl",

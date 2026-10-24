@@ -47,6 +47,14 @@ const GRADIENT        = UInt8(30)
 const MAGIC           = UInt8(31)
 const CHECKER         = UInt8(32)
 const BRICK           = UInt8(33)
+const ARGS            = UInt8(34)
+const CLOSURE         = UInt8(35)
+const PRINCIPLED      = UInt8(36)
+const BUMP            = UInt8(37)
+const POSITION_DX     = UInt8(38)
+const POSITION_DY     = UInt8(39)
+const UV_DX           = UInt8(40)
+const UV_DY           = UInt8(41)
 end
 
 """

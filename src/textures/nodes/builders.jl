@@ -24,14 +24,15 @@ module TextureNodes
 using ..Hikari: TexNode, NodeCore, NodeOp, MathOp, VectorMathOp, RangeType, BlendType, ColorModel, MappingType,
                 RotateType, NoiseType, VoronoiFeature, VoronoiMetric, WaveType, WaveDirection, WaveProfile,
                 GradientType, Texture, RGBSpectrum, to_texture, RAMP_TABLE_SIZE, RAMP_ENTRIES_PER_DATA, NODE_ARGS,
-                _width
+                _width, ShaderNode, BSDFNode, MixShaderNode, AddShaderNode, ClosureKind, shifted_graph
 using LinearAlgebra: LinearAlgebra
 using ..Hikari: Colorant, red, green, blue
 
 export uv, xyz, normal, constant, combine, mix, smoothstep, fract, greater, less, transform, mapping, math,
        vector_math, map_range, color_ramp, hsv, gamma, bright_contrast, invert, rgb_to_bw, separate_color,
        combine_color, vector_rotate, noise, voronoi, white_noise, wave, gradient, magic, checker, brick,
-       image_texture, rotation_matrix
+       image_texture, rotation_matrix, principled_bsdf, diffuse_bsdf, glossy_bsdf, metallic_bsdf, translucent_bsdf,
+       mix_shader, add_shader, bump
 
 const NodeLike = Union{TexNode, Real, Tuple{Real, Real, Real}, Colorant, AbstractVector{<:Real}}
 
@@ -455,6 +456,77 @@ function image_texture(img, coords::NodeLike = uv())
     data = img isa Texture ? img.data : img isa AbstractMatrix{<:Colorant} ? to_texture(img).data : img
     ndims(data) == 2 || error("image needs a 2D image, got $(ndims(data)) dimensions")
     return node(NodeOp.IMAGE, (coords,), (3,); data)
+end
+
+
+# ── Shaders ─────────────────────────────────────────────────────────────────
+
+"""
+    principled_bsdf(; base_color = (0.8, 0.8, 0.8), metallic = 0, roughness = 0.5, ior = 1.5, normal = normal(),
+                    specular_ior_level = 0.5, specular_tint = (1, 1, 1), coat_weight = 0, coat_roughness = 0.03,
+                    coat_ior = 1.5, coat_tint = (1, 1, 1), coat_normal = normal)
+
+Blender's Principled BSDF: a diffuse base under a dielectric specular layer, blended towards a
+metal by `metallic`, under a clear coat of `coat_weight`. Subsurface, transmission, sheen,
+anisotropy, thin film and emission are not supported yet.
+"""
+principled_bsdf(; base_color::NodeLike = (0.8, 0.8, 0.8), metallic::NodeLike = 0, roughness::NodeLike = 0.5,
+                ior::NodeLike = 1.5, normal::NodeLike = TextureNodes.normal(), specular_ior_level::NodeLike = 0.5,
+                specular_tint::NodeLike = (1, 1, 1), coat_weight::NodeLike = 0, coat_roughness::NodeLike = 0.03,
+                coat_ior::NodeLike = 1.5, coat_tint::NodeLike = (1, 1, 1), coat_normal::NodeLike = normal) =
+    bsdf(NodeOp.PRINCIPLED, 0x00, base_color, metallic, roughness, ior, normal, specular_ior_level, specular_tint,
+         coat_weight, coat_roughness, coat_ior, coat_tint, coat_normal)
+
+"""    diffuse_bsdf(; color = (0.8, 0.8, 0.8), normal = normal())
+
+Blender's Diffuse BSDF, Lambertian (its Oren-Nayar roughness is not supported yet)."""
+diffuse_bsdf(; color::NodeLike = (0.8, 0.8, 0.8), normal::NodeLike = TextureNodes.normal()) =
+    bsdf(NodeOp.CLOSURE, ClosureKind.DIFFUSE, color, 0, normal)
+
+"""    glossy_bsdf(; color = (0.8, 0.8, 0.8), roughness = 0.5, normal = normal())
+
+Blender's Glossy BSDF with the GGX distribution: a microfacet reflection tinted by `color` at every angle."""
+glossy_bsdf(; color::NodeLike = (0.8, 0.8, 0.8), roughness::NodeLike = 0.5, normal::NodeLike = TextureNodes.normal()) =
+    bsdf(NodeOp.CLOSURE, ClosureKind.GLOSSY, color, roughness, normal)
+
+"""    metallic_bsdf(; base_color = (0.617, 0.577, 0.540), edge_tint = (0.695, 0.726, 0.770), roughness = 0.5, normal = normal())
+
+Blender's Metallic BSDF with the F82 Tint Fresnel."""
+metallic_bsdf(; base_color::NodeLike = (0.617, 0.577, 0.540), edge_tint::NodeLike = (0.695, 0.726, 0.770),
+              roughness::NodeLike = 0.5, normal::NodeLike = TextureNodes.normal()) =
+    bsdf(NodeOp.CLOSURE, ClosureKind.METALLIC, base_color, edge_tint, roughness, normal)
+
+"""    translucent_bsdf(; color = (0.8, 0.8, 0.8), normal = normal())
+
+Blender's Translucent BSDF: diffuse light through the surface."""
+translucent_bsdf(; color::NodeLike = (0.8, 0.8, 0.8), normal::NodeLike = TextureNodes.normal()) =
+    bsdf(NodeOp.CLOSURE, ClosureKind.TRANSLUCENT, color, normal)
+
+"""    mix_shader(fac, a, b)
+
+Blender's Mix Shader: `a` where `fac` is 0, `b` where it is 1."""
+mix_shader(fac::NodeLike, a::ShaderNode, b::ShaderNode) = MixShaderNode(input(fac), a, b)
+
+"""    add_shader(a, b)
+
+Blender's Add Shader: the sum of both, which is not energy conserving in general."""
+add_shader(a::ShaderNode, b::ShaderNode) = AddShaderNode(a, b)
+
+bsdf(op, kind, inputs...) = BSDFNode(op, (kind, 0x00, 0x00), Any[input(x) for x in inputs])
+
+"""
+    bump(height; strength = 1, distance = 0.001, filter_width = 0.1, invert = false, normal = normal())
+
+Blender's Bump node: the normal of the surface displaced by `distance` times `height` along it,
+for a shader's `normal` input. As in Cycles, the height graph is evaluated at the hit and at the
+hit moved by `filter_width` of a pixel in either screen direction.
+"""
+function bump(height::NodeLike; strength::NodeLike = 1, distance::NodeLike = 0.001, filter_width::Real = 0.1,
+              invert::Bool = false, normal::NodeLike = TextureNodes.normal())
+    h = input(height)
+    fw = Float32(filter_width)
+    h_dx, h_dy = h isa TexNode ? (shifted_graph(h, :dx, fw), shifted_graph(h, :dy, fw)) : (h, h)
+    return node(NodeOp.BUMP, (h, h_dx, h_dy, strength, distance, normal, fw), (3,); mode = (invert, 0, 0))
 end
 
 end

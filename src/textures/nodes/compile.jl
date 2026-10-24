@@ -90,12 +90,12 @@ function _stack_need(c::NodeCore, memo = IdDict{NodeCore, Int}())
     end
 end
 
-"""Nodes in evaluation order, each once, the root last; the costliest input of a node goes first."""
-function _topological(root::NodeCore)
+"""Nodes in evaluation order, each once, every root after its inputs; the costliest input of a node goes first."""
+function _topological(roots::Vector{NodeCore})
     order = NodeCore[]
     seen = IdDict{NodeCore, Nothing}()
     memo = IdDict{NodeCore, Int}()
-    stack = Any[(root, false)]
+    stack = Any[(r, false) for r in reverse(roots)]
     while !isempty(stack)
         c, expanded = pop!(stack)
         haskey(seen, c) && continue
@@ -153,6 +153,9 @@ function _features(c::NodeCore)
     return f
 end
 
+const _SHADER_OPS = (NodeOp.CLOSURE, NodeOp.PRINCIPLED, NodeOp.BUMP, NodeOp.POSITION_DX, NodeOp.POSITION_DY,
+                     NodeOp.UV_DX, NodeOp.UV_DY)
+
 """
     compile_nodes(root, store_image) -> Vector{NodeInstr{F}}
 
@@ -160,15 +163,31 @@ Linearize the graph and place every value on the stack by liveness.
 `store_image(data)` returns the `(slot, idx)` an image input lives at.
 """
 function compile_nodes(root::TexNode, store_image)
-    order = _topological(getfield(root, :core))
+    order = _topological([getfield(root, :core)])
+    any(c -> c.op in _SHADER_OPS, order) &&
+        error("a texture cannot use `bump` or a shader node; give the bump to a shader's `normal` input")
+    return _compile(order, root, store_image)
+end
+
+"""
+    compile_shader(closures, store_image) -> Vector{NodeInstr{F}}
+
+The program of a shader: every closure node in `closures` with what it reads, in one program
+that runs until its `RESULT`.
+"""
+compile_shader(closures::Vector{NodeCore}, store_image) = _compile(_topological(closures), nothing, store_image)
+
+function _compile(order::Vector{NodeCore}, root, store_image)
     features = mapreduce(_features, |, order; init = UInt32(0))
     position = IdDict{NodeCore, Int}(c => i for (i, c) in enumerate(order))
     last_use = Dict{Tuple{Int, Int}, Int}()
     for (i, c) in enumerate(order), x in c.inputs
         x isa TexNode && (last_use[(position[getfield(x, :core)], getfield(x, :output))] = i)
     end
-    root_key = (position[getfield(root, :core)], getfield(root, :output))
-    last_use[root_key] = length(order) + 1
+    if root !== nothing
+        root_key = (position[getfield(root, :core)], getfield(root, :output))
+        last_use[root_key] = length(order) + 1
+    end
 
     free = trues(NODE_STACK)
     offset = Dict{Tuple{Int, Int}, Int}()
@@ -176,16 +195,17 @@ function compile_nodes(root::TexNode, store_image)
     used = 0
     for (i, c) in enumerate(order)
         args = UInt8[]
-        wide = UInt16(0)
+        wide = Bool[]
         k = Float32[]
-        for (j, x) in enumerate(c.inputs)
+        for x in c.inputs
             if x isa TexNode
                 key = (position[getfield(x, :core)], getfield(x, :output))
                 push!(args, UInt8(offset[key]))
-                _width(x) == 3 && (wide |= UInt16(1) << (j - 1))
+                push!(wide, _width(x) == 3)
                 push!(k, 0f0)
             else
                 push!(args, NO_SLOT)
+                push!(wide, false)
                 push!(k, Float32(something(x, 0f0)))
             end
         end
@@ -207,21 +227,30 @@ function compile_nodes(root::TexNode, store_image)
                 push!(outs, NO_SLOT)
             end
         end
-        kt = _pad(k, NODE_ARGS, 0f0)
+        chunks = collect(Iterators.partition(eachindex(args), NODE_ARGS))
+        first_chunk = isempty(chunks) ? Int[] : collect(first(chunks))
+        kt = _pad(k[first_chunk], NODE_ARGS, 0f0)
         if c.op == NodeOp.IMAGE
             slot, idx = store_image(c.data)
             kt = Base.setindex(Base.setindex(kt, reinterpret(Float32, Int32(slot)), 9), reinterpret(Float32, Int32(idx)), 10)
         end
-        push!(instructions, (c.op, c.mode, _pad(outs, NODE_OUTS, NO_SLOT), outwide, _pad(args, NODE_ARGS, NO_SLOT), wide, kt))
+        push!(instructions, (c.op, c.mode, _pad(outs, NODE_OUTS, NO_SLOT), outwide, _pad(args[first_chunk], NODE_ARGS, NO_SLOT),
+                             _wide_bits(wide[first_chunk]), kt))
+        for chunk in Iterators.drop(chunks, 1)
+            push!(instructions, (NodeOp.ARGS, (0x00, 0x00, 0x00), _pad(UInt8[], NODE_OUTS, NO_SLOT), 0x00,
+                                 _pad(args[chunk], NODE_ARGS, NO_SLOT), _wide_bits(wide[chunk]), _pad(k[chunk], NODE_ARGS, 0f0)))
+        end
         c.data isa Vector{Float32} && append!(instructions, _data_instructions(c.data))
     end
-    result_offset = UInt8(offset[root_key])
-    result_wide = _width(root) == 3 ? UInt16(1) : UInt16(0)
+    result_args = root === nothing ? UInt8[] : [UInt8(offset[root_key])]
+    result_wide = root !== nothing && _width(root) == 3 ? UInt16(1) : UInt16(0)
     push!(instructions, (NodeOp.RESULT, (0x00, 0x00, 0x00), _pad(UInt8[], NODE_OUTS, NO_SLOT), 0x00,
-                         _pad([result_offset], NODE_ARGS, NO_SLOT), result_wide, _pad(Float32[], NODE_ARGS, 0f0)))
-    F = features | _stack_bits(used)
+                         _pad(result_args, NODE_ARGS, NO_SLOT), result_wide, _pad(Float32[], NODE_ARGS, 0f0)))
+    F = features | _stack_bits(max(used, 1))
     return [NodeInstr{F}(fields...) for fields in instructions]
 end
+
+_wide_bits(wide) = reduce(|, (UInt16(w) << (j - 1) for (j, w) in enumerate(wide)); init = UInt16(0))
 
 """Floats carried inline after the instruction that reads them, `NODE_ARGS` to an instruction."""
 _data_instructions(data::Vector{Float32}) =

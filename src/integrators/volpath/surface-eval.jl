@@ -617,9 +617,9 @@ concern from materials)."""
     # 900-byte `PiecewiseLinearSpectrum{56}`-bearing struct collapses to a
     # 40-byte `ConductorEvaluated`, eliminating 8-16 redundant
     # `eval_ior_spectral` binary searches per surface hit.
-    tfc_for_bxdf = compute_texture_filter_context(mat_work, camera, samples_per_pixel)
     regularize_for_bxdf = regularizes(work, media, do_regularize)
-    bxdf = get_bxdf(mat, rgb2spec_table, materials, tfc_for_bxdf, work.lambda, regularize_for_bxdf)
+    bxdf = material_bxdf(mat, rgb2spec_table, materials, mat_work, camera, samples_per_pixel,
+                         work.lambda, regularize_for_bxdf)
 
     # Direct lighting + inline shadow + accumulate (typed BSDF eval).
     surface_direct_lighting_inner!(
