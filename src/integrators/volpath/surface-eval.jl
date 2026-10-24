@@ -416,8 +416,12 @@ write/read of two `pixel_samples_direct_*` arrays per bounce — measured as
         )
         is_black(bsdf_f) && return
         result = compute_direct_lighting_spectral(
-            # Shadow rays leave from the terminator-safe point, not the hit.
-            work.ps, work.n, work.ns, work.wo, work.beta, work.r_u, work.lambda,
+            # Shadow rays leave from the terminator-safe point, not the hit:
+            # that point lies outside the smooth surface, so only for light
+            # on its outer side. Light through the surface would otherwise
+            # cross the surface once more before it leaves.
+            dot(light_sample.wi, work.n) > 0f0 ? work.ps : Point3f(work.pi), work.n, work.ns, work.wo,
+            work.beta, work.r_u, work.lambda,
             light_sample, bsdf_f, bsdf_pdf,
         )
         result.valid || return
@@ -617,9 +621,11 @@ concern from materials)."""
     # 900-byte `PiecewiseLinearSpectrum{56}`-bearing struct collapses to a
     # 40-byte `ConductorEvaluated`, eliminating 8-16 redundant
     # `eval_ior_spectral` binary searches per surface hit.
-    tfc_for_bxdf = compute_texture_filter_context(mat_work, camera, samples_per_pixel)
     regularize_for_bxdf = regularizes(work, media, do_regularize)
-    bxdf = get_bxdf(mat, rgb2spec_table, materials, tfc_for_bxdf, work.lambda, regularize_for_bxdf)
+    bxdf = material_bxdf(mat, rgb2spec_table, materials, mat_work, camera, samples_per_pixel,
+                         work.lambda, regularize_for_bxdf)
+    add_emission!(pixel_L, bxdf, mat_work)
+    bxdf, mat_work = subsurface_scatter(bxdf, mat_work, accel, sample_idx)
 
     # Direct lighting + inline shadow + accumulate (typed BSDF eval).
     surface_direct_lighting_inner!(

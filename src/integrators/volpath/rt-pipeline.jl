@@ -488,9 +488,11 @@ end
 )
     mat_work = VPMaterialEvalWorkItem(hit_work, wo, resolved_mat_idx)
 
-    tfc_for_bxdf = compute_texture_filter_context(mat_work, camera, samples_per_pixel)
     regularize_for_bxdf = regularizes(hit_work, media, do_regularize)
-    bxdf = get_bxdf(mat, rgb2spec_table, materials, tfc_for_bxdf, hit_work.lambda, regularize_for_bxdf)
+    bxdf = material_bxdf(mat, rgb2spec_table, materials, mat_work, camera, samples_per_pixel,
+                         hit_work.lambda, regularize_for_bxdf)
+    add_emission!(pixel_L, bxdf, mat_work)
+    bxdf, mat_work = subsurface_scatter(bxdf, mat_work, accel, sample_idx)
 
     # Direct lighting + inline shadow trace + accumulate (typed BSDF eval).
     surface_direct_lighting_inner!(

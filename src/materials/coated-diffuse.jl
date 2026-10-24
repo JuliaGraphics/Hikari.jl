@@ -754,6 +754,5 @@ fully transparent and 30% of its triangles are partly cut — so giving the bird
 coat turned every feather card back into a solid quad.
 """
 @propagate_inbounds function get_surface_alpha(mat::CoatedDiffuse, textures, tfc::TextureFilterContext)
-    refl = eval_handle_spectrum(textures, mat.reflectance, tfc)
-    return get_alpha(refl)
+    return eval_handle_alpha(textures, mat.reflectance, tfc)
 end
