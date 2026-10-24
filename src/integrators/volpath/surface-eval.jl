@@ -416,8 +416,12 @@ write/read of two `pixel_samples_direct_*` arrays per bounce — measured as
         )
         is_black(bsdf_f) && return
         result = compute_direct_lighting_spectral(
-            # Shadow rays leave from the terminator-safe point, not the hit.
-            work.ps, work.n, work.ns, work.wo, work.beta, work.r_u, work.lambda,
+            # Shadow rays leave from the terminator-safe point, not the hit:
+            # that point lies outside the smooth surface, so only for light
+            # on its outer side. Light through the surface would otherwise
+            # cross the surface once more before it leaves.
+            dot(light_sample.wi, work.n) > 0f0 ? work.ps : Point3f(work.pi), work.n, work.ns, work.wo,
+            work.beta, work.r_u, work.lambda,
             light_sample, bsdf_f, bsdf_pdf,
         )
         result.valid || return
