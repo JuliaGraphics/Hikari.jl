@@ -169,6 +169,7 @@ Linearize the graph and place every value on the stack by liveness.
 `store_image(data)` returns the `(slot, idx)` an image input lives at.
 """
 function compile_nodes(root::TexNode, store_image)
+    root = _simplified(root, IdDict{NodeCore, NodeCore}())
     order = _topological([getfield(root, :core)])
     any(c -> c.op in _SHADER_OPS, order) &&
         error("a texture cannot use `bump`, `normal_map`, mesh attributes, texture coordinates other than uv or a " *
@@ -182,7 +183,47 @@ end
 The program of a shader: every closure node in `closures` with what it reads, in one program
 that runs until its `RESULT`.
 """
-compile_shader(closures::Vector{NodeCore}, store_image) = _compile(_topological(closures), nothing, store_image)
+function compile_shader(closures::Vector{NodeCore}, store_image)
+    memo = IdDict{NodeCore, NodeCore}()
+    return _compile(_topological([_simplified(c, memo) for c in closures]), nothing, store_image)
+end
+
+"""
+The graph under a node as it is run: a constant colour of three equal components read as the
+scalar it splats from, and the Principled BSDF inputs that a weight of constant zero leaves unread
+cut off, so neither costs an instruction.
+"""
+_simplified(n::TexNode, memo) = TexNode(_simplified(getfield(n, :core), memo), getfield(n, :output))
+_simplified(x, memo) = x
+function _simplified(c::NodeCore, memo::IdDict{NodeCore, NodeCore})
+    return get!(memo, c) do
+        inputs = Any[_simplified(x, memo) for x in c.inputs]
+        c.op == NodeOp.PRINCIPLED && _prune_principled!(inputs)
+        NodeCore(c.op, c.mode, Any[_splat_constant(x) for x in inputs], c.widths, c.data)
+    end
+end
+
+_splat_constant(x) = x
+function _splat_constant(n::TexNode)
+    c = getfield(n, :core)
+    (c.op == NodeOp.CONST && allequal(c.inputs)) || return n
+    return Float32(c.inputs[1])
+end
+
+"""The Principled BSDF inputs, by position, that each weight leaves unread when it is zero."""
+const _PRINCIPLED_UNREAD = (16 => (17, 18), 9 => (10, 11, 12, 13), 19 => (20, 21), 22 => (23, 24, 25),
+                            27 => (28, 29), 31 => (30,), 32 => (33,))
+
+function _prune_principled!(inputs)
+    for (weight, unread) in _PRINCIPLED_UNREAD
+        _constant(inputs[weight], 0) || continue
+        foreach(i -> inputs[i] = 0f0, unread)
+    end
+    # The sheen normal blends towards the coat normal by the coat weight, so the coat normal is
+    # still read: it becomes the normal, which is computed anyway.
+    _constant(inputs[22], 0) && (inputs[26] = inputs[7])
+    return inputs
+end
 
 function _compile(order::Vector{NodeCore}, root, store_image)
     features = mapreduce(_features, |, order; init = UInt32(0))

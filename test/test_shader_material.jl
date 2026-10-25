@@ -211,6 +211,13 @@ end
         @test count(==(NodeOp.MATH), ops) == 3
     end
 
+    @testset "a principled BSDF runs only the inputs its weights read" begin
+        @test [ins.op for ins in program(principled_bsdf())] ==
+              [NodeOp.NORMAL, NodeOp.PRINCIPLED, NodeOp.ARGS, NodeOp.ARGS, NodeOp.ARGS, NodeOp.RESULT]
+        @test count(==(NodeOp.POSITION), [ins.op for ins in program(principled_bsdf(anisotropic = 0.5))]) == 1
+        @test count(==(NodeOp.CONST), [ins.op for ins in program(principled_bsdf(subsurface_weight = 1))]) == 1
+    end
+
     @testset "a texture cannot use a bump" begin
         @test_throws "a texture cannot use `bump`" device_param(Raycore.MultiTypeSet(CPU()), bump(xyz().x))
     end
