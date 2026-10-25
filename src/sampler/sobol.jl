@@ -160,6 +160,31 @@ separate `sobol_sample` calls.
 end
 
 """
+The first two Sobol dimensions at index `a`, unscrambled, as `sobol_sample` computes them: the
+first is the radical inverse, the bits of `a` reversed, and the second reads the matrix only at
+the bits of `a` that are set.
+"""
+@inline _sobol_dim0(a::UInt64) = bitreverse(a % UInt32)
+
+@inline function _sobol_dim1(a::UInt64, matrices)
+    v = UInt32(0)
+    base = SOBOL_MATRIX_SIZE + Int32(1)
+    for (bits, k) in ((a % UInt32, Int32(0)), ((a >> 32) % UInt32 & (UInt32(1) << (SOBOL_MATRIX_SIZE - 32) - UInt32(1)), Int32(32)))
+        while bits != UInt32(0)
+            skip = trailing_zeros(bits) % Int32
+            k += skip
+            @inbounds v ⊻= matrices[base + k]
+            bits = (bits >> skip) >> 1
+            k += Int32(1)
+        end
+    end
+    return v
+end
+
+@inline _sobol_float(v::UInt32, scramble::UInt32) =
+    min(Float32(fast_owen_scramble(v, scramble)) * FLOAT32_SCALE, ONE_MINUS_EPSILON)
+
+"""
     sobol_sample_unscrambled(a::Int64, dimension::Int32) -> Float32
 
 Generate an unscrambled Sobol sample (for debugging/comparison).
@@ -328,7 +353,7 @@ Generate a 1D Sobol sample for the given pixel and sample index.
     # Uses MurmurHash64A on (dimension, seed) bytes, then truncates to 32-bit
     hash_dim = dim + Int32(1)
     sample_hash = u_uint32(zsobol_hash(hash_dim, seed))
-    return sobol_sample(Int64(sobol_index), Int32(0), sample_hash, sobol_matrices)
+    return _sobol_float(_sobol_dim0(sobol_index), sample_hash)
 end
 
 """
@@ -353,12 +378,8 @@ Uses two consecutive Sobol dimensions with independent scrambling seeds.
     hash1 = u_uint32(bits)
     hash2 = u_uint32(bits >> 32)
 
-    # Fuse the two 52-iter sobol_sample loops into one — same input bit
-    # pattern (`sobol_index`), different matrix bases (dim 0 vs dim 1) and
-    # different scrambling seeds.  Halves the per-jitter-sample loop control
-    # overhead in vp_generate_camera_rays_kernel!.
-    return sobol_sample_2(Int64(sobol_index), Int32(0), Int32(1),
-                          hash1, hash2, sobol_matrices)
+    return (_sobol_float(_sobol_dim0(sobol_index), hash1),
+            _sobol_float(_sobol_dim1(sobol_index, sobol_matrices), hash2))
 end
 
 """
