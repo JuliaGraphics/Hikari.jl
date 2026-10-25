@@ -469,6 +469,12 @@ end
     w = _f(s, ins, 1)
     kind = ins.mode[1]
     wo = sc.wo
+    if kind == ClosureKind.TRANSPARENT
+        return _with_transparency(cl, w * _saturate3(_v(s, ins, 2)))
+    elseif kind == ClosureKind.EMISSION
+        return _with_emission(cl, w * max.(_v(s, ins, 2), 0f0) * _f(s, ins, 3))
+    end
+    _has(ins, NodeFeature.BSDF) || return cl
     if kind == ClosureKind.DIFFUSE
         color = max.(_v(s, ins, 2), 0f0)
         n = _closure_normal(_v(s, ins, 4), sc)
@@ -500,10 +506,6 @@ end
     elseif kind == ClosureKind.SHEEN
         n = _closure_normal(_v(s, ins, 4), sc)
         return _push(cl, _sheen(lut, w * max.(_v(s, ins, 2), 0f0), n, _f(s, ins, 3), wo))
-    elseif kind == ClosureKind.TRANSPARENT
-        return _with_transparency(cl, w * _saturate3(_v(s, ins, 2)))
-    elseif kind == ClosureKind.EMISSION
-        return _with_emission(cl, w * max.(_v(s, ins, 2), 0f0) * _f(s, ins, 3))
     end
     return cl
 end
@@ -827,10 +829,10 @@ Run a compiled shader program at a hit: the closures it produces. Not inlined, f
             return cl
         elseif op == NodeOp.CLOSURE
             cl = _emit_closure(cl, s, ins, sc, lut)
-        elseif op == NodeOp.PRINCIPLED
+        elseif _has(ins, NodeFeature.PRINCIPLED) && op == NodeOp.PRINCIPLED
             cl = _principled(cl, s, prog, i, ins, sc, lut)
             skip = _PRINCIPLED_ARGS
-        elseif op == NodeOp.BUMP
+        elseif _has(ins, NodeFeature.BUMP) && op == NodeOp.BUMP
             s = _store(s, ins, _bump(s, ins, sc))
         elseif op == NodeOp.NORMAL_MAP
             s = _store(s, ins, _normal_map(s, ins, sc))
@@ -844,7 +846,7 @@ Run a compiled shader program at a hit: the closures it produces. Not inlined, f
         elseif op == NodeOp.REFLECTION
             facing = _closure_normal(sc.tfc.n, sc)
             s = _store(s, ins, 2f0 * dot(facing, sc.wo) * facing - sc.wo)
-        elseif NodeOp.POSITION_DX <= op <= NodeOp.UV_DY
+        elseif _has(ins, NodeFeature.BUMP) && NodeOp.POSITION_DX <= op <= NodeOp.UV_DY
             s = _store(s, ins, _shifted_leaf(op, s, ins, sc))
         else
             s, skip = _exec(s, prog, i, ins, textures, sc.tfc)

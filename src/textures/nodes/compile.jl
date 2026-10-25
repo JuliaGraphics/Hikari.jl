@@ -135,7 +135,9 @@ const _OP_FEATURES = Dict(
     NodeOp.BRICK => NodeFeature.BRICK, NodeOp.VECTOR_MATH => NodeFeature.VECTOR_MATH, NodeOp.AFFINE_ROW => NodeFeature.VECTOR,
     NodeOp.MIX => NodeFeature.MIX, NodeOp.CLAMP => NodeFeature.RANGE, NodeOp.MAP_RANGE => NodeFeature.RANGE,
     NodeOp.ATTRIBUTE => NodeFeature.ATTRIBUTE, NodeOp.ATTRIBUTE_DX => NodeFeature.ATTRIBUTE,
-    NodeOp.ATTRIBUTE_DY => NodeFeature.ATTRIBUTE)
+    NodeOp.ATTRIBUTE_DY => NodeFeature.ATTRIBUTE,
+    NodeOp.PRINCIPLED => NodeFeature.PRINCIPLED, NodeOp.BUMP => NodeFeature.BUMP, NodeOp.POSITION_DX => NodeFeature.BUMP,
+    NodeOp.POSITION_DY => NodeFeature.BUMP, NodeOp.UV_DX => NodeFeature.BUMP, NodeOp.UV_DY => NodeFeature.BUMP)
 
 """The `NodeFeature` bits the interpreter needs to run node `c`."""
 function _features(c::NodeCore)
@@ -143,6 +145,8 @@ function _features(c::NodeCore)
     dims, kind = c.mode
     if c.op == NodeOp.MATH
         f |= _math_group(c.mode[1])
+    elseif c.op == NodeOp.CLOSURE && !(c.mode[1] in (ClosureKind.TRANSPARENT, ClosureKind.EMISSION))
+        f |= NodeFeature.BSDF
     elseif c.op == NodeOp.MIX && c.mode[1] != BlendType.MIX
         f |= NodeFeature.BLEND
     elseif c.op == NodeOp.NOISE

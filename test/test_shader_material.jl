@@ -119,11 +119,20 @@ end
         store = Raycore.MultiTypeSet(CPU())
         plain = Hikari.to_device_material(store, Hikari.ShaderMaterial(diffuse_bsdf(color = (0.2, 0.4, 0.6))))
         noisy = Hikari.to_device_material(store, Hikari.ShaderMaterial(diffuse_bsdf(color = noise(xyz()).color)))
-        @test typeof(plain.program) == Hikari.ShaderProgram{0x00000000}
-        @test typeof(noisy.program) == Hikari.ShaderProgram{Hikari.NodeFeature.NOISE}
+        @test typeof(plain.program) == Hikari.ShaderProgram{Hikari.NodeFeature.BSDF}
+        @test typeof(noisy.program) == Hikari.ShaderProgram{Hikari.NodeFeature.BSDF | Hikari.NodeFeature.NOISE}
         sc = Hikari.ShaderContext(TextureFilterContext(Point2f(0), Point3f(0), Vec3f(0, 0, 1)), Vec3f(0, 0, 1),
                                   Vec3f(0), Vec3f(0), Vec3f(1, 0, 0), Vec3f(0, 0, 1), 1f0, Vec3f(0), Point2f(0))
         @test Hikari.eval_shader_handle(static_textures(store), plain, sc).closures[1].weight ≈ Vec3f(0.2, 0.4, 0.6)
+    end
+
+    @testset "a shader program holds only the shader code it runs" begin
+        store = Raycore.MultiTypeSet(CPU())
+        shiny = principled_bsdf(base_color = noise(xyz()).color, coat_weight = 1, normal = bump(noise(xyz()).fac))
+        mat = Hikari.to_device_material(store, Hikari.ShaderMaterial(shiny))
+        features(::Hikari.ShaderProgram{F}) where {F} = F & ~(UInt32(3) << Hikari.STACK_SHIFT)
+        N = Hikari.NodeFeature
+        @test features(mat.program) == N.NOISE | N.PRINCIPLED | N.BUMP
     end
 
     @testset "a closure tilted off the smooth normal is shadowed as in Cycles" begin
