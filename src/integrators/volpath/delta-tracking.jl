@@ -138,13 +138,18 @@ significantly reducing null scattering events in sparse heterogeneous media.
     iter = create_majorant_iterator(medium, table, ray, min(t_max, step_limit), λ, template_grid)
 
     # Call type-stable iteration (dispatches on iter type)
-    result = sample_T_maj_loop!(
-        iter, T_maj_accum, beta, r_u, r_l, rng_state,
-        scatter_queue,
-        pixel_L,
-        work, media, medium_idx, table, max_depth,
-        control(medium, media, table, λ), controlmajorant(medium)
-    )
+    result = if integrates_emission(medium)
+        march_T_maj_loop!(medium, iter, beta, r_u, r_l, rng_state, pixel_L,
+                          work, media, table, max_depth, control(medium, media, table, λ))
+    else
+        sample_T_maj_loop!(
+            iter, T_maj_accum, beta, r_u, r_l, rng_state,
+            scatter_queue,
+            pixel_L,
+            work, media, medium_idx, table, max_depth,
+            control(medium, media, table, λ), controlmajorant(medium)
+        )
+    end
     # An empty majorant iterator still spans vacuum along a curved path.
     # Advance it, otherwise a capped continuation retraces the same origin
     # forever when its step lies outside the density grid.
@@ -425,6 +430,84 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
         T_maj_accum = SpectralRadiance(1f0)
     end
 
+    return SampleTMajResult(beta, r_u, r_l, current_rng, false, end_d, ray_o, false)
+end
+
+"""
+The emission a step of length `h` adds per unit of its emission density `σ_a Le`
+when that density and `σ` are constant over it, `∫₀ʰ e^(-σ s) ds`, and the
+step's transmittance `e^(-σ h)`. With the exact `exp`, and a series where σh is
+small: `1 - e^(-σh)` cancels there, and `fast_exp`'s 5e-5 error made it a
+thousand times the step in thin emitting gas.
+"""
+@inline function step_integral(σ::SpectralRadiance, h::Float32)
+    w(i) = (x = σ[i] * h; x < 1f-3 ? h * (1f0 - x * (0.5f0 - x / 6f0)) : (1f0 - exp(-x)) / σ[i])
+    T(i) = exp(-σ[i] * h)
+    return SpectralRadiance(w(1), w(2), w(3), w(4)), SpectralRadiance(T(1), T(2), T(3), T(4))
+end
+
+"""
+    march_T_maj_loop!(medium, iter, beta, r_u, r_l, rng_state, pixel_L, work, media,
+                      table, max_depth, mc) -> SampleTMajResult
+
+Integrate a medium that [`integrates_emission`](@ref) along the chord: its
+majorant segments as delta tracking walks them, empty ones skipped, the others
+in steps of [`medium_quadrature_step`](@ref), each looked up once at the same
+jittered fraction of the step (one random number per chord, so the pixel's
+samples stratify the steps). Each step adds its emission and multiplies the
+throughput by its transmittance; nothing is absorbed or scattered, and the
+chord ends as delta tracking's does when nothing happens on it.
+"""
+@propagate_inbounds function march_T_maj_loop!(
+    medium,
+    iter::RayMajorantIterator,
+    beta::SpectralRadiance,
+    r_u::SpectralRadiance,
+    r_l::SpectralRadiance,
+    rng_state::UInt64,
+    pixel_L,
+    work::VPMediumSampleWorkItem,
+    media,
+    rgb2spec_table,
+    max_depth::Int32,
+    mc::MediumProperties
+)
+    max_segments = majorant_segment_limit(iter)
+    ray_d = work.ray.d
+    ray_o = work.ray.o
+    planned_step = medium_step_limit(medium, work.ray.o, ray_d)
+    curved = planned_step < Inf32
+    end_d = ray_d
+    current_rng, jitter = lcg_next(rng_state)
+    emits = work.depth < max_depth
+    weight = 1f0 / average(r_u)
+    current_iter = iter
+    for _ in Int32(1):max_segments
+        seg, new_iter, valid = ray_majorant_next(current_iter, media)
+        valid || break
+        current_iter = new_iter
+        if seg.σ_maj[1] >= 1f-10
+            t = seg.t_min
+            while t < seg.t_max
+                h = min(medium_quadrature_step(medium, Point3f(work.ray.o + ray_d * t), ray_d), seg.t_max - t)
+                ts = t + jitter * h
+                p = Point3f(work.ray.o + ray_d * ts)
+                local_d = medium_point_direction(medium, p, ray_d, planned_step, ts)
+                mr = residual(medium, media, rgb2spec_table, p, work.lambda, local_d)
+                σ_a = mc.σ_a + mr.σ_a
+                w, T = step_integral(σ_a, h)
+                if emits
+                    emission = mc.σ_a * mc.Le + mr.σ_a * mr.Le
+                    is_black(emission) || add_to_pixel!(pixel_L, work.pixel_index, beta * emission * w * weight, work.lambda)
+                end
+                beta = beta * T
+                t += h
+            end
+        end
+        ray_o = Point3f(work.ray.o + ray_d * seg.t_max)
+        end_d = curved ? medium_end_direction(medium, ray_o, ray_d, planned_step, seg.t_max) : ray_d
+        is_black(beta) && return SampleTMajResult(beta, r_u, r_l, current_rng, true, end_d)
+    end
     return SampleTMajResult(beta, r_u, r_l, current_rng, false, end_d, ray_o, false)
 end
 

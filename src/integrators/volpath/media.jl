@@ -2202,6 +2202,27 @@ end
 # should override this method.
 @propagate_inbounds apply_deflection(medium, p::Point3f, ray_d::Vec3f, dt::Float32) = ray_d
 
+"""
+    integrates_emission(medium) -> Bool
+
+Whether the medium only absorbs and emits, never scatters, and is integrated
+along rays rather than tracked (see [`medium_quadrature_step`](@ref)). A trait of
+the medium's type, so the choice compiles away.
+"""
+@inline integrates_emission(medium) = false
+
+"""
+    medium_quadrature_step(medium, p, ray_d) -> Float32
+
+The step at which a medium that [`integrates_emission`](@ref) is integrated
+from `p`. Along a ray it adds its emission `∫ T(s) σ_a(s) Le(s) ds` and
+multiplies the throughput by its transmittance `exp(-∫ σ_a ds)`, both
+deterministic: the expectation delta tracking estimates with its absorption
+events, without their variance. The step should resolve the medium's own
+structure.
+"""
+function medium_quadrature_step end
+
 """Maximum straight transport segment before re-intersecting a curved ray.
 
 Ordinary media return infinity and keep the existing delta-tracking fast path.
