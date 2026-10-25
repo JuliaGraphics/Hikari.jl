@@ -494,6 +494,15 @@ traverses_by_linked_call(accel::Mantle.AdaptedAccel) = !isnothing(accel.scene)
 # recognises this function's complete lifecycle and lets the @noinline stand.
 @noinline _trace_shadow_transmittance_outlined(args...) = _trace_shadow_transmittance(args...)
 
+"""Whether a shadow ray's hit stops it whatever else lies on the segment: a surface with a material, that passes no light and has no cutout there."""
+@propagate_inbounds function _blocks_shadow(media_interfaces, materials, primitive, barycentric, instance_id)
+    mi = media_interfaces[resolve_mi_idx(instance_id, primitive)]
+    (Raycore.is_valid(mi.material) && !(mi.shadows > 0f0)) || return false
+    tfc = TextureFilterContext(vp_compute_uv_barycentric(primitive, barycentric),
+                               primitive.metadata.primitive_index, SVector{3,Float32}(barycentric))
+    return get_surface_alpha_dispatch(materials, mi.material, tfc) >= 1f0
+end
+
 @inline function _trace_shadow_transmittance(
     accel, media_interfaces, media, materials, rgb2spec_table,
     origin::Point3f, dir::Vec3f, t_max::Float32, lambda::Wavelengths, medium_idx::SetKey,
@@ -508,6 +517,15 @@ traverses_by_linked_call(accel::Mantle.AdaptedAccel) = !isnothing(accel.scene)
     ray_o = origin
     t_remaining = t_max
     bent = false
+
+    # Outside media, a free segment or an occluder that blocks outright settles the ray
+    # with one query that may stop at any surface; only the rest walk the surfaces in order.
+    if !has_medium(current_medium) && t_remaining >= 1f-6
+        hit, primitive, _, barycentric, instance_id = Raycore.any_hit(accel, Raycore.Ray(o=ray_o, d=dir, t_max=t_remaining))
+        hit || return (T_ray, r_u, r_l, true, dir)
+        _blocks_shadow(media_interfaces, materials, primitive, barycentric, instance_id) &&
+            return (SpectralRadiance(0f0), SpectralRadiance(1f0), SpectralRadiance(1f0), false, dir)
+    end
 
     # Trace through up to N transmissive/alpha boundaries
     max_bounces = Int32(10)
