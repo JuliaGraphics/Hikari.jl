@@ -423,6 +423,8 @@ This avoids runtime tuple indexing which is broken on some GPU backends (e.g. Me
 - `n_base4_digits::Int32`: number of base-4 digits for Morton encoding
 - `seed::UInt32`: scrambling seed
 - `width::Int32`: image width (for pixel coordinate recovery)
+- `pixels::Int32`: number of pixels
+- `lanes::Int32`: samples of every pixel one wave of paths holds (see [`path_pixel_sample`](@ref))
 """
 struct SobolRNG{M <: AbstractVector{UInt32}}
     matrices::M
@@ -430,15 +432,17 @@ struct SobolRNG{M <: AbstractVector{UInt32}}
     n_base4_digits::Int32
     seed::UInt32
     width::Int32
+    pixels::Int32
+    lanes::Int32
 end
 
 """
-    SobolRNG(mem, seed::UInt32, width::Integer, height::Integer, samples_per_pixel::Integer)
+    SobolRNG(mem, seed::UInt32, width::Integer, height::Integer, samples_per_pixel::Integer; lanes = 1)
 
-Create a SobolRNG for the given render settings.
+Create a SobolRNG for the given render settings, with waves of `lanes` samples per pixel.
 Allocates the Sobol matrices in memory the render state owns.
 """
-function SobolRNG(mem, seed::UInt32, width::Integer, height::Integer, samples_per_pixel::Integer)
+function SobolRNG(mem, seed::UInt32, width::Integer, height::Integer, samples_per_pixel::Integer; lanes::Integer = 1)
     # Allocate and copy Sobol matrices + packed permutation table to GPU
     combined = vcat(SobolMatrices32, PACKED_PERMUTATIONS_4WAY)
     matrices = upload!(mem, combined)
@@ -446,7 +450,7 @@ function SobolRNG(mem, seed::UInt32, width::Integer, height::Integer, samples_pe
     # Compute ZSobol parameters
     log2_spp, n_base4_digits = compute_zsobol_params(Int(samples_per_pixel), Int(width), Int(height))
 
-    return SobolRNG(matrices, log2_spp, n_base4_digits, seed, Int32(width))
+    return SobolRNG(matrices, log2_spp, n_base4_digits, seed, Int32(width), Int32(width * height), Int32(lanes))
 end
 
 # Adapt.jl integration for GPU kernels
@@ -456,8 +460,25 @@ function Adapt.adapt_structure(to, rng::SobolRNG)
         rng.log2_spp,
         rng.n_base4_digits,
         rng.seed,
-        rng.width
+        rng.width,
+        rng.pixels,
+        rng.lanes
     )
+end
+
+"""
+    path_pixel_sample(rng::SobolRNG, slot::Int32, sample_idx::Int32) -> (px, py, sample)
+
+The pixel and the sample of the path in slot `slot` of a wave. A wave holds `rng.lanes` samples of
+every pixel, each sample's slots after those of the one before, and `sample_idx` is the last
+sample of the wave.
+"""
+@inline function path_pixel_sample(rng::SobolRNG, slot::Int32, sample_idx::Int32)
+    lane = u_div(slot - Int32(1), rng.pixels)
+    pixel_0 = slot - Int32(1) - lane * rng.pixels
+    px = u_mod(pixel_0, rng.width) + Int32(1)
+    py = u_div(pixel_0, rng.width) + Int32(1)
+    return px, py, sample_idx - rng.lanes + lane + Int32(1)
 end
 
 

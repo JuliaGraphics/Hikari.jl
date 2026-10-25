@@ -365,10 +365,7 @@ write/read of two `pixel_samples_direct_*` arrays per bounce — measured as
     # Inline Sobol. Dimension allocation matches the original
     # `vp_generate_ray_samples_kernel!`: 6 (camera) + 7 * depth + dim-offset;
     # direct lighting uses dim+1 (1D light select) and dim+3 (2D light pos).
-    pixel_idx = work.pixel_index
-    pixel_idx_0 = pixel_idx - Int32(1)
-    px = u_mod(pixel_idx_0, sobol_rng.width) + Int32(1)
-    py = u_div(pixel_idx_0, sobol_rng.width) + Int32(1)
+    px, py, sample_idx = path_pixel_sample(sobol_rng, work.pixel_index, sample_idx)
     base_dim = Int32(6) + Int32(7) * work.depth
     light_select = sample_1d(sobol_rng, px, py, sample_idx, base_dim + Int32(1))
     u_light_x, u_light_y = sample_2d(sobol_rng, px, py, sample_idx, base_dim + Int32(3))
@@ -484,10 +481,7 @@ carrier, applies Russian roulette, pushes the continuation ray."""
         return
     end
 
-    pixel_idx = work.pixel_index
-    pixel_idx_0 = pixel_idx - Int32(1)
-    px = u_mod(pixel_idx_0, sobol_rng.width) + Int32(1)
-    py = u_div(pixel_idx_0, sobol_rng.width) + Int32(1)
+    px, py, sample_idx = path_pixel_sample(sobol_rng, work.pixel_index, sample_idx)
     base_dim = Int32(6) + Int32(7) * work.depth
     rng = sample_1d(sobol_rng, px, py, sample_idx, base_dim + Int32(4))
     u_x, u_y = sample_2d(sobol_rng, px, py, sample_idx, base_dim + Int32(6))
