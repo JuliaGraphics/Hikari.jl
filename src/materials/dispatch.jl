@@ -4,11 +4,14 @@
 
 
 """
-    get_perturbed_shading_frame(materials, idx, ns, dpdus, tfc) -> (ns', dpdus')
+    get_perturbed_shading_frame(materials, idx, ns, dpdus, dpdu, dpdv, dndu, dndv, ng, tfc) -> (ns', dpdus')
+    get_perturbed_shading_frame(materials, idx, ns, dpdus, dpdu, dpdv, ng, bump_inputs) -> (ns', dpdus')
 
 Type-stable dispatch that returns the bump-perturbed shading frame for a
 material. Materials without a `displacement` height field (or with an unset
-one) return the frame untouched.
+one) return the frame untouched. `bump_inputs()` returns `(dndu, dndv, tfc)`
+and is called only for a material with a height field, so a hit on one without
+pays nothing for the screen-space differentials.
 
 Here and not inside the material's `sample_bsdf_spectral`, where the
 perturbation never reaches the path-integrator's `cos_theta = dot(wi,
@@ -17,12 +20,18 @@ dome rendered smooth even with bump mapping active). Hoisting it to the
 intersection point lets `work.ns` itself be the perturbed normal — the
 BSDF, MIS, and direct-lighting paths all see the same shading frame.
 """
-@propagate_inbounds function get_perturbed_shading_frame(
+@propagate_inbounds get_perturbed_shading_frame(
     materials::StaticMultiTypeSet, idx::SetKey,
     ns::Vec3f, dpdus::Vec3f, dpdu::Vec3f, dpdv::Vec3f,
     dndu::Vec3f, dndv::Vec3f,
     ng::Vec3f, tfc::TextureFilterContext
-)::Tuple{Vec3f, Vec3f}
+) = get_perturbed_shading_frame(materials, idx, ns, dpdus, dpdu, dpdv, ng, () -> (dndu, dndv, tfc))
+
+@propagate_inbounds function get_perturbed_shading_frame(
+    materials::StaticMultiTypeSet, idx::SetKey,
+    ns::Vec3f, dpdus::Vec3f, dpdu::Vec3f, dpdv::Vec3f,
+    ng::Vec3f, bump_inputs::F
+)::Tuple{Vec3f, Vec3f} where {F}
     # A surface whose material is not in the set has no displacement to read, so
     # the frame is the geometric one. Same guard, same reason as
     # `get_surface_alpha_dispatch`: a null-material medium boundary carries an
@@ -33,7 +42,7 @@ BSDF, MIS, and direct-lighting paths all see the same shading frame.
     # the volume, on the far wall of the same cube.
     Raycore.is_valid(idx) || return (ns, dpdus)
     return with_index(perturb_shading_frame_impl, materials, idx,
-                      materials, ns, dpdus, dpdu, dpdv, dndu, dndv, ng, tfc)
+                      materials, ns, dpdus, dpdu, dpdv, ng, bump_inputs)
 end
 
 # One implementation for every material: read the `displacement` handle (a
@@ -47,11 +56,11 @@ end
     mat::Material, materials,
     ns::Vec3f, dpdus::Vec3f,
     dpdu::Vec3f, dpdv::Vec3f,
-    dndu::Vec3f, dndv::Vec3f,
-    ng::Vec3f, tfc::TextureFilterContext,
-)
+    ng::Vec3f, bump_inputs::F,
+) where {F}
     h = displacement(mat)
     is_none(h) && return (ns, dpdus)
+    dndu, dndv, tfc = bump_inputs()
     return perturb_bump_frame(h, materials, ns, dpdu, dpdv, dndu, dndv, ng, tfc)
 end
 

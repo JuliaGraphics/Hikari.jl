@@ -583,11 +583,26 @@ const _PRINCIPLED_LAYERS = Int32(9)
         w = w * alpha
     end
     for layer in Int32(1):_PRINCIPLED_LAYERS
-        c, w = _principled_layer(layer, p, w, sc, lut)
-        cl = _push(cl, c)
+        if _layer_present(layer, p)
+            c, w = _principled_layer(layer, p, w, sc, lut)
+            cl = _push(cl, c)
+        end
         layer == Int32(2) && _max(p.emission) > 0f0 && (cl = _with_emission(cl, max.(p.emission, 0f0) .* w))
     end
     return cl
+end
+
+"""Whether layer `layer` of a Principled BSDF can produce a closure: the ones `_principled_layer` returns none for, it is not called for."""
+@inline function _layer_present(layer::Int32, p::PrincipledInputs)
+    thin_wall = p.thin_wall > 0.5f0
+    layer == Int32(1) && return max(p.sheen_weight, 0f0) > CLOSURE_WEIGHT_CUTOFF
+    layer == Int32(2) && return max(p.coat_weight, 0f0) > CLOSURE_WEIGHT_CUTOFF
+    layer == Int32(3) && return clamp(p.metallic, 0f0, 1f0) > CLOSURE_WEIGHT_CUTOFF
+    (layer == Int32(4) || layer == Int32(5)) &&
+        return clamp(p.transmission, 0f0, 1f0) > CLOSURE_WEIGHT_CUTOFF && (layer == Int32(4) || thin_wall)
+    (layer == Int32(7) || layer == Int32(8)) &&
+        return clamp(p.subsurface, 0f0, 1f0) > CLOSURE_WEIGHT_CUTOFF && (layer == Int32(7) || thin_wall)
+    return true
 end
 
 """

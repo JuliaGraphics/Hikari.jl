@@ -189,10 +189,9 @@ end
 """
     bump_filter_context(camera, work, geom, samples_per_pixel, face_idx, bary) -> TextureFilterContext
 
-The differentials + UV-derivative + context construction that every trace kernel
-needs before perturbing the shading frame. Six call sites across the software and
-hardware paths had this open-coded identically. `face_idx` and `bary` are the
-hit's: a vertex-colour bump height indexes with them.
+The differentials, uv derivatives and texture filter context a bump reads at a
+hit, for [`bumped_shading_frame`](@ref). `face_idx` and `bary` are the hit's: a
+vertex-colour bump height indexes with them.
 """
 @propagate_inbounds function bump_filter_context(camera, work, geom, samples_per_pixel::Int32,
                                                  face_idx::UInt32, bary::SVector{3, Float32})
@@ -200,6 +199,16 @@ hit's: a vertex-colour bump height indexes with them.
                                 samples_per_pixel, work.depth)
     dudx, dudy, dvdx, dvdy = compute_uv_derivatives(geom.dpdu, geom.dpdv, dpdx, dpdy)
     return TextureFilterContext(geom.uv, dudx, dudy, dvdx, dvdy, face_idx, bary, geom.pi, geom.ns)
+end
+
+"""The shading frame at the hit `geom` of `primitive`, perturbed by the material's bump, if it has one."""
+@propagate_inbounds function bumped_shading_frame(materials, mat_idx, camera, work, geom, primitive,
+                                                  samples_per_pixel::Int32, bary)
+    face_idx = primitive.metadata.primitive_index
+    bump_inputs() = (vp_compute_normal_derivatives(primitive)...,
+                     bump_filter_context(camera, work, geom, samples_per_pixel, face_idx, SVector{3, Float32}(bary)))
+    return get_perturbed_shading_frame(materials, mat_idx, geom.ns, geom.dpdus, geom.dpdu, geom.dpdv, geom.n,
+                                       bump_inputs)
 end
 
 """

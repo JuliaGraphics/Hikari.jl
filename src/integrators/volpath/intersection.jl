@@ -340,13 +340,8 @@ end
 
             geom = vp_compute_surface_geometry(primitive, barycentric, work.ray.o, work.ray.d, t_hit)
 
-            tfc_bump = bump_filter_context(camera, work, geom, samples_per_pixel,
-                                       primitive.metadata.primitive_index, SVector{3,Float32}(barycentric))
-            dndu, dndv = vp_compute_normal_derivatives(primitive)
-            ns_b, dpdus_b = get_perturbed_shading_frame(materials, mat_idx,
-                                                       geom.ns, geom.dpdus,
-                                                       geom.dpdu, geom.dpdv,
-                                                       dndu, dndv, geom.n, tfc_bump)
+            ns_b, dpdus_b = bumped_shading_frame(materials, mat_idx, camera, work, geom, primitive,
+                                                 samples_per_pixel, barycentric)
 
             dpdvs_b = cross(ns_b, dpdus_b)
 
@@ -432,13 +427,8 @@ end
 
         # Camera-approximated differentials for every hit, matching pbrt-v4
         # ComputeDifferentials (see the trace-kernel comment above).
-        tfc_bump = bump_filter_context(camera, work, geom, samples_per_pixel,
-                                       primitive.metadata.primitive_index, SVector{3,Float32}(barycentric))
-        dndu, dndv = vp_compute_normal_derivatives(primitive)
-        ns_b, dpdus_b = get_perturbed_shading_frame(materials, resolved_mat_idx,
-                                                   geom.ns, geom.dpdus,
-                                                   geom.dpdu, geom.dpdv,
-                                                   dndu, dndv, geom.n, tfc_bump)
+        ns_b, dpdus_b = bumped_shading_frame(materials, resolved_mat_idx, camera, work, geom, primitive,
+                                             samples_per_pixel, barycentric)
 
         dpdvs_b = cross(ns_b, dpdus_b)
 
