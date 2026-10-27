@@ -160,6 +160,31 @@ separate `sobol_sample` calls.
 end
 
 """
+The first two Sobol dimensions at index `a`, unscrambled, as `sobol_sample` computes them: the
+first is the radical inverse, the bits of `a` reversed, and the second reads the matrix only at
+the bits of `a` that are set.
+"""
+@inline _sobol_dim0(a::UInt64) = bitreverse(a % UInt32)
+
+@inline function _sobol_dim1(a::UInt64, matrices)
+    v = UInt32(0)
+    base = SOBOL_MATRIX_SIZE + Int32(1)
+    for (bits, k) in ((a % UInt32, Int32(0)), ((a >> 32) % UInt32 & (UInt32(1) << (SOBOL_MATRIX_SIZE - 32) - UInt32(1)), Int32(32)))
+        while bits != UInt32(0)
+            skip = trailing_zeros(bits) % Int32
+            k += skip
+            @inbounds v ⊻= matrices[base + k]
+            bits = (bits >> skip) >> 1
+            k += Int32(1)
+        end
+    end
+    return v
+end
+
+@inline _sobol_float(v::UInt32, scramble::UInt32) =
+    min(Float32(fast_owen_scramble(v, scramble)) * FLOAT32_SCALE, ONE_MINUS_EPSILON)
+
+"""
     sobol_sample_unscrambled(a::Int64, dimension::Int32) -> Float32
 
 Generate an unscrambled Sobol sample (for debugging/comparison).
@@ -328,7 +353,7 @@ Generate a 1D Sobol sample for the given pixel and sample index.
     # Uses MurmurHash64A on (dimension, seed) bytes, then truncates to 32-bit
     hash_dim = dim + Int32(1)
     sample_hash = u_uint32(zsobol_hash(hash_dim, seed))
-    return sobol_sample(Int64(sobol_index), Int32(0), sample_hash, sobol_matrices)
+    return _sobol_float(_sobol_dim0(sobol_index), sample_hash)
 end
 
 """
@@ -353,12 +378,8 @@ Uses two consecutive Sobol dimensions with independent scrambling seeds.
     hash1 = u_uint32(bits)
     hash2 = u_uint32(bits >> 32)
 
-    # Fuse the two 52-iter sobol_sample loops into one — same input bit
-    # pattern (`sobol_index`), different matrix bases (dim 0 vs dim 1) and
-    # different scrambling seeds.  Halves the per-jitter-sample loop control
-    # overhead in vp_generate_camera_rays_kernel!.
-    return sobol_sample_2(Int64(sobol_index), Int32(0), Int32(1),
-                          hash1, hash2, sobol_matrices)
+    return (_sobol_float(_sobol_dim0(sobol_index), hash1),
+            _sobol_float(_sobol_dim1(sobol_index, sobol_matrices), hash2))
 end
 
 """
@@ -402,6 +423,8 @@ This avoids runtime tuple indexing which is broken on some GPU backends (e.g. Me
 - `n_base4_digits::Int32`: number of base-4 digits for Morton encoding
 - `seed::UInt32`: scrambling seed
 - `width::Int32`: image width (for pixel coordinate recovery)
+- `pixels::Int32`: number of pixels
+- `lanes::Int32`: samples of every pixel one wave of paths holds (see [`path_pixel_sample`](@ref))
 """
 struct SobolRNG{M <: AbstractVector{UInt32}}
     matrices::M
@@ -409,15 +432,17 @@ struct SobolRNG{M <: AbstractVector{UInt32}}
     n_base4_digits::Int32
     seed::UInt32
     width::Int32
+    pixels::Int32
+    lanes::Int32
 end
 
 """
-    SobolRNG(mem, seed::UInt32, width::Integer, height::Integer, samples_per_pixel::Integer)
+    SobolRNG(mem, seed::UInt32, width::Integer, height::Integer, samples_per_pixel::Integer; lanes = 1)
 
-Create a SobolRNG for the given render settings.
+Create a SobolRNG for the given render settings, with waves of `lanes` samples per pixel.
 Allocates the Sobol matrices in memory the render state owns.
 """
-function SobolRNG(mem, seed::UInt32, width::Integer, height::Integer, samples_per_pixel::Integer)
+function SobolRNG(mem, seed::UInt32, width::Integer, height::Integer, samples_per_pixel::Integer; lanes::Integer = 1)
     # Allocate and copy Sobol matrices + packed permutation table to GPU
     combined = vcat(SobolMatrices32, PACKED_PERMUTATIONS_4WAY)
     matrices = upload!(mem, combined)
@@ -425,7 +450,7 @@ function SobolRNG(mem, seed::UInt32, width::Integer, height::Integer, samples_pe
     # Compute ZSobol parameters
     log2_spp, n_base4_digits = compute_zsobol_params(Int(samples_per_pixel), Int(width), Int(height))
 
-    return SobolRNG(matrices, log2_spp, n_base4_digits, seed, Int32(width))
+    return SobolRNG(matrices, log2_spp, n_base4_digits, seed, Int32(width), Int32(width * height), Int32(lanes))
 end
 
 # Adapt.jl integration for GPU kernels
@@ -435,8 +460,25 @@ function Adapt.adapt_structure(to, rng::SobolRNG)
         rng.log2_spp,
         rng.n_base4_digits,
         rng.seed,
-        rng.width
+        rng.width,
+        rng.pixels,
+        rng.lanes
     )
+end
+
+"""
+    path_pixel_sample(rng::SobolRNG, slot::Int32, sample_idx::Int32) -> (px, py, sample)
+
+The pixel and the sample of the path in slot `slot` of a wave. A wave holds `rng.lanes` samples of
+every pixel, each sample's slots after those of the one before, and `sample_idx` is the last
+sample of the wave.
+"""
+@inline function path_pixel_sample(rng::SobolRNG, slot::Int32, sample_idx::Int32)
+    lane = u_div(slot - Int32(1), rng.pixels)
+    pixel_0 = slot - Int32(1) - lane * rng.pixels
+    px = u_mod(pixel_0, rng.width) + Int32(1)
+    py = u_div(pixel_0, rng.width) + Int32(1)
+    return px, py, sample_idx - rng.lanes + lane + Int32(1)
 end
 
 

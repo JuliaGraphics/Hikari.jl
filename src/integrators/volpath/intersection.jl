@@ -340,13 +340,8 @@ end
 
             geom = vp_compute_surface_geometry(primitive, barycentric, work.ray.o, work.ray.d, t_hit)
 
-            tfc_bump = bump_filter_context(camera, work, geom, samples_per_pixel,
-                                       primitive.metadata.primitive_index, SVector{3,Float32}(barycentric))
-            dndu, dndv = vp_compute_normal_derivatives(primitive)
-            ns_b, dpdus_b = get_perturbed_shading_frame(materials, mat_idx,
-                                                       geom.ns, geom.dpdus,
-                                                       geom.dpdu, geom.dpdv,
-                                                       dndu, dndv, geom.n, tfc_bump)
+            ns_b, dpdus_b = bumped_shading_frame(materials, mat_idx, camera, work, geom, primitive,
+                                                 samples_per_pixel, barycentric)
 
             dpdvs_b = cross(ns_b, dpdus_b)
 
@@ -432,13 +427,8 @@ end
 
         # Camera-approximated differentials for every hit, matching pbrt-v4
         # ComputeDifferentials (see the trace-kernel comment above).
-        tfc_bump = bump_filter_context(camera, work, geom, samples_per_pixel,
-                                       primitive.metadata.primitive_index, SVector{3,Float32}(barycentric))
-        dndu, dndv = vp_compute_normal_derivatives(primitive)
-        ns_b, dpdus_b = get_perturbed_shading_frame(materials, resolved_mat_idx,
-                                                   geom.ns, geom.dpdus,
-                                                   geom.dpdu, geom.dpdv,
-                                                   dndu, dndv, geom.n, tfc_bump)
+        ns_b, dpdus_b = bumped_shading_frame(materials, resolved_mat_idx, camera, work, geom, primitive,
+                                             samples_per_pixel, barycentric)
 
         dpdvs_b = cross(ns_b, dpdus_b)
 
@@ -484,6 +474,16 @@ Following pbrt-v4's TraceTransmittance: transmissive surfaces (MediumInterface) 
 while opaque surfaces block it. The final contribution is computed as:
     Ld * T_ray / average(path_r_u * r_u + path_r_l * r_l)
 """
+@propagate_inbounds trace_shadow_transmittance(accel, args...) =
+    traverses_by_linked_call(accel) ? _trace_shadow_transmittance(accel, args...) :
+                                      _trace_shadow_transmittance_outlined(accel, args...)
+
+# Metal's `AdaptedAccel` carries `scene`, the argument buffer its linked MSL
+# traversal reads, so the traversal is a call already. Outlining around that
+# call doubles the call boundary, and it made renders 1.6x slower on an M1 Pro.
+traverses_by_linked_call(accel) = false
+traverses_by_linked_call(accel::Mantle.AdaptedAccel) = !isnothing(accel.scene)
+
 # @noinline: this is a self-contained ray-query lifecycle (init+proceed+get
 # all internal via Raycore.closest_hit). Keeping it as a separate OpFunction
 # in SPIR-V gives the call site its own register frame so the surrounding
@@ -492,7 +492,18 @@ while opaque surfaces block it. The final contribution is computed as:
 # specializations pinned at 255 regs / ~1 KB spill on RTX 4000 Ada.
 # Lava's refined `incomplete_rayquery` rule (compilation.jl, 2026-06-04)
 # recognises this function's complete lifecycle and lets the @noinline stand.
-@noinline function trace_shadow_transmittance(
+@noinline _trace_shadow_transmittance_outlined(args...) = _trace_shadow_transmittance(args...)
+
+"""Whether a shadow ray's hit stops it whatever else lies on the segment: a surface with a material, that passes no light and has no cutout there."""
+@propagate_inbounds function _blocks_shadow(media_interfaces, materials, primitive, barycentric, instance_id)
+    mi = media_interfaces[resolve_mi_idx(instance_id, primitive)]
+    (Raycore.is_valid(mi.material) && !(mi.shadows > 0f0)) || return false
+    tfc = TextureFilterContext(vp_compute_uv_barycentric(primitive, barycentric),
+                               primitive.metadata.primitive_index, SVector{3,Float32}(barycentric))
+    return get_surface_alpha_dispatch(materials, mi.material, tfc) >= 1f0
+end
+
+@inline function _trace_shadow_transmittance(
     accel, media_interfaces, media, materials, rgb2spec_table,
     origin::Point3f, dir::Vec3f, t_max::Float32, lambda::Wavelengths, medium_idx::SetKey,
     refract::Bool = false
@@ -506,6 +517,15 @@ while opaque surfaces block it. The final contribution is computed as:
     ray_o = origin
     t_remaining = t_max
     bent = false
+
+    # Outside media, a free segment or an occluder that blocks outright settles the ray
+    # with one query that may stop at any surface; only the rest walk the surfaces in order.
+    if !has_medium(current_medium) && t_remaining >= 1f-6
+        hit, primitive, _, barycentric, instance_id = Raycore.any_hit(accel, Raycore.Ray(o=ray_o, d=dir, t_max=t_remaining))
+        hit || return (T_ray, r_u, r_l, true, dir)
+        _blocks_shadow(media_interfaces, materials, primitive, barycentric, instance_id) &&
+            return (SpectralRadiance(0f0), SpectralRadiance(1f0), SpectralRadiance(1f0), false, dir)
+    end
 
     # Trace through up to N transmissive/alpha boundaries
     max_bounces = Int32(10)

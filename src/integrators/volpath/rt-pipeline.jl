@@ -131,13 +131,8 @@ end
 
         geom = vp_compute_surface_geometry(primitive, bary, work.ray.o, work.ray.d, t_hit)
 
-        tfc_bump = bump_filter_context(camera, work, geom, samples_per_pixel,
-                                   primitive.metadata.primitive_index, SVector{3,Float32}(bary))
-        dndu, dndv = vp_compute_normal_derivatives(primitive)
-        ns_b, dpdus_b = get_perturbed_shading_frame(materials, mat_idx,
-                                                   geom.ns, geom.dpdus,
-                                                   geom.dpdu, geom.dpdv,
-                                                   dndu, dndv, geom.n, tfc_bump)
+        ns_b, dpdus_b = bumped_shading_frame(materials, mat_idx, camera, work, geom, primitive,
+                                             samples_per_pixel, bary)
 
         dpdvs_b = cross(ns_b, dpdus_b)
 
@@ -191,13 +186,8 @@ end
 
     # True ray differentials on camera rays, camera approximation deeper —
     # pbrt-v4 ComputeDifferentials branches the same way (interaction.cpp:48).
-    tfc_bump = bump_filter_context(camera, work, geom, samples_per_pixel,
-                                   primitive.metadata.primitive_index, SVector{3,Float32}(bary))
-    dndu, dndv = vp_compute_normal_derivatives(primitive)
-    ns_b, dpdus_b = get_perturbed_shading_frame(materials, resolved_mat_idx,
-                                               geom.ns, geom.dpdus,
-                                               geom.dpdu, geom.dpdv,
-                                               dndu, dndv, geom.n, tfc_bump)
+    ns_b, dpdus_b = bumped_shading_frame(materials, resolved_mat_idx, camera, work, geom, primitive,
+                                         samples_per_pixel, bary)
 
     dpdvs_b = cross(ns_b, dpdus_b)
 
@@ -364,13 +354,8 @@ struct VPClosesthitTyped{T} end
 
         geom = vp_compute_surface_geometry(primitive, bary, work.ray.o, work.ray.d, t_hit)
 
-        tfc_bump = bump_filter_context(camera, work, geom, samples_per_pixel,
-                                   primitive.metadata.primitive_index, SVector{3,Float32}(bary))
-        dndu, dndv = vp_compute_normal_derivatives(primitive)
-        ns_b, dpdus_b = get_perturbed_shading_frame(materials, mat_idx,
-                                                   geom.ns, geom.dpdus,
-                                                   geom.dpdu, geom.dpdv,
-                                                   dndu, dndv, geom.n, tfc_bump)
+        ns_b, dpdus_b = bumped_shading_frame(materials, mat_idx, camera, work, geom, primitive,
+                                             samples_per_pixel, bary)
         dpdvs_b = cross(ns_b, dpdus_b)
 
         push!(medium_sample_queue, VPMediumSampleWorkItem(
@@ -417,13 +402,8 @@ struct VPClosesthitTyped{T} end
 
     # True ray differentials on camera rays, camera approximation deeper —
     # see the chit-shade comment above.
-    tfc_bump = bump_filter_context(camera, work, geom, samples_per_pixel,
-                                   primitive.metadata.primitive_index, SVector{3,Float32}(bary))
-    dndu, dndv = vp_compute_normal_derivatives(primitive)
-    ns_b, dpdus_b = get_perturbed_shading_frame(materials, resolved_mat_idx,
-                                               geom.ns, geom.dpdus,
-                                               geom.dpdu, geom.dpdv,
-                                               dndu, dndv, geom.n, tfc_bump)
+    ns_b, dpdus_b = bumped_shading_frame(materials, resolved_mat_idx, camera, work, geom, primitive,
+                                         samples_per_pixel, bary)
     dpdvs_b = cross(ns_b, dpdus_b)
 
     hit_work = VPHitSurfaceWorkItem(
@@ -488,9 +468,11 @@ end
 )
     mat_work = VPMaterialEvalWorkItem(hit_work, wo, resolved_mat_idx)
 
-    tfc_for_bxdf = compute_texture_filter_context(mat_work, camera, samples_per_pixel)
     regularize_for_bxdf = regularizes(hit_work, media, do_regularize)
-    bxdf = get_bxdf(mat, rgb2spec_table, materials, tfc_for_bxdf, hit_work.lambda, regularize_for_bxdf)
+    bxdf = material_bxdf(mat, rgb2spec_table, materials, mat_work, camera, samples_per_pixel,
+                         hit_work.lambda, regularize_for_bxdf)
+    add_emission!(pixel_L, bxdf, mat_work)
+    bxdf, mat_work = subsurface_scatter(bxdf, mat_work, accel, sample_idx)
 
     # Direct lighting + inline shadow trace + accumulate (typed BSDF eval).
     surface_direct_lighting_inner!(

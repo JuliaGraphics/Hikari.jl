@@ -15,6 +15,7 @@
 
 using Test
 using Random
+using Hikari
 using Hikari: mod24
 
 @testset "mod24 is x % 24, exactly" begin
@@ -43,4 +44,15 @@ using Hikari: mod24
     # Result is always a valid 0-based permutation index; the caller adds 1 and
     # indexes a 24-entry table with it, so anything else is an out-of-bounds read.
     @test all(mod24(x) < UInt32(24) for x in rand(rng, UInt64, 20_000))
+end
+
+@testset "the first two Sobol dimensions are the matrix products" begin
+    M = Hikari.SobolMatrices32
+    rng = Random.MersenneTwister(0x50b0)
+    indices = [rand(rng, UInt64) >> rand(rng, 12:63) for _ in 1:50_000]
+    seeds = rand(rng, UInt32, length(indices))
+    @test all(Hikari._sobol_float(Hikari._sobol_dim0(a), h) === Hikari.sobol_sample(Int64(a), Int32(0), h, M)
+              for (a, h) in zip(indices, seeds))
+    @test all(Hikari._sobol_float(Hikari._sobol_dim1(a, M), h) === Hikari.sobol_sample(Int64(a), Int32(1), h, M)
+              for (a, h) in zip(indices, seeds))
 end

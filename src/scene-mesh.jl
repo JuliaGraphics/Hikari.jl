@@ -38,6 +38,11 @@ function Base.push!(scene::Scene, mesh::GeometryBasics.Mesh, material::Material;
     return SceneHandle(scene, mat_idx, handle, mesh_area_lights(face_meta))
 end
 
+function Base.push!(scene::Scene, mesh::GeometryBasics.Mesh, material::ShaderMaterial; kw...)
+    bound_mesh, bound = bind_mesh(mesh, material)
+    return invoke(push!, Tuple{Scene, GeometryBasics.Mesh, Material}, scene, bound_mesh, bound; kw...)
+end
+
 """
     push!(scene::Scene, mesh::GeometryBasics.Mesh, mat_idx::UInt32, material::Material;
           transform=Mat4f(I))
@@ -61,6 +66,11 @@ function Base.push!(scene::Scene, mesh::GeometryBasics.Mesh, mat_idx::UInt32,
     sbt_offset = Raycore.is_valid(mi.material) ? mi.material.type_idx - UInt32(1) : UInt32(0)
     handle = push!(scene.accel, mesh_with_meta, transform; sbt_offset=sbt_offset)
     return SceneHandle(scene, mat_idx, handle, mesh_area_lights(face_meta))
+end
+
+function Base.push!(scene::Scene, mesh::GeometryBasics.Mesh, mat_idx::UInt32, material::ShaderMaterial; kw...)
+    bound_mesh, bound = bind_mesh(mesh, material)
+    return invoke(push!, Tuple{Scene, GeometryBasics.Mesh, UInt32, Material}, scene, bound_mesh, mat_idx, bound; kw...)
 end
 
 """

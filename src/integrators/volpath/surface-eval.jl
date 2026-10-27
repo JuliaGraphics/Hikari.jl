@@ -189,10 +189,9 @@ end
 """
     bump_filter_context(camera, work, geom, samples_per_pixel, face_idx, bary) -> TextureFilterContext
 
-The differentials + UV-derivative + context construction that every trace kernel
-needs before perturbing the shading frame. Six call sites across the software and
-hardware paths had this open-coded identically. `face_idx` and `bary` are the
-hit's: a vertex-colour bump height indexes with them.
+The differentials, uv derivatives and texture filter context a bump reads at a
+hit, for [`bumped_shading_frame`](@ref). `face_idx` and `bary` are the hit's: a
+vertex-colour bump height indexes with them.
 """
 @propagate_inbounds function bump_filter_context(camera, work, geom, samples_per_pixel::Int32,
                                                  face_idx::UInt32, bary::SVector{3, Float32})
@@ -200,6 +199,16 @@ hit's: a vertex-colour bump height indexes with them.
                                 samples_per_pixel, work.depth)
     dudx, dudy, dvdx, dvdy = compute_uv_derivatives(geom.dpdu, geom.dpdv, dpdx, dpdy)
     return TextureFilterContext(geom.uv, dudx, dudy, dvdx, dvdy, face_idx, bary, geom.pi, geom.ns)
+end
+
+"""The shading frame at the hit `geom` of `primitive`, perturbed by the material's bump, if it has one."""
+@propagate_inbounds function bumped_shading_frame(materials, mat_idx, camera, work, geom, primitive,
+                                                  samples_per_pixel::Int32, bary)
+    face_idx = primitive.metadata.primitive_index
+    bump_inputs() = (vp_compute_normal_derivatives(primitive)...,
+                     bump_filter_context(camera, work, geom, samples_per_pixel, face_idx, SVector{3, Float32}(bary)))
+    return get_perturbed_shading_frame(materials, mat_idx, geom.ns, geom.dpdus, geom.dpdu, geom.dpdv, geom.n,
+                                       bump_inputs)
 end
 
 """
@@ -356,10 +365,7 @@ write/read of two `pixel_samples_direct_*` arrays per bounce — measured as
     # Inline Sobol. Dimension allocation matches the original
     # `vp_generate_ray_samples_kernel!`: 6 (camera) + 7 * depth + dim-offset;
     # direct lighting uses dim+1 (1D light select) and dim+3 (2D light pos).
-    pixel_idx = work.pixel_index
-    pixel_idx_0 = pixel_idx - Int32(1)
-    px = u_mod(pixel_idx_0, sobol_rng.width) + Int32(1)
-    py = u_div(pixel_idx_0, sobol_rng.width) + Int32(1)
+    px, py, sample_idx = path_pixel_sample(sobol_rng, work.pixel_index, sample_idx)
     base_dim = Int32(6) + Int32(7) * work.depth
     light_select = sample_1d(sobol_rng, px, py, sample_idx, base_dim + Int32(1))
     u_light_x, u_light_y = sample_2d(sobol_rng, px, py, sample_idx, base_dim + Int32(3))
@@ -416,8 +422,12 @@ write/read of two `pixel_samples_direct_*` arrays per bounce — measured as
         )
         is_black(bsdf_f) && return
         result = compute_direct_lighting_spectral(
-            # Shadow rays leave from the terminator-safe point, not the hit.
-            work.ps, work.n, work.ns, work.wo, work.beta, work.r_u, work.lambda,
+            # Shadow rays leave from the terminator-safe point, not the hit:
+            # that point lies outside the smooth surface, so only for light
+            # on its outer side. Light through the surface would otherwise
+            # cross the surface once more before it leaves.
+            dot(light_sample.wi, work.n) > 0f0 ? work.ps : Point3f(work.pi), work.n, work.ns, work.wo,
+            work.beta, work.r_u, work.lambda,
             light_sample, bsdf_f, bsdf_pdf,
         )
         result.valid || return
@@ -471,10 +481,7 @@ carrier, applies Russian roulette, pushes the continuation ray."""
         return
     end
 
-    pixel_idx = work.pixel_index
-    pixel_idx_0 = pixel_idx - Int32(1)
-    px = u_mod(pixel_idx_0, sobol_rng.width) + Int32(1)
-    py = u_div(pixel_idx_0, sobol_rng.width) + Int32(1)
+    px, py, sample_idx = path_pixel_sample(sobol_rng, work.pixel_index, sample_idx)
     base_dim = Int32(6) + Int32(7) * work.depth
     rng = sample_1d(sobol_rng, px, py, sample_idx, base_dim + Int32(4))
     u_x, u_y = sample_2d(sobol_rng, px, py, sample_idx, base_dim + Int32(6))
@@ -617,9 +624,11 @@ concern from materials)."""
     # 900-byte `PiecewiseLinearSpectrum{56}`-bearing struct collapses to a
     # 40-byte `ConductorEvaluated`, eliminating 8-16 redundant
     # `eval_ior_spectral` binary searches per surface hit.
-    tfc_for_bxdf = compute_texture_filter_context(mat_work, camera, samples_per_pixel)
     regularize_for_bxdf = regularizes(work, media, do_regularize)
-    bxdf = get_bxdf(mat, rgb2spec_table, materials, tfc_for_bxdf, work.lambda, regularize_for_bxdf)
+    bxdf = material_bxdf(mat, rgb2spec_table, materials, mat_work, camera, samples_per_pixel,
+                         work.lambda, regularize_for_bxdf)
+    add_emission!(pixel_L, bxdf, mat_work)
+    bxdf, mat_work = subsurface_scatter(bxdf, mat_work, accel, sample_idx)
 
     # Direct lighting + inline shadow + accumulate (typed BSDF eval).
     surface_direct_lighting_inner!(

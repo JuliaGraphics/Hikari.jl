@@ -69,6 +69,19 @@ include("matrix.jl")
 get_camera_to_world(camera::PerspectiveCamera) = camera.core.core.camera_to_world
 get_camera_to_world(camera::MatrixCamera) = camera.core.camera_to_world
 
+camera_to_window(camera::PerspectiveCamera) = camera.core.camera_to_window
+camera_to_window(camera::MatrixCamera) = camera.camera_to_window
+
+"""
+`p` in the camera's space as Cycles' Camera texture coordinate has it (x right, y up, z along the
+view) and on the image's window, 0 to 1 from the bottom left.
+"""
+@inline function camera_coordinates(camera, p::Point3f)
+    pc = Raycore.transform_point(get_camera_to_world(camera).inv_m, p)
+    h = camera_to_window(camera) * Vec4f(pc[1], pc[2], pc[3], 1f0)
+    return Vec3f(pc[1], pc[2], -pc[3]), Point2f(h[1] / h[4], h[2] / h[4])
+end
+
 get_camera_position(camera::PerspectiveCamera) = Raycore.transform_point(get_camera_to_world(camera).m, Point3f(0f0))
 get_camera_position(camera::MatrixCamera) = Raycore.transform_point(get_camera_to_world(camera).m, Point3f(0f0))
 

@@ -167,6 +167,5 @@ end
 # ============================================================================
 
 @propagate_inbounds function get_surface_alpha(mat::Diffuse, textures, tfc::TextureFilterContext)
-    kd_rgb = eval_handle_spectrum(textures, mat.Kd, tfc)
-    return get_alpha(kd_rgb)
+    return eval_handle_alpha(textures, mat.Kd, tfc)
 end

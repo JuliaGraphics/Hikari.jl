@@ -182,7 +182,9 @@ function VolPathState(
     lights::Raycore.MultiTypeSet;  # MultiTypeSet of lights (has backend for GPU allocation)
     max_depth::Integer = 8,
     rr_depth::Integer = 1,
-    queue_capacity::Integer = width * height,
+    # Samples of every pixel one wave of paths holds (see `path_pixel_sample`).
+    lanes::Integer = 1,
+    queue_capacity::Integer = width * height * lanes,
     scene_radius::Float32 = 10f0,  # Scene bounding sphere radius for light power estimation
     samples_per_pixel::Integer = 1,  # For SobolRNG parameter computation
     sampler_seed::UInt32 = UInt32(0),  # Scrambling seed for Sobol
@@ -221,15 +223,17 @@ function VolPathState(
     escaped_queue = WorkQueue{VPEscapedRayWorkItem}(mem, queue_capacity)
     hit_area_light_queue = WorkQueue{VPHitAreaLightWorkItem}(mem, vestigial_capacity)
 
-    # Film buffer (4 wavelengths per pixel)
-    pixel_L = alloc!(mem, Float32, n_pixels * 4, 0f0)
+    n_paths = n_pixels * lanes
+
+    # The radiance of every path of a wave, at its 4 wavelengths
+    pixel_L = alloc!(mem, Float32, n_paths * 4, 0f0)
 
     # Accumulators for progressive rendering (configurable eltype for OpenCL compatibility)
     pixel_rgb = alloc!(mem, accumulation_eltype, n_pixels * 3, zero(accumulation_eltype))
     pixel_weight_sum = alloc!(mem, accumulation_eltype, n_pixels, zero(accumulation_eltype))
-    wavelengths_per_pixel = alloc!(mem, Float32, n_pixels * 4, 0f0)
-    pdf_per_pixel = alloc!(mem, Float32, n_pixels * 4, 0f0)
-    filter_weight_per_pixel = alloc!(mem, Float32, n_pixels, 0f0)
+    wavelengths_per_pixel = alloc!(mem, Float32, n_paths * 4, 0f0)
+    pdf_per_pixel = alloc!(mem, Float32, n_paths * 4, 0f0)
+    filter_weight_per_pixel = alloc!(mem, Float32, n_paths, 0f0)
 
     # Load lookup tables to GPU (sensor determines response curves)
     rgb2spec_table = to_gpu(mem, get_srgb_table())
@@ -254,7 +258,7 @@ function VolPathState(
     end
 
     # Create SobolRNG (allocated once, reused across frames)
-    sobol_rng = SobolRNG(mem, sampler_seed, width, height, samples_per_pixel)
+    sobol_rng = SobolRNG(mem, sampler_seed, width, height, samples_per_pixel; lanes)
 
     return VolPathState(
         backend,

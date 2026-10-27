@@ -7,6 +7,8 @@ struct ProjectiveCamera <: Camera
 
     lens_radius::Float32
     focal_distance::Float32
+    """Camera space to the image's window, 0 to 1 from the bottom left (homogeneous)."""
+    camera_to_window::Mat4f
 
     function ProjectiveCamera(
             camera_to_world::Transformation, camera_to_screen::Transformation,
@@ -34,6 +36,7 @@ struct ProjectiveCamera <: Camera
             camera_to_screen, raster_to_camera,
             screen_to_raster, raster_to_screen,
             lens_radius, focal_distance,
+            (inv_bounds * offset * camera_to_screen).m,
         )
     end
 end

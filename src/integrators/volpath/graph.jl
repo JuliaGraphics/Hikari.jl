@@ -358,7 +358,7 @@ function setup_passes!(g, state::VolPathState, refs, cur::WorkQueue)
                       state.filter_weight_per_pixel, state.height,
                       refs.camera, refs.sample_idx, refs.initial_medium,
                       refs.filter_params, refs.filter_sampler, state.sobol_rng),
-                     Int(state.width) * Int(state.height); name = "camera")
+                     Int(state.sobol_rng.pixels) * Int(state.sobol_rng.lanes); name = "camera")
     return g
 end
 
@@ -371,7 +371,7 @@ function accumulate_passes!(g, state::VolPathState, refs)
                       state.wavelengths_per_pixel, state.pdf_per_pixel,
                       state.filter_weight_per_pixel,
                       state.cie_table.cie_x, state.cie_table.cie_y,
-                      state.cie_table.cie_z, Int32(n_pixels),
+                      state.cie_table.cie_z, Int32(n_pixels), state.sobol_rng.lanes,
                       refs.max_component_value, state.output_matrix,
                       state.imaging_ratio),
                      n_pixels; name = "accumulate")
@@ -429,7 +429,7 @@ function sample_graph(dev, state::VolPathState, refs, max_depth::Int32;
     # declared reads; a store through one lands in the run's own submission,
     # ahead of the recorded commands that read it. Everything else was fixed at
     # `record!`.
-    Mantle.dispatch!(g, vp_next_sample_kernel!, (refs.sample_idx,), 1;
+    Mantle.dispatch!(g, vp_next_sample_kernel!, (refs.sample_idx, state.sobol_rng.lanes), 1;
                      group = 1, name = "next sample")
     setup_passes!(g, state, refs, a)
     d = Int(max_depth)
@@ -448,10 +448,11 @@ function sample_graph(dev, state::VolPathState, refs, max_depth::Int32;
     return g
 end
 
-@kernel function vp_next_sample_kernel!(sample_idx)
+"""Count the wave's samples, `lanes` of every pixel, into the device's sample index."""
+@kernel function vp_next_sample_kernel!(sample_idx, lanes::Int32)
     i = @index(Global)
     if i == 1
-        @inbounds sample_idx[1] += Int32(1)
+        @inbounds sample_idx[1] += lanes
     end
 end
 
@@ -639,7 +640,7 @@ function build_plans(backend, state::VolPathState, framebuffer, refs, perrun::Pe
     dev = mantle_device(backend)
     if has_media && max_depth>=128 && max_depth%64==0
         head=Mantle.Graph(dev)
-        Mantle.dispatch!(head,vp_next_sample_kernel!,(refs.sample_idx,),1;
+        Mantle.dispatch!(head,vp_next_sample_kernel!,(refs.sample_idx,state.sobol_rng.lanes),1;
                          group=1,name="next sample")
         setup_passes!(head,state,refs,state.ray_queue_a)
         body=Mantle.Graph(dev)

@@ -322,12 +322,10 @@ Following pbrt-v4's GetCameraSample: samples the filter, computes offset and wei
     # reads on a value already in registers, so the kernel computes them.
     camera_needs_time = camera_uses_motion_blur(camera)  # shutter_open != shutter_close
     camera_needs_lens = camera_uses_lens(camera)         # lens_radius > 0
-    num_pixels = rng.width * height
+    num_paths = rng.pixels * rng.lanes
 
-    @inbounds if idx <= num_pixels
-        pixel_idx = idx - Int32(1)
-        x = u_int32(mod(pixel_idx, rng.width)) + Int32(1)
-        y = u_int32(div(pixel_idx, rng.width)) + Int32(1)
+    @inbounds if idx <= num_paths
+        x, y, path_sample = path_pixel_sample(rng, Int32(idx), sample_idx)
 
         # ZSobol sampling: deterministic low-discrepancy samples based on (pixel, sample_index)
         # Matches PBRT-v4's ZSobolSampler for better convergence.  Skip the
@@ -336,7 +334,7 @@ Following pbrt-v4's GetCameraSample: samples the filter, computes offset and wei
         # and the camera-ray kernel is Sobol-bound.  Effects flags come
         # from the kernel arguments (computed CPU-side) so the GPU code
         # path is just two uniform branches, not a getproperty chain.
-        pixel_sample = compute_pixel_sample(rng, Int32(x), Int32(y), sample_idx,
+        pixel_sample = compute_pixel_sample(rng, x, y, path_sample,
                                             camera_needs_time, camera_needs_lens)
         wavelength_u = pixel_sample.wavelength_u
 
@@ -352,7 +350,7 @@ Following pbrt-v4's GetCameraSample: samples the filter, computes offset and wei
         lambda = sample_wavelengths_visible(wavelength_u)
 
         # Store wavelengths and PDFs
-        base = pixel_idx * Int32(4)
+        base = (idx - Int32(1)) * Int32(4)
         wavelengths_per_pixel[base + Int32(1)] = lambda.lambda[1]
         wavelengths_per_pixel[base + Int32(2)] = lambda.lambda[2]
         wavelengths_per_pixel[base + Int32(3)] = lambda.lambda[3]
@@ -442,6 +440,7 @@ pbrt-v4's PixelSensor::ToSensorRGB. White balance is handled via the output_matr
     @Const(filter_weight_per_pixel),
     @Const(cie_x), @Const(cie_y), @Const(cie_z),
     @Const(n_pixels::Int32),
+    @Const(lanes::Int32),
     @Const(max_component_value::Float32),
     @Const(output_matrix::Mat3f),
     @Const(imaging_ratio::Float32),
@@ -452,39 +451,47 @@ pbrt-v4's PixelSensor::ToSensorRGB. White balance is handled via the output_matr
     cie_table = CIEXYZTable(cie_x, cie_y, cie_z)
 
     @inbounds if pixel_idx <= n_pixels
-        base = (pixel_idx - Int32(1)) * Int32(4)
+        weighted = Vec3f(0)
+        weight_sum = 0f0
+        # The pixel's samples of the wave, one per lane (see `path_pixel_sample`).
+        for lane in Int32(0):lanes - Int32(1)
+            slot = pixel_idx + lane * n_pixels
+            base = (slot - Int32(1)) * Int32(4)
 
-        L = load(pixel_L, base + Int32(1), SpectralRadiance)
+            L = load(pixel_L, base + Int32(1), SpectralRadiance)
 
-        lambda_tuple = load(wavelengths_per_pixel, base + Int32(1), NTuple{4, Float32})
-        pdf_tuple = load(pdf_per_pixel, base + Int32(1), NTuple{4, Float32})
+            lambda_tuple = load(wavelengths_per_pixel, base + Int32(1), NTuple{4, Float32})
+            pdf_tuple = load(pdf_per_pixel, base + Int32(1), NTuple{4, Float32})
 
-        lambda = Wavelengths(lambda_tuple, pdf_tuple)
+            lambda = Wavelengths(lambda_tuple, pdf_tuple)
 
-        # Convert spectral to response (CIE XYZ or sensor RGB)
-        response = spectral_to_xyz(cie_table, L, lambda)
-        sensor_rgb = max.(0f0, response) * imaging_ratio
+            # Convert spectral to response (CIE XYZ or sensor RGB)
+            response = spectral_to_xyz(cie_table, L, lambda)
+            sensor_rgb = max.(0f0, response) * imaging_ratio
 
-        # Apply maxComponentValue clamping in sensor space (pbrt-v4: before output matrix)
-        m = maximum(sensor_rgb)
-        if m > max_component_value
-            sensor_rgb = sensor_rgb * (max_component_value / m)
+            # Apply maxComponentValue clamping in sensor space (pbrt-v4: before output matrix)
+            m = maximum(sensor_rgb)
+            if m > max_component_value
+                sensor_rgb = sensor_rgb * (max_component_value / m)
+            end
+
+            # Convert sensor RGB → output sRGB
+            rgb = output_matrix * sensor_rgb
+
+            # Get filter weight for this sample (pbrt-v4 style weighted accumulation)
+            weight = filter_weight_per_pixel[slot]
+            weighted += weight * Vec3f(rgb[1], rgb[2], rgb[3])
+            weight_sum += weight
         end
-
-        # Convert sensor RGB → output sRGB
-        rgb = output_matrix * sensor_rgb
-
-        # Get filter weight for this sample (pbrt-v4 style weighted accumulation)
-        weight = filter_weight_per_pixel[pixel_idx]
 
         # Accumulate weighted RGB (pbrt-v4: pixel.rgbSum[c] += weight * rgb[c])
         rgb_base = (pixel_idx - Int32(1)) * Int32(3)
-        Atomix.@atomic :monotonic pixel_rgb[rgb_base + Int32(1)] += weight * rgb[1]
-        Atomix.@atomic :monotonic pixel_rgb[rgb_base + Int32(2)] += weight * rgb[2]
-        Atomix.@atomic :monotonic pixel_rgb[rgb_base + Int32(3)] += weight * rgb[3]
+        Atomix.@atomic :monotonic pixel_rgb[rgb_base + Int32(1)] += weighted[1]
+        Atomix.@atomic :monotonic pixel_rgb[rgb_base + Int32(2)] += weighted[2]
+        Atomix.@atomic :monotonic pixel_rgb[rgb_base + Int32(3)] += weighted[3]
 
         # Accumulate weight (pbrt-v4: pixel.weightSum += weight)
-        Atomix.@atomic :monotonic pixel_weight_sum[pixel_idx] += weight
+        Atomix.@atomic :monotonic pixel_weight_sum[pixel_idx] += weight_sum
     end
 end
 
@@ -566,23 +573,26 @@ function run_finalize!(plans::VPPlans, fb)
 end
 
 """
-    render!(vp::VolPath, scene, film, camera)
+    render!(vp::VolPath, scene, film, camera; samples = 1)
 
-Render one iteration/sample using volumetric spectral wavefront path tracing.
+Render `samples` samples per pixel using volumetric spectral wavefront path
+tracing, accumulating them in the film. The iteration index is read from and
+incremented in `film.iteration_index`.
 
-This function is allocation-free and renders a single sample, accumulating
-results in the film. The iteration index is read from and incremented in
-`film.iteration_index`.
+The samples are traced in waves that each hold several samples of every pixel
+(see [`wave_lanes`](@ref)): a GPU keeps more paths in flight that way, which
+makes each one cheaper. A different `samples` than the last call's builds the
+render state again, so a progressive caller keeps it fixed.
 
 For progressive rendering, call this repeatedly. For complete rendering,
-use the main call function `(vp::VolPath)(scene, film, camera)` which wraps
-this in a loop.
+use the main call function `(vp::VolPath)(scene, film, camera)`.
 """
 function render!(
     vp::VolPath,
     scene::AbstractScene,
     film::Film,
     camera::Camera;
+    samples::Integer = 1,
     # When `false`, skip the per-sample `vp_finalize_film_kernel!` dispatch
     # (which divides accumulated RGB by weight and writes the framebuffer).
     # The caller must run `finalize_film!(vp, film)` itself after the last
@@ -642,9 +652,11 @@ function render!(
     # the state) or a first call. The film and the camera are call ARGUMENTS,
     # which cannot announce themselves; scene mutation never comes through here
     # at all.
+    lanes = owns_surface_shading(adapted) ? 1 : wave_lanes(samples, width * height)
     plans = vp.state === nothing ? nothing : vp.state.plans
-    if plans === nothing || plans.framebuffer !== img || !holdscamera(vp.perrun, camera)
-        rebuild_render_state!(vp, scene, film, camera, backend, initial_medium)
+    if plans === nothing || plans.framebuffer !== img || !holdscamera(vp.perrun, camera) ||
+       vp.state.sobol_rng.lanes != lanes
+        rebuild_render_state!(vp, scene, film, camera, backend, initial_medium, lanes)
         plans = (vp.state::VolPathState).plans
     end
 
@@ -653,18 +665,20 @@ function render!(
     # Zero here is the one thing the host has to say about it: a film that was
     # cleared starts the device's count over.
     film.iteration_index[] == 0 && resetsamples!(vp.perrun)
-    film.iteration_index[] += Int32(1)
 
     # A sample's whole host input to the recorded plans: the per-run values
     # that CHANGED, stored through their refs — nothing at all for a still
     # scene. Through `vp.perrun`, typed as a union over the camera type, so
     # the compare is static and boxes nothing; `plans` is `Any`.
     storechanged!(vp.perrun, camera, initial_medium, vp.filter_params)
-    # A sample is one plan: setup, the bounce loop, accumulate. The loop's exit
+    # A wave is one plan: setup, the bounce loop, accumulate. The loop's exit
     # test runs on the device — `Mantle.repeat!` gated on the ray queue's live
     # count — so there is no chunking, no host read of that count, and nothing
     # to wait for between rounds.
-    runsample!(plans)
+    for _ in 1:(samples ÷ lanes)
+        film.iteration_index[] += Int32(lanes)
+        runsample!(plans)
+    end
 
     # Update film: divide weighted sum by weight sum (pbrt-v4 style).
     # The kwarg lets batched callers (RayMakie's colorbuffer loop) skip the
@@ -677,8 +691,26 @@ function render!(
     return nothing
 end
 
+"""Whether the closest-hit shaders of the hardware pipeline shade the surfaces, so no queue between kernels holds the hits."""
+owns_surface_shading(adapted) =
+    shades_surfaces_inline(adapted.accel) && isempty(adapted.media) && !isempty(adapted.materials)
+
+"""The most paths a wave holds: what its queues and buffers are sized for."""
+const WAVE_PATHS = 1 << 19
+
 """
-    rebuild_render_state!(vp, scene, film, camera, backend, initial_medium)
+    wave_lanes(samples, n_pixels) -> Int
+
+How many samples of every pixel one wave of paths holds when `samples` are taken: the most that
+divide `samples` and keep a wave within [`WAVE_PATHS`](@ref) paths.
+"""
+function wave_lanes(samples::Integer, n_pixels::Integer)
+    most = clamp(WAVE_PATHS ÷ n_pixels, 1, samples)
+    return findlast(k -> samples % k == 0, 1:most)
+end
+
+"""
+    rebuild_render_state!(vp, scene, film, camera, backend, initial_medium, lanes)
 
 Build everything a sample needs that does not change between samples: the
 `VolPathState`, the per-material queues, the filter sampler's device copy and
@@ -688,7 +720,7 @@ here; the state-rebuild condition answers the film the plans were just dropped
 for.
 """
 function rebuild_render_state!(vp::VolPath, scene::AbstractScene, film::Film,
-                               camera::Camera, backend, initial_medium)
+                               camera::Camera, backend, initial_medium, lanes::Integer)
     img = film.framebuffer
     height, width = size(img)
     adapted = vp.adapted::Scene  # set by render! just above
@@ -709,18 +741,20 @@ function rebuild_render_state!(vp::VolPath, scene::AbstractScene, film::Film,
     # `!isempty(materials)` for the same reason `trace_pass!` asks it: with no
     # materials there are no closest-hit shaders, so that path is not taken and
     # the passes it would have replaced have to stay in the graph.
-    chit_owns_surface = shades_surfaces_inline(accel) && isempty(media) && !isempty(materials)
+    chit_owns_surface = owns_surface_shading(adapted)
 
     has_media = !isempty(media)
+    n_paths = width * height * lanes
     if vp.state === nothing ||
        vp.state.width != width ||
        vp.state.height != height ||
+       vp.state.sobol_rng.lanes != lanes ||
        vp.state.num_lights != n_lights ||
        # Queues allocated as capacity-1 placeholders (no-media medium queues,
        # chit-owns-surface hit/area-light queues) must grow if a scene that
        # needs them shows up on a reused integrator.
-       (has_media && Int(vp.state.medium_sample_queue.capacity) < width * height) ||
-       (!chit_owns_surface && Int(vp.state.hit_surface_queue.capacity) < width * height)
+       (has_media && Int(vp.state.medium_sample_queue.capacity) < n_paths) ||
+       (!chit_owns_surface && Int(vp.state.hit_surface_queue.capacity) < n_paths)
         # The previous state's regions go back before the new ones are taken,
         # so a resize does not hold two states' worth at once. No synchronize
         # and no finalizer race: nothing finalizes, and `free!` retires.
@@ -734,6 +768,7 @@ function rebuild_render_state!(vp::VolPath, scene::AbstractScene, film::Film,
         vp.state = VolPathState(backend, width, height, scene.lights;
                                 max_depth=vp.max_depth,
                                 rr_depth=vp.russian_roulette_depth,
+                                lanes=lanes,
                                 scene_radius=world_radius(scene),
                                 samples_per_pixel=sobol_spp,
                                 sampler_seed=UInt32(0),
@@ -751,7 +786,7 @@ function rebuild_render_state!(vp::VolPath, scene::AbstractScene, film::Film,
     # shade hits inline and the typed queues are never drained, so we use a
     # capacity=1 placeholder.  SW BVH and HW-with-media still route surface
     # hits through these to avoid the monolithic with_index BSDF switch.
-    pmq_capacity = chit_owns_surface ? 1 : n_pixels
+    pmq_capacity = chit_owns_surface ? 1 : n_paths
     ensure_per_material_queue!(state, materials, pmq_capacity)
 
     # Adapt filter sampler data to GPU — cache on struct to avoid re-uploading
@@ -814,8 +849,11 @@ function (vp::VolPath)(
     # the driver's preemption timeout (DEVICE_LOST).
     backend = KA.get_backend(film.framebuffer)
     dev = mantle_device(backend)
-    for _ in 1:vp.samples_per_pixel
-        render!(vp, scene, film, camera)
+    height, width = size(film.framebuffer)
+    lanes = wave_lanes(vp.samples_per_pixel, width * height)
+    waves = vp.samples_per_pixel ÷ lanes
+    for wave in 1:waves
+        render!(vp, scene, film, camera; samples = lanes, finalize_framebuffer = wave == waves)
         # Device-wide, and meant to be: this bounds how much work one submission
         # carries, which is a statement about the queue rather than about any one
         # plan. Through Mantle rather than `KA.synchronize` so the wait is one
