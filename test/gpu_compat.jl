@@ -198,8 +198,9 @@ function gen_gpu_test_scene()
     )
     glass_with_fog = Hikari.MediumInterface(glass; inside=fog, outside=nothing)
 
-    # Build scene using push! API
-    scene = Hikari.Scene()
+    # Build scene using push! API, on the device the kernels run on
+    backend = Mantle.defaultbackend()
+    scene = Hikari.Scene(; backend)
     push!(scene, normal_mesh(Rect3f(Vec3f(-1, 0, -1), Vec3f(2, 0.01f0, 2))), white_matte)
     push!(scene, normal_mesh(Tesselation(Sphere(Point3f(0, 0.5f0, 0), 0.3f0), 16)), glass_with_fog)
     push!(scene, normal_mesh(Tesselation(Sphere(Point3f(0, 1.5f0, 0), 0.1f0), 16)), emissive)
@@ -210,7 +211,6 @@ function gen_gpu_test_scene()
     Hikari.sync!(scene)
 
     # Adapt scene to get StaticMultiTypeSet for type analysis
-    backend = KernelAbstractions.CPU()
     adapted = Adapt.adapt(backend, scene)
 
     # Get rgb2spec_table directly
@@ -262,23 +262,21 @@ end
     end
 
     @testset "BSDF Sampling" begin
-        # Materials are stored in the StaticMultiTypeSet; access by type slot
-        matte_mat = first(td.materials.data[1])
-        glass_mat = first(td.materials.data[2])
-        emissive_mat = first(td.materials.data[3])
-
-        # sample_bsdf_spectral signature: mat, table, textures, wo, n, dpdus, tfc, lambda, sample_u, rng
-        @test test_no_dispatch(Hikari.sample_bsdf_spectral,
-            (typeof(matte_mat), typeof(td.rgb2spec_table), typeof(td.materials), Vec3f, Vec3f, Vec3f, tfc_type, typeof(td.lambda), Point2f, Float32))
-        @test test_no_dispatch(Hikari.sample_bsdf_spectral,
-            (typeof(glass_mat), typeof(td.rgb2spec_table), typeof(td.materials), Vec3f, Vec3f, Vec3f, tfc_type, typeof(td.lambda), Point2f, Float32))
-        @test test_no_dispatch(Hikari.sample_bsdf_spectral,
-            (typeof(emissive_mat), typeof(td.rgb2spec_table), typeof(td.materials), Vec3f, Vec3f, Vec3f, tfc_type, typeof(td.lambda), Point2f, Float32))
+        # What the shading kernels sample: the BSDF each material of the scene builds at a hit.
+        table, textures, lambda = typeof(td.rgb2spec_table), typeof(td.materials), typeof(td.lambda)
+        @testset "$(nameof(eltype(v)))" for v in td.materials.data
+            build = (eltype(v), table, textures, tfc_type, lambda, Bool, Vec3f, Vec3f, Vec3f)
+            @test test_no_dispatch(Hikari.get_bxdf, build)
+            bsdf = only(Base.return_types(Hikari.get_bxdf, build))
+            @test isconcretetype(bsdf)
+            @test test_no_dispatch(Hikari.sample_bsdf_spectral,
+                (bsdf, table, textures, Vec3f, Vec3f, Vec3f, tfc_type, lambda, Point2f, Float32))
+            @test test_no_dispatch(Hikari.evaluate_bsdf_spectral,
+                (bsdf, table, textures, Vec3f, Vec3f, Vec3f, Vec3f, tfc_type, lambda))
+        end
     end
 
     @testset "Microfacet/Fresnel Functions" begin
-        @test test_no_dispatch(Hikari.sample_dielectric_transmission_spectral, (Float32, Vec3f, Float32))
-        @test test_no_dispatch(Hikari.sample_ggx_vndf, (Vec3f, Float32, Float32, Point2f))
         @test test_no_dispatch(Hikari.trowbridge_reitz_sample_wm, (Vec3f, Point2f, Float32, Float32))
     end
 end

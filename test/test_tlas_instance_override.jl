@@ -182,7 +182,7 @@ _channel_maxes(img) = (
         @test m.r > 0.1f0
         @test m.g > 0.1f0
         @test m.b > 0.1f0
-        @test !Mantle.device_lost(Mantle.todevice(backend))
+        @test !Mantle.retired(Mantle.todevice(backend))
     end
 
     # ── 5. HW-path render: each instance shows its own color ────────────────
@@ -208,15 +208,17 @@ _channel_maxes(img) = (
                                         Hikari.RGBSpectrum(30f0)))
         Hikari.sync!(scene)
 
-        # VulkanTLAS structure: 1 floor BLAS + 1 sphere BLAS = 2 total, 5 instances,
-        # 2 batches (floor=1, sphere=4). All sphere instances share the second BLAS;
-        # their per-instance custom_indices are distinct nonzero overrides.
+        # Hardware structure: 1 floor BLAS + 1 sphere BLAS = 2 total, 5 instances,
+        # 2 batches (floor=1, sphere=4). All sphere instances share the second BLAS
+        # (a batch holds it as its backend's `geometryref`: the object on Vulkan,
+        # its table index on Metal); their per-instance custom_indices are distinct
+        # nonzero overrides.
         @test length(scene.accel.blas_list) == 2
         @test Raycore.n_instances(scene.accel) == 5
         @test length(scene.accel.instances) == 2
         @test scene.accel.instances[1].n == 1
         @test scene.accel.instances[2].n == 4
-        @test scene.accel.instances[2].blas === scene.accel.blas_list[2]
+        @test scene.accel.instances[2].blas === Mantle.geometryref(scene.accel, 2)
         sphere_records = Array(scene.accel.instances[2].records)
         overrides = UInt32[(r.id & 0x00FFFFFF) for r in sphere_records[1:4]]
         @test all(o != UInt32(0) for o in overrides)
@@ -230,7 +232,7 @@ _channel_maxes(img) = (
         @test m.r > 0.1f0
         @test m.g > 0.1f0
         @test m.b > 0.1f0
-        @test !Mantle.device_lost(Mantle.todevice(backend))
+        @test !Mantle.retired(Mantle.todevice(backend))
     end
 
     # ── 6. Rapid push/delete cycles — no BLAS growth ────────────────────────

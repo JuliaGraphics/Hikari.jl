@@ -181,12 +181,15 @@ const MATERIALS = Dict(
     "conductor_rough"  => """Material "conductor" "spectrum eta" "metal-Au-eta" "spectrum k" "metal-Au-k" "float roughness" 0.2""",
     "conductor_silver" => """Material "conductor" "spectrum eta" "metal-Ag-eta" "spectrum k" "metal-Ag-k" "float roughness" 0.05""",
     "conductor_copper" => """Material "conductor" "spectrum eta" "metal-Cu-eta" "spectrum k" "metal-Cu-k" "float roughness" 0.1""",
+    "conductor_reflectance" => """Material "conductor" "rgb reflectance" [0.9 0.5 0.2] "float roughness" 0.1""",
+    "conductor_aniso"  => """Material "conductor" "spectrum eta" "metal-Au-eta" "spectrum k" "metal-Au-k" "float uroughness" 0.02 "float vroughness" 0.4""",
 
     # Dielectric
     "dielectric"            => """Material "dielectric" "float eta" 1.5""",
     "dielectric_rough"      => """Material "dielectric" "float eta" 1.5 "float uroughness" 0.1 "float vroughness" 0.1""",
     "dielectric_rough_high" => """Material "dielectric" "float eta" 1.5 "float uroughness" 0.3 "float vroughness" 0.3""",
     "dielectric_diamond"    => """Material "dielectric" "float eta" 2.4""",
+    "dielectric_bk7"        => """Material "dielectric" "spectrum eta" "glass-BK7" "float roughness" 0.05""",
 
     # Thin dielectric
     "thindielectric" => """Material "thindielectric" "float eta" 1.5""",
@@ -194,10 +197,15 @@ const MATERIALS = Dict(
     # Coated diffuse
     "coateddiffuse"       => """Material "coateddiffuse" "rgb reflectance" [0.5 0.3 0.1] "float roughness" 0.1 "float eta" 1.5""",
     "coateddiffuse_rough" => """Material "coateddiffuse" "rgb reflectance" [0.5 0.3 0.1] "float roughness" 0.3 "float eta" 1.5""",
+    "coateddiffuse_aniso" => """Material "coateddiffuse" "rgb reflectance" [0.5 0.3 0.1] "float uroughness" 0.05 "float vroughness" 0.3 "float eta" 1.5""",
+    # A coat whose IOR is a spectrum: pbrt ends the secondary wavelengths where a path meets it.
+    "coateddiffuse_f11"   => """Material "coateddiffuse" "rgb reflectance" [0.5 0.3 0.1] "float roughness" 0.1 "spectrum eta" "glass-F11\"""",
 
     # Coated conductor
     "coatedconductor"       => """Material "coatedconductor" "spectrum conductor.eta" "metal-Au-eta" "spectrum conductor.k" "metal-Au-k" "float interface.roughness" 0.1 "float conductor.roughness" 0.01""",
     "coatedconductor_rough" => """Material "coatedconductor" "spectrum conductor.eta" "metal-Au-eta" "spectrum conductor.k" "metal-Au-k" "float interface.roughness" 0.3 "float conductor.roughness" 0.1""",
+    "coatedconductor_reflectance" => """Material "coatedconductor" "rgb reflectance" [0.85 0.1 0.1] "float interface.roughness" 0.08 "float conductor.roughness" 0.01""",
+    "coatedconductor_bk7" => """Material "coatedconductor" "spectrum conductor.eta" "metal-Au-eta" "spectrum conductor.k" "metal-Au-k" "float interface.roughness" 0.1 "float conductor.roughness" 0.01 "spectrum interface.eta" "glass-BK7\"""",
 
     # Diffuse transmission
     "diffusetransmission" => """Material "diffusetransmission" "rgb reflectance" [0.5 0.5 0.5] "rgb transmittance" [0.5 0.5 0.5]""",
@@ -347,16 +355,23 @@ function generate_material_light_scenes()
     base_materials = [
         "diffuse", "diffuse_colored",
         "conductor_gold", "conductor_mirror", "conductor_rough",
-        "conductor_silver", "conductor_copper",
-        "dielectric", "dielectric_rough", "dielectric_rough_high", "dielectric_diamond",
+        "conductor_silver", "conductor_copper", "conductor_reflectance", "conductor_aniso",
+        "dielectric", "dielectric_rough", "dielectric_rough_high", "dielectric_diamond", "dielectric_bk7",
         "thindielectric",
-        "coateddiffuse", "coateddiffuse_rough",
-        "coatedconductor", "coatedconductor_rough",
+        "coateddiffuse", "coateddiffuse_rough", "coateddiffuse_aniso", "coateddiffuse_f11",
+        "coatedconductor", "coatedconductor_rough", "coatedconductor_reflectance", "coatedconductor_bk7",
         "diffusetransmission",
     ]
 
+    # Not generated: a scene whose 256-sample render is too noisy for the suite's tile band to
+    # say anything. Dispersive glass under the spot light ends every path's secondary wavelengths,
+    # and pbrt's own 256-sample image is 0.0575 from its 4096-sample one, so two 256-sample images
+    # differ by about 0.08 whatever the renderer. Hikari's matches pbrt's at 4096 samples (tile
+    # 0.019, energy 1.001); `test_dispersion.jl` checks the glass's energy under the point light.
+    noisy = Set([("dielectric_bk7", "spot")])
     count = 0
     for mat in base_materials, light in base_lights
+        (mat, light) in noisy && continue
         name = "mat_$(mat)_light_$(light)"
         write_scene(joinpath(SCENES_DIR, "$(name).pbrt");
                     light=LIGHTS[light], sphere_mat=MATERIALS[mat])

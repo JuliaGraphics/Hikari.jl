@@ -41,8 +41,8 @@
 
 using StaticArrays: SVector
 import Mantle
-import Mantle: procedural_miss, procedural_candidate, procedural_commit, procedural_bary,
-               candidate_primitive_index, candidate_object_ray, commit_intersection!
+import Mantle: procedural_miss, procedural_candidate, procedural_opaque, procedural_commit, procedural_bary,
+               candidate_primitive_index, candidate_object_ray
 import Raycore
 
 # A quadratic element in 2D has nine monomials, `[(i,j) for j in 0:2 for i in 0:2]`.
@@ -310,11 +310,12 @@ end
 # ── The procedural payload ──────────────────────────────────────────────────
 
 """
-    FEMElements(cx, cy, cf, warp, metadata)
+    FEMElements(cx, cy, cf, warp, metadata, opaque)
 
 The scene's FEM geometry, as the traversal sees it: three coefficient blocks
-(`x`, `y`, and the field), the out-of-plane scale the field is drawn at, and
-per-cell `metadata` carrying the material.
+(`x`, `y`, and the field), the out-of-plane scale the field is drawn at,
+per-cell `metadata` carrying the material, and whether that material stops
+shadow rays (see [`opaque`](@ref)).
 
 This is the value that goes on `VulkanTLAS.procedural`. It reaches the kernel
 by `Adapt`, like every other device array on the accel.
@@ -325,19 +326,20 @@ struct FEMElements{C, M}
     cf::C
     warp::Float32
     metadata::M
+    opaque::Bool
 end
 
 Adapt.adapt_structure(to, e::FEMElements) = FEMElements(
     Adapt.adapt(to, e.cx), Adapt.adapt(to, e.cy), Adapt.adapt(to, e.cf),
-    e.warp, Adapt.adapt(to, e.metadata))
+    e.warp, Adapt.adapt(to, e.metadata), e.opaque)
 
 """
 The traversal's running best hit.
 
 The loop carries this ITSELF rather than reading it back, because an inline ray
 query carries no hit attributes for a generated intersection —
-`get_barycentrics` is triangles only. Generating only an IMPROVING `t` is what
-makes this local best the one traversal finally commits.
+`get_barycentrics` is triangles only. The traversal commits only an IMPROVING
+`t`, which makes this local best the one it finally commits.
 """
 struct FEMHit
     t::Float32
@@ -347,6 +349,7 @@ struct FEMHit
 end
 
 @inline procedural_miss(::FEMElements) = FEMHit(1f30, 0f0, 0f0, UInt32(0))
+@inline procedural_opaque(e::FEMElements) = e.opaque
 
 """
 The precision the solve runs in: the coefficients'.
@@ -360,10 +363,10 @@ per bounce. `Float64` coefficients are what the reference comparison wants;
 """
 @inline femfloat(e::FEMElements{<:AbstractArray{T}}) where {T} = T
 
-@inline function procedural_candidate(e::FEMElements, best::FEMHit)
+@inline function procedural_candidate(e::FEMElements, best::FEMHit, q)
     F = femfloat(e)
-    cell = candidate_primitive_index()
-    o, d = candidate_object_ray()
+    cell = candidate_primitive_index(q)
+    o, d = candidate_object_ray(q)
     ox = F(o[1]); oy = F(o[2]); oz = F(o[3])
     dx = F(d[1]); dy = F(d[2]); dz = F(d[3])
     warp = F(e.warp)
@@ -373,12 +376,8 @@ per bounce. `Float64` coefficients are what the reference comparison wants;
     h, t, a, b = intersect_element(e.cx, e.cy, e.cf, cell,
                                    ox, oy, oz, dx, dy, dz, t0, warp)
     if h && Float32(t) < best.t
-        commit_intersection!(t)
-        # `cell % UInt32`, not `UInt32(cell)`: the checked conversion can raise
-        # `InexactError`, and building that error reaches for `kernel_state`,
-        # which a graphics stage and a VISIBLE function both lack. `cell` is
-        # `candidate_primitive_index()`, so it is positive and small by
-        # construction; only the unreachable error path differs.
+        # `cell % UInt32`: `cell` is `candidate_primitive_index(q)`, positive and
+        # small by construction, so the checked conversion's error path is dead.
         return FEMHit(Float32(t), Float32(a), Float32(b), cell % UInt32)
     end
     return best
@@ -467,6 +466,7 @@ end
 # which is how `CheckerboardTexture` does it, minus the nesting.
 
 @inline matparam(x::FEMFieldTexture) = x
+cutout(t::FEMFieldTexture) = any(c -> get_alpha(c) < 1f0, t.ramp)
 
 function device_param(dhv, t::FEMFieldTexture)
     stored = FEMFieldTexture(Raycore.store_texture(dhv, t.coeffs), t.ramp, t.vmin, t.vmax)
@@ -559,7 +559,7 @@ end
 #            exist to improve on.
 #
 # On the DEVICE it is a `Diffuse`. `to_device_material` unwraps to `surface`, so
-# no new BSDF, no per-material closest-hit shader, and Hikari's material
+# no new BSDF, no per-material shading kernel, and Hikari's material
 # dispatch (`MultiTypeSet`) is untouched — the field reaches the image as that
 # Diffuse's albedo, through [`FEMFieldTexture`](@ref).
 
@@ -656,7 +656,7 @@ function FEMMaterial(surface::Material, cx, cy, cf; warp = 0.6,
     # Newton rather than anywhere interesting.
     c32 = (femcoeffs(cx), femcoeffs(cy), femcoeffs(cf))
     field = FEMFieldTexture(c32[3], colormap; vmin = colorrange[1], vmax = colorrange[2])
-    return FEMMaterial(surface, FEMElements(c32..., Float32(warp), nothing),
+    return FEMMaterial(surface, FEMElements(c32..., Float32(warp), nothing, opaque(surface)),
                        field, Float32(tolerance))
 end
 
@@ -770,10 +770,9 @@ function Base.push!(scene::Scene, material::FEMMaterial;
         takes no BLAS: build the scene with `Hikari.Scene(; backend, \
         hw_accel = true)`.
 
-        If it is a hardware one, this backend does not answer the three \
+        If it is a hardware one, this backend does not answer the two \
         candidate verbs `procedural_candidate` is written against — \
-        `candidate_primitive_index`, `candidate_object_ray`, \
-        `commit_intersection!`.
+        `candidate_primitive_index` and `candidate_object_ray`.
 
         The raster path is unaffected either way: the same elements draw \
         through a mesh pipeline (see `Mantle/examples/isubd`), which is the \
@@ -793,7 +792,8 @@ function Base.push!(scene::Scene, material::FEMMaterial;
     handle = push!(accel, blas, transform; instance_id = UInt32(0))
 
     todev(x) = Mantle.devicearray(accel.backend, x)
-    accel.procedural = FEMElements(todev(cx), todev(cy), todev(cf), e.warp, todev(meta))
+    accel.procedural = FEMElements(todev(cx), todev(cy), todev(cf), e.warp, todev(meta),
+                                   opaque(femsurface(material)))
     return SceneHandle(scene, mi, handle)
 end
 
@@ -808,6 +808,8 @@ end
 #
 # The geometry is NOT updated: the elements live in the acceleration structure,
 # and a material update is for what changes in place — the tolerance, which only
-# the raster path reads, and the field ramp.
-update_material!(scene::Scene, key::Union{UInt32, MediumInterfaceIdx}, material::FEMMaterial) =
+# the raster path reads, and the field ramp. By interface key only: the generic
+# `UInt32` method resolves an index to one, and a method of its own for an index
+# was ambiguous with that one.
+update_material!(scene::Scene, key::MediumInterfaceIdx, material::FEMMaterial) =
     update_material!(scene, key, femsurface(material))

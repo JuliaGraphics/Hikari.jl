@@ -136,7 +136,7 @@ const _OP_FEATURES = Dict(
     NodeOp.MIX => NodeFeature.MIX, NodeOp.CLAMP => NodeFeature.RANGE, NodeOp.MAP_RANGE => NodeFeature.RANGE,
     NodeOp.ATTRIBUTE => NodeFeature.ATTRIBUTE, NodeOp.ATTRIBUTE_DX => NodeFeature.ATTRIBUTE,
     NodeOp.ATTRIBUTE_DY => NodeFeature.ATTRIBUTE,
-    NodeOp.PRINCIPLED => NodeFeature.PRINCIPLED, NodeOp.BUMP => NodeFeature.BUMP, NodeOp.POSITION_DX => NodeFeature.BUMP,
+    NodeOp.BUMP => NodeFeature.BUMP, NodeOp.POSITION_DX => NodeFeature.BUMP,
     NodeOp.POSITION_DY => NodeFeature.BUMP, NodeOp.UV_DX => NodeFeature.BUMP, NodeOp.UV_DY => NodeFeature.BUMP)
 
 """The `NodeFeature` bits the interpreter needs to run node `c`."""
@@ -145,8 +145,6 @@ function _features(c::NodeCore)
     dims, kind = c.mode
     if c.op == NodeOp.MATH
         f |= _math_group(c.mode[1])
-    elseif c.op == NodeOp.CLOSURE && !(c.mode[1] in (ClosureKind.TRANSPARENT, ClosureKind.EMISSION))
-        f |= NodeFeature.BSDF
     elseif c.op == NodeOp.MIX && c.mode[1] != BlendType.MIX
         f |= NodeFeature.BLEND
     elseif c.op == NodeOp.NOISE
@@ -167,30 +165,79 @@ const _SHADER_OPS = (NodeOp.CLOSURE, NodeOp.PRINCIPLED, NodeOp.BUMP, NodeOp.POSI
                      NodeOp.ATTRIBUTE_DY, NodeOp.CAMERA, NodeOp.WINDOW, NodeOp.REFLECTION)
 
 """
-    compile_nodes(root, store_image) -> Vector{NodeInstr{F}}
+A compiled node program before it is linked: its instructions, each read of a stored array (an
+image, a mesh attribute) holding the read's ordinal where the array's place goes, and the data of
+the reads in that order. Compiling stores nothing: `link` puts in where each datum is stored, and
+where that is is decided by `place!`, so a program pushed new and a program replacing another
+compile the same way and differ only in where their data goes.
+"""
+struct CompiledProgram{F}
+    instructions::Vector{NodeInstr{F}}
+    data::Vector{Any}
+end
+
+"""
+    compile_nodes(root) -> CompiledProgram
 
 Linearize the graph and place every value on the stack by liveness.
-`store_image(data)` returns the `(slot, idx)` an image input lives at.
 """
-function compile_nodes(root::TexNode, store_image)
+function compile_nodes(root::TexNode)
     root = _simplified(root, IdDict{NodeCore, NodeCore}())
     order = _topological([getfield(root, :core)])
     any(c -> c.op in _SHADER_OPS, order) &&
         error("a texture cannot use `bump`, `normal_map`, mesh attributes, texture coordinates other than uv or a " *
               "shader node; use them in a shader graph")
-    return _compile(order, root, store_image)
+    return _compile(order, root)
 end
 
 """
-    compile_shader(closures, store_image) -> Vector{NodeInstr{F}}
+    compile_shader(closures) -> CompiledProgram
 
-The program of a shader: every closure node in `closures` with what it reads, in one program
-that runs until its `RESULT`.
+The program of a shader: every value the BSDF nodes `closures` read, then their instructions in
+that order, so a material runs the values and finds every BSDF's inputs still on the stack.
 """
-function compile_shader(closures::Vector{NodeCore}, store_image)
+function compile_shader(closures::Vector{NodeCore})
     memo = IdDict{NodeCore, NodeCore}()
-    return _compile(_topological([_simplified(c, memo) for c in closures]), nothing, store_image)
+    cores = [folded(_simplified(c, memo)) for c in closures]
+    values = _topological(unique(reduce(vcat, map(_input_cores, cores); init = NodeCore[])))
+    return _compile(vcat(values, cores), nothing)
 end
+
+"""A BSDF input the compiler folds into the BSDF's instruction: the shading normal, as `normal()` reads it."""
+struct ShadingNormal end
+"""A BSDF input the compiler folds into the data after the BSDF's instructions: a constant colour."""
+struct WideConstant
+    value::Vec3f
+end
+
+"""The argument code of a BSDF input that is the shading normal; codes from `WIDE_CONSTANT_ARG` up are folded colours."""
+const SHADING_NORMAL_ARG = 0xFF
+const WIDE_CONSTANT_ARG = 0xC0
+
+"""
+`c`, a BSDF node, with the inputs that need no instruction folded into its own: the default
+normal and constant colours. A BSDF of such inputs alone runs no value instruction at all.
+"""
+folded(c::NodeCore) = NodeCore(c.op, c.mode, Any[fold_input(x) for x in c.inputs], c.widths, c.data)
+fold_input(x) = x
+function fold_input(x::TexNode)
+    c = getfield(x, :core)
+    c.op == NodeOp.NORMAL && isempty(c.inputs) && return ShadingNormal()
+    c.op == NodeOp.CONST && return WideConstant(Vec3f(c.inputs[1], c.inputs[2], c.inputs[3]))
+    return x
+end
+
+input_arg(::ShadingNormal, wides) = SHADING_NORMAL_ARG
+input_arg(x::WideConstant, wides) = (push!(wides, x.value); WIDE_CONSTANT_ARG + UInt8(length(wides) - 1))
+input_arg(x, wides) = NO_SLOT
+input_k(::Union{ShadingNormal, WideConstant}) = 0f0
+input_k(x) = Float32(something(x, 0f0))
+
+"""Folded colours packed three to a `DATA` instruction, each at a multiple of three floats."""
+wide_constant_instructions(wides::Vector{Vec3f}) =
+    [(NodeOp.DATA, (0x00, 0x00, 0x00), _pad(UInt8[], NODE_OUTS, NO_SLOT), 0x00, _pad(UInt8[], NODE_ARGS, NO_SLOT),
+      UInt16(0), _pad(reduce(vcat, map(collect, chunk)), NODE_ARGS, 0f0))
+     for chunk in Iterators.partition(wides, 3)]
 
 """
 The graph under a node as it is run: a constant colour of three equal components read as the
@@ -229,7 +276,7 @@ function _prune_principled!(inputs)
     return inputs
 end
 
-function _compile(order::Vector{NodeCore}, root, store_image)
+function _compile(order::Vector{NodeCore}, root)
     features = mapreduce(_features, |, order; init = UInt32(0))
     position = IdDict{NodeCore, Int}(c => i for (i, c) in enumerate(order))
     last_use = Dict{Tuple{Int, Int}, Int}()
@@ -244,11 +291,13 @@ function _compile(order::Vector{NodeCore}, root, store_image)
     free = trues(NODE_STACK)
     offset = Dict{Tuple{Int, Int}, Int}()
     instructions = []
+    data = Any[]
     used = 0
     for (i, c) in enumerate(order)
         args = UInt8[]
         wide = Bool[]
         k = Float32[]
+        wides = Vec3f[]
         for x in c.inputs
             if x isa TexNode
                 key = (position[getfield(x, :core)], getfield(x, :output))
@@ -256,9 +305,9 @@ function _compile(order::Vector{NodeCore}, root, store_image)
                 push!(wide, _width(x) == 3)
                 push!(k, 0f0)
             else
-                push!(args, NO_SLOT)
+                push!(args, input_arg(x, wides))
                 push!(wide, false)
-                push!(k, Float32(something(x, 0f0)))
+                push!(k, input_k(x))
             end
         end
         for x in unique(filter(x -> x isa TexNode, c.inputs))
@@ -283,15 +332,18 @@ function _compile(order::Vector{NodeCore}, root, store_image)
         first_chunk = isempty(chunks) ? Int[] : collect(first(chunks))
         kt = _pad(k[first_chunk], NODE_ARGS, 0f0)
         if c.op == NodeOp.IMAGE || (c.op in _ATTRIBUTE_OPS && c.data isa BoundAttribute)
-            slot, idx = store_image(c.op == NodeOp.IMAGE ? c.data : c.data.corners)
-            kt = Base.setindex(Base.setindex(kt, reinterpret(Float32, Int32(slot)), 9), reinterpret(Float32, Int32(idx)), 10)
+            push!(data, c.op == NodeOp.IMAGE ? c.data : c.data.corners)
+            kt = located(kt, length(data), 0)
         end
-        push!(instructions, (c.op, c.mode, _pad(outs, NODE_OUTS, NO_SLOT), outwide, _pad(args[first_chunk], NODE_ARGS, NO_SLOT),
+        data_count = cld(length(wides), 3)
+        mode = isempty(wides) ? c.mode : (c.mode[1], c.mode[2], UInt8(data_count))
+        push!(instructions, (c.op, mode, _pad(outs, NODE_OUTS, NO_SLOT), outwide, _pad(args[first_chunk], NODE_ARGS, NO_SLOT),
                              _wide_bits(wide[first_chunk]), kt))
         for chunk in Iterators.drop(chunks, 1)
             push!(instructions, (NodeOp.ARGS, (0x00, 0x00, 0x00), _pad(UInt8[], NODE_OUTS, NO_SLOT), 0x00,
                                  _pad(args[chunk], NODE_ARGS, NO_SLOT), _wide_bits(wide[chunk]), _pad(k[chunk], NODE_ARGS, 0f0)))
         end
+        append!(instructions, wide_constant_instructions(wides))
         c.data isa Vector{Float32} && append!(instructions, _data_instructions(c.data))
     end
     result_args = root === nothing ? UInt8[] : [UInt8(offset[root_key])]
@@ -299,8 +351,30 @@ function _compile(order::Vector{NodeCore}, root, store_image)
     push!(instructions, (NodeOp.RESULT, (0x00, 0x00, 0x00), _pad(UInt8[], NODE_OUTS, NO_SLOT), 0x00,
                          _pad(result_args, NODE_ARGS, NO_SLOT), result_wide, _pad(Float32[], NODE_ARGS, 0f0)))
     F = features | _stack_bits(max(used, 1))
-    return [NodeInstr{F}(fields...) for fields in instructions]
+    return CompiledProgram([NodeInstr{F}(fields...) for fields in instructions], data)
 end
+
+"`k` with the place of a stored array in the two constants a read of it takes it from."
+located(k::NTuple{NODE_ARGS, Float32}, slot, idx) =
+    Base.setindex(Base.setindex(k, reinterpret(Float32, Int32(slot)), 9), reinterpret(Float32, Int32(idx)), 10)
+
+"Whether `ins` reads a stored array: an image, or a mesh attribute bound to one (slot 0 is none, as the device reads it)."
+reads_array(ins::NodeInstr) = (ins.op == NodeOp.IMAGE || ins.op in _ATTRIBUTE_OPS) && reinterpret(Int32, ins.k[9]) > Int32(0)
+
+"The place each read of a linked `program` takes its array from, in program order: what `link` put in."
+array_places(program::AbstractVector{<:NodeInstr}) =
+    [(Int(reinterpret(Int32, ins.k[9])), Int(reinterpret(Int32, ins.k[10]))) for ins in program if reads_array(ins)]
+
+"""
+    link(compiled, places) -> Vector{NodeInstr{F}}
+
+The program a device runs: the read of the `k`-th datum taking its array from `places[k]`, its
+`(slot, idx)` in the set the program is stored in.
+"""
+link(c::CompiledProgram{F}, places) where {F} =
+    [reads_array(ins) ? NodeInstr{F}(ins.op, ins.mode, ins.out, ins.outwide, ins.arg, ins.wide,
+                                     located(ins.k, places[reinterpret(Int32, ins.k[9])]...)) : ins
+     for ins in c.instructions]
 
 _wide_bits(wide) = reduce(|, (UInt16(w) << (j - 1) for (j, w) in enumerate(wide)); init = UInt16(0))
 
@@ -312,31 +386,82 @@ _data_instructions(data::Vector{Float32}) =
 
 @inline matparam(x::TexNode) = x
 
-_compile_into(dhv, n::TexNode) =
-    compile_nodes(n, data -> (ref = Raycore.store_texture(dhv, data); (texref_slot(ref), ref.idx)))
+"Where the data of one material's programs went, so a datum two of them read is stored once."
+const Places = IdDict{Any, Tuple{Int, Int}}
 
-function device_param(dhv, n::TexNode)
-    ref = Raycore.store_texture(dhv, _compile_into(dhv, n))
-    return TexHandle(TexKind.NODES, 0f0, _TH_ZERO, Int32(texref_slot(ref)), Int32(ref.idx))
+"""
+    place!(dhv, data, placed, over = ()) -> places
+
+Where in `dhv` each datum of `data` goes: the `k`-th over `over[k]`, copied into that array when it
+holds the datum's element type and dimensions, else into an array stored anew. A datum `placed`
+already has stays where it is, and an array goes to one datum of a placement only.
+
+`over` is the places of the program a new one replaces (`array_places`), so an update keeps the
+arrays its program reads, as Raycore keeps a material's texture field
+(`update_item(dhv, ::TextureRef, ::AbstractArray)`): the set takes no array and its layout, and
+with it every plan recorded against it, stays.
+"""
+function place!(dhv::Raycore.MultiTypeSet, data, placed::Places, over = ())
+    return map(enumerate(data)) do (k, datum)
+        get!(placed, datum) do
+            k <= length(over) && holds(dhv, over[k], datum) && !(over[k] in values(placed)) ?
+                copied!(dhv, over[k], datum) : stored!(dhv, datum)
+        end
+    end
 end
 
-"""The `idx`-th stored array of type `AT`, found the way `Raycore.copyto_texture!` finds it."""
-_stored_array(dhv::Raycore.MultiTypeSet, AT, idx) =
-    filter(arr -> typeof(arr) === AT, dhv.texture_gpu_arrays)[idx]
+"Whether the array at `place` can take `data`: of its element type and dimensions. Its size may differ."
+function holds(dhv::Raycore.MultiTypeSet, (slot, idx)::Tuple{Int, Int}, data::AbstractArray)
+    AT = dhv.texture_order[slot]
+    return eltype(AT) === eltype(data) && ndims(AT) == ndims(data)
+end
+
+function copied!(dhv::Raycore.MultiTypeSet, (slot, idx)::Tuple{Int, Int}, data::AbstractArray)
+    AT = dhv.texture_order[slot]
+    Raycore.copyto_texture!(dhv, Raycore.TextureRef{AT, eltype(AT), ndims(AT), slot}(idx), data)
+    return (slot, idx)
+end
+
+stored!(dhv::Raycore.MultiTypeSet, data::AbstractArray) = (ref = Raycore.store_texture(dhv, data); (texref_slot(ref), ref.idx))
+
+"The array `dhv` holds at `place`, found the way `Raycore.copyto_texture!` finds it."
+stored_array(dhv::Raycore.MultiTypeSet, (slot, idx)::Tuple{Int, Int}) =
+    filter(arr -> typeof(arr) === dhv.texture_order[slot], dhv.texture_gpu_arrays)[idx]
+
+"""
+    stored_program!(dhv, compiled, placed) -> (slot, idx)
+
+`compiled` linked to its data placed anew in `dhv`, and stored; where it is.
+"""
+stored_program!(dhv::Raycore.MultiTypeSet, c::CompiledProgram, placed::Places) =
+    stored!(dhv, link(c, place!(dhv, c.data, placed)))
+
+"""
+    updated_program!(dhv, place, compiled, placed) -> (slot, idx)
+
+`compiled` in place of the program `dhv` holds at `place`: its data placed over that program's,
+and the program placed over it by the same rule, so it keeps its place whenever it keeps its node
+families, whatever its length. Else it is stored anew, where it returns.
+"""
+function updated_program!(dhv::Raycore.MultiTypeSet, place::Tuple{Int, Int}, c::CompiledProgram, placed::Places)
+    old = Array(stored_array(dhv, place))
+    program = link(c, place!(dhv, c.data, placed, array_places(old)))
+    return holds(dhv, place, program) ? copied!(dhv, place, program) : stored!(dhv, program)
+end
+
+function device_param(dhv, n::TexNode)
+    slot, idx = stored_program!(dhv, compile_nodes(n), Places())
+    return TexHandle(TexKind.NODES, 0f0, _TH_ZERO, Int32(slot), Int32(idx))
+end
 
 """
     update_item(dhv, old::TexHandle, new::TexNode)
 
-Overwrite the program `old` names when the new one has the same length and node
-families, which is the case whenever only a graph's parameters change, so
-tweaking them does not take a new slot on every update.
+The program of `new` where the one `old` names is, with the images it reads where that one's
+are (`updated_program!`), so updating a graph takes no array and keeps the set's layout.
 """
 function Raycore.update_item(dhv::Raycore.MultiTypeSet, old::TexHandle, new::TexNode)
     old.kind == TexKind.NODES || return device_param(dhv, new)
-    AT = dhv.texture_order[old.slot]
-    program = _compile_into(dhv, new)
-    eltype(program) === eltype(AT) && length(program) == length(_stored_array(dhv, AT, old.idx)) || return device_param(dhv, new)
-    ref = Raycore.TextureRef{AT, eltype(AT), ndims(AT), Int(old.slot)}(Int(old.idx))
-    Raycore.copyto_texture!(dhv, ref, program)
-    return old
+    slot, idx = updated_program!(dhv, (Int(old.slot), Int(old.idx)), compile_nodes(new), Places())
+    return TexHandle(TexKind.NODES, 0f0, _TH_ZERO, Int32(slot), Int32(idx))
 end

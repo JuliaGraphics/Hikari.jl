@@ -293,6 +293,9 @@ event occurs (e.g., refraction with dispersion). This indicates that
 only the hero wavelength (first) should contribute to the pixel.
 """
 @propagate_inbounds function terminate_secondary_wavelengths(lambda::Wavelengths)
+    # Once, as pbrt-v4's `TerminateSecondary`: a path refracting through a dispersive surface
+    # twice was otherwise divided by four again, and came out four times too bright.
+    secondary_terminated(lambda) && return lambda
     # Keep first wavelength, zero out others
     # Divide hero PDF by N to account for the N wavelengths now being represented by 1
     # (matches pbrt-v4: pdf[0] /= NSpectrumSamples)

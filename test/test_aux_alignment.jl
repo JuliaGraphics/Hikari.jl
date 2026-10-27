@@ -44,7 +44,7 @@ end
 @testset "Auxiliary buffers align with radiance" begin
     test_aux_alignment(KA.CPU())
     backend = Mantle.defaultbackend()
-    if !Mantle.supports_rt_pipeline(backend)
+    if !Mantle.supports_hwtlas(backend)
         @test_skip false
     else
         test_aux_alignment(backend; hw_accel = true)

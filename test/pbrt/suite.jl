@@ -29,14 +29,8 @@ const REFS_DIR   = joinpath(@__DIR__, "references")
 const PBRT_BIN   = get(ENV, "PBRT_BIN",
                        normpath(joinpath(@__DIR__, "..", "..", "..", "..", "pbrt-v4", "build", "pbrt")))
 
-"""Is hardware ray tracing available on the currently-bound Lava device?"""
-function hw_rt_available()
-    try
-        Mantle.supports_rt_pipeline(Mantle.defaultbackend())
-    catch
-        false
-    end
-end
+"""Does the default device trace in hardware?"""
+hw_rt_available() = Mantle.supports_hwtlas(Mantle.defaultbackend())
 
 # ── Reference management ────────────────────────────────────────────────────
 

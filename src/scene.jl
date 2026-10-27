@@ -220,13 +220,6 @@ the batched `push_interfaces!` both build interfaces with this.
 """
 function interface_key(scene::Scene, medium::MediumInterface)
     mat_idx = push!(scene.materials, resolve_material(scene, medium.material))
-    # Record the materials-set SetKey of the inner material from this push so
-    # `push!(scene, mesh, ::Material)` can read it back without doing a GPU
-    # scalar readback on `scene.media_interfaces`. The materials are converted
-    # by `maybe_convert_field` inside the MultiTypeSet push (texture wrappers
-    # collapse to bare scalars), so this is the only place that knows the
-    # canonical type_idx for SBT routing.
-    _LAST_MAT_SETKEY[] = mat_idx
     return MediumInterfaceIdx(mat_idx, push!(scene, medium.inside), push!(scene, medium.outside), medium.shadows)
 end
 
@@ -241,17 +234,15 @@ function Base.push!(scene::Scene, medium::MediumInterface)
     return UInt32(idx)
 end
 
-# Side-channel for `push!(scene, mesh, ::Material)` to read the materials-set
-# SetKey produced by the last `push!(scene, ::MediumInterface)` — needed to
-# compute the HWTLAS instance's `sbt_offset` in the per-material chit path.
-const _LAST_MAT_SETKEY = Ref(SetKey(UInt32(0), UInt32(0)))
-
 """
     update_material!(scene, idx::UInt32, new_medium::Medium)
     update_material!(scene, idx::UInt32, new_material::Material)
 
 Mutate an existing entry in `scene.media` / `scene.materials` in place.
-Does **not** synchronize with the GPU.
+Does **not** synchronize with the GPU. The geometry using the slot keeps the
+opacity it was pushed with: a material that lets shadow rays through where the
+old one did not ([`opaque`](@ref)) needs the mesh's handle
+(`update_material!(scene, handle::SceneHandle, material)`) or a new push.
 
 Invariants:
 - CPU-side bookkeeping and MultiTypeSet slot contents are updated.

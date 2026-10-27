@@ -135,37 +135,24 @@ carries a count over from the previous bounce."""
 function round_queues(state::VolPathState, nxt::WorkQueue)
     pmq = state.per_material_queue
     base = (nxt, state.medium_sample_queue, state.medium_scatter_queue,
-            state.hit_surface_queue, state.shadow_queue, state.escaped_queue,
-            state.hit_area_light_queue)
+            state.surface_hits, state.arrivals, state.shadow_queue, state.escaped_queue)
     return pmq === nothing ? base : (base..., pmq)
 end
 
 """
-Trace the live rays and shade whatever needs no queue of its own.
-
-Two implementations on the accel axis, and the pass kind differs with them: the
-software BVH and inline ray queries are one compute kernel over the ray queue,
-while the hardware RT pipeline is a `vkCmdTraceRaysIndirect` with an SBT, which
-is not a dispatch. `custom!` is the pass for that — the body records through the
-backend and the graph still orders it, because what it touches is declared here
-either way.
+Trace the live rays: each hit leaves as a `VPSurfaceHit` in its material's queue,
+a ray in a medium as a medium sample, a miss as an escaped ray. One compute kernel
+on every traversal: the software BVH, Vulkan's inline ray query and Metal's
+intersector.
 """
-function trace_pass!(g, accel, state::VolPathState, refs, cur::WorkQueue, nxt::WorkQueue)
-    Mantle.dispatch!(g, workqueue_map_kernel!,
-                         (vp_trace_and_shade_kernel!, cur, nxt,
-                          state.escaped_queue, state.medium_sample_queue,
-                          state.per_material_queue, state.hit_surface_queue,
-                          state.hit_area_light_queue, state.pixel_L,
-                          refs.accel, refs.media_interfaces, refs.media,
-                          refs.materials, refs.lights,
-                          state.rgb2spec_table,
-                          state.bvh_nodes, state.infinite_light_indices,
-                          state.light_to_bit_trail,
-                          state.num_infinite_lights, state.num_bvh_lights,
-                          state.num_lights,
-                          state.max_depth, refs.regularize,
-                          state.sobol_rng, refs.sample_idx,
-                          refs.camera, refs.samples_per_pixel, state.rr_depth),
+function trace_pass!(g, state::VolPathState, refs, cur::WorkQueue, nxt::WorkQueue)
+    Mantle.dispatch!(g, vp_trace_kernel!,
+                     (cur, nxt, state.escaped_queue, state.medium_sample_queue,
+                      state.per_material_queue, state.surface_hits,
+                      state.pixel_L, refs.accel, refs.media_interfaces, refs.media,
+                      refs.materials, refs.lights, state.rgb2spec_table,
+                      state.bvh_nodes, state.light_to_bit_trail,
+                      state.num_infinite_lights, state.num_bvh_lights, state.max_depth),
                      Mantle.DeviceRange(cur.size; max = Int(cur.capacity));
                      group = DEFAULT_WORKGROUPSIZE, name = "trace")
 end
@@ -177,9 +164,12 @@ function medium_sample_pass!(g, state::VolPathState, refs, nxt::WorkQueue)
     Mantle.dispatch!(g, workqueue_map_kernel!,
                          (vp_sample_medium_kernel!, state.medium_sample_queue,
                           state.medium_scatter_queue, state.per_material_queue,
-                          state.hit_surface_queue, state.hit_area_light_queue,
+                          state.surface_hits, state.arrivals,
                           nxt, state.escaped_queue, state.pixel_L,
-                          refs.media, refs.materials, state.rgb2spec_table,
+                          refs.accel, refs.media_interfaces, refs.media, refs.materials,
+                          refs.lights, state.rgb2spec_table,
+                          state.bvh_nodes, state.light_to_bit_trail,
+                          state.num_infinite_lights, state.num_bvh_lights,
                           state.max_depth),
                      Mantle.DeviceRange(state.medium_sample_queue.size;
                                         max = Int(state.medium_sample_queue.capacity));
@@ -205,7 +195,7 @@ end
 function medium_scatter_pass!(g, state::VolPathState, refs, nxt::WorkQueue)
     Mantle.dispatch!(g, workqueue_map_kernel!,
                          (vp_medium_scatter_kernel!, state.medium_scatter_queue,
-                          nxt, state.max_depth, state.sobol_rng, refs.sample_idx, state.rr_depth, refs.media),
+                          nxt, state.sobol_rng, refs.sample_idx, state.rr_depth, refs.media),
                      Mantle.DeviceRange(state.medium_scatter_queue.size;
                                         max = Int(state.medium_scatter_queue.capacity));
                      group = volume_workgroupsize(), name = "medium-scatter")
@@ -224,20 +214,6 @@ function escaped_pass!(g, state::VolPathState, refs)
                      group = DEFAULT_WORKGROUPSIZE, name = "escaped")
 end
 
-"""Emission MIS for indirect rays that landed on an area light — pbrt-v4's
-"Handle emitters hit by indirect rays"."""
-function emitters_pass!(g, state::VolPathState, refs)
-    Mantle.dispatch!(g, workqueue_map_kernel!,
-                         (vp_handle_emitters_kernel!, state.hit_area_light_queue,
-                          state.pixel_L, refs.lights, state.rgb2spec_table,
-                          state.bvh_nodes, state.light_to_bit_trail,
-                          state.num_infinite_lights, state.num_bvh_lights,
-                          state.num_lights),
-                     Mantle.DeviceRange(state.hit_area_light_queue.size;
-                                        max = Int(state.hit_area_light_queue.capacity));
-                     group = DEFAULT_WORKGROUPSIZE, name = "emitters")
-end
-
 """
 Surface shading, one dispatch per concrete material type.
 
@@ -247,19 +223,20 @@ and a pass is the unit Mantle emits barriers between. A hand-placed
 `concurrent_indirect_group` says the same thing; here it follows from the
 dispatches sharing a pass, and the backend fuses their prepares into one.
 """
-function shade_pass!(g, state::VolPathState, refs, nxt::WorkQueue; group=DEFAULT_WORKGROUPSIZE)
+function shade_pass!(g, state::VolPathState, refs, cur::WorkQueue, nxt::WorkQueue;
+                     group = DEFAULT_WORKGROUPSIZE)
     for q in state.per_material_queue.queues
-        Mantle.dispatch!(g, workqueue_map_kernel!,
-                             (vp_shade_material_kernel!, q,
-                              state.hit_surface_queue, nxt, state.pixel_L,
-                              refs.accel, refs.media_interfaces, refs.media,
-                              refs.materials, refs.lights, state.rgb2spec_table,
-                              state.bvh_nodes, state.infinite_light_indices,
-                              state.light_to_bit_trail,
-                              state.num_infinite_lights, state.num_bvh_lights,
-                              state.num_lights, state.max_depth, refs.regularize,
-                              state.sobol_rng, refs.sample_idx,
-                              refs.camera, refs.samples_per_pixel, state.rr_depth),
+        Mantle.dispatch!(g, vp_shade_kernel!,
+                         (q, state.surface_hits, cur, state.arrivals,
+                          nxt, state.pixel_L, state.pdf_per_pixel,
+                          refs.accel, refs.media_interfaces, refs.media,
+                          refs.materials, refs.lights, state.rgb2spec_table,
+                          state.bvh_nodes, state.infinite_light_indices,
+                          state.light_to_bit_trail,
+                          state.num_infinite_lights, state.num_bvh_lights,
+                          state.num_lights, state.max_depth, refs.regularize,
+                          state.sobol_rng, refs.sample_idx,
+                          refs.camera, refs.samples_per_pixel, state.rr_depth),
                          Mantle.DeviceRange(q.size; max = Int(q.capacity));
                          group, name = "shade")
     end
@@ -284,26 +261,22 @@ end
 One bounce, appended to `g`.
 
 Which stages exist is a property of the scene, not a runtime branch: a scene
-without media never fills the medium queues, and on the hardware per-material
-chit path the closest-hit shaders have already shaded the surface by the time
-the trace returns. A stage that could only ever dispatch over an empty queue is
-left out rather than run for nothing — which is also why the shadow pass is
-gated: medium direct lighting is its only producer.
+without media never fills the medium queues. A stage that could only ever
+dispatch over an empty queue is left out rather than run for nothing — which is
+also why the shadow pass is gated: medium direct lighting is its only producer.
+The shading follows the medium passes, which deliver surface hits too.
 """
 function round_passes!(g, state::VolPathState, refs, cur::WorkQueue, nxt::WorkQueue;
-                       chit_owns_surface::Bool, has_media::Bool, has_lights::Bool)
+                       has_media::Bool, has_lights::Bool)
     reset_pass!(g, state, nxt)
-    trace_pass!(g, refs.accel, state, refs, cur, nxt)
+    trace_pass!(g, state, refs, cur, nxt)
     if has_media
         medium_sample_pass!(g, state, refs, nxt)
         has_lights && medium_dl_pass!(g, state, refs)
         medium_scatter_pass!(g, state, refs, nxt)
     end
     has_lights && escaped_pass!(g, state, refs)
-    if !chit_owns_surface
-        has_lights && emitters_pass!(g, state, refs)
-        shade_pass!(g, state, refs, nxt;group=has_media ? volume_workgroupsize() : DEFAULT_WORKGROUPSIZE)
-    end
+    shade_pass!(g, state, refs, cur, nxt; group = has_media ? volume_workgroupsize() : DEFAULT_WORKGROUPSIZE)
     has_media && has_lights && shadow_pass!(g, state, refs)
     return g
 end
@@ -330,11 +303,10 @@ of the recording. `n` rounds starting at A end at A when `n` is even, which is
 what lets the same plan run back to back.
 """
 function rounds_passes!(g, state::VolPathState, refs, n::Integer;
-                        chit_owns_surface::Bool, has_media::Bool, has_lights::Bool)
+                        has_media::Bool, has_lights::Bool)
     cur, nxt = state.ray_queue_a, state.ray_queue_b
     for _ in 1:n
-        round_passes!(g, state, refs, cur, nxt;
-                      chit_owns_surface, has_media, has_lights)
+        round_passes!(g, state, refs, cur, nxt; has_media, has_lights)
         cur, nxt = nxt, cur
     end
     return g
@@ -393,9 +365,26 @@ finalize_graph(dev, state::VolPathState, framebuffer) =
     finalize_passes!(Mantle.Graph(dev), state, framebuffer)
 
 """
-    sample_graph(dev, state, refs, max_depth; …) -> Graph
+    sample_rounds(max_depth, emitters_reachable, crossings) -> Int
 
-A whole sample as one graph: setup, the bounce loop, accumulate.
+The rounds a sample traces: one per depth, and one more where a ray can reach anything that
+emits, as pbrt-v4's wavefront loop. The last traces the BSDF rays of the deepest vertices
+for the emission they reach and shades nothing (`vp_shade_resolved_hit!`); in a scene of
+point and directional lights only, those rays carry nothing back.
+
+A ray that passes a surface without a material (`crossings`: a medium's boundary, a
+see-through emitter) goes on at the same depth in the next round, where pbrt's path goes on
+in the same loop iteration; such scenes get a round more per depth. In the suite's fog cube
+behind null interfaces (`medium_null_interface_homog`, depth 12) that is as much as three
+or ten times the rounds give, and 0.4 % of the image without them.
+"""
+sample_rounds(max_depth::Int32, emitters_reachable::Bool, crossings::Bool) =
+    Int(max_depth) + emitters_reachable + (crossings ? Int(max_depth) + 1 : 0)
+
+"""
+    sample_graph(dev, state, refs, d; …) -> Graph
+
+A whole sample as one graph: setup, a bounce loop of `d` rounds (`sample_rounds`), accumulate.
 
 The loop is a `Mantle.repeat!` gated on the ray queue's own live count. That is
 the whole reason this can be one graph — the host neither reads that count nor
@@ -418,8 +407,8 @@ the test on the device there is nothing left to amortise.
 it between samples: a per-call decision, which is the one thing a single
 recording cannot express.
 """
-function sample_graph(dev, state::VolPathState, refs, max_depth::Int32;
-                      chit_owns_surface::Bool, has_media::Bool, has_lights::Bool)
+function sample_graph(dev, state::VolPathState, refs, d::Int;
+                      has_media::Bool, has_lights::Bool)
     a = state.ray_queue_a
     g = Mantle.Graph(dev)
     # The sample counter lives on the device: one thread, one increment, ordered
@@ -432,18 +421,15 @@ function sample_graph(dev, state::VolPathState, refs, max_depth::Int32;
     Mantle.dispatch!(g, vp_next_sample_kernel!, (refs.sample_idx, state.sobol_rng.lanes), 1;
                      group = 1, name = "next sample")
     setup_passes!(g, state, refs, a)
-    d = Int(max_depth)
     if d >= 2
         Mantle.repeat!(g, d ÷ 2; while_nonzero = a.size) do _
-            rounds_passes!(g, state, refs, 2;
-                           chit_owns_surface, has_media, has_lights)
+            rounds_passes!(g, state, refs, 2; has_media, has_lights)
         end
     end
-    # An odd depth has one round the pairs cannot cover. It runs unconditionally:
+    # An odd count has one round the pairs cannot cover. It runs unconditionally:
     # a round on an empty queue is every stage sizing itself to zero work, which
     # is what makes the loop legal in the first place.
-    isodd(d) && rounds_passes!(g, state, refs, 1;
-                               chit_owns_surface, has_media, has_lights)
+    isodd(d) && rounds_passes!(g, state, refs, 1; has_media, has_lights)
     accumulate_passes!(g, state, refs)
     return g
 end
@@ -630,13 +616,15 @@ wants that cost outside a timing loop calls `Mantle.record!` on each of
 
 Deep medium budgets divisible by 64 use bounded submissions: setup and the
 sample-index increment happen once, the same round graph runs up to the FULL
-budget in 64-round batches, and accumulation happens once. This avoids keeping
+budget (a round per depth and the emission-only one after it) in 64-round
+batches, and accumulation happens once. This avoids keeping
 a long curved-transport workload in one GPU submission. Ordinary short paths
 retain their single-graph fast path.
 """
 function build_plans(backend, state::VolPathState, framebuffer, refs, perrun::PerRun,
                      max_depth::Int32;
-                     chit_owns_surface::Bool, has_media::Bool, has_lights::Bool)
+                     has_media::Bool, has_lights::Bool,
+                     emitters_reachable::Bool, crossings::Bool)
     dev = mantle_device(backend)
     if has_media && max_depth>=128 && max_depth%64==0
         head=Mantle.Graph(dev)
@@ -645,16 +633,16 @@ function build_plans(backend, state::VolPathState, framebuffer, refs, perrun::Pe
         setup_passes!(head,state,refs,state.ray_queue_a)
         body=Mantle.Graph(dev)
         Mantle.repeat!(body,32;while_nonzero=state.ray_queue_a.size) do _
-            rounds_passes!(body,state,refs,2;chit_owns_surface,has_media,has_lights)
+            rounds_passes!(body,state,refs,2;has_media,has_lights)
         end
         tail=Mantle.Graph(dev)
         accumulate_passes!(tail,state,refs)
         sample=ChunkedSamplePlan(Mantle.record!(Mantle.Plan(head)),
             Mantle.record!(Mantle.Plan(body)),Mantle.record!(Mantle.Plan(tail)),
-            state.ray_queue_a.size,zeros(Int32,1),Int(max_depth)÷64)
+            state.ray_queue_a.size,zeros(Int32,1),cld(sample_rounds(max_depth,emitters_reachable,crossings),64))
     else
-        g = sample_graph(dev, state, refs, max_depth;
-                         chit_owns_surface, has_media, has_lights)
+        g = sample_graph(dev, state, refs, sample_rounds(max_depth, emitters_reachable, crossings);
+                         has_media, has_lights)
         sample=Mantle.record!(Mantle.Plan(g))
     end
     # Recorded here, once: `run!` submits the recording and never records.
@@ -715,7 +703,8 @@ function rebuild_plans!(state::VolPathState, film::Film, backend,
                         camera, initial_medium::SetKey, filter_params, filter_sampler,
                         regularize::Bool, samples_per_pixel::Int32,
                         max_component_value::Float32, max_depth::Int32;
-                        chit_owns_surface::Bool, has_media::Bool, has_lights::Bool)
+                        has_media::Bool, has_lights::Bool,
+                        emitters_reachable::Bool, crossings::Bool)
     # The previous plans go back without a wait. Their recordings may well still
     # be in flight; `Mantle.free!` retires the regions rather than releasing
     # them, so the pool hands those bytes on only once the device says so.
@@ -732,7 +721,7 @@ function rebuild_plans!(state::VolPathState, film::Film, backend,
                        filter_sampler, perrun.sample_idx,
                        regularize, samples_per_pixel, max_component_value)
     state.plans = build_plans(backend, state, film.framebuffer, refs, perrun, max_depth;
-                              chit_owns_surface, has_media, has_lights)
+                              has_media, has_lights, emitters_reachable, crossings)
     return nothing
 end
 

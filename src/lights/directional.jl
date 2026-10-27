@@ -27,7 +27,7 @@ struct DirectionalLight{S<:Spectrum} <: Light
 end
 
 # Directional lights are delta lights (emit along a single direction)
-is_δ_light(::DirectionalLight) = true
+is_δ_light(::Type{<:DirectionalLight}) = true
 # Directional lights are infinite (at infinity)
 is_infinite_light(::DirectionalLight) = true
 is_infinite_light(::Type{<:DirectionalLight}) = true

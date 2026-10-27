@@ -1,46 +1,29 @@
 # Per-material-type queue infrastructure (pbrt-v4 wavefront pattern).
 #
-# Today's `vp_trace_and_shade_kernel!` shades each surface hit inline by
-# going through `with_index(materials, idx, ...)` which expands to a switch
-# over every concrete material type in the scene's `StaticMultiTypeSet`.
-# That makes the kernel large (every material's BSDF code is inlined into
-# the switch arms) and divergent (threads with different materials in the
-# same warp follow different arms).
+# The trace kernel leaves each surface hit as a `VPSurfaceHit` (a hit record and
+# where the ray's path state is), and one shading kernel per concrete material
+# type expands and shades it. pbrt-v4 splits its shading queue the same way —
+# `MaterialEvalQueue<ConcreteMaterial>` in wavefront/workitems.h, one kernel per
+# type via `ForEachType` (surfscatter.cpp:41) — so each kernel compiles exactly
+# one material's code and the threads of a warp share it. That is the coherence
+# NVIDIA's shader execution reordering gives a ray-tracing pipeline, on every
+# backend.
 #
-# pbrt-v4 sidesteps both by splitting the shading queue by concrete material
-# type — `MaterialEvalQueue<ConcreteMaterial>` in wavefront/workitems.h —
-# and running one shading kernel per type via `ForEachType` (per-type kernel
-# launches in surfscatter.cpp:41). Each kernel is templated on a single
-# concrete material, so the BSDF code is fully monomorphised; warps process
-# threads that all run the same code path.
+#   * `TypedHitRef{T}` — a 4-byte index into the shared `surface_hits` store
+#     that carries the hit's concrete material type `T` in its type, so Julia's
+#     dispatch picks the shading kernel's specialisation. The hit itself is
+#     stored ONCE; a typed queue per material sized for every path holds indices
+#     only (with full items that was `n_types × n_paths × 304 B`, 4.76 GiB on
+#     Crown's 12-material 1.4 Mpx render).
 #
-# The pieces below are the Julia analogue:
+#   * `MultiTypeMaterialQueue` — a `MultiTypeWorkQueue` of `TypedHitRef{T}` for
+#     each `T` in the scene's `StaticMultiTypeSet`.
 #
-#   * `TypedHitRef{T}` — a 4-byte index into the shared `hit_surface_queue`
-#     that attaches the concrete material type `T` at the type level. Its
-#     only purpose is to let Julia's normal multiple dispatch pick a kernel
-#     specialisation per `T`; the hit payload itself is stored ONCE in
-#     `hit_surface_queue`. (The previous design stored a full 304-byte
-#     `VPHitSurfaceWorkItem` copy per typed queue; with every queue sized
-#     for the full pixel count — hits PARTITION across the queues, so the
-#     worst case for any single queue is all of them — that was
-#     `n_types × n_pixels × 304 B` = 4.76 GiB on Crown's 12-material
-#     1.4 Mpx render. Indices bring that to 67 MiB.)
+#   * `enqueue_surface_hit!` — stores the hit and routes its index into the
+#     queue of its material's type, with `with_index` once per hit.
 #
-#   * `MultiTypeMaterialQueue` — a `MultiTypeWorkQueue` of `TypedHitRef{T}`
-#     for each `T` in the scene's `StaticMultiTypeSet`. Built once at
-#     integrator state init from the materials set's static type tuple.
-#
-#   * `push_typed_hit!(mtmq, materials, hit_surface_queue, hit)` — pushes
-#     the hit into `hit_surface_queue` once, then uses `with_index` on the
-#     materials set ONE time (per hit, at push site) to route the index into
-#     the matching typed queue. The kernel that drains a typed queue never
-#     touches `with_index`; it only sees one concrete `TypedHitRef{T}` type.
-#
-#   * `material_of_type(materials, T, vec_idx)` — a `@generated` lookup that
-#     returns the concrete material instance for a known type `T` and the
-#     `vec_idx` carried on the hit. Zero overhead — compiles down to one
-#     array load on the data tuple at the slot where the type lives.
+#   * `material_of_type(materials, T, vec_idx)` — the concrete material of a
+#     known type, a compile-time slot lookup and one array load.
 
 using Adapt
 import KernelAbstractions as KA
@@ -54,11 +37,11 @@ import Raycore
 """
     TypedHitRef{T}
 
-4-byte index into the shared `hit_surface_queue`, tagged with the concrete
+4-byte index into the shared `surface_hits` store, tagged with the concrete
 material type `T` at the type level. Per-material shading kernels dispatch
 on `TypedHitRef{T}` — each `T` produces a separately compiled kernel via
-Julia's normal multiple dispatch — and load the actual
-`VPHitSurfaceWorkItem` from `hit_surface_queue.items[ref.idx]`.
+Julia's normal multiple dispatch — and load the `VPSurfaceHit` from
+`surface_hits.items[ref.idx]`.
 """
 struct TypedHitRef{T}
     idx::Int32
@@ -133,17 +116,15 @@ function build_per_material_queues(
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
-# push_typed_hit! — `with_index` once at push site, queue dispatch is then
-# data-driven (just an indexed tuple access on the queue side).
+# enqueue_surface_hit! — `with_index` once at the push site; the shading kernel
+# that drains a typed queue sees one concrete `TypedHitRef{T}`.
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Internal: pushes the hit's index into the correct typed queue. `with_index`
-# picks the concrete material type `T`; this helper pushes `TypedHitRef{T}`
-# into the matching queue slot.
+# Pushes the hit's index into the typed queue of material type `M`, which
+# `with_index` picked.
 @inline function _push_to_typed_queue!(
     ::M, materials, mtmq::MultiTypeMaterialQueue, idx::Int32,
 ) where {M}
-    # Find the queue slot for material type M at compile time, push the index.
     _push_typed_hit_slot!(mtmq, M, idx)
     return nothing
 end
@@ -174,93 +155,31 @@ end
 end
 
 """
-    push_typed_hit!(mtmq, materials, hit_surface_queue, hit::VPHitSurfaceWorkItem)
+    wants_shading(depth, max_depth, arealight_id, materials, mat_idx) -> Bool
 
-Store `hit` once in the shared `hit_surface_queue` and route its index into
-the matching per-material typed queue. Uses `with_index` on `materials`
-*once* to pick the concrete material type, then a compile-time tuple lookup
-to push into the right queue slot.
+Whether a surface hit goes to its material's shading kernel: every hit below the
+depth limit, and at the limit one that can add light there, on an area light or
+with a material that emits (`vp_shade_resolved_hit!` shades nothing else there).
 """
-@propagate_inbounds function push_typed_hit!(
-    mtmq::MultiTypeMaterialQueue, materials,
-    hit_surface_queue::WorkQueue{VPHitSurfaceWorkItem},
-    hit::VPHitSurfaceWorkItem,
+@propagate_inbounds wants_shading(depth::Int32, max_depth::Int32, arealight_id::UInt32, materials, mat_idx::SetKey) =
+    depth < max_depth || arealight_id > UInt32(0) || Raycore.with_index(emits, materials, mat_idx)
+
+"""
+    enqueue_surface_hit!(per_material_queue, materials, surface_hits, mat_idx, hit::VPSurfaceHit)
+
+Store `hit` once in `surface_hits` and route its index into the queue of the
+material type of `mat_idx`, the material of the mesh it hit. A `MixMaterial` hit
+goes to the mix's queue, whose kernel picks the component per hit.
+"""
+@propagate_inbounds function enqueue_surface_hit!(
+    mtmq::MultiTypeMaterialQueue, materials, surface_hits::WorkQueue{VPSurfaceHit},
+    mat_idx::SetKey, hit::VPSurfaceHit,
 )
-    idx = push!(hit_surface_queue, hit)
+    idx = push!(surface_hits, hit)
     # Dropped on overflow (same contract as WorkQueue.push! itself) — never
     # publish an index whose payload slot wasn't written.
-    idx <= hit_surface_queue.capacity || return nothing
-    Raycore.with_index(_push_to_typed_queue!, materials, hit.material_idx, materials, mtmq, Int32(idx))
-    return nothing
-end
-
-"""
-    enqueue_after_intersection!(per_material_queue, hit_area_light_queue,
-                                materials, hit_surface_queue,
-                                hit::VPHitSurfaceWorkItem,
-                                arealight_id::UInt32,
-                                triangle_area::Float32, t_hit::Float32)
-
-Mirrors pbrt-v4's `EnqueueWorkAfterIntersection`
-(wavefront/intersect.h:48-149). For surface intersections (no medium) we
-need two parallel pushes:
-
-* If the hit triangle is part of an area light
-  (`arealight_id > 0`), push a `VPHitAreaLightWorkItem` so the
-  dedicated emitter kernel can run MIS for the indirect-ray hit.
-* Always push the hit into `hit_surface_queue` and its index into the
-  per-material typed queue — the material kernel will sample direct
-  lighting + continuation rays.
-
-`arealight_id`, `triangle_area`, `t_hit` are passed as separate
-arguments rather than stored on `VPHitSurfaceWorkItem` because they're
-emission-MIS-only — pbrt-v4's `MaterialEvalWorkItem` doesn't carry them
-either.
-"""
-@propagate_inbounds function enqueue_after_intersection!(
-    per_material_queue::MultiTypeMaterialQueue,
-    hit_area_light_queue::WorkQueue{VPHitAreaLightWorkItem},
-    materials,
-    hit_surface_queue::WorkQueue{VPHitSurfaceWorkItem},
-    hit::VPHitSurfaceWorkItem,
-    arealight_id::UInt32,
-    triangle_area::Float32,
-    t_hit::Float32,
-)
-    push_arealight_hit!(hit_area_light_queue, arealight_id,
-        hit.pi, hit.n, hit.uv, -hit.ray.d, hit, hit.beta, hit.r_u, hit.r_l,
-        triangle_area, t_hit)
-    push_typed_hit!(per_material_queue, materials, hit_surface_queue, hit)
-    return nothing
-end
-
-"""
-    push_arealight_hit!(hit_area_light_queue, arealight_id, pi, n, uv, wo,
-                        path, beta, r_u, r_l, triangle_area, t_hit)
-
-Queue the emission of a hit on an area light (`arealight_id > 0`) for
-`vp_handle_emitters_kernel!`. `path` is the work item the ray belongs to; its
-wavelengths, depth, previous interaction and pixel are what the MIS needs.
-Also called for emissive null-material surfaces, which queue their emission and
-let the ray pass.
-"""
-@propagate_inbounds function push_arealight_hit!(
-    hit_area_light_queue::WorkQueue{VPHitAreaLightWorkItem},
-    arealight_id::UInt32, pi::Point3f, n::Vec3f, uv::Point2f, wo::Vec3f,
-    path, beta::SpectralRadiance, r_u::SpectralRadiance, r_l::SpectralRadiance,
-    triangle_area::Float32, t_hit::Float32,
-)
-    arealight_id > UInt32(0) || return nothing
-    push!(hit_area_light_queue, VPHitAreaLightWorkItem(
-        arealight_id,
-        pi, n, uv, wo,
-        path.lambda, path.depth,
-        beta, r_u, r_l,
-        path.prev_intr_p, path.prev_intr_n,
-        path.specular_bounce,
-        path.pixel_index,
-        triangle_area, t_hit,
-    ))
+    idx <= surface_hits.capacity || return nothing
+    Raycore.with_index(_push_to_typed_queue!, materials, mat_idx, materials, mtmq, Int32(idx))
     return nothing
 end
 

@@ -5,17 +5,42 @@
 
 using LinearAlgebra: I, norm
 
-# SBT slot for the most recently pushed material. The materials set converts
-# texture wrappers to bare scalars at push! time (e.g. `Diffuse{Texture{RGB,
-# 0, Array{RGB, 0}}, ...}` → `Diffuse{RGB, Float32}`), so the type that ends
-# up in the chit-tuple slot order is the *converted* type — not the type the
-# user pushed. `push!(::MediumInterface)` stashes the SetKey it got back from
-# `MultiTypeSet.push!`, and we read the `type_idx` from that here.
-function _last_pushed_sbt_offset()
-    setkey = _LAST_MAT_SETKEY[]
-    setkey.type_idx == UInt32(0) && return UInt32(0)
-    return UInt32(setkey.type_idx - 1)
-end
+# ============================================================================
+# Opacity: which geometry a shadow ray stops at without shading it
+# ============================================================================
+
+"""
+    opaque(material) -> Bool
+
+Whether a shadow ray stops wherever it meets a surface of `material`: one with a
+material (a null material is a medium boundary or a see-through emitter), no
+`shadows` index of refraction and no cutout in its alpha. A mesh is pushed into
+the acceleration structure with it, so the traversal stops at opaque geometry
+itself, and records what is not for the shadow ray to shade
+(`Raycore.transparent_hits`).
+"""
+opaque(m::Material) = opaque(MediumInterface(m))
+opaque(mi::MediumInterface) = !(mi.material isa NullMaterial) && mi.shadows == 0f0 && !cutout(mi.material)
+
+"""
+    cutout(material) -> Bool
+
+Whether the material's alpha (`get_surface_alpha`) is below 1 anywhere. A handle to
+a stored texture cannot be looked into and counts as a cutout.
+"""
+cutout(::Material) = false
+cutout(m::Diffuse) = cutout(m.Kd)
+cutout(m::CoatedDiffuse) = cutout(m.reflectance)
+cutout(m::ShaderMaterial) = m.alpha !== nothing
+
+cutout(h::TexHandle) = h.kind == TexKind.CONST_SPECTRUM ? get_alpha(h.rgb) < 1f0 :
+    h.kind in (TexKind.IMAGE, TexKind.CHECKER, TexKind.VERTEX_COLOR, TexKind.FEM_FIELD)
+cutout(t::Texture{<:RGBSpectrum}) = t.isconst ? get_alpha(t.constval) < 1f0 : any(x -> get_alpha(x) < 1f0, t.data)
+cutout(::Texture) = false
+cutout(t::CheckerboardTexture) = cutout(t.tex1) || cutout(t.tex2)
+cutout(v::VertexColorTexture) = any(x -> get_alpha(x) < 1f0, v.face_colors)
+cutout(::PiecewiseLinearSpectrum) = false
+cutout(::TexNode) = false       # a node program carries no alpha (`eval_handle_alpha`)
 
 # Single material for entire mesh
 # A material that carries its own geometry contributes ITS triangles, not the
@@ -33,8 +58,7 @@ function Base.push!(scene::Scene, mesh::GeometryBasics.Mesh, material::Material;
     mat_idx = push!(scene, material)
     face_meta = build_face_meta(scene, mesh, mat_idx, material)
     mesh_with_meta = GeometryBasics.mesh(mesh; face_meta=GeometryBasics.per_face(face_meta, mesh))
-    sbt_offset = _last_pushed_sbt_offset()
-    handle = push!(scene.accel, mesh_with_meta, transform; sbt_offset=sbt_offset)
+    handle = push!(scene.accel, mesh_with_meta, transform; opaque = opaque(material))
     return SceneHandle(scene, mat_idx, handle, mesh_area_lights(face_meta))
 end
 
@@ -59,12 +83,7 @@ function Base.push!(scene::Scene, mesh::GeometryBasics.Mesh, mat_idx::UInt32,
                     material::Material; transform::Mat4f=Mat4f(I), area_lights=SetKey[])
     face_meta = build_face_meta(scene, mesh, mat_idx, material; area_lights)
     mesh_with_meta = GeometryBasics.mesh(mesh; face_meta=GeometryBasics.per_face(face_meta, mesh))
-    # The interface already names the stored material and therefore its SBT
-    # type slot. Converting the raw material just to discover that type stores
-    # all its textures again, leaking a full feather map on every mesh rebuild.
-    mi = @allowscalar scene.media_interfaces[mat_idx]
-    sbt_offset = Raycore.is_valid(mi.material) ? mi.material.type_idx - UInt32(1) : UInt32(0)
-    handle = push!(scene.accel, mesh_with_meta, transform; sbt_offset=sbt_offset)
+    handle = push!(scene.accel, mesh_with_meta, transform; opaque = opaque(material))
     return SceneHandle(scene, mat_idx, handle, mesh_area_lights(face_meta))
 end
 
@@ -132,7 +151,7 @@ function Base.push!(scene::Scene, mesh::GeometryBasics.Mesh,
     mesh_with_meta = GeometryBasics.mesh(mesh; face_meta=GeometryBasics.per_face(face_meta, mesh))
 
     accel_handle = push!(scene.accel, mesh_with_meta, collect(transforms);
-                         instance_ids=mi_indices)
+                         instance_ids=mi_indices, opaque = all(opaque, materials))
     # One SceneHandle per instance, all sharing the same accel handle.
     return [SceneHandle(scene, mi_indices[i], accel_handle) for i in eachindex(mi_indices)]
 end
@@ -203,7 +222,7 @@ function Base.push!(scene::Scene, mesh::GeometryBasics.Mesh, materials::Abstract
     end
     face_meta = build_face_meta(scene, mesh, mat_indices, materials)
     mesh_with_meta = GeometryBasics.mesh(mesh; face_meta=GeometryBasics.per_face(face_meta, mesh))
-    handle = push!(scene.accel, mesh_with_meta, transform)
+    handle = push!(scene.accel, mesh_with_meta, transform; opaque = all(opaque, materials))
     # Return SceneHandle with first material index (for compatibility)
     return SceneHandle(scene, first(mat_indices), handle, mesh_area_lights(face_meta))
 end
@@ -215,10 +234,16 @@ mesh_area_lights(face_meta) = unique([arealight_key(m.arealight_id) for m in fac
 
 Update a retained mesh's surface/media and its existing face emitters. Sampled
 emission reuses the lights' texture slots; shared textures are uploaded once.
-The geometry and acceleration structures are unchanged. Adding an emitter to a
-mesh without emitter slots requires rebuilding that mesh.
+The geometry is unchanged. Adding an emitter to a mesh without emitter slots
+requires rebuilding that mesh.
+
+A material that lets shadow rays through ([`opaque`](@ref) is `false`) makes the
+mesh's geometry non-opaque. The reverse is left to the next push: the geometry
+may carry other materials (a `meshscatter`, per-face materials) that still do,
+and non-opaque geometry that turns out to block costs time, never a wrong image.
 """
 function update_material!(scene::Scene, handle::SceneHandle, material::Material)
+    opaque(material) || Raycore.set_opaque!(scene.accel, handle.geometry, false)
     emission = get_emission_info(material)
     if isempty(handle.area_lights)
         emission === nothing || error("adding mesh emission requires rebuilding its face emitters")

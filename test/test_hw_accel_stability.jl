@@ -13,10 +13,10 @@ using LinearAlgebra: I
 #
 #   * UAF / stale-BDA from `sync!` + `unsafe_free!` interplay under real
 #     integrator load (primary rays + shadow rays + aux buffers).
-#   * Pipeline / SBT lifetime regressions across multiple `VolPath` calls
+#   * Pipeline lifetime regressions across multiple `VolPath` calls
 #     against the same `VulkanTLAS`.
 #   * Mesh-mutation regressions in the `delete!` + `push!` + `sync!` path
-#     while the RT pipeline is live.
+#     while plans that trace it are live.
 #   * Cross-scene state leakage: a second `hw_accel=true` scene in the
 #     same session must render correctly.
 #
@@ -118,7 +118,7 @@ end
 
     # Each iteration: delete one sphere, push a different one (new tessellation
     # to force a BLAS size change), re-sync, re-render.  Exercises the full
-    # delete+push+sync!+unsafe_free! path under live RT pipeline.
+    # delete+push+sync!+unsafe_free! path under live tracing plans.
     sphere_small = normal_mesh(Tesselation(Sphere(Point3f(0,0,0), 0.35f0), 8))
     sphere_large = normal_mesh(Tesselation(Sphere(Point3f(0,0,0), 0.35f0), 32))
     n_iters = 12

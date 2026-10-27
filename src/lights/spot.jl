@@ -25,7 +25,7 @@ struct SpotLight{S<:Spectrum} <: Light
 end
 
 # Spot lights are delta lights (emit from a single point)
-is_δ_light(::SpotLight) = true
+is_δ_light(::Type{<:SpotLight}) = true
 
 """
     SpotLight(position, target, intensity, cone_angle, falloff_angle; scale=1f0)

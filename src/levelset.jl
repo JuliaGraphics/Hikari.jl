@@ -75,6 +75,7 @@ struct LevelSetElements{T<:NanoTree,L<:AbstractVector{Int32},O<:AbstractVector{V
     interface::UInt32
     region::R
     tile::Float32
+    opaque::Bool        # the interface stops shadow rays (see `opaque`)
 end
 Adapt.@adapt_structure LevelSetElements
 
@@ -87,15 +88,16 @@ struct LevelSetHit
 end
 
 @inline procedural_miss(::LevelSetElements) = LevelSetHit(1f30, 0f0, 0f0, 0f0)
+@inline procedural_opaque(e::LevelSetElements) = e.opaque
 
-@inline function procedural_candidate(e::LevelSetElements, best::LevelSetHit)
+@inline function procedural_candidate(e::LevelSetElements, best::LevelSetHit, q)
     t = e.tree
     words = t.words
-    ro, rd = candidate_object_ray()
+    ro, rd = candidate_object_ray(q)
     # New names, not `o, d` reassigned: the closure `f` below captures them, and a
     # captured variable assigned twice is boxed, which the device cannot type.
     o = Point3f(ro[1], ro[2], ro[3]); d = Vec3f(rd[1], rd[2], rd[3])
-    box = Int32(candidate_primitive_index())
+    box = Int32(candidate_primitive_index(q))
     leaf = @inbounds e.leaves[box]
     origin = @inbounds e.origins[box]
     lo = t.lo + Vec3f(origin) * t.voxel
@@ -128,10 +130,7 @@ end
                 end
             end
             p = o + h * d
-            if counts(e.region, p)
-                commit_intersection!(h)
-                return LevelSetHit(h, p[1], p[2], p[3])
-            end
+            counts(e.region, p) && return LevelSetHit(h, p[1], p[2], p[3])
             # Not surface here: carry on from the other side.
             above = !above
         end
@@ -235,7 +234,8 @@ function Base.push!(scene::Scene, m::LevelSetSurface, mi::UInt32; transform = Ma
     handle = push!(accel, blas, transform; instance_id = UInt32(0))
     leaves = Mantle.devicearray(accel.backend, Int32[t.leaf + (l - 1) * NT_LEAF_WORDS for l in keep])
     origins = Mantle.devicearray(accel.backend, org[keep])
-    accel.procedural = LevelSetElements(t, leaves, origins, m.iso, m.rising, UInt32(mi), m.region, m.tile)
+    accel.procedural = LevelSetElements(t, leaves, origins, m.iso, m.rising, UInt32(mi), m.region, m.tile,
+                                        opaque(m.interface))
     return SceneHandle(scene, mi, handle)
 end
 

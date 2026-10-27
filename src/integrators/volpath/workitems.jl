@@ -91,8 +91,9 @@ Work item for rays in medium that need delta tracking.
 Follows pbrt-v4's approach: intersection is found FIRST, then delta tracking
 runs with the known t_max distance.
 
-If the ray reaches t_max without scattering/absorption, it processes the
-surface hit normally. This allows proper bounded medium traversal.
+If the ray reaches t_max without scattering/absorption, its surface hit goes to
+the material's shading kernel as any other does: `hit` is the record the trace
+found, which that kernel expands. A miss record when the ray escapes.
 """
 struct VPMediumSampleWorkItem
     # Ray info
@@ -115,37 +116,16 @@ struct VPMediumSampleWorkItem
     # Current medium
     medium_idx::SetKey
 
-    # Surface hit info (used if ray reaches t_max without medium event)
-    # If t_max == Inf, these are invalid (ray escaped)
-    has_surface_hit::Bool
-    hit_pi::Point3f
-    hit_ps::Point3f                 # Where shadow rays leave (see `vp_shadow_point`)
-    hit_n::Vec3f
-    hit_dpdu::Vec3f                 # Geometric position derivative w.r.t. u
-    hit_dpdv::Vec3f                 # Geometric position derivative w.r.t. v
-    hit_ns::Vec3f
-    hit_dpdus::Vec3f                # Shading position derivative w.r.t. u
-    hit_dpdvs::Vec3f                # Shading position derivative w.r.t. v
-    hit_uv::Point2f
-    hit_material_idx::SetKey
-    hit_interface::MediumInterfaceIdx  # For medium transitions at surface
-    hit_face_idx::UInt32              # Triangle face index (for vertex colors)
-    hit_bary::SVector{3, Float32}     # Barycentric coordinates (for vertex colors)
-    hit_arealight_id::UInt32    # Area light id (`pack_arealight`, 0 = no area light)
-    hit_triangle_area::Float32        # Triangle area (for PDF_Li)
+    # The surface the ray reaches if no medium event stops it first.
+    hit::Raycore.HitRecord
 end
 
-# Constructor from VPRayWorkItem with surface hit
-function VPMediumSampleWorkItem(
-    work::VPRayWorkItem,
-    t_max::Float32,
-    pi::Point3f, ps::Point3f, n::Vec3f, dpdu::Vec3f, dpdv::Vec3f,
-    ns::Vec3f, dpdus::Vec3f, dpdvs::Vec3f,
-    uv::Point2f, mat_idx::SetKey,
-    interface::MediumInterfaceIdx,
-    face_idx::UInt32, bary::SVector{3, Float32},
-    arealight_id::UInt32, triangle_area::Float32
-)
+"""Whether the medium ray reaches a surface at `t_max`, rather than escaping."""
+@inline has_surface_hit(work::VPMediumSampleWorkItem) = work.hit.kind != Raycore.HIT_MISS
+
+# Delta tracking is bounded by the hit, or by the ray's own extent on a miss.
+function VPMediumSampleWorkItem(work::VPRayWorkItem, hit::Raycore.HitRecord)
+    t_max = hit.kind == Raycore.HIT_MISS ? work.ray.t_max : hit.t
     VPMediumSampleWorkItem(
         work.ray, work.depth, t_max,
         work.lambda, work.beta, work.r_u, work.r_l,
@@ -153,26 +133,7 @@ function VPMediumSampleWorkItem(
         work.specular_bounce, work.any_non_specular_bounces,
         work.prev_intr_p, work.prev_intr_n,
         work.medium_idx,
-        true, pi, ps, n, dpdu, dpdv, ns, dpdus, dpdvs, uv, mat_idx, interface,
-        face_idx, bary,
-        arealight_id, triangle_area
-    )
-end
-
-# Constructor from VPRayWorkItem for escaped rays (no surface hit)
-function VPMediumSampleWorkItem(work::VPRayWorkItem)
-    VPMediumSampleWorkItem(
-        work.ray, work.depth, work.ray.t_max,
-        work.lambda, work.beta, work.r_u, work.r_l,
-        work.pixel_index, work.eta_scale,
-        work.specular_bounce, work.any_non_specular_bounces,
-        work.prev_intr_p, work.prev_intr_n,
-        work.medium_idx,
-        false, Point3f(0f0), Point3f(0f0), Vec3f(0f0, 0f0, 1f0), Vec3f(0f0), Vec3f(0f0),
-        Vec3f(0f0, 0f0, 1f0), Vec3f(0f0), Vec3f(0f0),
-        Point2f(0f0, 0f0), SetKey(), MediumInterfaceIdx(SetKey(), SetKey(), SetKey()),
-        UInt32(0), SVector{3, Float32}(0f0, 0f0, 0f0),
-        UInt32(0), 0f0
+        hit,
     )
 end
 
@@ -278,42 +239,21 @@ struct VPShadowRayWorkItem
 end
 
 # ============================================================================
-# Hit Area Light Work Item — pbrt-v4 HitAreaLightWorkItem (wavefront/workitems.h:147)
+# Surface Hit
 # ============================================================================
 
 """
-    VPHitAreaLightWorkItem
+    VPSurfaceHit
 
-Surface hit on a triangle that's part of an area light. Pushed (in parallel
-with the per-material queue push) at intersection time so that emission MIS
-can run in its own kernel — see pbrt-v4 `EnqueueWorkAfterIntersection`
-(wavefront/intersect.h:113) and the drain kernel "Handle emitters hit by
-indirect rays" in wavefront/integrator.cpp:540.
-
-Keeping emission MIS in a separate kernel means the material kernels no
-longer carry `arealight_id`, `triangle_area`, `t_hit`, `prev_intr_p`,
-`prev_intr_n` along the per-material queue path — those fields only matter
-for emission MIS, which now reads them from this dedicated queue instead.
+A ray's surface hit as the trace leaves it for the material's shading kernel:
+the hit record and where the ray's path state is. `path > 0` is its index in the
+round's ray queue; `path < 0` is `-index` into the arrivals, the paths a medium
+delivered to their surface with its transmittance applied. The shading kernel
+expands the record, so the surface is computed once, where it is shaded.
 """
-struct VPHitAreaLightWorkItem
-    arealight_id::UInt32      # Area light id (`pack_arealight`, >0 sentinel)
-    pi::Point3f                     # Intersection point
-    n::Vec3f                        # Geometric normal
-    uv::Point2f                     # Texture coordinates
-    wo::Vec3f                       # Outgoing direction (= -ray.d)
-    lambda::Wavelengths
-    depth::Int32
-    beta::SpectralRadiance
-    r_u::SpectralRadiance
-    r_l::SpectralRadiance
-    prev_intr_p::Point3f            # LightSampleContext analogue
-    prev_intr_n::Vec3f
-    specular_bounce::Bool
-    pixel_index::Int32
-    # Hikari computes pdf_li inline from triangle_area + t_hit (pbrt-v4 calls
-    # `areaLight.PDF_Li(ctx, wi)` which hides these inside the Light handle).
-    triangle_area::Float32
-    t_hit::Float32
+struct VPSurfaceHit
+    path::Int32
+    hit::Raycore.HitRecord
 end
 
 # ============================================================================
@@ -368,9 +308,9 @@ end
 """
     VPHitSurfaceWorkItem
 
-Intermediate work item when ray hits a surface.
-Used to separate intersection from material evaluation.
-Stores surface partial derivatives for texture filtering (pbrt-v4 style).
+A surface hit expanded for shading: the path state with the surface's geometry,
+shading frame and partial derivatives for texture filtering (pbrt-v4 style).
+Built in registers by the shading kernel from a [`VPSurfaceHit`](@ref).
 """
 struct VPHitSurfaceWorkItem
     # Ray that hit
@@ -403,24 +343,13 @@ struct VPHitSurfaceWorkItem
     eta_scale::Float32
     specular_bounce::Bool
     any_non_specular_bounces::Bool
-    # `prev_intr_p`/`prev_intr_n` are kept (vs pbrt-v4 which doesn't carry
-    # them in MaterialEvalWorkItem) because Hikari's null-material handling
-    # lives inside `vp_shade_material_kernel!`, not the intersection kernel.
-    # pbrt-v4 dispatches null-material continuation rays from
-    # `EnqueueWorkAfterIntersection` itself with `r.prevIntrCtx`, so its
-    # MaterialEvalQueue never needs prev_intr. A future refactor moving
-    # null-material handling to `enqueue_after_intersection!` would let us
-    # drop these two fields too.
+    # The previous interaction, for the MIS weight of emission the BSDF ray
+    # reaches from it.
     prev_intr_p::Point3f
     prev_intr_n::Vec3f
 
     # Medium info
     current_medium::SetKey
-
-    # No `arealight_id`, `triangle_area` or `t_hit`, as in pbrt-v4's own
-    # `MaterialEvalWorkItem`: they are emission-MIS-only fields, and
-    # `enqueue_after_intersection!` forwards them to `VPHitAreaLightWorkItem`
-    # when the hit is on an area light. Saves 12 B per queued item.
 end
 
 # Constructor from VPRayWorkItem with hit geometry.
@@ -438,26 +367,6 @@ function VPHitSurfaceWorkItem(
         face_idx, bary,
         work.lambda, work.pixel_index,
         work.beta, work.r_u, work.r_l,
-        work.depth, work.eta_scale,
-        work.specular_bounce, work.any_non_specular_bounces,
-        work.prev_intr_p, work.prev_intr_n,
-        work.medium_idx,
-    )
-end
-
-# Constructor from VPMediumSampleWorkItem (with updated beta/r_u/r_l from delta tracking)
-function VPHitSurfaceWorkItem(
-    work::VPMediumSampleWorkItem,
-    beta::SpectralRadiance, r_u::SpectralRadiance, r_l::SpectralRadiance
-)
-    VPHitSurfaceWorkItem(
-        work.ray,
-        work.hit_pi, work.hit_ps, work.hit_n, work.hit_dpdu, work.hit_dpdv,
-        work.hit_ns, work.hit_dpdus, work.hit_dpdvs,
-        work.hit_uv, work.hit_material_idx, work.hit_interface,
-        work.hit_face_idx, work.hit_bary,
-        work.lambda, work.pixel_index,
-        beta, r_u, r_l,
         work.depth, work.eta_scale,
         work.specular_bounce, work.any_non_specular_bounces,
         work.prev_intr_p, work.prev_intr_n,

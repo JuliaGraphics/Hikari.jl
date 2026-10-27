@@ -97,9 +97,7 @@ const MATH_POWER     = UInt32(1) << 22
 const MATH_ROUND     = UInt32(1) << 23
 const MATH_COMPARE   = UInt32(1) << 24
 const ATTRIBUTE      = UInt32(1) << 25
-const BSDF           = UInt32(1) << 26
-const PRINCIPLED     = UInt32(1) << 27
-const BUMP           = UInt32(1) << 28
+const BUMP           = UInt32(1) << 26
 end
 
 """

@@ -21,19 +21,6 @@ using GPUArraysCore: @allowscalar
 # Mantle is a hard dependency: `hw-rt.jl` below imports it unconditionally.
 import Mantle
 
-# The device-side ray-tracing intrinsics `rt-pipeline.jl` calls. They are
-# KernelInterface's, re-exported by Mantle, and they are IMPORTED BY NAME
-# because a shader body writes them bare: an unimported name in a kernel is not
-# a `MethodError` but a global variable access, which GPUCompiler reports as
-# "unsupported" three frames from where the name is missing. This block was
-# `import Lava: lava_rt_*` — the one line that made a renderer which reaches the
-# GPU through Mantle for everything else name a backend, and that stopped Hikari
-# loading on a machine with no Vulkan driver.
-using Mantle: rt_launch_id_x, rt_hit_object_trace_ray, rt_reorder_thread,
-    rt_hit_object_execute_shader, rt_ignore_intersection, rt_primitive_id,
-    rt_instance_id, rt_instance_custom_index, rt_ray_tmax, rt_hit_bary_u,
-    rt_hit_bary_v
-
 # Unexported but API: RayMakie's pbrt bridge calls it, so it is not free to
 # change shape. `public` says that without putting it in every `using`'s scope.
 public attach_bump
@@ -153,6 +140,7 @@ include("spectrum.jl")
 include("spectral/spectral.jl")
 include("spectral/piecewise-linear.jl")
 include("spectral/metal-spectra.jl")
+include("spectral/ior-spectra.jl")
 
 include("random.jl")
 include("surface_interaction.jl")
@@ -189,6 +177,9 @@ include("materials/coated-conductor.jl")
 include("materials/coated-diffuse-transmission.jl")
 include("materials/diffuse-transmission.jl")
 include("materials/emissive.jl")
+include("materials/lobes.jl")
+include("materials/layered.jl")
+include("materials/bsdf-nodes.jl")
 include("materials/shader-material.jl")
 include("materials/bump-mapped.jl")
 include("materials/merge-color.jl")
@@ -252,8 +243,6 @@ include("integrators/volpath/volpath.jl")
 # Hardware RT dispatch (uses Raycore's backend-agnostic HWTLAS/AdaptedAccel interface)
 include("integrators/volpath/hw-rt.jl")
 include("guides.jl")
-# RT pipeline (raygen+closesthit+miss via VkRayTracingPipelineKHR + SBT) variant
-include("integrators/volpath/rt-pipeline.jl")
 include("kernel-abstractions.jl")
 # Postprocessing pipeline
 include("postprocess.jl")

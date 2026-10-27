@@ -14,53 +14,87 @@ const VOLUME_THROUGHPUT_EPSILON = 1f-6
 """
     subsurface_scatter(bsdf, work, accel, sample_idx) -> (bsdf, work)
 
-Pick between a shader's BSDF and its subsurface closure, in proportion to their sample weights,
-as Cycles' `surface_shader_bsdf_bssrdf_pick` does. Picking the BSDF leaves it without the
-subsurface closure and the path's throughput divided by its chance; picking subsurface walks
-inside the object to where the light leaves it, and returns a diffuse BSDF there with the work
-item moved to that point, as Cycles' `subsurface_shader_data_setup`. A walk that does not get out
-returns a BSDF of no closures, which ends the path.
+Pick between a shader's BSDF and its subsurface lobe, in proportion to their shares of the
+samples, as Cycles' `surface_shader_bsdf_bssrdf_pick` does. Picking the BSDF leaves it without the
+subsurface lobe and the path's throughput divided by its chance; picking subsurface walks inside
+the object to where the light leaves it, and returns a diffuse BSDF there with the work item moved
+to that point, as Cycles' `subsurface_shader_data_setup`. A walk that does not get out returns a
+BSDF of no samples, which ends the path. A BSDF without a subsurface lobe is returned as it is.
 """
 @inline subsurface_scatter(bsdf, work, accel, sample_idx) = (bsdf, work)
 
-@propagate_inbounds function subsurface_scatter(bsdf::ClosureBSDF{N, true}, work, accel, sample_idx::Int32) where {N}
-    k = _subsurface_index(bsdf)
-    k == Int32(0) && return (bsdf, work)
-    sss = _closure_at(bsdf.closures, k)
-    total = bsdf.total_sample_weight
+# The BSDF keeps its type through every outcome: picking the BSDF takes the subsurface lobe's share
+# away, a walk that gets out turns that lobe into the diffuse lobe it exits by and takes every other
+# lobe's share away, and a walk that does not leaves no share at all.
+@propagate_inbounds function subsurface_scatter(bsdf::LobeBSDF{L}, work, accel, sample_idx::Int32) where {L}
+    return subsurface_scatter(bsdf, Val(subsurface_slot(L)), work, accel, sample_idx)
+end
+
+@inline subsurface_scatter(bsdf::LobeBSDF, ::Val{0}, work, accel, sample_idx::Int32) = (bsdf, work)
+
+@propagate_inbounds function subsurface_scatter(bsdf::LobeBSDF, ::Val{K}, work, accel, sample_idx::Int32) where {K}
+    sss = bsdf.lobes[K]
+    sss.sample_weight > 0f0 || return (bsdf, work)
+    total = bsdf.total
     rng = pcg32_init(UInt64(work.pixel_index) << 32 | UInt64(reinterpret(UInt32, sample_idx)), UInt64(work.depth) + UInt64(0x5353))
     u, rng = pcg32_uniform_f32(rng)
-    pick = sss.sample_weight / total
-    if u >= pick
+    if u >= sss.sample_weight / total
         rest = total - sss.sample_weight
-        rest > 0f0 || return (_no_bsdf(bsdf), work)
-        closures = ntuple(i -> Int32(i) == k ? _without_samples(bsdf.closures[i]) : bsdf.closures[i], Val(N))
-        reduced = typeof(bsdf)(bsdf.count, rest, closures, bsdf.lambda, bsdf.emission, bsdf.dispersive)
-        return (reduced, _with_beta(work, work.beta * (total / rest)))
+        rest > 0f0 || return (no_samples(typeof(bsdf.lobes), bsdf.lambda), work)
+        lobes = with_lobe(bsdf.lobes, Val(K), without_samples, identity)
+        return (LobeBSDF(lobes, rest, bsdf.lambda, bsdf.emission, bsdf.dispersive), _with_beta(work, work.beta * (total / rest)))
     end
-    return _random_walk(sss, bsdf, work, accel, rng, total / sss.sample_weight)
+    # The walk traces rays, so what is live across it is held through every traversal: the walk's
+    # parameters and the wavelengths, not the lobes. The other slots come back blank, which no
+    # evaluation reads, as they take no samples.
+    params, lambda = WalkParams(sss), bsdf.lambda
+    exited, exit_work, n = random_walk(params, work, accel, rng, total / sss.sample_weight)
+    exited || return (no_samples(typeof(bsdf.lobes), lambda), work)
+    lobes = with_lobe(typeof(bsdf.lobes), Val(K), exit_lobe(typeof(sss), params, n))
+    return (LobeBSDF(lobes, 1f0, lambda, SpectralRadiance(0f0), false), exit_work)
 end
 
-@inline function _subsurface_index(bsdf::ClosureBSDF)
-    k = Int32(0)
-    for i in Int32(1):bsdf.count
-        _closure_at(bsdf.closures, i).lobe == Lobe.SUBSURFACE && (k = i)
-    end
-    return k
+"""The position of the last subsurface lobe in a BSDF's lobes, 0 for none: the one a walk starts from, as Cycles picks the last."""
+@generated subsurface_slot(::Type{L}) where {L <: Tuple} =
+    something(findlast(T -> T <: Weighted{<:SubsurfaceLobe}, fieldtypes(L)), 0)
+
+"""The lobes with `f` applied to the `K`-th and `g` to every other, unrolled when compiled."""
+@generated with_lobe(lobes::L, ::Val{K}, f, g) where {L <: Tuple, K} =
+    Expr(:tuple, (k == K ? :(f(lobes[$k])) : :(g(lobes[$k])) for k in 1:fieldcount(L))...)
+
+"""Lobes of the types `L` with `w` the `K`-th and every other blank."""
+@generated with_lobe(::Type{L}, ::Val{K}, w) where {L <: Tuple, K} =
+    Expr(:tuple, (k == K ? :w : :(blank($(fieldtype(L, k)))) for k in 1:fieldcount(L))...)
+
+"""A value of type `T` with every field zero."""
+@generated function blank(::Type{T}) where {T}
+    isprimitivetype(T) && return :(zero($T))
+    T <: Tuple && return Expr(:tuple, (:(blank($(fieldtype(T, i)))) for i in 1:fieldcount(T))...)
+    return Expr(:new, T, (:(blank($(fieldtype(T, i)))) for i in 1:fieldcount(T))...)
 end
 
-@inline _without_samples(c::SpectralClosure) =
-    SpectralClosure(c.lobe, c.fresnel, c.weight, c.c1, c.c2, c.c3, c.n, c.t, c.alpha_x, c.alpha_y, c.ior, c.energy,
-                    c.p1, c.p2, 0f0)
+@inline without_samples(w::Weighted) = Weighted(w.lobe, w.weight, 0f0, w.n, w.t)
+"""A BSDF of lobes of the types `L` that takes no samples and reflects nothing."""
+@inline no_samples(::Type{L}, lambda::Wavelengths) where {L <: Tuple} =
+    LobeBSDF(blank(L), 0f0, lambda, SpectralRadiance(0f0), false)
 
-@inline _no_bsdf(bsdf::ClosureBSDF) = typeof(bsdf)(Int32(0), 0f0, bsdf.closures, bsdf.lambda, SpectralRadiance(0f0), false)
+"""What a random walk needs of the subsurface lobe it starts from."""
+struct WalkParams
+    n::Vec3f
+    alpha::Float32
+    ior::Float32
+    anisotropy::Float32
+    weight::SpectralRadiance
+    albedo::SpectralRadiance
+    radius::SpectralRadiance
+end
 
-"""A diffuse BSDF of weight one around `n`: what leaves an object where a subsurface walk gets out of it."""
-@inline function _exit_bsdf(bsdf::ClosureBSDF{N}, n::Vec3f) where {N}
-    exit = SpectralClosure(Lobe.DIFFUSE, Fresnel.NONE, SpectralRadiance(1f0), SpectralRadiance(1f0), SpectralRadiance(1f0),
-                           SpectralRadiance(1f0), n, Vec3f(0), 0f0, 0f0, 1f0, 1f0, 0f0, 0f0, 1f0)
-    closures = ntuple(i -> i == 1 ? exit : SpectralClosure(), Val(N))
-    return typeof(bsdf)(Int32(1), 1f0, closures, bsdf.lambda, SpectralRadiance(0f0), false)
+WalkParams(w::Weighted{<:SubsurfaceLobe}) =
+    WalkParams(w.n, w.lobe.alpha, w.lobe.ior, w.lobe.anisotropy, w.weight, w.lobe.albedo, w.lobe.radius)
+
+"""The subsurface lobe a walk of `p` started from, as the diffuse lobe of weight one around `n` that it leaves the object by."""
+@inline function exit_lobe(::Type{Weighted{L, C}}, p::WalkParams, n::Vec3f) where {L <: SubsurfaceLobe, C}
+    return Weighted(L(p.albedo, p.radius, p.alpha, p.ior, p.anisotropy, true), SpectralRadiance(1f0), 1f0, n, Vec3f(0))
 end
 
 @inline _with_beta(w::VPMaterialEvalWorkItem, beta::SpectralRadiance) =
@@ -76,15 +110,15 @@ end
                            w.current_medium)
 
 """Cycles' `subsurface_entry_bounce`: a GGX refraction of the view into the surface."""
-@inline function _subsurface_entry(c::SpectralClosure, wo::Vec3f, u::Point2f)
-    n = c.n
+@inline function subsurface_entry(p::WalkParams, wo::Vec3f, u::Point2f)
+    n = p.n
     cos_ni = dot(n, wo)
     cos_ni > 0f0 || return (false, Vec3f(0))
     t, b = coordinate_system(n)
-    local_h = trowbridge_reitz_sample_wm(world_to_local(wo, n, t, b), u, max(c.alpha_x, 1f-4), max(c.alpha_x, 1f-4))
+    local_h = trowbridge_reitz_sample_wm(world_to_local(wo, n, t, b), u, max(p.alpha, 1f-4), max(p.alpha, 1f-4))
     h = local_to_world(local_h, n, t, b)
     cos_hi = dot(h, wo)
-    neta = 1f0 / c.ior
+    neta = 1f0 / p.ior
     dnp = max(sqrt(max(1f0 - neta^2 * (1f0 - cos_hi^2), 0f0)), 1f-7)
     return (true, normalize(-(neta * wo) + (neta * cos_hi - dnp) * h))
 end
@@ -136,19 +170,24 @@ end
 Cycles' `subsurface_random_walk`: scatter through the object from the entry, with distances by
 the extinction of one wavelength chosen by its throughput, half the time guided towards the
 surfaces it is between (Dwivedi), until a step reaches a surface.
+
+Inlined. Outlined as a function of its own, Apple's GPU compiler crashed ("Internal compiler
+error") linking the shading kernel of a subsurface material, on hardware and software traversal
+alike, once the BSDF sampling after the walk was in the same kernel. Inlined measured the same
+as outlined on a 7900 XTX (within 1.5%, both traversals).
 """
-@noinline function _random_walk(c::SpectralClosure, bsdf::ClosureBSDF, work, accel, rng, pick_scale::Float32)
-    fail = (_no_bsdf(bsdf), work)
+@inline function random_walk(c::WalkParams, work, accel, rng, pick_scale::Float32)
+    fail = (false, work, Vec3f(0, 0, 1))
     u1, rng = pcg32_uniform_f32(rng)
     u2, rng = pcg32_uniform_f32(rng)
-    entered, d = _subsurface_entry(c, work.wo, Point2f(u1, u2))
+    entered, d = subsurface_entry(c, work.wo, Point2f(u1, u2))
     (entered && dot(d, _facing_geometric(work)) < 0f0) || return fail
 
-    g = c.p1
+    g = c.anisotropy
     throughput = work.beta * c.weight * pick_scale
-    alpha = _map4(a -> _walk_albedo(a, g), c.c1)
-    sigma_t = _map4(r -> 1f0 / max(r, 1f-16), c.c2)
-    throughput = _map4((t, a) -> a != 0f0 ? t / a : 0f0, throughput, c.c1)
+    alpha = _map4(a -> _walk_albedo(a, g), c.albedo)
+    sigma_t = _map4(r -> 1f0 / max(r, 1f-16), c.radius)
+    throughput = _map4((t, a) -> a != 0f0 ? t / a : 0f0, throughput, c.albedo)
     min_alpha = 0.2f0
     throughput = _map4((t, a) -> a < min_alpha ? t * a / min_alpha : t, throughput, alpha)
     alpha = _map4(a -> max(a, min_alpha), alpha)
@@ -258,7 +297,7 @@ surfaces it is between (Dwivedi), until a step reaches a surface.
             geom = vp_compute_surface_geometry(primitive, barycentric, Point3f(p + d), -d, 1f0)
             exit_work = _at_exit(work, geom, primitive.metadata.primitive_index, SVector{3, Float32}(barycentric),
                                  throughput)
-            return (_exit_bsdf(bsdf, geom.ns), exit_work)
+            return (true, exit_work, geom.ns)
         end
         _maximum(throughput) < VOLUME_THROUGHPUT_EPSILON && return fail
     end

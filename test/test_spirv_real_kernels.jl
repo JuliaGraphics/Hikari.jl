@@ -17,6 +17,14 @@ using GeometryBasics
 using GeometryBasics: normal_mesh, Tesselation
 import KernelAbstractions as KA
 
+# Where there is no Vulkan loader, Lava builds no compiler (macOS), and there is no
+# SPIR-V to check: said so, as Lava's own suite does.
+@static if !Lava.Vulkan.HAS_LOADER
+@testset "Real Kernel Compilation" begin
+    @test_skip Lava.Vulkan.HAS_LOADER
+end
+else
+
 if !@isdefined(SPIRVTestUtils)
     include(joinpath(pkgdir(Lava), "test", "spirv_test_utils.jl"))
 end
@@ -56,16 +64,16 @@ import .SPIRVTestUtils: check, check_not, check_vendor_safety, spirv_opt_roundtr
         end
     end
 
-    # ── Test 2: VPMediumSampleWorkItem kernel (29 fields — largest work item) ──
-    @testset "VPMediumSampleWorkItem — 29-field struct" begin
+    # ── Test 2: VPMediumSampleWorkItem kernel (path state and a nested hit record) ──
+    @testset "VPMediumSampleWorkItem — nested hit record" begin
         function medium_sample_kernel(items, output)
             i = Lava.lava_global_invocation_id_x()
             @inbounds begin
                 item = items[i]
-                result = if item.has_surface_hit
-                    # Access deep nested hit geometry
-                    item.hit_pi[1] + item.hit_n[2] + item.hit_dpdu[3] +
-                    item.hit_uv[1] + item.hit_triangle_area
+                result = if Hikari.has_surface_hit(item)
+                    # Access the nested hit record, its tuple and its indices
+                    item.hit.t + item.hit.a[1] + item.hit.a[2] +
+                    Float32(item.hit.primitive) + Float32(item.hit.custom)
                 else
                     item.ray.o[1] + item.t_max + item.eta_scale
                 end
@@ -126,7 +134,10 @@ import .SPIRVTestUtils: check, check_not, check_vendor_safety, spirv_opt_roundtr
             @inbounds begin
                 val = values[i]
                 if val > 0.0f0
-                    idx = Lava.Atomix.@atomic counter[1] += Int32(1)
+                    # `:monotonic`, as `push!(::WorkQueue, ...)` reserves its slot: Vulkan's
+                    # memory model has no sequentially consistent ordering, which the
+                    # macro's default asks for, and Lava refuses it.
+                    idx = Lava.Atomix.@atomic :monotonic counter[1] += Int32(1)
                     items[idx + Int32(1)] = val
                 end
             end
@@ -217,7 +228,7 @@ import .SPIRVTestUtils: check, check_not, check_vendor_safety, spirv_opt_roundtr
                 ld = Hikari.SampledSpectrum{4}(NTuple{4, Float32}((val, val, val, val)))
                 item = Hikari.VPShadowRayWorkItem(
                     ray, 100.0f0, lambda, ld, ld, ld,
-                    Int32(i), Raycore.SetKey(UInt32(0), UInt32(0)))
+                    Int32(i), Raycore.SetKey(UInt32(0), UInt32(0)), false)
                 output[i] = item
             end
             return nothing
@@ -237,14 +248,14 @@ import .SPIRVTestUtils: check, check_not, check_vendor_safety, spirv_opt_roundtr
         end
     end
 
-    # ── Test 7: vp_shade_material_kernel! for a Conductor{PiecewiseLinearSpectrum{56}} ──
+    # ── Test 7: vp_shade_kernel! for a Conductor{PiecewiseLinearSpectrum{56}} ──
     # Regression test for retype_allocas bug: LLVM emits a float access (f32/f64) wider than the
     # alloca's chosen integer element type (e.g. T=i8), hitting the decomposition branch that
     # only handled int→int.  Fix: pick_uniform_type bails when decomp would involve non-integer types.
     #
     # Framed against `vp_sample_surface_direct_lighting_kernel!`, which Hikari fused
-    # into `vp_shade_surface_hits_kernel!` and then split per-material into `vp_shade_material_
-    # kernel!{T}` once per concrete material type. The retype_allocas path is exercised the
+    # into `vp_shade_surface_hits_kernel!`, split per material type, and now `vp_shade_kernel!`
+    # once per concrete material type. The retype_allocas path is exercised the
     # same way — heavy struct access through Conductor{PiecewiseLinearSpectrum{56}}.
     #
     # The argument types are the ones a render compiles, taken from the compile job
@@ -254,7 +265,7 @@ import .SPIRVTestUtils: check, check_not, check_vendor_safety, spirv_opt_roundtr
     # accelerator is Raycore's `StaticTLAS` rather than an `AdaptedAccel`, and the
     # sample index and camera arrive as one-element device arrays (`GPURef`s), so
     # the tuple no longer named a concrete signature.
-    @testset "vp_shade_material_kernel! — Conductor PiecewiseLinearSpectrum" begin
+    @testset "vp_shade_kernel! — Conductor PiecewiseLinearSpectrum" begin
         backend = Mantle.defaultbackend()
         scene = Hikari.Scene(; backend)
         push!(scene, normal_mesh(Tesselation(Sphere(Point3f(0), 0.5f0), 16)),
@@ -273,11 +284,10 @@ import .SPIRVTestUtils: check, check_not, check_vendor_safety, spirv_opt_roundtr
             KA.synchronize(backend)
         end
         isshade(job) = job isa Lava.LavaCompilerJob &&
-            job.source.specTypes.parameters[1] === typeof(Hikari.gpu_workqueue_map_kernel!) &&
-            job.source.specTypes.parameters[3] === typeof(Hikari.vp_shade_material_kernel!)
+            job.source.specTypes.parameters[1] === typeof(Hikari.gpu_vp_shade_kernel!)
         job = only(unique(filter(isshade, jobs)))
         # The queue the kernel drains holds hits on the measured-spectrum conductor.
-        @test job.source.specTypes.parameters[4] <:
+        @test job.source.specTypes.parameters[3] <:
               Hikari.WorkQueue{<:Hikari.TypedHitRef{<:Hikari.Conductor{Hikari.PiecewiseLinearSpectrum{56}}}}
 
         bytes = Lava.compile_or_lookup(job).spirv_bytes
@@ -291,3 +301,5 @@ import .SPIRVTestUtils: check, check_not, check_vendor_safety, spirv_opt_roundtr
         end
     end
 end
+
+end  # @static if Lava.Vulkan.HAS_LOADER

@@ -24,11 +24,11 @@ const DEFAULT_SPP = 256
 const BASE_MATERIALS = [
     "diffuse", "diffuse_colored",
     "conductor_gold", "conductor_mirror", "conductor_rough",
-    "conductor_silver", "conductor_copper",
-    "dielectric", "dielectric_rough", "dielectric_rough_high", "dielectric_diamond",
+    "conductor_silver", "conductor_copper", "conductor_reflectance", "conductor_aniso",
+    "dielectric", "dielectric_rough", "dielectric_rough_high", "dielectric_diamond", "dielectric_bk7",
     "thindielectric",
-    "coateddiffuse", "coateddiffuse_rough",
-    "coatedconductor", "coatedconductor_rough",
+    "coateddiffuse", "coateddiffuse_rough", "coateddiffuse_aniso", "coateddiffuse_f11",
+    "coatedconductor", "coatedconductor_rough", "coatedconductor_reflectance", "coatedconductor_bk7",
     "diffusetransmission",
 ]
 const BASE_LIGHTS = ["point", "distant", "spot", "area", "ambient"]

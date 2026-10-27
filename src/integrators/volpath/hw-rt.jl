@@ -34,7 +34,7 @@ end
 # fill_aux_buffers! for HWTLAS: trace primary rays via HW RT for depth
 # ============================================================================
 
-# Fused primary-ray + closest-hit + depth/normal/albedo kernel.  One thread
+# Fused primary-ray + closest hit + depth/normal/albedo kernel.  One thread
 # per pixel: generate the camera ray, run inline ray query via
 # `Raycore.closest_hit(accel, ray)` (lowers to OpRayQueryInitializeKHR /
 # Proceed / Get*KHR through the polymorphic dispatch), write the aux buffers.
@@ -90,16 +90,9 @@ function detect_initial_medium(backend, accel::AdaptedAccel, mi, pos, vp::VolPat
     return Raycore.SetKey()
 end
 
-# The per-material closest-hit shaders shade a hit before the trace returns.
-# Only when the backend actually runs closest-hit shaders from an SBT. With an
-# inline ray query the shading kernel keeps control, so surfaces are shaded by
-# the ordinary material pass rather than inside the trace.
-shades_surfaces_inline(a::AdaptedAccel) = Mantle.supports_rt_pipeline(a)
-
-# Tracing needs no HW override of its own (extract_rays → prepare_indirect →
-# cmd_trace_rays_indirect_khr → process): inline ray queries on
-# `Raycore.closest_hit(::AdaptedAccel, ray)` collapse that to a single
-# dispatch, so `vp_trace_and_shade!` covers both backends.
+# Tracing needs no hardware override of its own: `Raycore.closest_hit_record`
+# on an `AdaptedAccel` is Mantle's ray-query loop on every backend, so
+# `vp_trace_kernel!` covers every traversal.
 
 # ============================================================================
 # Mantle device

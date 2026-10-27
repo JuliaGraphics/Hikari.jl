@@ -13,7 +13,7 @@ using Colors: RGB
 # to cost a whole extra shader each. Crown had 12 concrete types where it uses
 # 5 material CLASSES; the other 7 were constant-vs-texture combinatorics and
 # wrapper types, and the two MixMaterial types were the most expensive of them
-# because a mix chit inlines the whole shading system.
+# because a mix's shading kernel inlines the whole shading system.
 #
 # These tests pin the three mechanisms that keep it collapsed:
 #
@@ -90,7 +90,7 @@ float_tex(v) = Hikari.Texture(fill(Float32(v), 4, 4))
         scene = fresh_scene()
         # Two mixes over different sub-material PAIRS, and different amount
         # spellings. Before, each pair was its own MixMaterial{M1,M2} — and a
-        # mix chit dispatches over every material type in the scene, so each
+        # mix's shading kernel dispatches over every material type in the scene, so each
         # extra one is a full copy of the shading system.
         push!(scene, Hikari.MixMaterial(
             materials = (Hikari.Diffuse(Kd = (0.2, 0.2, 0.2)), Hikari.Gold()),

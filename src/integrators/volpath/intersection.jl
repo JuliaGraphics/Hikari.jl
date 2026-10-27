@@ -23,8 +23,7 @@ end
 Pick the medium_interface_idx for a hit. `instance_id` is the 5th value
 `Raycore.closest_hit` / `Raycore.any_hit` return, the instance's custom index,
 on every acceleration structure: `Raycore.TLAS` and the hardware ones alike
-(`gl_InstanceCustomIndexEXT` on Vulkan, `user_instance_id` on Metal, in the
-ray-tracing pipeline `rt_instance_custom_index()`).
+(`gl_InstanceCustomIndexEXT` on Vulkan, `user_instance_id` on Metal).
 
 A nonzero index replaces the triangle's per-face `medium_interface_idx`; zero
 means "inherit". This is the single place where the per-instance interface
@@ -67,6 +66,21 @@ Compute UV coordinates using barycentric coordinates from ray intersection.
         w * uv0[1] + u * uv1[1] + v * uv2[1],
         w * uv0[2] + u * uv1[2] + v * uv2[2]
     )
+end
+
+"""
+    alpha_filter_context(primitive, barycentric, ray_o, ray_d, t_hit) -> TextureFilterContext
+
+What an alpha query at a hit reads: the hit's uv, face and barycentrics, and its position and
+shading normal. A shader material's alpha may depend on those (a node program over `xyz()`);
+built from uv alone, every shadow ray read its alpha at the origin and a checker cutout cast
+no shadow. Point-sampled, as every alpha query is.
+"""
+@propagate_inbounds function alpha_filter_context(primitive, barycentric, ray_o, ray_d, t_hit)
+    ns = vp_compute_shading_normal(primitive, barycentric, vp_compute_geometric_normal(primitive))
+    return TextureFilterContext(vp_compute_uv_barycentric(primitive, barycentric), 0f0, 0f0, 0f0, 0f0,
+                                primitive.metadata.primitive_index, SVector{3, Float32}(barycentric),
+                                Point3f(ray_o + ray_d * t_hit), ns)
 end
 
 """
@@ -282,138 +296,96 @@ Returns (pi, n, dpdu, dpdv, ns, dpdus, dpdvs, uv).
 end
 
 # ============================================================================
-# Trace + Enqueue Kernel
+# Trace Kernel
 # ============================================================================
 #
-# Software-BVH counterpart of the hardware closest-hit shaders. Each thread:
-#   1. If the ray is currently inside a medium, push it to
-#      `medium_sample_queue` and let the medium pipeline handle it. Delta
-#      tracking enqueues whatever survives to a surface, through the same
-#      `enqueue_after_intersection!` used below.
-#   2. Otherwise, run the alpha-test ray-query loop, then resolve MixMaterial
-#      and the null-material medium swap HERE — at the push site, so the
-#      per-material queue routes to a concrete type and the shading kernels
-#      never see a material that has no BSDF.
-#   3. Enqueue the hit: its payload once into `hit_surface_queue`, a 4-byte
-#      `TypedHitRef{T}` into the matching per-material queue, and a
-#      `VPHitAreaLightWorkItem` if the triangle emits.
+# One thread per ray of the round's queue, on any traversal (software BVH, Vulkan
+# ray query, Metal intersector). Each thread:
+#   1. A ray inside a medium: its hit record goes with it to the medium pipeline,
+#      which delivers what survives to the surface as any other hit.
+#   2. Otherwise the alpha-test loop, then either the null-material crossing,
+#      handled here because a surface without a material has no shading kernel
+#      to go to, or a `VPSurfaceHit` into the queue of the hit mesh's material.
 #
-# Shading itself is `vp_shade_material_kernel!` (surface-eval.jl), the same
-# implementation the closest-hit shaders call.
+# Nothing else is computed here: the shading kernel expands the record into the
+# surface it shades (`vp_shade_surface_hit!`, surface-eval.jl), so the hit is
+# written in 40 bytes and the surface computed once. Writing the expanded surface
+# here and reading it back there cost more than the shading on an RTX 4000 Ada.
 
-@propagate_inbounds function vp_trace_and_shade_kernel!(
-    work,
-    next_ray_queue, escaped_queue, medium_sample_queue,
-    per_material_queue,                   # MultiTypeMaterialQueue — routed by material type (4-byte index items)
-    hit_surface_queue,                    # shared hit store the typed queues index into
-    hit_area_light_queue,                 # parallel push for emission-MIS (pbrt-v4 hitAreaLightQueue)
-    pixel_L,
-    accel, media_interfaces, media, materials, lights,
-    rgb2spec_table,
-    bvh_nodes, infinite_light_indices, light_to_bit_trail,
-    num_infinite_lights::Int32, num_bvh_lights::Int32, num_lights::Int32,
-    max_depth::Int32, do_regularize::Bool,
-    sobol_rng, sample_idx_ref,
-    camera_ref,
-    samples_per_pixel::Int32,
-    rr_depth::Int32,
+@kernel inbounds = true function vp_trace_kernel!(
+    cur, next_ray_queue, escaped_queue, medium_sample_queue,
+    per_material_queue, surface_hits,
+    pixel_L, accel, media_interfaces, media, materials, lights, rgb2spec_table,
+    bvh_nodes, light_to_bit_trail,
+    num_infinite_lights::Int32, num_bvh_lights::Int32, max_depth::Int32,
 )
-    # The sample index is a `Mantle.GPURef`, so it arrives as a one-element
-    # device array and the recorded commands hold its ADDRESS. That is what lets
-    # one recording render every sample: the plan is written once and the host
-    # writes this number with one `cmd_update_buffer` per run. An `Int32` packed
-    # into the arguments of every dispatch that reads it is what would make a
-    # recorded plan need a per-run repack.
-    sample_idx = @inbounds sample_idx_ref[Int32(1)]
-    # The camera is a `GPURef` for the same reason: a moved camera is an update
-    # in the run's own submission, not a new plan.
-    camera = @inbounds camera_ref[Int32(1)]
-    # ─── Medium ray: trace and defer all shading to the medium pipeline ───
+    i = @index(Global)
+    if i <= cur.size[1]
+        vp_trace!(cur.items[i], Int32(i), next_ray_queue, escaped_queue, medium_sample_queue,
+                  per_material_queue, surface_hits,
+                  pixel_L, accel, media_interfaces, media, materials, lights, rgb2spec_table,
+                  bvh_nodes, light_to_bit_trail, num_infinite_lights, num_bvh_lights, max_depth)
+    end
+end
+
+@propagate_inbounds function vp_trace!(
+    work::VPRayWorkItem, path::Int32, next_ray_queue, escaped_queue, medium_sample_queue,
+    per_material_queue, surface_hits,
+    pixel_L, accel, media_interfaces, media, materials, lights, rgb2spec_table,
+    bvh_nodes, light_to_bit_trail,
+    num_infinite_lights::Int32, num_bvh_lights::Int32, max_depth::Int32,
+)
+    # A medium ray: delta tracking is bounded by the hit and delivers the surface.
     if has_medium(work.medium_idx)
-        work=prepare_medium_work(work,media)
-        hit, primitive, t_hit, barycentric, instance_id = Raycore.closest_hit(accel, work.ray)
-
-        if hit
-            mi_idx = resolve_mi_idx(instance_id, primitive)
-            mi = media_interfaces[mi_idx]
-            mat_idx = mi.material
-
-            geom = vp_compute_surface_geometry(primitive, barycentric, work.ray.o, work.ray.d, t_hit)
-
-            ns_b, dpdus_b = bumped_shading_frame(materials, mat_idx, camera, work, geom, primitive,
-                                                 samples_per_pixel, barycentric)
-
-            dpdvs_b = cross(ns_b, dpdus_b)
-
-            push!(medium_sample_queue, VPMediumSampleWorkItem(
-                work, t_hit,
-                geom.pi, geom.ps, geom.n, geom.dpdu, geom.dpdv,
-                ns_b, dpdus_b, dpdvs_b,
-                geom.uv, mat_idx, mi,
-                primitive.metadata.primitive_index, SVector{3,Float32}(barycentric),
-                primitive.metadata.arealight_id, Raycore.area(primitive)
-            ))
-        else
-            push!(medium_sample_queue, VPMediumSampleWorkItem(work))
-        end
+        work = prepare_medium_work(work, media)
+        push!(medium_sample_queue, VPMediumSampleWorkItem(work, Raycore.closest_hit_record(accel, work.ray)))
         return
     end
 
-    # ─── Non-medium: trace + alpha-test + inline shade ───
+    # Every surface is opaque to this ray; a cutout is tested after the hit and,
+    # where the ray passes, it goes on along the same line past the hit (Cycles
+    # moves `tmin` the same way), so the record stays in the queued ray's parameter.
     ray = work.ray
     for _ in 1:Int32(16)
-        hit, primitive, t_hit, barycentric, instance_id = Raycore.closest_hit(accel, ray)
-
-        if !hit
+        rec = Raycore.closest_hit_record(accel, ray)
+        if rec.kind == Raycore.HIT_MISS
             push!(escaped_queue, VPEscapedRayWorkItem(work))
             return
         end
-
-        mi_idx = resolve_mi_idx(instance_id, primitive)
-        mi = media_interfaces[mi_idx]
+        primitive = Raycore.hit_primitive(accel, rec)
+        bary = Raycore.hit_barycentric(accel, rec)
+        mi = media_interfaces[resolve_mi_idx(rec.custom, primitive)]
         mat_idx = mi.material
 
-        uv = vp_compute_uv_barycentric(primitive, barycentric)
-        tfc = TextureFilterContext(uv, 0f0, 0f0, 0f0, 0f0,
-                primitive.metadata.primitive_index, SVector{3,Float32}(barycentric))
+        tfc = alpha_filter_context(primitive, bary, ray.o, ray.d, rec.t)
         alpha = get_surface_alpha_dispatch(materials, mat_idx, tfc)
-
         if alpha < 1f0
-            rng = pcg32_init(pbrt_hash(ray.o), pbrt_hash(ray.d))
+            # Hashed from where the ray meets the surface: each layer it passes
+            # decides apart from the last.
+            rng = pcg32_init(pbrt_hash(Point3f(ray.o + ray.d * rec.t)), pbrt_hash(ray.d))
             alpha_u, _ = pcg32_uniform_f32(rng)
             if alpha_u > alpha
-                pi_pt = Point3f(ray.o + ray.d * t_hit)
-                n = vp_compute_geometric_normal(primitive)
-                offset = if dot(ray.d, n) > 0f0; n else; -n end
-                ray = Raycore.Ray(o=Point3f(pi_pt + offset * 1f-4), d=ray.d)
+                ray = Raycore.Ray(ray; t_min = nextfloat(rec.t))
                 continue
             end
         end
 
-        # Valid surface hit — compute geometry + bump perturbation, resolve
-        # MixMaterial (must happen at the push site, not in the shading
-        # kernel, so the per-material queue routes to the right concrete
-        # type), and either push to the typed shading queue or handle the
-        # null-material boundary inline.
-        geom = vp_compute_surface_geometry(primitive, barycentric, ray.o, ray.d, t_hit)
-        wo = -ray.d
-        resolved_mat_idx = resolve_mix_material(materials, mat_idx, geom.pi, wo,
-            TextureFilterContext(geom.uv, primitive.metadata.primitive_index, SVector{3,Float32}(barycentric), geom.pi))
-
-        # Null-material surface (pbrt `Material "interface"` / nullptr): no
-        # BSDF, no direct lighting.  Push a continuation ray with the medium
-        # swap inline — depth NOT incremented (same as
-        # `evaluate_material_inner!`'s null-material skip).  An emissive one
-        # (a see-through glowing sheet) adds its emission first, as pbrt-v4's
-        # VolPath adds `isect.Le` before it skips a surface without a BSDF.
-        if !Raycore.is_valid(resolved_mat_idx)
-            push_arealight_hit!(hit_area_light_queue, primitive.metadata.arealight_id,
-                geom.pi, geom.n, geom.uv, wo, work, work.beta, work.r_u, work.r_l,
-                Raycore.area(primitive), t_hit)
+        # Null-material surface (pbrt `Material "interface"` / nullptr): no BSDF,
+        # no direct lighting, so no shading kernel to go to. Its emission (a
+        # see-through glowing sheet), then the ray goes on at the same depth with
+        # the medium swapped, as pbrt-v4's VolPath adds `isect.Le` before it skips
+        # a surface without a BSDF.
+        if !Raycore.is_valid(mat_idx)
+            geom = vp_compute_surface_geometry(primitive, bary, ray.o, ray.d, rec.t)
+            wo = -ray.d
+            accumulate_arealight_hit!(pixel_L, lights, rgb2spec_table,
+                bvh_nodes, light_to_bit_trail, num_infinite_lights, num_bvh_lights,
+                primitive.metadata.arealight_id, geom.n, geom.uv, wo,
+                work, work.beta, work.r_u, work.r_l, Raycore.area(primitive), rec.t)
             ray_d = -wo
             new_medium = null_crossing_medium(mi, work.medium_idx, ray_d, geom.n)
-            ray_origin = offset_surface_origin(geom.pi,geom.n,ray_d)
-            new_ray = Raycore.Ray(o=ray_origin, d=ray_d, t_max=Inf32, time=0f0)
+            new_ray = Raycore.Ray(o=offset_surface_origin(geom.pi, geom.n, ray_d), d=ray_d,
+                                  t_max=Inf32, time=0f0)
             push!(next_ray_queue, VPRayWorkItem(
                 new_ray, work.depth,
                 work.lambda, work.pixel_index,
@@ -425,30 +397,8 @@ end
             return
         end
 
-        # Camera-approximated differentials for every hit, matching pbrt-v4
-        # ComputeDifferentials (see the trace-kernel comment above).
-        ns_b, dpdus_b = bumped_shading_frame(materials, resolved_mat_idx, camera, work, geom, primitive,
-                                             samples_per_pixel, barycentric)
-
-        dpdvs_b = cross(ns_b, dpdus_b)
-
-        hit_work = VPHitSurfaceWorkItem(
-            work,
-            geom.pi, geom.ps, geom.n, geom.dpdu, geom.dpdv,
-            ns_b, dpdus_b, dpdvs_b,
-            geom.uv, resolved_mat_idx, mi,
-            primitive.metadata.primitive_index, SVector{3,Float32}(barycentric),
-        )
-
-        # Route into the matching per-material queue + emission queue.  The
-        # push site uses `with_index(materials, ...)` ONCE per hit to pick
-        # the concrete type; the per-type shading kernels never touch
-        # `with_index` on the material axis (vp_shade_material_kernel uses
-        # `material_of_type` — a compile-time slot lookup). Emission MIS
-        # runs in its own kernel via `hit_area_light_queue`.
-        enqueue_after_intersection!(per_material_queue, hit_area_light_queue, materials,
-            hit_surface_queue, hit_work,
-            primitive.metadata.arealight_id, Raycore.area(primitive), t_hit)
+        wants_shading(work.depth, max_depth, primitive.metadata.arealight_id, materials, mat_idx) || return
+        enqueue_surface_hit!(per_material_queue, materials, surface_hits, mat_idx, VPSurfaceHit(path, rec))
         return
     end
     # 16 alpha-bounces exhausted (extremely unlikely): ray absorbed
@@ -461,11 +411,12 @@ end
 # ============================================================================
 
 """
-    trace_shadow_transmittance(accel, media_interfaces, media, rgb2spec_table, origin, dir, t_max, lambda, medium_idx)
+    trace_shadow_transmittance(accel, media_interfaces, media, materials, rgb2spec_table, origin, dir, t_max, lambda, medium_idx, refract)
 
-Trace a shadow ray computing transmittance through media and transmissive boundaries;
-with `refract`, bending at surfaces that pass shadow rays (see `snells_window`).
-Returns (T_ray, r_u, r_l, visible, dir) where `dir` is the direction it leaves in and:
+Trace a shadow ray computing transmittance through media and the surfaces that let
+it through; with `refract`, bending at surfaces that pass shadow rays (see
+`snells_window`). Returns (T_ray, r_u, r_l, visible, dir) where `dir` is the
+direction it leaves in and:
 - T_ray: spectral transmittance
 - r_u, r_l: MIS weight accumulators for combining with path weights
 - visible: false if ray hits an opaque surface
@@ -473,37 +424,25 @@ Returns (T_ray, r_u, r_l, visible, dir) where `dir` is the direction it leaves i
 Following pbrt-v4's TraceTransmittance: transmissive surfaces (MediumInterface) let the ray through,
 while opaque surfaces block it. The final contribution is computed as:
     Ld * T_ray / average(path_r_u * r_u + path_r_l * r_l)
+
+The traversal stops at opaque geometry itself and hands back the nearest hits on
+the rest (`Raycore.transparent_hits`), which are shaded here in order, as Cycles'
+`integrate_transparent_shadow` does: a cutout passes `1 - alpha` of the light, a
+surface with `shadows` what a dielectric of that index transmits, a null material
+everything, changing the medium. Past the hits kept, the ray is traced on from the
+last of them.
 """
-@propagate_inbounds trace_shadow_transmittance(accel, args...) =
-    traverses_by_linked_call(accel) ? _trace_shadow_transmittance(accel, args...) :
-                                      _trace_shadow_transmittance_outlined(accel, args...)
-
-# Metal's `AdaptedAccel` carries `scene`, the argument buffer its linked MSL
-# traversal reads, so the traversal is a call already. Outlining around that
-# call doubles the call boundary, and it made renders 1.6x slower on an M1 Pro.
-traverses_by_linked_call(accel) = false
-traverses_by_linked_call(accel::Mantle.AdaptedAccel) = !isnothing(accel.scene)
-
 # @noinline: this is a self-contained ray-query lifecycle (init+proceed+get
-# all internal via Raycore.closest_hit). Keeping it as a separate OpFunction
-# in SPIR-V gives the call site its own register frame so the surrounding
-# shading kernel (vp_shade_material_kernel!) doesn't drag the shadow trace's
-# state through its own register budget — this is what kept Conductor
-# specializations pinned at 255 regs / ~1 KB spill on RTX 4000 Ada.
-# Lava's refined `incomplete_rayquery` rule (compilation.jl, 2026-06-04)
-# recognises this function's complete lifecycle and lets the @noinline stand.
-@noinline _trace_shadow_transmittance_outlined(args...) = _trace_shadow_transmittance(args...)
+# all internal via Raycore.transparent_hits). Keeping it as a separate function gives
+# the call site its own register frame so the surrounding shading kernel
+# (vp_shade_kernel!) doesn't drag the shadow trace's state through its own
+# register budget — this is what kept Conductor specializations pinned at 255
+# regs / ~1 KB spill on RTX 4000 Ada. Lava's refined `incomplete_rayquery` rule
+# (compilation.jl, 2026-06-04) recognises this function's complete lifecycle and
+# lets the @noinline stand.
+@noinline trace_shadow_transmittance(args...) = shadow_transmittance(args...)
 
-"""Whether a shadow ray's hit stops it whatever else lies on the segment: a surface with a material, that passes no light and has no cutout there."""
-@propagate_inbounds function _blocks_shadow(media_interfaces, materials, primitive, barycentric, instance_id)
-    mi = media_interfaces[resolve_mi_idx(instance_id, primitive)]
-    (Raycore.is_valid(mi.material) && !(mi.shadows > 0f0)) || return false
-    tfc = TextureFilterContext(vp_compute_uv_barycentric(primitive, barycentric),
-                               primitive.metadata.primitive_index, SVector{3,Float32}(barycentric))
-    return get_surface_alpha_dispatch(materials, mi.material, tfc) >= 1f0
-end
-
-@inline function _trace_shadow_transmittance(
+@inline function shadow_transmittance(
     accel, media_interfaces, media, materials, rgb2spec_table,
     origin::Point3f, dir::Vec3f, t_max::Float32, lambda::Wavelengths, medium_idx::SetKey,
     refract::Bool = false
@@ -512,154 +451,117 @@ end
     T_ray = SpectralRadiance(1f0)
     r_u = SpectralRadiance(1f0)
     r_l = SpectralRadiance(1f0)
+    blocked = (SpectralRadiance(0f0), SpectralRadiance(1f0), SpectralRadiance(1f0), false, dir)
 
     current_medium = medium_idx
+    # The ray traced: from `ray_o` along `dir`, the part past `t_min` up to `t_end`.
     ray_o = origin
-    t_remaining = t_max
+    t_min = 0f0
+    t_end = t_max
     bent = false
+    # Surfaces passed, of at most `max_crossed`: Cycles' transparent bounces.
+    crossed = Int32(0)
+    max_crossed = Int32(10)
 
-    # Outside media, a free segment or an occluder that blocks outright settles the ray
-    # with one query that may stop at any surface; only the rest walk the surfaces in order.
-    if !has_medium(current_medium) && t_remaining >= 1f-6
-        hit, primitive, _, barycentric, instance_id = Raycore.any_hit(accel, Raycore.Ray(o=ray_o, d=dir, t_max=t_remaining))
-        hit || return (T_ray, r_u, r_l, true, dir)
-        _blocks_shadow(media_interfaces, materials, primitive, barycentric, instance_id) &&
-            return (SpectralRadiance(0f0), SpectralRadiance(1f0), SpectralRadiance(1f0), false, dir)
-    end
-
-    # Trace through up to N transmissive/alpha boundaries
-    max_bounces = Int32(10)
-    for _ in 1:max_bounces
-        if t_remaining < 1f-6
-            break
-        end
-
-        ray = Raycore.Ray(o=ray_o, d=dir, t_max=t_remaining)
-        hit, primitive, t_hit, barycentric, instance_id = Raycore.closest_hit(accel, ray)
-
-        if !hit
-            # No more surfaces - compute transmittance for remaining distance
+    while true
+        th = Raycore.transparent_hits(accel, Raycore.Ray(o = ray_o, d = dir, t_min = t_min, t_max = t_end),
+                                      0xff, Val(4), max_crossed - crossed)
+        th.blocked && return blocked
+        # Nearest first, each taken from the front of the tuple turned by one: an
+        # index that varies would put the tuple in scratch memory on a GPU.
+        hits = th.hits
+        t_prev = t_min
+        bent_here = false
+        new_dir = dir
+        for _ in UInt32(1):min(th.count, UInt32(4))
+            rec = hits[1]
+            hits = (Base.tail(hits)..., rec)
+            # The medium up to the surface
             if has_medium(current_medium)
                 seg_T, seg_r_u, seg_r_l = compute_transmittance_ratio_tracking(
                     rgb2spec_table, media, current_medium,
-                    ray_o, dir, t_remaining, lambda
+                    Point3f(ray_o + dir * t_prev), dir, rec.t - t_prev, lambda
                 )
                 T_ray = T_ray * seg_T
                 r_u = r_u * seg_r_u
                 r_l = r_l * seg_r_l
             end
-            return (T_ray, r_u, r_l, true, dir)  # Visible
-        end
+            t_prev = rec.t
+            crossed += Int32(1)
 
-        # Hit a surface - look up MediumInterfaceIdx (per-instance override takes priority)
-        mi_idx = resolve_mi_idx(instance_id, primitive)
-        mi = @inbounds media_interfaces[mi_idx]
-        n = vp_compute_geometric_normal(primitive)
-        entering = dot(dir, n) < 0f0
+            primitive = Raycore.hit_primitive(accel, rec)
+            barycentric = Raycore.hit_barycentric(accel, rec)
+            mi = @inbounds media_interfaces[resolve_mi_idx(rec.custom, primitive)]
+            n = vp_compute_geometric_normal(primitive)
 
-        # A surface is a transparent boundary for shadow rays if it has no BSDF
-        # material: a medium transition, or an emissive sheet. Surfaces with a
-        # material (e.g. dielectric glass) block shadow rays — pbrt-v4:
-        # result.hit && result.material → T_ray=0. Refracted-light contributions
-        # are captured by explicit path bouncing through the BSDF.
-        is_transmissive = !Raycore.is_valid(mi.material)
-
-        # A surface that passes shadow rays (see `MediumInterface`'s `shadows`): what a
-        # dielectric of that index transmits. With `refract`, the ray bends there as
-        # light does (see `snells_window`), and the radiance it brings back changes
-        # by the square of the indices; without, the refraction is ignored.
-        bend = !is_transmissive && mi.shadows > 0f0 && refract
-        new_dir = dir
-        if !is_transmissive && mi.shadows > 0f0
-            # Through Snell's window light crosses one surface; what crosses more is
-            # the paths' (see `snells_window`).
-            bend && bent && return (SpectralRadiance(0f0), SpectralRadiance(1f0), SpectralRadiance(1f0), false, dir)
-            if refract
-                ns = vp_compute_shading_normal(primitive, barycentric, n)
-                ns = dot(ns, n) < 0f0 ? -ns : ns
-                leaving = dot(dir, ns) > 0f0            # from the inside out
-                η = leaving ? mi.shadows : 1f0 / mi.shadows
-                nf = leaving ? -ns : ns                  # facing the way the ray comes from
-                cos_i = -dot(dir, nf)
-                sin2_t = η * η * max(0f0, 1f0 - cos_i * cos_i)
-                sin2_t >= 1f0 && return (SpectralRadiance(0f0), SpectralRadiance(1f0), SpectralRadiance(1f0), false, dir)
-                new_dir = normalize(η * dir + (η * cos_i - sqrt(1f0 - sin2_t)) * nf)
-                T_ray = T_ray * ((1f0 - fresnel_dielectric(dot(-dir, ns), mi.shadows)) * η * η)
-            else
-                T_ray = T_ray * (1f0 - fresnel_dielectric(dot(dir, n), mi.shadows))
+            if Raycore.is_valid(mi.material) && !(mi.shadows > 0f0)
+                # A cutout: what its alpha lets through, the medium unchanged.
+                tfc = alpha_filter_context(primitive, barycentric, ray_o, dir, rec.t)
+                T_ray = T_ray * (1f0 - get_surface_alpha_dispatch(materials, mi.material, tfc))
+                is_black(T_ray) && return blocked
+                continue
             end
-            is_transmissive = true
-        end
 
-        if !is_transmissive
-            # Check alpha for stochastic pass-through (e.g. GLTF BLEND mode foliage)
-            # Following pbrt-v4: use deterministic hash of ray origin+direction
-            hit_tfc = TextureFilterContext(vp_compute_uv_barycentric(primitive, barycentric),
-                                           primitive.metadata.primitive_index, SVector{3,Float32}(barycentric))
-            mat_idx = mi.material
-            alpha = get_surface_alpha_dispatch(materials, mat_idx, hit_tfc)
-
-            if alpha < 1f0
-                # Deterministic stochastic test (same ray always gets same decision)
-                rng = pcg32_init(pbrt_hash(ray_o), pbrt_hash(dir))
-                alpha_u, _ = pcg32_uniform_f32(rng)
-                if alpha_u > alpha
-                    # Alpha pass-through: compute medium transmittance up to surface, then continue
-                    if has_medium(current_medium)
-                        seg_T, seg_r_u, seg_r_l = compute_transmittance_ratio_tracking(
-                            rgb2spec_table, media, current_medium,
-                            ray_o, dir, t_hit, lambda
-                        )
-                        T_ray = T_ray * seg_T
-                        r_u = r_u * seg_r_u
-                        r_l = r_l * seg_r_l
-                    end
-                    # Move past this surface (medium unchanged — not a medium transition)
-                    ray_o = Point3f(ray_o + dir * (t_hit + 1f-4))
-                    t_remaining = t_remaining - t_hit - 1f-4
-                    continue
+            # A surface that passes shadow rays (see `MediumInterface`'s `shadows`): what a
+            # dielectric of that index transmits. With `refract`, the ray bends there as
+            # light does (see `snells_window`), and the radiance it brings back changes
+            # by the square of the indices; without, the refraction is ignored.
+            if Raycore.is_valid(mi.material)
+                if refract
+                    # Through Snell's window light crosses one surface; what crosses more is
+                    # the paths' (see `snells_window`).
+                    bent && return blocked
+                    ns = vp_compute_shading_normal(primitive, barycentric, n)
+                    ns = dot(ns, n) < 0f0 ? -ns : ns
+                    leaving = dot(dir, ns) > 0f0            # from the inside out
+                    η = leaving ? mi.shadows : 1f0 / mi.shadows
+                    nf = leaving ? -ns : ns                  # facing the way the ray comes from
+                    cos_i = -dot(dir, nf)
+                    sin2_t = η * η * max(0f0, 1f0 - cos_i * cos_i)
+                    sin2_t >= 1f0 && return blocked
+                    new_dir = normalize(η * dir + (η * cos_i - sqrt(1f0 - sin2_t)) * nf)
+                    T_ray = T_ray * ((1f0 - fresnel_dielectric(dot(-dir, ns), mi.shadows)) * η * η)
+                    bent_here = true
+                else
+                    T_ray = T_ray * (1f0 - fresnel_dielectric(dot(dir, n), mi.shadows))
                 end
             end
+            is_black(T_ray) && return blocked
 
-            # Opaque surface blocks the ray
-            return (SpectralRadiance(0f0), SpectralRadiance(1f0), SpectralRadiance(1f0), false, dir)
+            # Update medium based on crossing direction, where the surface
+            # separates two media at all
+            if is_medium_transition(mi)
+                current_medium = get_crossing_medium(mi, dot(dir, n) < 0f0)
+            end
+            # Bent, the hits after this one lie on the old line: trace anew from here.
+            if bent_here
+                hit_p = Point3f(ray_o + dir * rec.t)
+                ray_o = offset_surface_origin(hit_p, n, new_dir)
+                t_end = t_end - rec.t - 1f-4
+                t_min = 0f0
+                dir = new_dir
+                bent = true
+                break
+            end
         end
-
-        # Transmissive boundary - compute transmittance up to this point
+        bent_here && continue
+        # More hits than were kept: trace on past the last of them.
+        if th.count >= UInt32(4)
+            t_min = nextfloat(th.hits[4].t)
+            continue
+        end
+        # No more surfaces - compute transmittance for remaining distance
         if has_medium(current_medium)
             seg_T, seg_r_u, seg_r_l = compute_transmittance_ratio_tracking(
                 rgb2spec_table, media, current_medium,
-                ray_o, dir, t_hit, lambda
+                Point3f(ray_o + dir * t_prev), dir, t_end - t_prev, lambda
             )
             T_ray = T_ray * seg_T
             r_u = r_u * seg_r_u
             r_l = r_l * seg_r_l
         end
-
-        if is_black(T_ray)
-            return (T_ray, r_u, r_l, true, dir)  # Transmittance is zero, no point continuing
-        end
-
-        # Update medium based on crossing direction, where the surface
-        # separates two media at all
-        if is_medium_transition(mi)
-            current_medium = get_crossing_medium(mi, entering)
-        end
-
-        # Move past this surface, on the side the ray goes on, bent if it bends
-        hit_p = Point3f(ray_o + dir * t_hit)
-        if bend
-            ray_o = offset_surface_origin(hit_p,n,new_dir)
-            dir = new_dir
-            bent = true
-        else
-            ray_o = offset_surface_origin(hit_p,n,dir)
-        end
-        t_remaining = t_remaining - t_hit - 1f-4
+        return (T_ray, r_u, r_l, true, dir)
     end
-
-    # Exceeded max bounces - treat as occluded
-    return (SpectralRadiance(0f0), SpectralRadiance(1f0), SpectralRadiance(1f0), false, dir)
 end
 
 """
@@ -1015,12 +917,13 @@ which medium the camera is inside. Writes a SetKey to result[1].
 end
 
 """
-    detect_camera_medium(backend, accel, media_interfaces, camera_pos) -> SetKey
+    detect_camera_medium(mem, accel, media_interfaces, camera_pos) -> SetKey
 
 Detect which medium the camera is inside by tracing a single ray from the camera
-position. Returns a SetKey identifying the medium, or SetKey() for vacuum.
+position. Returns a SetKey identifying the medium, or SetKey() for vacuum. The probe's
+scratch comes from `mem` and goes back to it (`free!`) before this returns.
 """
-function detect_camera_medium(backend, accel, media_interfaces, camera_pos::Point3f)
+function detect_camera_medium(mem::DeviceMemory, accel, media_interfaces, camera_pos::Point3f)
     # No interfaces, no medium to be inside — and the answer is not a guess,
     # it is the same `SetKey()` the kernel writes when its probe ray escapes.
     #
@@ -1033,8 +936,12 @@ function detect_camera_medium(backend, accel, media_interfaces, camera_pos::Poin
     # scene whose geometry has been handed to the rasteriser — and it surfaced
     # as a shader compile error naming a kernel the scene has no use for.
     isempty(media_interfaces) && return SetKey()
-    result = Mantle.devicearray(backend, SetKey, (1,))
-    kernel! = detect_camera_medium_kernel!(backend)
+    # From the pool and given back: an array of its own was a dedicated device
+    # allocation that nothing released, one for every camera position probed.
+    result = alloc!(mem, SetKey, 1)
+    kernel! = detect_camera_medium_kernel!(mem.backend)
     kernel!(result, accel, media_interfaces, camera_pos; ndrange=1)
-    return @allowscalar result[1]
+    key = @allowscalar result[1]
+    free!(mem)
+    return key
 end

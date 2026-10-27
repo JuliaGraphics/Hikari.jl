@@ -257,21 +257,7 @@ adapt_scene_for_render(backend, scene, ::VolPath) = Adapt.adapt(backend, scene)
 
 # Camera medium detection dispatch — overridden for AdaptedAccel in hikari_integration.jl
 detect_initial_medium(backend, accel, media_interfaces, camera_pos, ::VolPath) =
-    detect_camera_medium(backend, accel, media_interfaces, camera_pos)
-
-"""
-    shades_surfaces_inline(accel) -> Bool
-
-Does tracing already shade the surfaces it hits? The hardware RT path runs
-per-material closest-hit shaders, so a hit is fully shaded by the time the
-trace returns; the software BVH only records hits and leaves shading to the
-post-hoc kernels. Only true for rays that never enter a medium — see
-`chit_owns_surface` in `render!`.
-
-The `AdaptedAccel` method lives in `hw-rt.jl`, with the other overrides on
-the accel axis.
-"""
-shades_surfaces_inline(accel) = false
+    detect_camera_medium(DeviceMemory(backend), accel, media_interfaces, camera_pos)
 
 """
     clear!(integrator::VolPath)
@@ -309,7 +295,8 @@ Following pbrt-v4's GetCameraSample: samples the filter, computes offset and wei
     rng  # SobolRNG passed via Adapt
 )
     idx = @index(Global)
-    # See `vp_trace_and_shade_kernel!`: the sample index is a `Mantle.GPURef`.
+    # The sample index is a `Mantle.GPURef`, a one-element device array whose
+    # ADDRESS the recorded commands hold, so one recording renders every sample.
     # So are the camera, the initial medium and the filter params — per-run
     # values the recorded commands hold the ADDRESS of, written by an `Update`
     # in the run's own submission. What a run changes never rebuilds the plan.
@@ -451,9 +438,10 @@ pbrt-v4's PixelSensor::ToSensorRGB. White balance is handled via the output_matr
     cie_table = CIEXYZTable(cie_x, cie_y, cie_z)
 
     @inbounds if pixel_idx <= n_pixels
-        weighted = Vec3f(0)
-        weight_sum = 0f0
-        # The pixel's samples of the wave, one per lane (see `path_pixel_sample`).
+        rgb_base = (pixel_idx - Int32(1)) * Int32(3)
+        # The pixel's samples of the wave, one per lane (see `path_pixel_sample`), each added
+        # on its own as pbrt-v4's `AddSample`: summed first, a wave of samples rounds
+        # differently from the same samples rendered one at a time.
         for lane in Int32(0):lanes - Int32(1)
             slot = pixel_idx + lane * n_pixels
             base = (slot - Int32(1)) * Int32(4)
@@ -478,20 +466,14 @@ pbrt-v4's PixelSensor::ToSensorRGB. White balance is handled via the output_matr
             # Convert sensor RGB → output sRGB
             rgb = output_matrix * sensor_rgb
 
-            # Get filter weight for this sample (pbrt-v4 style weighted accumulation)
+            # Filter-weighted (pbrt-v4: pixel.rgbSum[c] += weight * rgb[c], pixel.weightSum += weight)
             weight = filter_weight_per_pixel[slot]
-            weighted += weight * Vec3f(rgb[1], rgb[2], rgb[3])
-            weight_sum += weight
+            weighted = weight * Vec3f(rgb[1], rgb[2], rgb[3])
+            Atomix.@atomic :monotonic pixel_rgb[rgb_base + Int32(1)] += weighted[1]
+            Atomix.@atomic :monotonic pixel_rgb[rgb_base + Int32(2)] += weighted[2]
+            Atomix.@atomic :monotonic pixel_rgb[rgb_base + Int32(3)] += weighted[3]
+            Atomix.@atomic :monotonic pixel_weight_sum[pixel_idx] += weight
         end
-
-        # Accumulate weighted RGB (pbrt-v4: pixel.rgbSum[c] += weight * rgb[c])
-        rgb_base = (pixel_idx - Int32(1)) * Int32(3)
-        Atomix.@atomic :monotonic pixel_rgb[rgb_base + Int32(1)] += weighted[1]
-        Atomix.@atomic :monotonic pixel_rgb[rgb_base + Int32(2)] += weighted[2]
-        Atomix.@atomic :monotonic pixel_rgb[rgb_base + Int32(3)] += weighted[3]
-
-        # Accumulate weight (pbrt-v4: pixel.weightSum += weight)
-        Atomix.@atomic :monotonic pixel_weight_sum[pixel_idx] += weight_sum
     end
 end
 
@@ -640,7 +622,9 @@ function render!(
     initial_medium = if vp.initial_medium_camera_pos === camera_pos && vp.initial_medium_key !== nothing
         vp.initial_medium_key::SetKey
     else
-        key = detect_initial_medium(backend, adapted.accel, adapted.media_interfaces, camera_pos, vp)::SetKey
+        # A scene without media has no medium to start in: no probe to trace.
+        key = isempty(adapted.media) ? SetKey() :
+              detect_initial_medium(backend, adapted.accel, adapted.media_interfaces, camera_pos, vp)::SetKey
         vp.initial_medium_camera_pos = camera_pos
         vp.initial_medium_key = key
         key
@@ -652,7 +636,7 @@ function render!(
     # the state) or a first call. The film and the camera are call ARGUMENTS,
     # which cannot announce themselves; scene mutation never comes through here
     # at all.
-    lanes = owns_surface_shading(adapted) ? 1 : wave_lanes(samples, width * height)
+    lanes = wave_lanes(samples, width * height)
     plans = vp.state === nothing ? nothing : vp.state.plans
     if plans === nothing || plans.framebuffer !== img || !holdscamera(vp.perrun, camera) ||
        vp.state.sobol_rng.lanes != lanes
@@ -691,10 +675,6 @@ function render!(
     return nothing
 end
 
-"""Whether the closest-hit shaders of the hardware pipeline shade the surfaces, so no queue between kernels holds the hits."""
-owns_surface_shading(adapted) =
-    shades_surfaces_inline(adapted.accel) && isempty(adapted.media) && !isempty(adapted.materials)
-
 """The most paths a wave holds: what its queues and buffers are sized for."""
 const WAVE_PATHS = 1 << 19
 
@@ -708,6 +688,17 @@ function wave_lanes(samples::Integer, n_pixels::Integer)
     most = clamp(WAVE_PATHS ÷ n_pixels, 1, samples)
     return findlast(k -> samples % k == 0, 1:most)
 end
+
+"""
+Whether a ray can reach anything that emits: a light that is not a point or a direction (an
+area light, the sky), or a material's own emission (`emits`).
+"""
+@inline emission_reachable(lights::Raycore.StaticMultiTypeSet, materials::Raycore.StaticMultiTypeSet) =
+    reduce(|, map(v -> !is_δ_light(eltype(v)), lights.data); init = false) ||
+    reduce(|, map(v -> emits(eltype(v)), materials.data); init = false)
+
+"""Whether a ray can pass a surface without scattering: an interface without a material."""
+has_crossings(media_interfaces) = any(mi -> !Raycore.is_valid(mi.material), Array(media_interfaces))
 
 """
     rebuild_render_state!(vp, scene, film, camera, backend, initial_medium, lanes)
@@ -732,17 +723,6 @@ function rebuild_render_state!(vp::VolPath, scene::AbstractScene, film::Film,
 
     # Note: Rebuild state if lights changed (num_lights mismatch) to update light sampler
     n_lights = length(lights)
-    # `hit_area_light_queue` and the per-material typed queues are vestigial
-    # ONLY when the HW per-material chit fully owns the surface shading.  On
-    # medium-bearing scenes the wavefront medium-survives-to-surface path
-    # (`delta-tracking.jl`'s `vp_sample_medium_kernel!`) still uses
-    # `enqueue_after_intersection!` to push hits into both queues, so they
-    # must be full-capacity even on HW.
-    # `!isempty(materials)` for the same reason `trace_pass!` asks it: with no
-    # materials there are no closest-hit shaders, so that path is not taken and
-    # the passes it would have replaced have to stay in the graph.
-    chit_owns_surface = owns_surface_shading(adapted)
-
     has_media = !isempty(media)
     n_paths = width * height * lanes
     if vp.state === nothing ||
@@ -750,11 +730,10 @@ function rebuild_render_state!(vp::VolPath, scene::AbstractScene, film::Film,
        vp.state.height != height ||
        vp.state.sobol_rng.lanes != lanes ||
        vp.state.num_lights != n_lights ||
-       # Queues allocated as capacity-1 placeholders (no-media medium queues,
-       # chit-owns-surface hit/area-light queues) must grow if a scene that
-       # needs them shows up on a reused integrator.
-       (has_media && Int(vp.state.medium_sample_queue.capacity) < n_paths) ||
-       (!chit_owns_surface && Int(vp.state.hit_surface_queue.capacity) < n_paths)
+       # Queues allocated as capacity-1 placeholders (the medium queues and the
+       # arrivals of a scene without media) must grow if a scene that needs them
+       # shows up on a reused integrator.
+       (has_media && Int(vp.state.medium_sample_queue.capacity) < n_paths)
         # The previous state's regions go back before the new ones are taken,
         # so a resize does not hold two states' worth at once. No synchronize
         # and no finalizer race: nothing finalizes, and `free!` retires.
@@ -774,7 +753,6 @@ function rebuild_render_state!(vp::VolPath, scene::AbstractScene, film::Film,
                                 sampler_seed=UInt32(0),
                                 accumulation_eltype=vp.accumulation_eltype,
                                 sensor=vp.sensor,
-                                hw_accel=chit_owns_surface,
                                 has_media=has_media)
     end
     state = vp.state
@@ -782,12 +760,8 @@ function rebuild_render_state!(vp::VolPath, scene::AbstractScene, film::Film,
     n_pixels = width * height
 
     # Build (or refresh) the per-material typed queues from the adapted
-    # materials set.  On the HW per-material chit path the chit shaders fully
-    # shade hits inline and the typed queues are never drained, so we use a
-    # capacity=1 placeholder.  SW BVH and HW-with-media still route surface
-    # hits through these to avoid the monolithic with_index BSDF switch.
-    pmq_capacity = chit_owns_surface ? 1 : n_paths
-    ensure_per_material_queue!(state, materials, pmq_capacity)
+    # materials set: every surface hit goes through them.
+    ensure_per_material_queue!(state, materials, n_paths)
 
     # Adapt filter sampler data to GPU — cache on struct to avoid re-uploading
     if vp.filter_sampler_gpu === nothing
@@ -803,9 +777,10 @@ function rebuild_render_state!(vp::VolPath, scene::AbstractScene, film::Film,
                    initial_medium, vp.filter_params, vp.filter_sampler_gpu,
                    vp.regularize, Int32(vp.samples_per_pixel),
                    vp.max_component_value, vp.max_depth;
-                   chit_owns_surface = chit_owns_surface,
                    has_media = has_media,
-                   has_lights = length(lights) > 0)
+                   has_lights = length(lights) > 0,
+                   emitters_reachable = emission_reachable(lights, materials),
+                   crossings = has_crossings(media_interfaces))
     # The typed handle to what the plans just made. The union names the camera
     # types a sample can be rendered with; another is a plan the field cannot
     # hold, said here rather than as a TypeError.

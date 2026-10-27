@@ -5,21 +5,11 @@ What Hikari still names from Lava, and why each one is allowed to stay.
 this file is what keeps the count at zero.
 
 Lava is a Julia→SPIR-V compiler with no Vulkan dependency, and everything a
-renderer would reach for — `LavaBackend`, `VulkanTLAS`, `vk_context`,
-`RayTracingPipeline`, `@compile_workload` — is Mantle's. The names that could
-plausibly have stayed are the device-side ones:
-
-    lava_rt_launch_id_x   lava_rt_trace_ray        lava_rt_primitive_id
-    lava_rt_ray_tmax      lava_rt_instance_id      lava_rt_instance_custom_index
-    lava_rt_hit_bary_u    lava_rt_hit_bary_v       lava_rt_reorder_thread
-    lava_rt_hit_object_trace_ray   lava_rt_hit_object_execute_shader
-    lava_rt_payload_store_f32_at   lava_rt_payload_load_f32_at
-
-Those are **ray-tracing intrinsics** — what a shader BODY calls, lowered by the
-compiler to `OpTraceRayKHR` and friends — and they are `KernelInterface`'s,
-re-exported by Mantle: `rt-pipeline.jl` names `rt_launch_id_x` from Mantle and
-not `lava_rt_launch_id_x` from Lava. So the count is **zero names in zero
-files**, and any reference at all is the split coming undone.
+renderer would reach for (`LavaBackend`, `VulkanTLAS`, `vk_context`,
+`@compile_workload`) is Mantle's. Hikari traces with `Raycore.closest_hit` from
+ordinary kernels, which Mantle lowers to a ray query, so it needs no device-side
+name from Lava either. The count is **zero names in zero files**, and any
+reference at all is the split coming undone.
 
 `src/precompile_statements.jl` is skipped: generated from a compile trace, it
 names whatever types the run saw.

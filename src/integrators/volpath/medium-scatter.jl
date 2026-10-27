@@ -186,17 +186,13 @@ Sobol samples are generated inline; see `surface_direct_lighting_inner!`.
 @propagate_inbounds function medium_scatter_inner!(
     ray_queue,
     work::VPMediumScatterWorkItem,
-    max_depth::Int32,
     sobol_rng,
     sample_idx::Int32,
     rr_depth::Int32 = Int32(1),
     media = nothing,
 )
-    # Check depth limit
+    # A real scattering is only queued below the depth limit (`sample_T_maj_loop!`).
     new_depth = work.depth + Int32(1)
-    if new_depth >= max_depth
-        return
-    end
 
     # Inline Sobol sample generation for phase function direction (dim+6 = 2D).
     px, py, sample_idx = path_pixel_sample(sobol_rng, work.pixel_index, sample_idx)
@@ -257,11 +253,10 @@ end
 @propagate_inbounds function vp_medium_scatter_kernel!(
     work,
     ray_queue,
-    max_depth::Int32,
     sobol_rng, sample_idx_ref,
     rr_depth::Int32,
     media,
 )
     sample_idx = @inbounds sample_idx_ref[Int32(1)]
-    medium_scatter_inner!(ray_queue, work, max_depth, sobol_rng, sample_idx, rr_depth, media)
+    medium_scatter_inner!(ray_queue, work, sobol_rng, sample_idx, rr_depth, media)
 end

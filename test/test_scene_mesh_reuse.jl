@@ -24,7 +24,7 @@ end
 @testset "Geometry replacement reuses material textures" begin
     test_scene_mesh_texture_reuse(KA.CPU())
     backend = Mantle.defaultbackend()
-    if !Mantle.supports_rt_pipeline(backend)
+    if !Mantle.supports_hwtlas(backend)
         @test_skip false
     else
         test_scene_mesh_texture_reuse(backend; hw_accel = true)

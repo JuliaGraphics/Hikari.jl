@@ -34,11 +34,7 @@ end
         hit || return (RGB{Float32}(0, 0, 0), Vec3f(0), first_depth)
         step == 1 && (first_depth = t)
         mi = interfaces[resolve_mi_idx(instance, prim)]
-        uv = vp_compute_uv_barycentric(prim, bary)
-        tfc = TextureFilterContext(
-            uv, 0.0f0, 0.0f0, 0.0f0, 0.0f0,
-            prim.metadata.primitive_index, SVector{3, Float32}(bary)
-        )
+        tfc = alpha_filter_context(prim, bary, ray.o, ray.d, t)
         # Deterministic centre-ray guides: skip null volume boundaries and
         # alpha-cutout surfaces below 50% coverage. No random guide flicker.
         alpha = get_surface_alpha_dispatch(materials, mi.material, tfc)

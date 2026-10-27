@@ -35,9 +35,9 @@ The integrator should call `choose_material()` to get the actual material index
 to use for the hit point, then proceed with normal material evaluation.
 """
 # NON-PARAMETRIC, and that matters more here than anywhere else: the
-# MixMaterial closest-hit shader has to dispatch over EVERY material type in
-# the scene (see rt-pipeline.jl `T <: MixMaterial`), so it inlines the whole
-# shading system. One MixMaterial type per distinct sub-material PAIR therefore
+# MixMaterial shading kernel has to dispatch over EVERY material type in the
+# scene (see `vp_shade_surface_hit!`'s `T <: MixMaterial`), so it inlines the
+# whole shading system. One MixMaterial type per distinct sub-material PAIR therefore
 # cost a full copy of that shader each — the two Crown mixes were the single
 # largest item in its compile time.
 #

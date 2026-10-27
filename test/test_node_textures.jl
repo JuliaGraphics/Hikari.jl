@@ -1,6 +1,7 @@
 using Test
 using Hikari
 using Hikari.TextureNodes
+using Hikari.TextureNodes: magic   # FileIO, which the suite loads, exports a `magic` too
 using Hikari: TextureFilterContext, TexKind, RGBSpectrum, device_param, eval_handle, eval_handle_spectrum
 using GeometryBasics
 using GeometryBasics: Point2f, Point3f, Vec3f
@@ -276,13 +277,13 @@ const CYCLES_VALUES = [
         @test scalar_at(reduce(+, terms), x) ≈ sum(sin(0.3f0 * k) for k in 1:40) atol = 1e-5
         @test scalar_at(foldr(+, terms), x) ≈ sum(sin(0.3f0 * k) for k in 1:40) atol = 1e-5
         wide = [sin(p * k) for k in 1:60]
-        @test_throws "more than $(Hikari.NODE_STACK) floats" Hikari.compile_nodes(reduce(+, wide) + reduce(+, [t * t for t in wide]), identity)
+        @test_throws "more than $(Hikari.NODE_STACK) floats" Hikari.compile_nodes(reduce(+, wide) + reduce(+, [t * t for t in wide]))
         shared = noise(p; detail = 1)
         @test at(shared.color + shared, x) ≈ at(shared.color, x) + at(shared, x)
     end
 
     @testset "programs carry the node families and stack they use" begin
-        features(g) = typeof(Hikari.compile_nodes(g, _ -> (1, 1))).parameters[1].parameters[1]
+        features(g) = typeof(Hikari.compile_nodes(g)).parameters[1]
         p = xyz()
         F = Hikari.NodeFeature
         @test features(p.x * 2 + 1) & ~(UInt32(0x3) << Hikari.STACK_SHIFT) == 0
@@ -320,9 +321,38 @@ const CYCLES_VALUES = [
         @test updated == handle
         tfc = TextureFilterContext(Point2f(0), Point3f(1, 0, 0))
         @test eval_handle(host_static(store), updated, tfc) == 3f0
+        # A longer program of the same node families is resized where it is.
         longer = Raycore.update_item(store, handle, xyz().x * 3 + 1)
-        @test longer.idx != handle.idx
+        @test longer == handle
         @test eval_handle(host_static(store), longer, tfc) == 4f0
+    end
+
+    # An update compiled the graph again, and compiling stored every image it read: each update
+    # took a new array per image, kept the one it replaced, and changed the store's layout, which
+    # drops every plan recorded against it. The images go where the old program's are.
+    @testset "updating a graph keeps the images it reads where they are" begin
+        store = Raycore.MultiTypeSet(CPU())
+        image(c, n = 4) = fill(RGBSpectrum(c...), n, n)
+        handle = device_param(store, image_texture(image((1, 0, 0))) * 0.5)
+        arrays, layout = length(store.texture_gpu_arrays), store.layout
+        rgb(h) = (s = eval_handle_spectrum(host_static(store), h, TextureFilterContext(Point2f(0.5), Point3f(0), Vec3f(0, 0, 1)));
+                  Vec3f(s.c[1], s.c[2], s.c[3]))
+        updated = Raycore.update_item(store, handle, image_texture(image((0, 0, 1))) * 0.25)
+        @test updated == handle
+        @test (length(store.texture_gpu_arrays), store.layout) == (arrays, layout)
+        @test rgb(updated) == Vec3f(0, 0, 0.25)
+        # Another size is the same array, resized.
+        resized = Raycore.update_item(store, handle, image_texture(image((0, 1, 0), 8)) * 0.25)
+        @test resized == handle
+        @test length(store.texture_gpu_arrays) == arrays
+        @test rgb(resized) == Vec3f(0, 0.25, 0)
+        # One image read twice is one array, and stays one.
+        once = device_param(store, (img = image_texture(image((1, 1, 0))); img * img))
+        arrays = length(store.texture_gpu_arrays)
+        again = Raycore.update_item(store, once, (img = image_texture(image((0, 1, 1))); img * img))
+        @test again == once
+        @test length(store.texture_gpu_arrays) == arrays
+        @test rgb(again) == Vec3f(0, 1, 1)
     end
 
     @testset "rendered by position ($(hw ? "hardware" : "software") tracing)" for hw in (false, true)

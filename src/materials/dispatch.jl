@@ -137,13 +137,14 @@ end
 # The materials that have no BSDF of their own
 # ============================================================================
 #
-# The shading pass dispatches a `vp_shade_material_kernel!{T}` per concrete type
-# in the scene's material set, so every one of them needs BSDF methods to
-# compile — including the types that never actually shade a hit:
+# The shading pass dispatches a `vp_shade_kernel!` per concrete type in the
+# scene's material set, and a mix's kernel dispatches its component over all of
+# them, so every one needs BSDF methods to compile — including the types that
+# never actually shade a hit:
 #
-#   * `MixMaterial` is re-pointed at one of its sub-materials at the PUSH site
-#     (`resolve_mix_material` in `vp_trace_and_shade_kernel!` and in delta
-#     tracking), so a `TypedHitRef{MixMaterial}` is never produced.
+#   * `MixMaterial` is re-pointed at one of its components in its own kernel
+#     (`resolve_mix_material` in `vp_shade_surface_hit!`), so the mix itself is
+#     never shaded.
 #   * `Emissive` lives in `MediumInterface.emission`, not in the material slot;
 #     it only reaches the material set if something pushes it directly.
 #
@@ -177,7 +178,7 @@ const BSDFLessMaterial = Union{Emissive, MixMaterial}
 # For materials Hikari takes over completely: `to_device_material` rewrites the
 # texture-carrying fields into `TexHandle`s (storing whatever needs a slot),
 # which is what collapses "same material, different parameter spelling" into a
-# single concrete type and therefore a single closest-hit shader.
+# single concrete type and therefore a single shading kernel.
 Raycore.maybe_convert_field(dhv::Raycore.MultiTypeSet, m::Material) =
     to_device_material(dhv, m)
 

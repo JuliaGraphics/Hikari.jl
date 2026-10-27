@@ -31,7 +31,7 @@ function merge_color_with_material(color_tex, material::Dielectric)
 end
 
 function merge_color_with_material(color_tex, material::Conductor)
-    Conductor(material.eta, material.k, material.roughness, color_tex,
+    Conductor(material.eta, material.k, material.u_roughness, material.v_roughness, color_tex,
                      material.remap_roughness, material.displacement)
 end
 
@@ -61,8 +61,15 @@ function merge_color_with_material(color_tex, material::CoatedDiffuseTransmissio
     )
 end
 
+# The colour is the conductor's reflectance, as pbrt-v4 gives a conductor one instead of its IOR.
 function merge_color_with_material(color_tex, material::CoatedConductor)
-    material
+    CoatedConductor(
+        material.interface_u_roughness, material.interface_v_roughness, material.interface_eta,
+        material.conductor_eta, material.conductor_k, color_tex,
+        material.conductor_u_roughness, material.conductor_v_roughness,
+        material.thickness, material.albedo, material.g, material.max_depth, material.n_samples,
+        material.remap_roughness, material.displacement
+    )
 end
 
 # No surface, so nothing for a plot colour to tint.

@@ -17,7 +17,7 @@
 
 using Test
 using Hikari
-using Lava, Mantle
+using Mantle
 using Raycore
 using Adapt
 using GeometryBasics
@@ -59,6 +59,18 @@ function _render(scene; backend=_BACKEND, hw::Bool=false, res::Int=32,
     img = Array(gpu_film.framebuffer)
     close(vp)
     return img
+end
+
+# What the device's pool holds once collected garbage is returned to it: the bytes
+# of its blocks and its live regions. Asked of the pool, as Mantle's own leak tests
+# do, so it reads the same on every backend.
+function pool_state(dev)
+    p = Mantle.pool(dev)
+    GC.gc(true); GC.gc(true)
+    Mantle.waitidle(dev)
+    Mantle.reclaim!(p, dev; wait = true)
+    blocks = collect(Iterators.flatten(values(p.blocks)))
+    return (bytes = Mantle.reserved(p), regions = sum(b -> length(b.live), blocks; init = 0))
 end
 
 function _make_grid_volume_scene(; backend=_BACKEND, σ_s::Float32=0.3f0)
@@ -132,9 +144,9 @@ end
 
 @testset "J3: RGBGridMedium animation loop is bounded" begin
     scene, handle = _make_grid_volume_scene(; σ_s=0.3f0)
+    dev = Hikari.mantle_device(_BACKEND)
 
-    bytes_before    = Mantle.gpu_live_bytes()
-    bufs_before     = Mantle.live_buffer_count()
+    before          = pool_state(dev)
     media_before    = length(scene.media)
     texarrs_before  = length(scene.media.texture_gpu_arrays)
 
@@ -150,15 +162,15 @@ end
                                  Hikari.MediumInterface(Hikari.NullMaterial();
                                                          inside=new_med))
     end
-    GC.gc(true)
+    after = pool_state(dev)
 
-    @info "J3: post-animation state" media=length(scene.media) texarrs=length(scene.media.texture_gpu_arrays) bytes=Mantle.gpu_live_bytes() bufs=Mantle.live_buffer_count()
+    @info "J3: post-animation state" media=length(scene.media) texarrs=length(scene.media.texture_gpu_arrays) before after
 
     @test length(scene.media)                       == media_before
     @test length(scene.media.texture_gpu_arrays)    == texarrs_before
     # GPU memory may shift slightly due to deferred-free timing; bound the
     # delta tightly so a real leak is visible.
-    @test Mantle.gpu_live_bytes() - bytes_before <= 32 * 1024 * 1024  # +32 MiB ceiling
+    @test after.bytes - before.bytes <= 32 * 1024 * 1024  # +32 MiB ceiling
 end
 
 # ── J4. HW RT picks up material updates the same as SW ─────────────────────
@@ -195,10 +207,9 @@ end
 
 @testset "J5: render + update_material! loop is stable" begin
     scene, handle = _make_sphere_scene(; hw_accel=false)
-    ctx = Mantle.vk_context()
+    dev = Hikari.mantle_device(_BACKEND)
 
-    bytes_before = Mantle.gpu_live_bytes()
-    bufs_before  = Mantle.live_buffer_count()
+    before = pool_state(dev)
 
     for k in 1:20
         # Cycle the material colour each iteration.
@@ -208,21 +219,15 @@ end
         Hikari.update_material!(scene, handle.interface,
                                  Hikari.Diffuse(Kd=Hikari.RGBSpectrum(r, g, b)))
         img = _render(scene; samples=4, res=16)
-        @test !Mantle.device_lost(ctx)
+        @test !Mantle.retired(dev)
         m = _channel_means(img)
         @test (m.r + m.g + m.b) > 0.001f0   # non-degenerate output
     end
-    GC.gc(true)
+    after = pool_state(dev)
+    @info "J5: after 20 render + update cycles" before after
 
-    # Lavapipe's shader/buffer accounting runs heavier than RADV's — same
-    # "did the loop stop growing" invariant we care about, just plateauing
-    # at a bigger number. Empirically: ≤64 MiB on RADV; ~130 MiB on lavapipe
-    # at 20 iterations and still bounded. Use a per-driver ceiling so the
-    # tighter contract on RADV doesn't quietly slip.
-    is_llvmpipe = occursin("llvmpipe", lowercase(ctx.device_name))
-    bytes_budget = is_llvmpipe ? 256 * 1024 * 1024 : 64 * 1024 * 1024
-    @test Mantle.gpu_live_bytes() - bytes_before <= bytes_budget
-    @test Mantle.live_buffer_count() - bufs_before <= 16              # +16 bufs
+    @test after.bytes - before.bytes <= 64 * 1024 * 1024    # +64 MiB
+    @test after.regions - before.regions <= 16             # +16 regions
 end
 
 # ── J6. Adapted-snapshot freshness contract ────────────────────────────────
@@ -239,7 +244,7 @@ end
     # values, not the layout — the test cares that update_material! flows
     # through to the static snapshot's contents.
     function _read_material_kd(static_mts)
-        # `static_mts.data` is a Tuple of LavaArrays (one per type slot);
+        # `static_mts.data` is a Tuple of device arrays (one per type slot);
         # the first non-empty slot holds the floor's diffuse, the second
         # holds the sphere's diffuse.  We index by slot then element.
         mats_arr = first(static_mts.data)

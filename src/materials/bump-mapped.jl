@@ -10,8 +10,8 @@
 # NOT a `BumpMapped{M, T}` WRAPPER material: such a wrapper doubles the
 # concrete material type count of any scene that bump-maps some of its
 # surfaces — `Conductor{…}` and `BumpMapped{Conductor{…}, TextureRef{…}}` are
-# different types, so the per-material closest-hit path compiled a separate
-# shader for each. pbrt-v4 does not wrap: `displacement` is a plain field on
+# different types, so the per-material shading compiled a separate kernel
+# for each. pbrt-v4 does not wrap: `displacement` is a plain field on
 # every `Material`, and `Material::GetBxDF` is oblivious to it. Hikari now does
 # the same — `displacement(mat)` is a `TexHandle` field, NONE when absent, and
 # the perturbation is one predictable branch per hit.

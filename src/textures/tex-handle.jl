@@ -8,8 +8,8 @@
 # for a constant, a `Raycore.TextureRef` for an image map, a
 # `CheckerboardTexture` for a procedural — is a different TYPE per case, so
 # `Conductor{…,Float32,…}` and `Conductor{…,TextureRef{…},…}` are different
-# materials — and the per-material chit path compiles one closest-hit shader per
-# concrete material type. Crown's 50 named materials collapse to 12 Julia types
+# materials — and the per-material shading compiles one kernel per concrete
+# material type. Crown's 50 named materials collapse to 12 Julia types
 # of which only ~5 are distinct material CLASSES; the rest is
 # constant-vs-texture combinatorics and wrapper types.
 #
@@ -27,7 +27,7 @@
 # The tag switch is paid ONCE PER HIT inside `get_bxdf`, never in a BSDF inner
 # loop. That ordering is what makes it work: without the `get_bxdf` split (done
 # first, deliberately) the switch would be inlined at each of the ~87 texture
-# reads and would likely cost more than the chits it saves.
+# reads and would likely cost more than the kernels it saves.
 
 """Texture kinds a `TexHandle` can name. Stored as a `UInt8` tag."""
 module TexKind
@@ -263,8 +263,8 @@ end
 # PARAMETERS: the host form is whatever the caller passed, and
 # `to_device_material` rewrites every one of them to a `TexHandle`, so the form
 # that reaches the GPU is the same concrete type for all spellings. A
-# constant-coloured `Diffuse` and an image-mapped one are one closest-hit
-# shader, not two.
+# constant-coloured `Diffuse` and an image-mapped one are one shading
+# kernel, not two.
 
 """
     matparam(x)

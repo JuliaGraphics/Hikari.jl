@@ -80,26 +80,34 @@ end
     work,
     scatter_queue,
     per_material_queue,
-    hit_surface_queue,
-    hit_area_light_queue,
+    surface_hits,
+    arrivals,
     next_ray_queue,
     escaped_queue,
     pixel_L,
+    accel,
+    media_interfaces,
     media,
     materials,
+    lights,
     rgb2spec_table,
+    bvh_nodes,
+    light_to_bit_trail,
+    num_infinite_lights::Int32,
+    num_bvh_lights::Int32,
     max_depth::Int32
 )
     # Run delta tracking for this ray
     sample_medium_interaction!(
         scatter_queue,
         per_material_queue,
-        hit_surface_queue,
-        hit_area_light_queue,
+        surface_hits,
+        arrivals,
         next_ray_queue,
         escaped_queue,
         pixel_L,
-        work, media, materials, rgb2spec_table, max_depth
+        work, accel, media_interfaces, media, materials, lights, rgb2spec_table,
+        bvh_nodes, light_to_bit_trail, num_infinite_lights, num_bvh_lights, max_depth
     )
 end
 
@@ -166,16 +174,23 @@ end
     # Output queues
     scatter_queue,
     per_material_queue,
-    hit_surface_queue,
-    hit_area_light_queue,
+    surface_hits,
+    arrivals,
     next_ray_queue,
     escaped_queue,
     pixel_L,
     # Input
     work::VPMediumSampleWorkItem,
+    accel,
+    media_interfaces,
     media,
     materials,
+    lights,
     rgb2spec_table,
+    bvh_nodes,
+    light_to_bit_trail,
+    num_infinite_lights::Int32,
+    num_bvh_lights::Int32,
     max_depth::Int32
 )
     medium_idx = work.medium_idx
@@ -235,12 +250,13 @@ end
         return
     end
 
-    # Ray survived to t_max - process what's at the end
-    if is_black(beta) || is_black(r_u) || work.depth >= max_depth
+    # Ray survived to t_max - process what's at the end. At the depth limit too: what
+    # it reaches may emit, and the shading of a surface it hits ends the path there.
+    if is_black(beta) || is_black(r_u)
         return
     end
 
-    if !work.has_surface_hit
+    if !has_surface_hit(work)
         # A finite tracing horizon is a segment boundary, not an escape.
         # Dense media can restrict geometry queries to a few mean free paths;
         # surviving flights continue without adding a scattering vertex.
@@ -263,29 +279,26 @@ end
         )
         push!(escaped_queue, escaped)
     else
-        # Ray reached surface — resolve MixMaterial and route into the
-        # matching per-material typed queue.  This must happen at the push
-        # site (not inside the shading kernel), so the typed queue picks
-        # the concrete material type.  Mirrors the non-medium path in
-        # `vp_trace_and_shade_kernel!`.
-        wo = -ray_d
-        resolved_mat_idx = resolve_mix_material(
-            materials, work.hit_material_idx, work.hit_pi, wo,
-            TextureFilterContext(work.hit_uv, work.hit_face_idx, work.hit_bary, work.hit_pi),
-        )
-
-        # Null-material surface (pbrt `Material "interface"` / nullptr):
-        # no BSDF, no DL.  Push a continuation ray with the medium swap
-        # inline (depth NOT incremented), same as the non-medium trace
-        # kernel's null-material handling, emission of an emissive one first.
-        if !Raycore.is_valid(resolved_mat_idx)
-            push_arealight_hit!(hit_area_light_queue, work.hit_arealight_id,
-                work.hit_pi, work.hit_n, work.hit_uv, wo, work, beta, r_u, r_l,
-                work.hit_triangle_area, work.t_max)
-            ray_d = -wo
-            new_medium = null_crossing_medium(work.hit_interface, work.medium_idx, ray_d, work.hit_n)
-            ray_origin = offset_surface_origin(work.hit_pi,work.hit_n,ray_d)
-            new_ray = Raycore.Ray(o=ray_origin, d=ray_d, t_max=Inf32, time=0f0)
+        # The ray reached its surface: the surface hit goes to its material's
+        # shading kernel as the trace's do, with the path state delta tracking left
+        # (the transmittance in `beta`, `r_u` and `r_l`) as an arrival.
+        rec = work.hit
+        primitive = Raycore.hit_primitive(accel, rec)
+        mi = media_interfaces[resolve_mi_idx(rec.custom, primitive)]
+        # Null-material surface (pbrt `Material "interface"` / nullptr): no BSDF,
+        # so no shading kernel to go to. Its emission, then the ray goes on at the
+        # same depth with the medium swapped, as in the trace.
+        if !Raycore.is_valid(mi.material)
+            bary = Raycore.hit_barycentric(accel, rec)
+            geom = vp_compute_surface_geometry(primitive, bary, work.ray.o, ray_d, work.t_max)
+            wo = -ray_d
+            accumulate_arealight_hit!(pixel_L, lights, rgb2spec_table,
+                bvh_nodes, light_to_bit_trail, num_infinite_lights, num_bvh_lights,
+                primitive.metadata.arealight_id, geom.n, geom.uv, wo,
+                work, beta, r_u, r_l, Raycore.area(primitive), work.t_max)
+            new_medium = null_crossing_medium(mi, work.medium_idx, ray_d, geom.n)
+            new_ray = Raycore.Ray(o=offset_surface_origin(geom.pi, geom.n, ray_d), d=ray_d,
+                                  t_max=Inf32, time=0f0)
             push!(next_ray_queue, VPRayWorkItem(
                 new_ray, work.depth,
                 work.lambda, work.pixel_index,
@@ -296,31 +309,19 @@ end
                 new_medium))
             return
         end
-
-        # Build VPHitSurfaceWorkItem manually so we can stamp the RESOLVED
-        # material index (the VPMediumSampleWorkItem constructor would keep
-        # the unresolved one, which would mis-route a MixMaterial hit).
-        # Bump-perturbed shading frame is kept as computed in
-        # `vp_trace_and_shade_kernel!` (using the unresolved material's bump
-        # map) — same behaviour as before the per-material split.
-        incoming_ray = Raycore.Ray(o=work.ray.o, d=ray_d,
-                                  t_max=work.ray.t_max, time=work.ray.time)
-        hit_work = VPHitSurfaceWorkItem(
-            incoming_ray,
-            work.hit_pi, work.hit_ps, work.hit_n, work.hit_dpdu, work.hit_dpdv,
-            work.hit_ns, work.hit_dpdus, work.hit_dpdvs,
-            work.hit_uv, resolved_mat_idx, work.hit_interface,
-            work.hit_face_idx, work.hit_bary,
-            work.lambda, work.pixel_index,
+        wants_shading(work.depth, max_depth, primitive.metadata.arealight_id, materials, mi.material) || return
+        arrival = VPRayWorkItem(
+            Raycore.Ray(o=work.ray.o, d=ray_d, t_max=work.ray.t_max, time=work.ray.time),
+            work.depth, work.lambda, work.pixel_index,
             beta, r_u, r_l,
-            work.depth, work.eta_scale,
-            work.specular_bounce, work.any_non_specular_bounces,
             work.prev_intr_p, work.prev_intr_n,
-            work.medium_idx,
-        )
-        enqueue_after_intersection!(per_material_queue, hit_area_light_queue, materials,
-            hit_surface_queue, hit_work,
-            work.hit_arealight_id, work.hit_triangle_area, work.t_max)
+            work.eta_scale,
+            work.specular_bounce, work.any_non_specular_bounces,
+            work.medium_idx)
+        a = push!(arrivals, arrival)
+        a <= arrivals.capacity || return
+        enqueue_surface_hit!(per_material_queue, materials, surface_hits, mi.material,
+                             VPSurfaceHit(-Int32(a), rec))
     end
     return
 end

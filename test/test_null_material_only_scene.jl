@@ -23,7 +23,7 @@
 # type must change nothing.
 
 using Test
-using Hikari, Lava, Raycore, GeometryBasics
+using Hikari, Mantle, Raycore, GeometryBasics
 using GeometryBasics: normal_mesh, Tesselation, Rect3f, Sphere, Point3f, Point2f, Vec3f
 using Colors: red, green, blue
 import KernelAbstractions as KA
@@ -43,7 +43,9 @@ end
 # cannot change a single pixel, and before the fix it changed everything.
 function null_only_render(backend; unused_material::Bool, samples = 8, max_depth = 32,
                           res = 48, hw_accel = true)
-    scene = Hikari.Scene(; backend)
+    # The SCENE decides the traversal: `hw_accel` on the integrator alone left
+    # both cases on the software BVH.
+    scene = Hikari.Scene(; backend, hw_accel)
     bounds = Raycore.Bounds3(Point3f(0), Point3f(2))
     push!(scene, normal_mesh(Rect3f(Vec3f(0), Vec3f(2))),
           Hikari.MediumInterface(Hikari.NullMaterial(); inside = null_only_medium(bounds)))
@@ -78,7 +80,7 @@ end
         @test length(scene.media_interfaces) == 1
     end
 
-    for hw_accel in (false, true)
+    for hw_accel in (Mantle.supports_hwtlas(backend) ? (false, true) : (false,))
         @testset "renders, hw_accel=$hw_accel" begin
             img = null_only_render(backend; unused_material = false, hw_accel)
             lum = c -> (red(c) + green(c) + blue(c)) / 3
