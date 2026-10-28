@@ -43,7 +43,7 @@ struct Metaballs{P<:AbstractVector{Point3f},I<:AbstractVector{Int32},C<:Abstract
 end
 
 function Metaballs(points::AbstractVector{<:Point3}, radius::Real; iso::Real, step::Real = radius / 6,
-                   anisotropy = nothing, chunk = 32768, backend = KA.CPU())
+                   anisotropy = nothing, chunk = 32768, backend = Mantle.defaultbackend())
     R = Float32(radius)
     pts = Point3f.(points)
     lo = Point3f(minimum(p -> p[1], pts), minimum(p -> p[2], pts), minimum(p -> p[3], pts)) .- R

@@ -85,6 +85,7 @@ using GeometryBasics: normal_mesh, Tesselation
     # Render
     # =========================================================================
 
+    film = Hikari.Film(Mantle.defaultbackend(), film)
     integrator = Hikari.VolPath(samples=4, max_depth=4)
     integrator(scene, film, camera)
     @test true  # render completed without error

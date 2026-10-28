@@ -19,7 +19,7 @@ struct PBRTResult
 end
 
 """
-    load_pbrt(filename; backend=KA.CPU(), samples=nothing, max_depth=nothing)
+    load_pbrt(filename; backend=Mantle.defaultbackend(), samples=nothing, max_depth=nothing)
 
 Load a pbrt-v4 scene file and return a ready-to-render `PBRTResult`.
 
@@ -30,7 +30,7 @@ img = VolPath(samples=64)(r.scene, r.film, r.camera)
 ```
 """
 function load_pbrt(filename::AbstractString;
-                   backend=KA.CPU(),
+                   backend=Mantle.defaultbackend(),
                    samples::Union{Nothing, Int}=nothing,
                    max_depth::Union{Nothing, Int}=nothing,
                    hw_accel::Bool=false)
@@ -39,7 +39,7 @@ function load_pbrt(filename::AbstractString;
 end
 
 function build_hikari_scene(pbrt::PBRTScene;
-                            backend=KA.CPU(),
+                            backend=Mantle.defaultbackend(),
                             samples::Union{Nothing, Int}=nothing,
                             max_depth::Union{Nothing, Int}=nothing,
                             hw_accel::Bool=false)
@@ -1412,7 +1412,7 @@ end
 Load a pbrt scene, render it, and optionally save to file. Returns the rendered image.
 """
 function render_pbrt(filename::AbstractString;
-                     backend=KA.CPU(),
+                     backend=Mantle.defaultbackend(),
                      samples::Union{Nothing, Int}=nothing,
                      max_depth::Union{Nothing, Int}=nothing,
                      hw_accel::Bool=false,
