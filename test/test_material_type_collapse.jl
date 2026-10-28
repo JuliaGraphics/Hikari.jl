@@ -1,4 +1,5 @@
 using Test
+import Adapt
 using Hikari
 using Raycore
 using GeometryBasics: Point2f
@@ -28,7 +29,16 @@ using Colors: RGB
 # The set's stored element types, in slot order.
 device_types(scene) = [eltype(v) for v in scene.materials.static.data]
 
-fresh_scene() = Hikari.Scene(; hw_accel = false)   # CPU backend by default
+fresh_scene() = Hikari.Scene(; hw_accel = false)
+
+# Download texture owners, not the device pointer table: Array(static.textures)
+# copies handles whose payloads still name device memory.
+function host_materials(mats)
+    data = Tuple(copy(mats.data_vectors[T]) for T in mats.data_order)
+    textures = Tuple([Array(a) for a in mats.texture_gpu_arrays if typeof(a) === T]
+                     for T in mats.texture_order)
+    return Raycore.StaticMultiTypeSet(data, textures)
+end
 
 img_tex(v) = Hikari.Texture(fill(Hikari.RGBSpectrum(v, v, v), 4, 4))
 float_tex(v) = Hikari.Texture(fill(Float32(v), 4, 4))
@@ -115,7 +125,7 @@ float_tex(v) = Hikari.Texture(fill(Float32(v), 4, 4))
         g = Hikari.Gold()
         push!(scene, Hikari.MixMaterial(materials = (d, g), amount = 0f0))
         stored = only(filter(m -> m isa Hikari.MixMaterial,
-                             [v[1] for v in scene.materials.static.data if length(v) >= 1]))
+                             [v[1] for v in host_materials(scene.materials).data if length(v) >= 1]))
         @test Raycore.is_valid(stored.material1_idx)
         @test Raycore.is_valid(stored.material2_idx)
         @test stored.material1_idx != stored.material2_idx
@@ -169,7 +179,7 @@ end
         # Distinct array types land in distinct slots.
         @test h_img_f.slot != h_img_s.slot
 
-        static = Raycore.get_static(mats)
+        static = host_materials(mats)
         tfc = Hikari.TextureFilterContext(Point2f(0.25f0, 0.25f0))
         @test Hikari.eval_handle(static, h_img_f, tfc) ≈ 0.5f0
         @test Hikari.eval_handle_spectrum(static, h_img_s, tfc).c[1] ≈ 0.75f0
@@ -188,7 +198,7 @@ end
         scene = fresh_scene()
         cb = Hikari.CheckerboardTexture(4f0, 4f0, 0f0, 0f0, 1f0, 0f0)
         h = Hikari.device_param(scene.materials, cb)
-        static = Raycore.get_static(scene.materials)
+        static = host_materials(scene.materials)
         for uv in (Point2f(0.05f0, 0.05f0), Point2f(0.3f0, 0.1f0), Point2f(0.7f0, 0.6f0))
             tfc = Hikari.TextureFilterContext(uv)
             @test Hikari.eval_handle(static, h, tfc) ≈ Float32(Hikari.eval_tex(static, cb, tfc))

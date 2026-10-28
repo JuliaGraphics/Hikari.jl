@@ -210,11 +210,12 @@ function gen_gpu_test_scene()
     Hikari.sync!(scene)
 
     # Adapt scene to get StaticMultiTypeSet for type analysis
-    backend = KernelAbstractions.CPU()
+    backend = Mantle.defaultbackend()
     adapted = Adapt.adapt(backend, scene)
 
     # Get rgb2spec_table directly
-    rgb2spec_table = Hikari.to_gpu(Hikari.DeviceMemory(backend), Hikari.get_srgb_table())
+    memory = Hikari.DeviceMemory(backend)
+    rgb2spec_table = Hikari.to_gpu(memory, Hikari.get_srgb_table())
 
     (
         scene=adapted,
@@ -222,6 +223,7 @@ function gen_gpu_test_scene()
         media=adapted.media,
         lights=adapted.lights,
         rgb2spec_table=rgb2spec_table,
+        memory=memory,
         lambda=Hikari.SampledWavelengths{4}((400f0, 500f0, 600f0, 700f0), (1f0, 1f0, 1f0, 1f0)),
         mat_idx=Hikari.SetKey(UInt32(1), UInt32(1)),
         ray=Raycore.Ray(o=Point3f(0,0,0), d=Vec3f(0,0,1), t_max=Inf32),
@@ -263,17 +265,23 @@ end
 
     @testset "BSDF Sampling" begin
         # Materials are stored in the StaticMultiTypeSet; access by type slot
-        matte_mat = first(td.materials.data[1])
-        glass_mat = first(td.materials.data[2])
-        emissive_mat = first(td.materials.data[3])
+        matte_type = eltype(td.materials.data[1])
+        glass_type = eltype(td.materials.data[2])
+        emissive_type = eltype(td.materials.data[3])
 
-        # sample_bsdf_spectral signature: mat, table, textures, wo, n, dpdus, tfc, lambda, sample_u, rng
+        # Texture evaluation produces the concrete BxDF carrier sampled by
+        # the integrator. Check both stages, rather than the removed raw
+        # Diffuse/Dielectric sampling overloads.
+        for material in (matte_type, glass_type)
+            @test test_no_dispatch(Hikari.get_bxdf,
+                (material, typeof(td.rgb2spec_table), typeof(td.materials), tfc_type, typeof(td.lambda), Bool))
+        end
         @test test_no_dispatch(Hikari.sample_bsdf_spectral,
-            (typeof(matte_mat), typeof(td.rgb2spec_table), typeof(td.materials), Vec3f, Vec3f, Vec3f, tfc_type, typeof(td.lambda), Point2f, Float32))
+            (Hikari.DiffuseEvaluated, typeof(td.rgb2spec_table), typeof(td.materials), Vec3f, Vec3f, Vec3f, tfc_type, typeof(td.lambda), Point2f, Float32))
         @test test_no_dispatch(Hikari.sample_bsdf_spectral,
-            (typeof(glass_mat), typeof(td.rgb2spec_table), typeof(td.materials), Vec3f, Vec3f, Vec3f, tfc_type, typeof(td.lambda), Point2f, Float32))
+            (Hikari.DielectricEvaluated, typeof(td.rgb2spec_table), typeof(td.materials), Vec3f, Vec3f, Vec3f, tfc_type, typeof(td.lambda), Point2f, Float32))
         @test test_no_dispatch(Hikari.sample_bsdf_spectral,
-            (typeof(emissive_mat), typeof(td.rgb2spec_table), typeof(td.materials), Vec3f, Vec3f, Vec3f, tfc_type, typeof(td.lambda), Point2f, Float32))
+            (emissive_type, typeof(td.rgb2spec_table), typeof(td.materials), Vec3f, Vec3f, Vec3f, tfc_type, typeof(td.lambda), Point2f, Float32))
     end
 
     @testset "Microfacet/Fresnel Functions" begin
