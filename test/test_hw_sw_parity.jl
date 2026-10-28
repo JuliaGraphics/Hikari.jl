@@ -29,14 +29,14 @@ function _build_scene(; backend, hw_accel::Bool)
     # Floor
     floor = normal_mesh(Rect3f(GeometryBasics.Vec3f(-3, -3, -0.05),
                                  GeometryBasics.Vec3f(6, 6, 0.05)))
-    push!(scene, floor, Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.6f0, 0.6f0, 0.6f0)))
+    push!(scene, floor, Hikari.Diffuse(color = Hikari.RGBSpectrum(0.6f0, 0.6f0, 0.6f0)))
     # Three colored spheres
     sphere = normal_mesh(Tesselation(Sphere(GeometryBasics.Point3f(0, 0, 0), 0.35f0), 16))
     for (x, color) in [(-0.8f0, (1f0, 0.2f0, 0.2f0)),
                         ( 0.0f0, (0.2f0, 1f0, 0.2f0)),
                         ( 0.8f0, (0.2f0, 0.2f0, 1f0))]
         tf = Raycore.Mat4f([1 0 0 x; 0 1 0 0f0; 0 0 1 0.35f0; 0 0 0 1])
-        push!(scene, sphere, Hikari.Diffuse(Kd=color); transform=tf)
+        push!(scene, sphere, Hikari.Diffuse(color = color); transform=tf)
     end
     push!(scene, Hikari.PointLight(GeometryBasics.Point3f(0, -2, 3),
                                     Hikari.RGBSpectrum(30f0)))

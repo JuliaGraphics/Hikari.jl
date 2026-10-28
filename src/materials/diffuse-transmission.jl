@@ -9,84 +9,24 @@
 # Reference: pbrt-v4 src/pbrt/bxdfs.h DiffuseTransmissionBxDF (lines 84-164)
 
 """
-    DiffuseTransmission{RTex, TTex}
+    DiffuseTransmission(; reflectance = (0.5, 0.5, 0.5), transmittance = (0.5, 0.5, 0.5), scale = 1,
+                        displacement = nothing)
 
-A material that diffusely reflects and transmits light.
-
-Models surfaces like paper, thin fabric, or leaves where light scatters
-diffusely on both sides. The reflection and transmission are independent
-Lambertian distributions.
-
-# Fields
-- `reflectance`: Diffuse reflectance color (same hemisphere as incident)
-- `transmittance`: Diffuse transmittance color (opposite hemisphere)
-- `scale`: Intensity multiplier applied to both R and T
-
-# Physics
-- Reflection: f = R/π (same hemisphere)
-- Transmission: f = T/π (opposite hemisphere)
-- Sampling: probability proportional to max(R) and max(T)
-
-# Usage
-```julia
-# Thin white paper (equal reflection and transmission)
-paper = DiffuseTransmission(reflectance=(0.8, 0.8, 0.8), transmittance=(0.5, 0.5, 0.5))
-
-# Green leaf (green transmission, less reflection)
-leaf = DiffuseTransmission(reflectance=(0.2, 0.3, 0.1), transmittance=(0.1, 0.5, 0.1))
-```
+pbrt-v4's diffuse transmission: Lambert reflection of `reflectance` and Lambert transmission of
+`transmittance`, both times `scale`, for paper, thin fabric or leaves. Blender's equivalent is an
+`Add` of a `Diffuse` and a `Translucent`.
 """
-# Non-parametric texture parameters: constant-vs-texture must not change the
-# material's TYPE, or the per-material shading compiles a separate kernel per
-# combination.
 struct DiffuseTransmission{ReflT, TransT, DispT} <: Material
     reflectance::ReflT
     transmittance::TransT
-    scale::Float32       # Intensity scale
-    displacement::DispT       # pbrt-v4 `Material::displacement` height field (NONE = flat)
+    scale::Float32
+    displacement::DispT
 end
 
-# No explicit positional constructor: the synthesized
-# `DiffuseTransmission(reflectance, transmittance, scale)` already accepts
-# any texture-like value (Texture, CheckerboardTexture, raw constants,
-# TextureRef). Re-declaring it with the identical signature is a method
-# overwrite, which breaks precompilation.
+DiffuseTransmission(; reflectance = (0.5f0, 0.5f0, 0.5f0), transmittance = (0.5f0, 0.5f0, 0.5f0), scale::Real = 1f0,
+                    displacement = nothing) =
+    DiffuseTransmission(reflectance, transmittance, Float32(scale), displacement)
 
-"""
-    DiffuseTransmission(; reflectance, transmittance, scale=1.0)
-
-Create a diffuse transmission material with keyword arguments.
-
-# Arguments
-- `reflectance`: Diffuse reflection color (RGBSpectrum, tuple, or Texture)
-- `transmittance`: Diffuse transmission color (RGBSpectrum, tuple, or Texture)
-- `scale`: Intensity multiplier (default 1.0)
-
-# Examples
-```julia
-# Thin translucent material
-DiffuseTransmission(reflectance=(0.5, 0.5, 0.5), transmittance=(0.3, 0.3, 0.3))
-
-# Pure transmission (no reflection)
-DiffuseTransmission(reflectance=(0, 0, 0), transmittance=(1, 1, 1))
-```
-"""
-function DiffuseTransmission(;
-    reflectance = RGBSpectrum(0.5f0),
-    transmittance = RGBSpectrum(0.5f0),
-    scale::Real = 1f0,
-    bump = nothing,
-)
-    DiffuseTransmission(
-        matparam(reflectance),
-        matparam(transmittance),
-        Float32(scale),
-        matparam(bump),
-    )
-end
-
-# Mark as non-emissive
-is_emissive(::DiffuseTransmission) = false
 
 
 """

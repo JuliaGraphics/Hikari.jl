@@ -25,7 +25,7 @@ using GeometryBasics: normal_mesh, Tesselation, Sphere, Point3f, Point2f
 function onerun_scene(backend)
     scene = Hikari.Scene(; backend = backend)
     sphere = normal_mesh(Tesselation(Sphere(Point3f(0, 0, 0), 0.5f0), 8))
-    push!(scene, sphere, Hikari.Diffuse(Kd = Hikari.RGBSpectrum(0.7f0, 0.4f0, 0.4f0)))
+    push!(scene, sphere, Hikari.Diffuse(color = Hikari.RGBSpectrum(0.7f0, 0.4f0, 0.4f0)))
     push!(scene, Hikari.PointLight(Point3f(0, -2, 3), Hikari.RGBSpectrum(30f0)))
     Hikari.sync!(scene)
     return scene

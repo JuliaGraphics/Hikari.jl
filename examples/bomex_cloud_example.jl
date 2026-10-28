@@ -77,9 +77,9 @@ function example_bomex_disney_lighting(;
     println("  Rotated shape: ", size(density_rotated))
 
     # Scene materials
-    white = Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.73f0, 0.73f0, 0.73f0))
-    red = Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.65f0, 0.05f0, 0.05f0))
-    green = Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.12f0, 0.45f0, 0.15f0))
+    white = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.73f0, 0.73f0, 0.73f0))
+    red = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.65f0, 0.05f0, 0.05f0))
+    green = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.12f0, 0.45f0, 0.15f0))
 
     # Box dimensions
     box_size = 2f0
@@ -110,11 +110,7 @@ function example_bomex_disney_lighting(;
     )
 
     # Transparent boundary (no refraction)
-    transparent = Hikari.Dielectric(
-        Kr = Hikari.RGBSpectrum(0f0),
-        Kt = Hikari.RGBSpectrum(1f0),
-        index = 1.0f0
-    )
+    transparent = Hikari.Glass(ior = 1.0f0)
     cloud_material = Hikari.MediumInterface(transparent; inside=cloud_medium, outside=nothing)
 
     cloud_cube_prim = tmesh(
@@ -202,9 +198,9 @@ function example_bomex_cornell_box(;
     density_rotated = reverse(density_rotated, dims=2)
 
     # Cornell box materials
-    white = Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.73f0, 0.73f0, 0.73f0))
-    red = Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.65f0, 0.05f0, 0.05f0))
-    green = Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.12f0, 0.45f0, 0.15f0))
+    white = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.73f0, 0.73f0, 0.73f0))
+    red = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.65f0, 0.05f0, 0.05f0))
+    green = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.12f0, 0.45f0, 0.15f0))
 
     box_size = 2f0
     half = box_size / 2
@@ -230,11 +226,7 @@ function example_bomex_cornell_box(;
         bounds = cloud_cube_bounds
     )
 
-    transparent = Hikari.Dielectric(
-        Kr = Hikari.RGBSpectrum(0f0),
-        Kt = Hikari.RGBSpectrum(1f0),
-        index = 1.0f0
-    )
+    transparent = Hikari.Glass(ior = 1.0f0)
     cloud_material = Hikari.MediumInterface(transparent; inside=cloud_medium, outside=nothing)
 
     cloud_cube_prim = tmesh(

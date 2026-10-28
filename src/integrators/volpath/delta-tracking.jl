@@ -79,7 +79,7 @@ end
 @propagate_inbounds function vp_sample_medium_kernel!(
     work,
     scatter_queue,
-    per_material_queue,
+    material_queues,
     surface_hits,
     arrivals,
     next_ray_queue,
@@ -88,7 +88,6 @@ end
     accel,
     media_interfaces,
     media,
-    materials,
     lights,
     rgb2spec_table,
     bvh_nodes,
@@ -100,13 +99,13 @@ end
     # Run delta tracking for this ray
     sample_medium_interaction!(
         scatter_queue,
-        per_material_queue,
+        material_queues,
         surface_hits,
         arrivals,
         next_ray_queue,
         escaped_queue,
         pixel_L,
-        work, accel, media_interfaces, media, materials, lights, rgb2spec_table,
+        work, accel, media_interfaces, media, lights, rgb2spec_table,
         bvh_nodes, light_to_bit_trail, num_infinite_lights, num_bvh_lights, max_depth
     )
 end
@@ -178,7 +177,7 @@ end
 @propagate_inbounds function sample_medium_interaction!(
     # Output queues
     scatter_queue,
-    per_material_queue,
+    material_queues,
     surface_hits,
     arrivals,
     next_ray_queue,
@@ -189,7 +188,6 @@ end
     accel,
     media_interfaces,
     media,
-    materials,
     lights,
     rgb2spec_table,
     bvh_nodes,
@@ -314,7 +312,7 @@ end
                 new_medium))
             return
         end
-        wants_shading(work.depth, max_depth, primitive.metadata.arealight_id, materials, mi.material) || return
+        wants_shading(work.depth, max_depth, primitive.metadata.arealight_id, material_queues, mi.material) || return
         arrival = VPRayWorkItem(
             Raycore.Ray(o=work.ray.o, d=ray_d, t_max=work.ray.t_max, time=work.ray.time),
             work.depth, work.lambda, work.pixel_index,
@@ -325,7 +323,7 @@ end
             work.medium_idx)
         a = push!(arrivals, arrival)
         a <= arrivals.capacity || return
-        enqueue_surface_hit!(per_material_queue, materials, surface_hits, mi.material,
+        enqueue_surface_hit!(material_queues, surface_hits, mi.material,
                              VPSurfaceHit(-Int32(a), rec))
     end
     return

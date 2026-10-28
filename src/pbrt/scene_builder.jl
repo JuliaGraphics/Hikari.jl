@@ -230,11 +230,10 @@ function build_hikari_scene(pbrt::PBRTScene;
         inside_medium = get(media_cache, srec.medium_inner, nothing)
         outside_medium = get(media_cache, srec.medium_outer, nothing)
 
-        # Area light → wrap material in MediumInterface with Emissive
+        # Area light → wrap material in MediumInterface with its emission
         if srec.area_light !== nothing
-            emissive = Emissive(srec.area_light)
             push!(scene, mesh, MediumInterface(mat;
-                emission=emissive, inside=inside_medium, outside=outside_medium))
+                emission=Emission(srec.area_light), inside=inside_medium, outside=outside_medium))
         elseif inside_medium !== nothing || outside_medium !== nothing
             # Shape has participating media — wrap in MediumInterface
             push!(scene, mesh, MediumInterface(mat;
@@ -330,31 +329,30 @@ function blackbody_to_rgb(T::Float32)
 end
 
 """
-    Emissive(area_light::PBRTEntity)
+    Emission(area_light::PBRTEntity)
 
-Build the emissive material for a pbrt `AreaLightSource "diffuse"` record.
+The emission of a pbrt `AreaLightSource "diffuse"` record.
 
 Applies pbrt-v4's photometric normalization from `lights.cpp`
 `DiffuseAreaLight::Create`, which scales so radiance is equivalent to 1 nit:
 
     scale /= SpectrumToPhotometric(L)
 
-Note this divides by the value for the ACTUAL emitter spectrum, not a fixed D65
-constant. For an `RGBIlluminantSpectrum` the two coincide — pbrt and Hikari both
-special-case it back to the colour space's illuminant — but that is a property of
-that spectrum type, not a licence to hardcode D65.
+`Emission` normalizes by D65's, so its strength is pbrt's scale times D65's over
+the ACTUAL emitter spectrum's. For an `RGBIlluminantSpectrum` the two coincide —
+pbrt and Hikari both special-case it back to the colour space's illuminant — but
+that is a property of that spectrum type, not a licence to hardcode D65.
 
 Both importers (Hikari's `pbrt_build_scene` and RayMakie's `pbrt_to_makie`) go
 through here so they cannot drift apart.
 """
-function Emissive(area_light::PBRTEntity)
+function Emission(area_light::PBRTEntity)
     Le = pbrt_get_emissive_le(area_light, (1.0, 1.0, 1.0))
     scale = Float32(pbrt_get_float(area_light, "scale", 1.0))
     two_sided = pbrt_get_bool(area_light, "twosided", false)
     Le_spectrum = rgb_illuminant_spectrum(get_srgb_table(),
         RGB{Float32}(Float32(Le[1]), Float32(Le[2]), Float32(Le[3])))
-    scale /= spectrum_to_photometric(Le_spectrum)
-    return Emissive(TexHandle(Le), scale, two_sided)
+    return Emission(; color = Le, strength = scale * (D65_PHOTOMETRIC / spectrum_to_photometric(Le_spectrum)), two_sided)
 end
 
 # Like pbrt_get_rgb but also handles "blackbody" type params (single temperature value).
@@ -644,7 +642,7 @@ function attach_bump(mat::Material, entity::PBRTEntity, textures::AbstractDict{S
         tex_name isa AbstractString || continue
         h = get(textures, String(tex_name), nothing)
         h === nothing && continue
-        return set_displacement(mat, matparam(h))
+        return set_displacement(mat, h)
     end
     return mat
 end
@@ -738,7 +736,7 @@ function build_pbrt_material(entity::PBRTEntity, pbrt::PBRTScene,
 
     if type == "diffuse"
         refl = pbrt_get_texture(entity, "reflectance", textures, (0.5, 0.5, 0.5))
-        return Diffuse(Kd=refl)
+        return Diffuse(color = refl)
 
     elseif type == "conductor"
         roughness = pbrt_get_roughness(entity, textures)
@@ -746,15 +744,15 @@ function build_pbrt_material(entity::PBRTEntity, pbrt::PBRTScene,
         ior = pbrt_get_conductor_ior(entity, "eta", "k")
         ior === nothing && return Conductor(; reflectance=pbrt_get_texture(entity, "reflectance", textures, (1.0, 1.0, 1.0)),
                                             roughness, remap_roughness=remap)
-        return Conductor(; eta=ior[1], k=ior[2], roughness, remap_roughness=remap)
+        return Conductor(; ior = ior[1], extinction = ior[2], roughness, remap_roughness = remap)
 
     elseif type == "dielectric"
         eta = something(pbrt_get_ior(entity, "eta"), 1.5f0)
         remap = pbrt_get_bool(entity, "remaproughness", true)
-        return Dielectric(index=eta, roughness=pbrt_get_roughness(entity, textures), remap_roughness=remap)
+        return Dielectric(ior = eta, roughness = pbrt_get_roughness(entity, textures), remap_roughness = remap)
 
     elseif type == "thindielectric"
-        return ThinDielectric(eta=something(pbrt_get_ior(entity, "eta"), 1.5f0))
+        return ThinDielectric(ior = something(pbrt_get_ior(entity, "eta"), 1.5f0))
 
     elseif type == "coateddiffuse"
         refl = pbrt_get_texture(entity, "reflectance", textures, (0.5, 0.5, 0.5))
@@ -762,7 +760,7 @@ function build_pbrt_material(entity::PBRTEntity, pbrt::PBRTScene,
         eta = something(pbrt_get_ior(entity, "eta"), 1.5f0)
         remap = pbrt_get_bool(entity, "remaproughness", true)
         thickness, albedo, g, max_depth, n_samples = pbrt_get_layers(entity, textures)
-        return CoatedDiffuse(reflectance=refl, roughness=pbrt_get_roughness(entity, textures), eta=eta,
+        return CoatedDiffuse(reflectance=refl, roughness=pbrt_get_roughness(entity, textures), ior=eta,
                              thickness=thickness, albedo=albedo, g=g, max_depth=max_depth, n_samples=n_samples,
                              remap_roughness=remap)
 
@@ -770,13 +768,13 @@ function build_pbrt_material(entity::PBRTEntity, pbrt::PBRTScene,
         thickness, albedo, g, max_depth, n_samples = pbrt_get_layers(entity, textures)
         layers = (; interface_roughness = pbrt_get_roughness(entity, textures, "interface."),
                     conductor_roughness = pbrt_get_roughness(entity, textures, "conductor."),
-                    interface_eta = something(pbrt_get_ior(entity, "interface.eta"), 1.5f0),
+                    interface_ior = something(pbrt_get_ior(entity, "interface.eta"), 1.5f0),
                     thickness, albedo, g, max_depth, n_samples,
                     remap_roughness = pbrt_get_bool(entity, "remaproughness", true))
         ior = pbrt_get_conductor_ior(entity, "conductor.eta", "conductor.k")
         ior === nothing && return CoatedConductor(; reflectance=pbrt_get_texture(entity, "reflectance", textures, (1.0, 1.0, 1.0)),
                                                   layers...)
-        return CoatedConductor(; conductor_eta=ior[1], conductor_k=ior[2], layers...)
+        return CoatedConductor(; conductor_ior = ior[1], conductor_extinction = ior[2], layers...)
 
     elseif type == "diffusetransmission"
         refl = pbrt_get_rgb(entity, "reflectance", (0.25, 0.25, 0.25))
@@ -785,8 +783,8 @@ function build_pbrt_material(entity::PBRTEntity, pbrt::PBRTScene,
         return DiffuseTransmission(reflectance=refl, transmittance=trans, scale=sc)
 
     elseif type == "mirror"
-        refl = pbrt_get_rgb(entity, "reflectance", (0.9, 0.9, 0.9))
-        return Mirror(Kr=refl)
+        # pbrt-v3's mirror: a singular reflection of `reflectance`, no Fresnel.
+        return Glossy(color = pbrt_get_rgb(entity, "reflectance", (0.9, 0.9, 0.9)), roughness = 0)
 
     elseif type == "interface"
         # pbrt `Material "interface"` = nullptr surface: rays pass through, only
@@ -807,11 +805,11 @@ function build_pbrt_material(entity::PBRTEntity, pbrt::PBRTScene,
         mat2 = get(mat_cache, mat_names[2], nothing)
         mat1 === nothing && error("mix: unknown material '$(mat_names[1])'")
         mat2 === nothing && error("mix: unknown material '$(mat_names[2])'")
-        return MixMaterial(materials=(mat1, mat2), amount=amount)
+        return Mix(mat1, mat2; factor = amount)
 
     else
         @warn "pbrt: unsupported material type '$type', using default Diffuse"
-        return Diffuse(Kd=(0.5, 0.5, 0.5))
+        return Diffuse(color = (0.5, 0.5, 0.5))
     end
 end
 
@@ -825,19 +823,19 @@ function resolve_pbrt_material(srec::PBRTShapeRecord, mat_cache::Dict{String, Ma
             pbrt.named_materials[name]
         else
             @warn "pbrt: unknown named material '$name', using default"
-            return Diffuse(Kd=(0.5, 0.5, 0.5))
+            return Diffuse(color = (0.5, 0.5, 0.5))
         end
     elseif srec.material_inline !== nothing
         srec.material_inline
     else
-        return Diffuse(Kd=(0.5, 0.5, 0.5))
+        return Diffuse(color = (0.5, 0.5, 0.5))
     end
 
     mat = build_pbrt_material(entity, pbrt, textures, mat_cache)
     if mat !== nothing
         return attach_bump(mat, entity, textures)
     end
-    return Diffuse(Kd=(0.5, 0.5, 0.5))
+    return Diffuse(color = (0.5, 0.5, 0.5))
 end
 
 # ============================================================================

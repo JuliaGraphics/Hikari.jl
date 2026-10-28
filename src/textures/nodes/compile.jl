@@ -41,6 +41,7 @@ const _OUTPUT_NAMES = Dict{UInt8, Vector{Symbol}}(
     NodeOp.CHECKER     => [:color, :fac],
     NodeOp.BRICK       => [:color, :fac],
     NodeOp.ATTRIBUTE   => [:color, :fac],
+    NodeOp.IMAGE       => [:color, :alpha],
 )
 
 const _SWIZZLE_LETTERS = Dict('x' => 0x01, 'y' => 0x02, 'z' => 0x03, 'r' => 0x01, 'g' => 0x02, 'b' => 0x03)
@@ -187,7 +188,7 @@ function compile_nodes(root::TexNode)
     any(c -> c.op in _SHADER_OPS, order) &&
         error("a texture cannot use `bump`, `normal_map`, mesh attributes, texture coordinates other than uv or a " *
               "shader node; use them in a shader graph")
-    return _compile(order, root)
+    return _compile(order, root, NodeFeature.TEXTURE)
 end
 
 """
@@ -200,7 +201,36 @@ function compile_shader(closures::Vector{NodeCore})
     memo = IdDict{NodeCore, NodeCore}()
     cores = [folded(_simplified(c, memo)) for c in closures]
     values = _topological(unique(reduce(vcat, map(_input_cores, cores); init = NodeCore[])))
-    return _compile(vcat(values, cores), nothing)
+    return _compile(vcat(values, cores), nothing, UInt32(0))
+end
+
+"""Whether argument code `o` names a slot of the value stack: neither a constant nor a folded input."""
+@inline reads_stack(o::UInt8) = o != NO_SLOT && o < WIDE_CONSTANT_ARG
+
+"""
+    closure_program(c::CompiledProgram) -> (instructions, inputs)
+
+The BSDF part of the shader program `c`, from its first BSDF instruction to its `RESULT`, as the
+closure kernel runs it: every input read off the value stack renumbered to where the values kernel
+gathers it (`gather_inputs!`), the inputs in program order and a vector taking three floats.
+`inputs` is how many floats that is. It names no node family, so a shader of other families has
+the same one and its closure kernel stays compiled.
+"""
+function closure_program(c::CompiledProgram)
+    first_bsdf = findfirst(ins -> ins.op in (NodeOp.CLOSURE, NodeOp.PRINCIPLED, NodeOp.RESULT), c.instructions)
+    g = 0
+    instructions = map(c.instructions[first_bsdf:end]) do ins
+        args = collect(ins.arg)
+        for a in 1:NODE_ARGS
+            reads_stack(args[a]) || continue
+            args[a] = UInt8(g + 1)
+            g += _bit(ins.wide, a) ? 3 : 1
+        end
+        NodeInstr{NodeFeature.CLOSURES}(ins.op, ins.mode, ins.out, ins.outwide, Tuple(args), ins.wide, ins.k)
+    end
+    g < Int(WIDE_CONSTANT_ARG) || throw(ArgumentError(
+        "a shader's BSDF nodes read $g floats of computed values; at most $(Int(WIDE_CONSTANT_ARG) - 1) are gathered"))
+    return instructions, g
 end
 
 """A BSDF input the compiler folds into the BSDF's instruction: the shading normal, as `normal()` reads it."""
@@ -276,8 +306,8 @@ function _prune_principled!(inputs)
     return inputs
 end
 
-function _compile(order::Vector{NodeCore}, root)
-    features = mapreduce(_features, |, order; init = UInt32(0))
+function _compile(order::Vector{NodeCore}, root, kind::UInt32)
+    features = mapreduce(_features, |, order; init = kind)
     position = IdDict{NodeCore, Int}(c => i for (i, c) in enumerate(order))
     last_use = Dict{Tuple{Int, Int}, Int}()
     for (i, c) in enumerate(order), x in c.inputs
@@ -384,7 +414,6 @@ _data_instructions(data::Vector{Float32}) =
       UInt16(0), _pad(chunk, NODE_ARGS, 0f0))
      for chunk in Iterators.partition(data, NODE_ARGS)]
 
-@inline matparam(x::TexNode) = x
 
 "Where the data of one material's programs went, so a datum two of them read is stored once."
 const Places = IdDict{Any, Tuple{Int, Int}}
@@ -394,7 +423,8 @@ const Places = IdDict{Any, Tuple{Int, Int}}
 
 Where in `dhv` each datum of `data` goes: the `k`-th over `over[k]`, copied into that array when it
 holds the datum's element type and dimensions, else into an array stored anew. A datum `placed`
-already has stays where it is, and an array goes to one datum of a placement only.
+already has stays where it is, and an array goes to one datum of a placement only. An image stored
+already (a `TexHandle`) is read where it is, and no array is copied over it.
 
 `over` is the places of the program a new one replaces (`array_places`), so an update keeps the
 arrays its program reads, as Raycore keeps a material's texture field
@@ -402,13 +432,22 @@ arrays its program reads, as Raycore keeps a material's texture field
 with it every plan recorded against it, stays.
 """
 function place!(dhv::Raycore.MultiTypeSet, data, placed::Places, over = ())
+    for datum in data
+        datum isa TexHandle && get!(placed, datum, (Int(datum.slot), Int(datum.idx)))
+    end
     return map(enumerate(data)) do (k, datum)
         get!(placed, datum) do
-            k <= length(over) && holds(dhv, over[k], datum) && !(over[k] in values(placed)) ?
-                copied!(dhv, over[k], datum) : stored!(dhv, datum)
+            stored = texels(datum)
+            k <= length(over) && holds(dhv, over[k], stored) && !(over[k] in values(placed)) ?
+                copied!(dhv, over[k], stored) : stored!(dhv, stored)
         end
     end
 end
+
+"""A datum as a program reads it: an image of colours as `RGBSpectrum`s, one of numbers as `Float32`s."""
+texels(img::AbstractMatrix{<:Colorant}) = to_texture(img).data
+texels(img::AbstractMatrix{<:Real}) = convert(Matrix{Float32}, img)
+texels(data) = data
 
 "Whether the array at `place` can take `data`: of its element type and dimensions. Its size may differ."
 function holds(dhv::Raycore.MultiTypeSet, (slot, idx)::Tuple{Int, Int}, data::AbstractArray)
@@ -433,7 +472,7 @@ stored_array(dhv::Raycore.MultiTypeSet, (slot, idx)::Tuple{Int, Int}) =
 
 `compiled` linked to its data placed anew in `dhv`, and stored; where it is.
 """
-stored_program!(dhv::Raycore.MultiTypeSet, c::CompiledProgram, placed::Places) =
+stored_program!(dhv::Raycore.MultiTypeSet, @nospecialize(c::CompiledProgram), placed::Places) =
     stored!(dhv, link(c, place!(dhv, c.data, placed)))
 
 """

@@ -35,7 +35,7 @@ const TEST_DEVICE = Hikari.mantle_device(Mantle.defaultbackend())
     # Tiny scene: minimum HW RT setup to exercise the fault trigger.
     scene = Hikari.Scene(; backend=_BACKEND_M, hw_accel=true)
     sphere = normal_mesh(Tesselation(Sphere(Point3f(0, 0, 0.35), 0.35f0), 6))
-    push!(scene, sphere, Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.6f0, 0.6f0, 0.6f0)))
+    push!(scene, sphere, Hikari.Diffuse(color = Hikari.RGBSpectrum(0.6f0, 0.6f0, 0.6f0)))
     push!(scene, Hikari.PointLight(Point3f(0, -2, 3), Hikari.RGBSpectrum(30f0)))
     Hikari.sync!(scene)
     camera = Hikari.PerspectiveCamera(Point3f(0, -3, 1.5), Point3f(0, 0, 0.35),

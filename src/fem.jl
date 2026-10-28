@@ -459,13 +459,11 @@ end
 
 # ── Reaching the device ─────────────────────────────────────────────────────
 #
-# Same two steps every procedural texture takes: survive construction before any
-# scene exists (`matparam`), then resolve against the scene's texture store at
-# push time (`device_param`). The stored value is a ONE-ELEMENT array holding
+# Same as every procedural texture: kept as it is until the material is pushed,
+# then resolved against the scene's texture store (`device_param`). The stored value is a ONE-ELEMENT array holding
 # the texture itself, with its coefficients already turned into a `TextureRef` —
 # which is how `CheckerboardTexture` does it, minus the nesting.
 
-@inline matparam(x::FEMFieldTexture) = x
 cutout(t::FEMFieldTexture) = any(c -> get_alpha(c) < 1f0, t.ramp)
 
 function device_param(dhv, t::FEMFieldTexture)
@@ -808,8 +806,6 @@ end
 #
 # The geometry is NOT updated: the elements live in the acceleration structure,
 # and a material update is for what changes in place — the tolerance, which only
-# the raster path reads, and the field ramp. By interface key only: the generic
-# `UInt32` method resolves an index to one, and a method of its own for an index
-# was ambiguous with that one.
-update_material!(scene::Scene, key::MediumInterfaceIdx, material::FEMMaterial) =
-    update_material!(scene, key, femsurface(material))
+# the raster path reads, and the field ramp.
+store_interface!(scene::Scene, mi::MediumInterfaceIdx, material::FEMMaterial) =
+    store_interface!(scene, mi, femsurface(material))

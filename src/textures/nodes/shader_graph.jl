@@ -115,7 +115,8 @@ program_slot(dhv::Raycore.MultiTypeSet, ::ShaderProgram{F}) where {F} =
     findfirst(AT -> eltype(AT) === NodeInstr{F}, dhv.texture_order)
 
 """The programs stored with the features of `p`, found by their element type."""
-@generated function shader_programs(textures::Raycore.StaticMultiTypeSet{D, Tex}, ::ShaderProgram{F}) where {D, Tex, F}
+@generated function shader_programs(textures::Union{Raycore.StaticMultiTypeSet{D, Tex}, Raycore.SetView{<:Any, <:Any, D, Tex}},
+                                     ::ShaderProgram{F}) where {D, Tex, F}
     slot = findfirst(T -> eltype(eltype(T)) === NodeInstr{F}, Tex.parameters)
     return :(@inbounds textures.textures[$slot])
 end

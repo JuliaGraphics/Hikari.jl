@@ -20,18 +20,19 @@ itself, and records what is not for the shadow ray to shade
 (`Raycore.transparent_hits`).
 """
 opaque(m::Material) = opaque(MediumInterface(m))
-opaque(mi::MediumInterface) = !(mi.material isa NullMaterial) && mi.shadows == 0f0 && !cutout(mi.material)
+opaque(mi::MediumInterface) = !(mi.material isa NullMaterial) && mi.shadows == 0f0 && !cutout(surface_material(mi.material))
 
 """
     cutout(material) -> Bool
 
-Whether the material's alpha (`get_surface_alpha`) is below 1 anywhere. A handle to
+Whether the material lets light through anywhere (`surface_transparency`). A handle to
 a stored texture cannot be looked into and counts as a cutout.
 """
 cutout(::Material) = false
-cutout(m::Diffuse) = cutout(m.Kd)
+cutout(m::Diffuse) = cutout(m.color)
 cutout(m::CoatedDiffuse) = cutout(m.reflectance)
 cutout(m::ShaderMaterial) = m.alpha !== nothing
+cutout(m::Mix) = cutout(m.a) || cutout(m.b)
 
 cutout(h::TexHandle) = h.kind == TexKind.CONST_SPECTRUM ? get_alpha(h.rgb) < 1f0 :
     h.kind in (TexKind.IMAGE, TexKind.CHECKER, TexKind.VERTEX_COLOR, TexKind.FEM_FIELD)
@@ -40,6 +41,11 @@ cutout(::Texture) = false
 cutout(t::CheckerboardTexture) = cutout(t.tex1) || cutout(t.tex2)
 cutout(v::VertexColorTexture) = any(x -> get_alpha(x) < 1f0, v.face_colors)
 cutout(::PiecewiseLinearSpectrum) = false
+cutout(::Union{Real, Tuple{Real, Real, Real}, Nothing}) = false
+cutout(c::Colorant) = alpha(c) < 1
+cutout(s::RGBSpectrum) = get_alpha(s) < 1f0
+cutout(img::AbstractMatrix{<:Colorant}) = any(c -> alpha(c) < 1, img)
+cutout(::Raycore.TextureRef) = true
 cutout(::TexNode) = false       # a node program carries no alpha (`eval_handle_alpha`)
 
 # Single material for entire mesh
@@ -53,18 +59,16 @@ Base.push!(scene::Scene, ::GeometryBasics.Mesh, m::GeneratedGeometry; kw...) =
 Base.push!(scene::Scene, ::Any, m::GeneratedGeometry; kw...) =
     push!(scene, tessellate(m), shadingmaterial(m); kw...)
 
+# `opaque` is whether shadow rays stop at the geometry without shading it (`opaque`). A caller that
+# stored a material's images itself knows it better than its handles say, which count as cutouts.
 function Base.push!(scene::Scene, mesh::GeometryBasics.Mesh, material::Material;
-                    transform::Mat4f=Mat4f(I))
+                    transform::Mat4f=Mat4f(I), opaque::Bool = Hikari.opaque(material))
+    mesh, material = bind_mesh(mesh, surface_material(material))
     mat_idx = push!(scene, material)
     face_meta = build_face_meta(scene, mesh, mat_idx, material)
     mesh_with_meta = GeometryBasics.mesh(mesh; face_meta=GeometryBasics.per_face(face_meta, mesh))
-    handle = push!(scene.accel, mesh_with_meta, transform; opaque = opaque(material))
+    handle = push!(scene.accel, mesh_with_meta, transform; opaque)
     return SceneHandle(scene, mat_idx, handle, mesh_area_lights(face_meta))
-end
-
-function Base.push!(scene::Scene, mesh::GeometryBasics.Mesh, material::ShaderMaterial; kw...)
-    bound_mesh, bound = bind_mesh(mesh, material)
-    return invoke(push!, Tuple{Scene, GeometryBasics.Mesh, Material}, scene, bound_mesh, bound; kw...)
 end
 
 """
@@ -80,16 +84,13 @@ instead of growing `scene.materials` and `scene.media_interfaces` on every
 frame.
 """
 function Base.push!(scene::Scene, mesh::GeometryBasics.Mesh, mat_idx::UInt32,
-                    material::Material; transform::Mat4f=Mat4f(I), area_lights=SetKey[])
+                    material::Material; transform::Mat4f=Mat4f(I), area_lights=SetKey[],
+                    opaque::Bool = Hikari.opaque(material))
+    mesh, material = bind_mesh(mesh, surface_material(material))
     face_meta = build_face_meta(scene, mesh, mat_idx, material; area_lights)
     mesh_with_meta = GeometryBasics.mesh(mesh; face_meta=GeometryBasics.per_face(face_meta, mesh))
-    handle = push!(scene.accel, mesh_with_meta, transform; opaque = opaque(material))
+    handle = push!(scene.accel, mesh_with_meta, transform; opaque)
     return SceneHandle(scene, mat_idx, handle, mesh_area_lights(face_meta))
-end
-
-function Base.push!(scene::Scene, mesh::GeometryBasics.Mesh, mat_idx::UInt32, material::ShaderMaterial; kw...)
-    bound_mesh, bound = bind_mesh(mesh, material)
-    return invoke(push!, Tuple{Scene, GeometryBasics.Mesh, UInt32, Material}, scene, bound_mesh, mat_idx, bound; kw...)
 end
 
 """
@@ -106,7 +107,7 @@ This is the path `meshscatter` should use.  It avoids the "N BLASes with
 identical geometry" explosion of calling the single-transform push!
 per instance (~1 GB / frame memory growth in the dolphin demo).
 
-`materials` and `transforms` must have equal length.  Emissive materials
+`materials` and `transforms` must have equal length.  Emitting materials
 are not yet supported here — an emitter would need per-instance area
 lights and per-instance-transformed geometry, which is a different
 feature.  Use the per-mesh `push!` for emitters.
@@ -117,6 +118,9 @@ function Base.push!(scene::Scene, mesh::GeometryBasics.Mesh,
                     reuse_mi_indices::Union{Nothing, AbstractVector{UInt32}}=nothing)
     length(materials) == length(transforms) ||
         throw(ArgumentError("materials ($(length(materials))) and transforms ($(length(transforms))) must have same length"))
+    # Each material object is converted once, however many instances name it.
+    surfaces = IdDict{Material, Material}()
+    materials = Material[get!(() -> surface_material(m), surfaces, m) for m in materials]
 
     for m in materials
         if get_emission_info(m) !== nothing
@@ -200,10 +204,13 @@ function update_materials!(scene::Scene, indices::AbstractVector{UInt32}, materi
     mis = Array(scene.media_interfaces)
     # Instances sharing one interface (one material for all) update it once.
     done = Dict{UInt32, Material}()
-    for (idx, m) in zip(indices, materials)
-        get(done, idx, nothing) === m && continue
-        update_material!(scene, mis[idx], m)
-        done[idx] = m
+    updating_in_place!(scene) do
+        for (idx, m) in zip(indices, materials)
+            get(done, idx, nothing) === m && continue
+            moved = store_interface!(scene, mis[idx], m)
+            moved === mis[idx] || (mis[idx] = moved; @allowscalar scene.media_interfaces[idx] = moved)
+            done[idx] = m
+        end
     end
     return
 end
@@ -237,13 +244,16 @@ emission reuses the lights' texture slots; shared textures are uploaded once.
 The geometry is unchanged. Adding an emitter to a mesh without emitter slots
 requires rebuilding that mesh.
 
-A material that lets shadow rays through ([`opaque`](@ref) is `false`) makes the
-mesh's geometry non-opaque. The reverse is left to the next push: the geometry
-may carry other materials (a `meshscatter`, per-face materials) that still do,
-and non-opaque geometry that turns out to block costs time, never a wrong image.
+A material that lets shadow rays through ([`opaque`](@ref) is `false`, or the
+`opaque` given) makes the mesh's geometry non-opaque. The reverse is left to the
+next push: the geometry may carry other materials (a `meshscatter`, per-face
+materials) that still do, and non-opaque geometry that turns out to block costs
+time, never a wrong image.
 """
-function update_material!(scene::Scene, handle::SceneHandle, material::Material)
-    opaque(material) || Raycore.set_opaque!(scene.accel, handle.geometry, false)
+function update_material!(scene::Scene, handle::SceneHandle, material::Material;
+                          opaque::Bool = Hikari.opaque(material))
+    material = surface_material(material)
+    opaque || Raycore.set_opaque!(scene.accel, handle.geometry, false)
     emission = get_emission_info(material)
     if isempty(handle.area_lights)
         emission === nothing || error("adding mesh emission requires rebuilding its face emitters")
@@ -310,19 +320,6 @@ function Base.delete!(scene::Scene, handle::SceneHandle)
     return deleted
 end
 
-# ============================================================================
-# Emission dispatch — extract emission info from material
-# ============================================================================
-
-get_emission_info(::Material) = nothing
-get_emission_info(m::Emissive) = (Le=m.Le, scale=m.scale, two_sided=m.two_sided)
-function get_emission_info(m::MediumInterface)
-    # Check emission field first (explicitly attached emission info)
-    !isnothing(m.emission) && return m.emission
-    # Fall through to inner material
-    return get_emission_info(m.material)
-end
-
 # The emitted radiance a face's light stores.
 #
 # An image texture goes into the lights set ONCE, and every face's light holds
@@ -335,7 +332,7 @@ function face_emission!(refs::IdDict, lights, Le::Texture)
     Le.isconst && return Le.constval
     return get!(() -> Raycore.maybe_convert_field(lights, Le), refs, Le)
 end
-# Emissive stores Le as a handle; area lights are always specified as constants
+# A constant emission is a handle; area lights are always specified as constants
 # in pbrt (`AreaLightSource "diffuse" "rgb L"`), so `const_spectrum` errors
 # loudly rather than silently registering a black light if that ever changes.
 face_emission!(refs::IdDict, lights, Le::TexHandle) = const_spectrum(Le)

@@ -33,20 +33,20 @@ using GeometryBasics
 using GeometryBasics: normal_mesh, Tesselation, Rect3f, Sphere, Point3f, Vec3f, Point2f
 
 const _BE_M7  = Mantle.defaultbackend()
-const _CTX_M7 = Mantle.vk_context()
+const _CTX_M7 = Mantle.Device()
 
 _build_a(backend) = let s = Hikari.Scene(; backend=backend, hw_accel=true)
     push!(s, normal_mesh(Tesselation(Sphere(Point3f(0,0,0.35), 0.35f0), 8)),
-          Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.6f0, 0.6f0, 0.6f0)))
+          Hikari.Diffuse(color = Hikari.RGBSpectrum(0.6f0, 0.6f0, 0.6f0)))
     push!(s, Hikari.PointLight(Point3f(0,-2,3), Hikari.RGBSpectrum(30f0)))
     Hikari.sync!(s); s
 end
 
 _build_b(backend) = let s = Hikari.Scene(; backend=backend, hw_accel=true)
     push!(s, normal_mesh(Rect3f(Vec3f(-1,-1,-0.05), Vec3f(2,2,0.05))),
-          Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.4f0, 0.7f0, 0.4f0)))
+          Hikari.Diffuse(color = Hikari.RGBSpectrum(0.4f0, 0.7f0, 0.4f0)))
     push!(s, normal_mesh(Tesselation(Sphere(Point3f(0,0,0.35), 0.35f0), 16)),
-          Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.8f0, 0.2f0, 0.2f0)))
+          Hikari.Diffuse(color = Hikari.RGBSpectrum(0.8f0, 0.2f0, 0.2f0)))
     push!(s, Hikari.PointLight(Point3f(1,-2,3), Hikari.RGBSpectrum(20f0)))
     Hikari.sync!(s); s
 end

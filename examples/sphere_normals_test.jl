@@ -37,12 +37,12 @@ end
 # Create scene with three spheres
 function create_sphere_scene()
     # Materials - different colors for each sphere
-    mat1 = Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.8f0, 0.2f0, 0.2f0))  # Red
-    mat2 = Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.2f0, 0.8f0, 0.2f0))  # Green
-    mat3 = Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.2f0, 0.2f0, 0.8f0))  # Blue
+    mat1 = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.8f0, 0.2f0, 0.2f0))  # Red
+    mat2 = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.2f0, 0.8f0, 0.2f0))  # Green
+    mat3 = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.2f0, 0.2f0, 0.8f0))  # Blue
 
     # Floor
-    floor_mat = Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.7f0, 0.7f0, 0.7f0))
+    floor_mat = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.7f0, 0.7f0, 0.7f0))
     floor_mesh = Raycore.TriangleMesh(normal_mesh(Rect3f(Vec3f(-5, -1, -5), Vec3f(10, 0.1f0, 10))))
 
     # Create spheres at different positions

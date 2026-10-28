@@ -12,20 +12,20 @@ function render_light(lights; res=512, spp=48, eye=Point3f(0f0, 1.5f0, -3f0), lo
     scene = Hikari.Scene()
     # Three spheres: matte, mirror, glass
     push!(scene, to_mesh(Sphere(Point3f(-0.8f0, 0.3f0, 0.2f0), 0.3f0)),
-          Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.8f0, 0.3f0, 0.2f0)))
+          Hikari.Diffuse(color = Hikari.RGBSpectrum(0.8f0, 0.3f0, 0.2f0)))
     push!(scene, to_mesh(Sphere(Point3f(0f0, 0.5f0, 0f0), 0.5f0)),
-          Hikari.Mirror(Kr=Hikari.RGBSpectrum(0.93f0)))
+          Hikari.Glossy(roughness = 0, color = Hikari.RGBSpectrum(0.93f0)))
     push!(scene, to_mesh(Sphere(Point3f(0.8f0, 0.3f0, 0.2f0), 0.3f0)),
-          Hikari.Dielectric(index=1.5f0))
+          Hikari.Glass(ior = 1.5f0))
     # Room
     push!(scene, to_mesh(Rect3f(Vec3f(-2, 0, -2), Vec3f(4, 0.01, 4))),
-          Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.88f0)))
+          Hikari.Diffuse(color = Hikari.RGBSpectrum(0.88f0)))
     push!(scene, to_mesh(Rect3f(Vec3f(-2, 0, 2-0.01f0), Vec3f(4, 3, 0.01f0))),
-          Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.85f0)))
+          Hikari.Diffuse(color = Hikari.RGBSpectrum(0.85f0)))
     push!(scene, to_mesh(Rect3f(Vec3f(-2, 0, -2), Vec3f(0.01f0, 3, 4))),
-          Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.7f0, 0.15f0, 0.15f0)))
+          Hikari.Diffuse(color = Hikari.RGBSpectrum(0.7f0, 0.15f0, 0.15f0)))
     push!(scene, to_mesh(Rect3f(Vec3f(2-0.01f0, 0, -2), Vec3f(0.01f0, 3, 4))),
-          Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.15f0, 0.6f0, 0.15f0)))
+          Hikari.Diffuse(color = Hikari.RGBSpectrum(0.15f0, 0.6f0, 0.15f0)))
     for l in lights; push!(scene, l); end
     Hikari.sync!(scene)
     film   = Hikari.Film(Point2f(res, res))
@@ -96,10 +96,10 @@ Hikari.AmbientLight(Hikari.RGBSpectrum(0.5f0))
 
 ### Area Lights
 
-Area lights are created by marking a mesh as emissive using the `Hikari.Emissive` material wrapper. The BVH light sampler automatically handles multi-triangle emitters.
+Area lights are created by marking a mesh as emissive using the `Hikari.Emission` material. The BVH light sampler automatically handles multi-triangle emitters.
 
 ```julia
-emissive_panel = Hikari.Emissive(Le=(3.0, 3.0, 3.0), scale=1f0, two_sided=true)
+emissive_panel = Hikari.Emission(color = (3.0, 3.0, 3.0), strength = 1f0, two_sided=true)
 push!(scene, panel_mesh, emissive_panel)
 ```
 
@@ -107,22 +107,22 @@ push!(scene, panel_mesh, emissive_panel)
 let
     scene = Hikari.Scene()
     push!(scene, to_mesh(Sphere(Point3f(-0.8f0, 0.3f0, 0.2f0), 0.3f0)),
-          Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.8f0, 0.3f0, 0.2f0)))
+          Hikari.Diffuse(color = Hikari.RGBSpectrum(0.8f0, 0.3f0, 0.2f0)))
     push!(scene, to_mesh(Sphere(Point3f(0f0, 0.5f0, 0f0), 0.5f0)),
-          Hikari.Mirror(Kr=Hikari.RGBSpectrum(0.93f0)))
+          Hikari.Glossy(roughness = 0, color = Hikari.RGBSpectrum(0.93f0)))
     push!(scene, to_mesh(Sphere(Point3f(0.8f0, 0.3f0, 0.2f0), 0.3f0)),
-          Hikari.Dielectric(index=1.5f0))
+          Hikari.Glass(ior = 1.5f0))
     push!(scene, to_mesh(Rect3f(Vec3f(-2, 0, -2), Vec3f(4, 0.01, 4))),
-          Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.88f0)))
+          Hikari.Diffuse(color = Hikari.RGBSpectrum(0.88f0)))
     push!(scene, to_mesh(Rect3f(Vec3f(-2, 0, 2-0.01f0), Vec3f(4, 3, 0.01f0))),
-          Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.85f0)))
+          Hikari.Diffuse(color = Hikari.RGBSpectrum(0.85f0)))
     push!(scene, to_mesh(Rect3f(Vec3f(-2, 0, -2), Vec3f(0.01f0, 3, 4))),
-          Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.7f0, 0.15f0, 0.15f0)))
+          Hikari.Diffuse(color = Hikari.RGBSpectrum(0.7f0, 0.15f0, 0.15f0)))
     push!(scene, to_mesh(Rect3f(Vec3f(2-0.01f0, 0, -2), Vec3f(0.01f0, 3, 4))),
-          Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.15f0, 0.6f0, 0.15f0)))
+          Hikari.Diffuse(color = Hikari.RGBSpectrum(0.15f0, 0.6f0, 0.15f0)))
     # Ceiling area light panel
     panel = to_mesh(Rect3f(Vec3f(-0.5f0, 2.9f0, -0.5f0), Vec3f(1f0, 0.01f0, 1f0)))
-    push!(scene, panel, Hikari.Emissive(Le=(3.0, 3.0, 2.85), scale=1f0, two_sided=true))
+    push!(scene, panel, Hikari.Emission(color = (3.0, 3.0, 2.85), strength = 1f0, two_sided=true))
     Hikari.sync!(scene)
     film   = Hikari.Film(Point2f(512, 512))
     camera = Hikari.PerspectiveCamera(

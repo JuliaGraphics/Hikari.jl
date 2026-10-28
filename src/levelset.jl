@@ -239,8 +239,7 @@ function Base.push!(scene::Scene, m::LevelSetSurface, mi::UInt32; transform = Ma
     return SceneHandle(scene, mi, handle)
 end
 
-update_material!(scene::Scene, key::UInt32, m::LevelSetSurface) = update_material!(scene, key, m.interface)
-update_material!(scene::Scene, key::MediumInterfaceIdx, m::LevelSetSurface) = update_material!(scene, key, m.interface)
+store_interface!(scene::Scene, mi::MediumInterfaceIdx, m::LevelSetSurface) = store_interface!(scene, mi, m.interface)
 
 """
 A raster renderer's stand-in for the traced surface: a square where the grid crosses

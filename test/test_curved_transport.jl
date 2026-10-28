@@ -15,7 +15,7 @@ end
     Hikari.sync!(scene)
     function frame()
         film=Hikari.Film(Point2f(16,16))
-        cam=Hikari.PerspectiveCamera(Point3f(0,-4,0),Point3f(0),film;fov=40f0)
+        cam=Hikari.PerspectiveCamera(Point3f(0,-4,0),Point3f(0),film;up=Vec3f(0,0,1),fov=40f0)
         film=Hikari.Film(backend,film);Hikari.clear!(film)
         film,cam
     end

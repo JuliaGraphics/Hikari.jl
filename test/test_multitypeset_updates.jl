@@ -40,9 +40,9 @@ end
 function _make_sphere_scene(; backend=_BACKEND, hw_accel::Bool=false)
     scene = Hikari.Scene(; backend=backend, hw_accel=hw_accel)
     floor = normal_mesh(Rect3f(Vec3f(-3, -3, -0.05), Vec3f(6, 6, 0.05)))
-    push!(scene, floor, Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.6f0, 0.6f0, 0.6f0)))
+    push!(scene, floor, Hikari.Diffuse(color = Hikari.RGBSpectrum(0.6f0, 0.6f0, 0.6f0)))
     sphere = normal_mesh(Tesselation(Sphere(Point3f(0, 0, 0.35), 0.35f0), 16))
-    handle = push!(scene, sphere, Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.9f0, 0.1f0, 0.1f0)))
+    handle = push!(scene, sphere, Hikari.Diffuse(color = Hikari.RGBSpectrum(0.9f0, 0.1f0, 0.1f0)))
     push!(scene, Hikari.PointLight(Point3f(0, -2, 3), Hikari.RGBSpectrum(30f0)))
     Hikari.sync!(scene)
     return scene, handle
@@ -100,7 +100,7 @@ end
 
     # Swap red sphere for blue sphere via update_material!.
     Hikari.update_material!(scene, handle.interface,
-                             Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.1f0, 0.1f0, 0.9f0)))
+                             Hikari.Diffuse(color = Hikari.RGBSpectrum(0.1f0, 0.1f0, 0.9f0)))
     img_blue = _render(scene; samples=16)
     means_blue = _channel_means(img_blue)
 
@@ -135,7 +135,7 @@ end
     # texture-with-default), so this primarily exercises the slot-update
     # path; we still expect zero growth in `materials.texture_gpu_arrays`.
     for σ in (0.2f0, 0.4f0, 0.6f0, 0.8f0)
-        new_mat = Hikari.Diffuse(Kd=Hikari.RGBSpectrum(σ, σ, σ))
+        new_mat = Hikari.Diffuse(color = Hikari.RGBSpectrum(σ, σ, σ))
         Hikari.update_material!(scene, handle.interface, new_mat)
     end
 
@@ -183,7 +183,7 @@ end
     scene_hw, h_hw = _make_sphere_scene(; hw_accel=true)
 
     # Update both to green.
-    new_mat = Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.1f0, 0.9f0, 0.1f0))
+    new_mat = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.1f0, 0.9f0, 0.1f0))
     Hikari.update_material!(scene_sw, h_sw.interface, new_mat)
     Hikari.update_material!(scene_hw, h_hw.interface, new_mat)
 
@@ -220,7 +220,7 @@ end
         g = Float32(0.1 + 0.4 * (k % 3 == 1))
         b = Float32(0.1 + 0.4 * (k % 3 == 2))
         Hikari.update_material!(scene, handle.interface,
-                                 Hikari.Diffuse(Kd=Hikari.RGBSpectrum(r, g, b)))
+                                 Hikari.Diffuse(color = Hikari.RGBSpectrum(r, g, b)))
         img = _render(scene; samples=4, res=16)
         @test !Mantle.retired(dev)
         m = _channel_means(img)
@@ -252,13 +252,13 @@ end
         # holds the sphere's diffuse.  We index by slot then element.
         mats_arr = first(static_mts.data)
         @assert length(mats_arr) >= 2
-        return @allowscalar mats_arr[2].Kd  # sphere is the second push!
+        return @allowscalar mats_arr[2].color  # sphere is the second push!
     end
     kd_before = _read_material_kd(adapted_before.materials)
 
     # Update to green.
     Hikari.update_material!(scene, handle.interface,
-                             Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.1f0, 0.9f0, 0.1f0)))
+                             Hikari.Diffuse(color = Hikari.RGBSpectrum(0.1f0, 0.9f0, 0.1f0)))
     Hikari.sync!(scene)
     adapted_after = Adapt.adapt(_BACKEND, scene)
     kd_after = _read_material_kd(adapted_after.materials)

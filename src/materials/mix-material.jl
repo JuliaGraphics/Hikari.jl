@@ -53,77 +53,51 @@ struct MixMaterial{AmountT} <: Material
 end
 
 """
-    MixMaterialSpec(material1, material2, amount)
+    Mix(a, b; factor = 0.5)
 
-Host-side form of a [`MixMaterial`](@ref), holding the two sub-materials
-themselves rather than their keys. A `Scene` hands out keys only at push time,
-and materials are routinely built before any scene exists (RayMakie constructs
-them inside a plot's argument-conversion node), so the mix carries its
-sub-materials until then. `resolve_material` turns it into the device form.
+Blender's Mix Shader: `a` where `factor` is 0, `b` where it is 1, which takes a number, an image or
+a node graph. A mix of Blender's BSDFs (and `Diffuse`) is one shader whose lobes are both of theirs,
+weighted. A mix holding one of pbrt's models (`Conductor`, the coated ones, `DiffuseTransmission`)
+picks one of its materials at each hit instead, with probability `factor` for `b`, as pbrt-v4's
+`MixMaterial`: the same image once converged, of other noise.
 """
-struct MixMaterialSpec{M1 <: Material, M2 <: Material, AmountT} <: Material
-    material1::M1
-    material2::M2
-    amount::AmountT
+struct Mix{A <: Material, B <: Material, FactorT} <: Material
+    a::A
+    b::B
+    factor::FactorT
 end
 
-is_emissive(::MixMaterialSpec) = false
-
-"""
-    MixMaterial(scene; materials, amount)
-
-Create a MixMaterial that blends between two sub-materials, pushing both into
-`scene`'s material set to obtain their keys.
-
-# Arguments
-- `materials`: Tuple of two materials (material1, material2)
-- `amount`: Mixing amount (0-1 scalar or texture handle). 0 = material1, 1 = material2.
-
-# Examples
-```julia
-MixMaterial(scene; materials=(gold, diffuse), amount=0.5)
-MixMaterial(scene; materials=(gold, diffuse), amount=mask_handle)
-```
-"""
-function MixMaterial(;
-    materials::Tuple{<:Material, <:Material},
-    amount=0.5f0,
-)
-    return MixMaterialSpec(materials[1], materials[2], matparam(amount))
-end
+Mix(a::Material, b::Material; factor = 0.5f0) = Mix(a, b, factor)
 
 """
     resolve_material(scene, mat) -> mat
 
-Turn any host-only material form into the one that is stored on the device.
-Only `MixMaterialSpec` needs it today: its sub-materials must be pushed first
-so the mix can reference them by `SetKey`.
+The material stored on the device for the one `surface_material` gives. Only a mix that picks
+needs it: its materials are pushed first, so the mix can reference them by `SetKey`.
 """
 resolve_material(scene, mat::Material) = mat
-function resolve_material(scene, spec::MixMaterialSpec)
-    key1 = push!(scene.materials, resolve_material(scene, spec.material1))
-    key2 = push!(scene.materials, resolve_material(scene, spec.material2))
-    return MixMaterial(spec.amount, key1, key2)
+function resolve_material(scene, mix::Mix)
+    key1 = push!(scene.materials, resolve_material(scene, mix.a))
+    key2 = push!(scene.materials, resolve_material(scene, mix.b))
+    return MixMaterial(mix.factor, key1, key2)
 end
 
-# The mix's half of `update_surface!` (scene.jl): its sub-materials at the keys it
-# was pushed with, then itself, the amount texture copied into the slot it has.
-function update_surface!(scene::Scene, key::SetKey, spec::MixMaterialSpec)
-    old = scene.materials[key]::MixMaterial
-    update_surface!(scene, old.material1_idx, spec.material1)
-    update_surface!(scene, old.material2_idx, spec.material2)
-    Raycore.update!(scene.materials, key, MixMaterial(spec.amount, old.material1_idx, old.material2_idx))
-    return nothing
+# The mix's half of `store_surface!` (scene.jl). A mix in place of a mix: its materials in place of
+# the old one's, then itself, the factor texture copied into the slot it has.
+function store_surface!(scene::Scene, key::SetKey, old::MixMaterial, mix::Mix)
+    a = store_surface!(scene, old.material1_idx, mix.a)
+    b = store_surface!(scene, old.material2_idx, mix.b)
+    return Raycore.store!(scene.materials, key, MixMaterial(mix.factor, a, b))
 end
 
-function update_material!(scene::Scene, mi::MediumInterfaceIdx, spec::MixMaterialSpec)
-    update_surface!(scene, mi.material, spec)
-    notify_scene_changed(scene)
-    return nothing
+# Anything else in place of a mix: the materials the mix referenced go with it.
+function store_surface!(scene::Scene, key::SetKey, old::MixMaterial, material::Material)
+    vacate_parts!(scene, old)
+    return Raycore.store!(scene.materials, key, resolve_material(scene, material))
 end
 
-# MixMaterial is not directly emissive (emission comes from chosen sub-material)
-is_emissive(::MixMaterial) = false
+vacate_parts!(scene::Scene, mix::MixMaterial) =
+    (vacate_surface!(scene, mix.material1_idx); vacate_surface!(scene, mix.material2_idx))
 
 # ============================================================================
 # Hash function for deterministic material selection
@@ -243,7 +217,7 @@ Type-stable dispatch to check if a material is MixMaterial.
     # would either fall into its else-branch — answering about an ARBITRARY
     # material — or, when the set is empty, expand to a bare `error(...)` that a
     # GPU kernel cannot raise and simply dies on. See
-    # `get_surface_alpha_dispatch` for the same guard and what it cost.
+    # `surface_transparency_dispatch` for the same guard and what it cost.
     Raycore.is_valid(idx) || return false
     return with_index(is_mix_material, materials, idx)
 end

@@ -18,13 +18,12 @@ include("software_backend.jl")
 # Every stage of the round: four material types, a medium, an area light and a
 # point light, so nothing in the graph is skipped for want of work.
 function volpath_graph_scene(backend; with_media::Bool)
-    white = Hikari.Diffuse(Kd = Hikari.RGBSpectrum(0.73f0))
-    red   = Hikari.Diffuse(Kd = Hikari.RGBSpectrum(0.65f0, 0.05f0, 0.05f0))
-    glass = Hikari.Dielectric(Kr = Hikari.RGBSpectrum(1f0), Kt = Hikari.RGBSpectrum(1f0),
-                              index = 1.5f0)
-    gold  = Hikari.Conductor(eta = Hikari.RGBSpectrum(0.15557f0, 0.42415f0, 1.3831f0),
-                             k = Hikari.RGBSpectrum(3.6024f0, 2.4721f0, 1.9155f0))
-    emissive = Hikari.Emissive(Le = Hikari.RGBSpectrum(12f0))
+    white = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.73f0))
+    red   = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.65f0, 0.05f0, 0.05f0))
+    glass = Hikari.Glass(ior = 1.5f0)
+    gold  = Hikari.Conductor(ior = Hikari.RGBSpectrum(0.15557f0, 0.42415f0, 1.3831f0),
+                             extinction = Hikari.RGBSpectrum(3.6024f0, 2.4721f0, 1.9155f0))
+    emissive = Hikari.Emission(color = Hikari.RGBSpectrum(12f0))
     fog = Hikari.HomogeneousMedium(σ_a = Hikari.RGBSpectrum(0.01f0),
                                    σ_s = Hikari.RGBSpectrum(0.3f0),
                                    Le = Hikari.RGBSpectrum(0f0), g = 0.3f0)

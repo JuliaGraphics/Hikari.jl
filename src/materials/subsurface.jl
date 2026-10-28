@@ -42,7 +42,7 @@ end
         rest = total - sss.sample_weight
         rest > 0f0 || return (no_samples(typeof(bsdf.lobes), bsdf.lambda), work)
         lobes = with_lobe(bsdf.lobes, Val(K), without_samples, identity)
-        return (LobeBSDF(lobes, rest, bsdf.lambda, bsdf.emission, bsdf.dispersive), _with_beta(work, work.beta * (total / rest)))
+        return (LobeBSDF(lobes, rest, bsdf.lambda, bsdf.emission, bsdf.dispersive), with_beta(work, work.beta * (total / rest)))
     end
     # The walk traces rays, so what is live across it is held through every traversal: the walk's
     # parameters and the wavelengths, not the lobes. The other slots come back blank, which no
@@ -97,7 +97,7 @@ WalkParams(w::Weighted{<:SubsurfaceLobe}) =
     return Weighted(L(p.albedo, p.radius, p.alpha, p.ior, p.anisotropy, true), SpectralRadiance(1f0), 1f0, n, Vec3f(0))
 end
 
-@inline _with_beta(w::VPMaterialEvalWorkItem, beta::SpectralRadiance) =
+@inline with_beta(w::VPMaterialEvalWorkItem, beta::SpectralRadiance) =
     VPMaterialEvalWorkItem(w.pi, w.ps, w.n, w.dpdu, w.dpdv, w.time, w.ns, w.dpdus, w.dpdvs, w.uv, w.face_idx, w.bary,
                            w.wo, w.material_idx, w.interface, w.lambda, w.pixel_index, beta, w.r_u, w.r_l, w.depth,
                            w.eta_scale, w.specular_bounce, w.any_non_specular_bounces, w.prev_intr_p, w.prev_intr_n,

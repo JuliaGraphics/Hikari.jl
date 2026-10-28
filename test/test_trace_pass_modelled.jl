@@ -19,9 +19,9 @@ using GeometryBasics: normal_mesh, Tesselation, Rect3f, Sphere, Point3f, Vec3f, 
 function _trace_scene(backend)
     scene = Hikari.Scene(; backend = backend, hw_accel = true)
     push!(scene, normal_mesh(Rect3f(Vec3f(-3, -3, -0.05), Vec3f(6, 6, 0.05))),
-          Hikari.Diffuse(Kd = Hikari.RGBSpectrum(0.6f0, 0.6f0, 0.6f0)))
+          Hikari.Diffuse(color = Hikari.RGBSpectrum(0.6f0, 0.6f0, 0.6f0)))
     push!(scene, normal_mesh(Tesselation(Sphere(Point3f(0, 0, 0.35), 0.35f0), 16)),
-          Hikari.Diffuse(Kd = Hikari.RGBSpectrum(0.8f0, 0.3f0, 0.2f0)))
+          Hikari.Diffuse(color = Hikari.RGBSpectrum(0.8f0, 0.3f0, 0.2f0)))
     push!(scene, Hikari.PointLight(Point3f(0, -2, 3), Hikari.RGBSpectrum(30f0)))
     Hikari.sync!(scene)
     return scene

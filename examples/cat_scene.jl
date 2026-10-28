@@ -47,19 +47,15 @@ function create_scene(; glass_cat=false, backend=Raycore.KA.CPU())
     # === Add geometry with materials ===
     # Cat - warm diffuse or glass
     cat_material = if glass_cat
-        Hikari.Dielectric(
-            Kr=Hikari.RGBSpectrum(0.95f0, 1.0f0, 0.95f0),
-            Kt=Hikari.RGBSpectrum(0.95f0, 1.0f0, 0.95f0),
-            index=1.5f0
-        )
+        Hikari.Glass(ior = 1.5f0)
     else
-        Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.8f0, 0.6f0, 0.4f0), σ=0f0)
+        Hikari.Diffuse(color = Hikari.RGBSpectrum(0.8f0, 0.6f0, 0.4f0))
     end
     push!(scene, create_cat_mesh(), cat_material)
 
     # Floor - green diffuse
     push!(scene, to_mesh(Rect3f(Vec3f(-5, -1.5, -2), Vec3f(10, 0.01, 10))),
-          Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.3f0, 0.5f0, 0.3f0), σ=0f0))
+          Hikari.Diffuse(color = Hikari.RGBSpectrum(0.3f0, 0.5f0, 0.3f0)))
 
     # Back wall - metallic copper
     push!(scene, to_mesh(Rect3f(Vec3f(-5, -1.5, 8), Vec3f(10, 5, 0.01))),
@@ -67,7 +63,7 @@ function create_scene(; glass_cat=false, backend=Raycore.KA.CPU())
 
     # Left wall - diffuse gray-blue
     push!(scene, to_mesh(Rect3f(Vec3f(-5, -1.5, -2), Vec3f(0.01, 5, 10))),
-          Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.7f0, 0.7f0, 0.8f0), σ=0f0))
+          Hikari.Diffuse(color = Hikari.RGBSpectrum(0.7f0, 0.7f0, 0.8f0)))
 
     # Sphere1 - metallic silver (mirror-like)
     push!(scene, to_mesh(Sphere(Point3f(-2, -1.5 + 0.8, 2), 0.8f0)),
@@ -78,11 +74,7 @@ function create_scene(; glass_cat=false, backend=Raycore.KA.CPU())
           Hikari.Conductor(reflectance=Hikari.RGBSpectrum(0.3f0, 0.6f0, 0.9f0), roughness=0.3f0))
 
     # Glass sphere - clear glass with slight green tint
-    glass_material = Hikari.Dielectric(
-        Kr=Hikari.RGBSpectrum(0.98f0, 1.0f0, 0.98f0),
-        Kt=Hikari.RGBSpectrum(0.98f0, 1.0f0, 0.98f0),
-        index=1.5f0
-    )
+    glass_material = Hikari.Glass(ior = 1.5f0)
     push!(scene, to_mesh(Sphere(Point3f(-0.8, -1.5 + 0.5, 0.5), 0.5f0)), glass_material)
 
     # Emissive sphere - use glass material (emissive handled via area lights)

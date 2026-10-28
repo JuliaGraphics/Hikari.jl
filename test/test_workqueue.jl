@@ -1,6 +1,6 @@
 using Test
 using Hikari, Lava, Mantle
-using Hikari: WorkQueue, MultiTypeWorkQueue, should_use_soa, allocate_array, DeviceMemory
+using Hikari: WorkQueue, should_use_soa, allocate_array, DeviceMemory
 import KernelAbstractions as KA
 using KernelAbstractions: @kernel, @index
 
@@ -118,18 +118,19 @@ end
         Hikari.free!(mem)
     end
 
-    @testset "MultiTypeWorkQueue empties every queue it holds" begin
+    # The material queues count per slot in one array (`MaterialQueues`), which the round's
+    # reset zeroes with the queues' counters. It zeroed the first element of each array.
+    @testset "the counter reset zeroes every counter of an array" begin
         mem = DeviceMemory(backend)
-        mtwq = MultiTypeWorkQueue((Int32, Int32), 8, mem)
-        wq_push_kernel!(backend)(mtwq.queues[1]; ndrange=2)
-        wq_push_kernel!(backend)(mtwq.queues[2]; ndrange=3)
+        q = WorkQueue{Int32}(mem, 8)
+        slots = Hikari.alloc!(mem, Int32, 3, Int32(5))
+        wq_push_kernel!(backend)(q; ndrange = 2)
         KA.synchronize(backend)
-        @test length(mtwq.queues[1]) == 2
-        @test length(mtwq.queues[2]) == 3
-
-        empty!(mtwq)
-        @test length(mtwq.queues[1]) == 0
-        @test length(mtwq.queues[2]) == 0
+        @test length(q) == 2
+        Hikari.zero_size_counters_kernel!(backend, 1)((q.size, slots); ndrange = 1)
+        KA.synchronize(backend)
+        @test length(q) == 0
+        @test all(iszero, Array(slots))
         Hikari.free!(mem)
     end
 

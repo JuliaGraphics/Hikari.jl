@@ -53,7 +53,7 @@ end
 # Create simple scene
 function create_scene()
     triangle_mesh = create_test_triangle()
-    mat = Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.8f0, 0.8f0, 0.8f0))
+    mat = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.8f0, 0.8f0, 0.8f0))
 
     primitives = [Hikari.GeometricPrimitive(triangle_mesh, mat)]
     mat_scene = Hikari.MaterialScene(primitives)

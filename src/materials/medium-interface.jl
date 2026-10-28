@@ -23,7 +23,7 @@ Emission is handled separately by DiffuseAreaLight (registered per-triangle
 in scene.lights, not on the material).
 
 # Fields
-- `material`: The underlying BSDF material (e.g., Diffuse, Dielectric)
+- `material`: The underlying BSDF material (e.g., Diffuse, Glass)
 - `inside`: Medium for inside the surface, or `nothing` for vacuum
 - `outside`: Medium for outside the surface, or `nothing` for vacuum
 - `shadows`: `0` (the default) and the surface blocks shadow rays, as a surface with a
@@ -38,17 +38,17 @@ in scene.lights, not on the material).
 # Usage
 ```julia
 # Glass with fog inside
-MediumInterface(Dielectric(...); inside=fog)
+MediumInterface(Glass(); inside=fog)
 
 # Simple material with no medium transition
-MediumInterface(Diffuse(Kd, σ))
+MediumInterface(Diffuse(color = (0.8, 0.2, 0.2)))
 ```
 """
 struct MediumInterface{M<:Material, I, O, E} <: Material
     material::M
     inside::I      # Medium or Nothing
     outside::O     # Medium or Nothing
-    emission::E    # NamedTuple (Le, scale, two_sided) or Nothing
+    emission::E    # an `Emission`, or nothing
     shadows::Float32   # 0: blocks shadow rays; an index of refraction: passes them (see above)
 end
 
@@ -146,7 +146,7 @@ floating in a scene needs.
 Usage:
 ```julia
 push!(scene, bounding_mesh, MediumInterface(NullMaterial(); inside=medium))
-glow = MediumInterface(NullMaterial(); emission=Emissive(Le=Texture(img), two_sided=true))
+glow = MediumInterface(NullMaterial(); emission=Emission(color=Texture(img), two_sided=true))
 ```
 """
 struct NullMaterial <: Material end

@@ -307,6 +307,10 @@ end
 #      handled here because a surface without a material has no shading kernel
 #      to go to, or a `VPSurfaceHit` into the queue of the hit mesh's material.
 #
+# `materials` is the scene's `cut_set`: the types a ray may pass, whose
+# transparency the alpha test reads, and nothing of the others, so that a material
+# of another type does not compile this kernel again.
+#
 # Nothing else is computed here: the shading kernel expands the record into the
 # surface it shades (`vp_shade_surface_hit!`, surface-eval.jl), so the hit is
 # written in 40 bytes and the surface computed once. Writing the expanded surface
@@ -314,23 +318,23 @@ end
 
 @kernel inbounds = true function vp_trace_kernel!(
     cur, next_ray_queue, escaped_queue, medium_sample_queue,
-    per_material_queue, surface_hits,
+    material_queues, surface_hits,
     pixel_L, accel, media_interfaces, media, materials, lights, rgb2spec_table,
     bvh_nodes, light_to_bit_trail,
     num_infinite_lights::Int32, num_bvh_lights::Int32, max_depth::Int32,
 )
     i = @index(Global)
     if i <= cur.size[1]
-        vp_trace!(cur.items[i], Int32(i), next_ray_queue, escaped_queue, medium_sample_queue,
-                  per_material_queue, surface_hits,
+        vp_trace!(cur.items[i], Int32(i), cur.items, next_ray_queue, escaped_queue, medium_sample_queue,
+                  material_queues, surface_hits,
                   pixel_L, accel, media_interfaces, media, materials, lights, rgb2spec_table,
                   bvh_nodes, light_to_bit_trail, num_infinite_lights, num_bvh_lights, max_depth)
     end
 end
 
 @propagate_inbounds function vp_trace!(
-    work::VPRayWorkItem, path::Int32, next_ray_queue, escaped_queue, medium_sample_queue,
-    per_material_queue, surface_hits,
+    work::VPRayWorkItem, path::Int32, rays, next_ray_queue, escaped_queue, medium_sample_queue,
+    material_queues, surface_hits,
     pixel_L, accel, media_interfaces, media, materials, lights, rgb2spec_table,
     bvh_nodes, light_to_bit_trail,
     num_infinite_lights::Int32, num_bvh_lights::Int32, max_depth::Int32,
@@ -345,7 +349,9 @@ end
     # Every surface is opaque to this ray; a cutout is tested after the hit and,
     # where the ray passes, it goes on along the same line past the hit (Cycles
     # moves `tmin` the same way), so the record stays in the queued ray's parameter.
+    # What it passed tints it, the throughput the shading kernel reads with it too.
     ray = work.ray
+    tinted = false
     for _ in 1:Int32(16)
         rec = Raycore.closest_hit_record(accel, ray)
         if rec.kind == Raycore.HIT_MISS
@@ -358,13 +364,18 @@ end
         mat_idx = mi.material
 
         tfc = alpha_filter_context(primitive, bary, ray.o, ray.d, rec.t)
-        alpha = get_surface_alpha_dispatch(materials, mat_idx, tfc)
-        if alpha < 1f0
+        transparency = surface_transparency_dispatch(materials, mat_idx, tfc)
+        through = _avg(transparency)
+        if through > 0f0
             # Hashed from where the ray meets the surface: each layer it passes
-            # decides apart from the last.
+            # decides apart from the last. It passes with the chance of what the
+            # surface lets through, and is tinted by that over the chance, as
+            # Cycles' transparent closure tints it.
             rng = pcg32_init(pbrt_hash(Point3f(ray.o + ray.d * rec.t)), pbrt_hash(ray.d))
             alpha_u, _ = pcg32_uniform_f32(rng)
-            if alpha_u > alpha
+            if alpha_u > 1f0 - through
+                work = with_beta(work, work.beta * _uplift(rgb2spec_table, transparency, work.lambda) / through)
+                tinted = true
                 ray = Raycore.Ray(ray; t_min = nextfloat(rec.t))
                 continue
             end
@@ -397,8 +408,9 @@ end
             return
         end
 
-        wants_shading(work.depth, max_depth, primitive.metadata.arealight_id, materials, mat_idx) || return
-        enqueue_surface_hit!(per_material_queue, materials, surface_hits, mat_idx, VPSurfaceHit(path, rec))
+        wants_shading(work.depth, max_depth, primitive.metadata.arealight_id, material_queues, mat_idx) || return
+        tinted && (rays.beta[path] = work.beta)
+        enqueue_surface_hit!(material_queues, surface_hits, mat_idx, VPSurfaceHit(path, rec))
         return
     end
     # 16 alpha-bounces exhausted (extremely unlikely): ray absorbed
@@ -427,22 +439,17 @@ while opaque surfaces block it. The final contribution is computed as:
 
 The traversal stops at opaque geometry itself and hands back the nearest hits on
 the rest (`Raycore.transparent_hits`), which are shaded here in order, as Cycles'
-`integrate_transparent_shadow` does: a cutout passes `1 - alpha` of the light, a
-surface with `shadows` what a dielectric of that index transmits, a null material
+`integrate_transparent_shadow` does: a cutout passes its transparency, a surface
+with `shadows` what a dielectric of that index transmits, a null material
 everything, changing the medium. Past the hits kept, the ray is traced on from the
 last of them.
 """
-# @noinline: this is a self-contained ray-query lifecycle (init+proceed+get
-# all internal via Raycore.transparent_hits). Keeping it as a separate function gives
-# the call site its own register frame so the surrounding shading kernel
-# (vp_shade_kernel!) doesn't drag the shadow trace's state through its own
-# register budget — this is what kept Conductor specializations pinned at 255
-# regs / ~1 KB spill on RTX 4000 Ada. Lava's refined `incomplete_rayquery` rule
-# (compilation.jl, 2026-06-04) recognises this function's complete lifecycle and
-# lets the @noinline stand.
-@noinline trace_shadow_transmittance(args...) = shadow_transmittance(args...)
-
-@inline function shadow_transmittance(
+# Inlined into the shading kernel. Outlined (it was, for an NVIDIA register budget
+# that no longer shows: the PR #47 scenes time the same either way on an RTX 4000
+# Ada, a Strix Halo and an M5), Apple's GPU compiler crashed linking a CoatedConductor
+# kernel under a distant light once a cutout's colour was uplifted in here, as it
+# did for the outlined subsurface walk.
+@inline function trace_shadow_transmittance(
     accel, media_interfaces, media, materials, rgb2spec_table,
     origin::Point3f, dir::Vec3f, t_max::Float32, lambda::Wavelengths, medium_idx::SetKey,
     refract::Bool = false
@@ -497,7 +504,7 @@ last of them.
             if Raycore.is_valid(mi.material) && !(mi.shadows > 0f0)
                 # A cutout: what its alpha lets through, the medium unchanged.
                 tfc = alpha_filter_context(primitive, barycentric, ray_o, dir, rec.t)
-                T_ray = T_ray * (1f0 - get_surface_alpha_dispatch(materials, mi.material, tfc))
+                T_ray = T_ray * _uplift(rgb2spec_table, surface_transparency_dispatch(materials, mi.material, tfc), lambda)
                 is_black(T_ray) && return blocked
                 continue
             end

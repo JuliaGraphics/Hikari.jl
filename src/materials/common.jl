@@ -827,13 +827,18 @@ end
 end
 
 # ============================================================================
-# Surface Alpha Evaluation (for shadow ray pass-through)
+# Surface transparency (what passes a hit unscattered)
 # ============================================================================
-# Following pbrt-v4: alpha is evaluated at intersection time to determine
-# if a surface should be treated as transparent. Used by trace_shadow_transmittance
-# to allow light through alpha-masked geometry (e.g. GLTF BLEND mode foliage).
 
-# All other material types are fully opaque (Diffuse override is in diffuse.jl)
-@propagate_inbounds get_surface_alpha(::Material, ::Any, ::TextureFilterContext) = 1f0
-@propagate_inbounds get_surface_alpha(mat::Material, textures, uv::Point2f) =
-    get_surface_alpha(mat, textures, TextureFilterContext(uv))
+"""
+    surface_transparency(material, textures, tfc) -> Vec3f
+
+What of the light a surface lets straight through at a hit, per RGB channel: `1 - alpha` of an
+alpha-masked texture (pbrt-v4's alpha, glTF's BLEND foliage), and for a shader the colour of its
+Transparent BSDF and Principled alpha, which tints what passes as Cycles' transparent closure does.
+Evaluated where a ray meets the surface, before it is shaded: a path passes with the chance of its
+mean and is tinted by it over that chance, a shadow ray is tinted by it.
+"""
+@propagate_inbounds surface_transparency(::Material, ::Any, ::TextureFilterContext) = Vec3f(0)
+# A material a view of the set does not hold (`shade_set`): one that cannot be cut out.
+@propagate_inbounds surface_transparency(::Nothing, ::Any, ::TextureFilterContext) = Vec3f(0)

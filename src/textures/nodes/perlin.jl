@@ -76,6 +76,13 @@ end
 @inline _wrap_1e5(x::Float32) = abs(x) < 100000f0 ? x : rem(x, 100000f0) + ifelse(abs(x) >= 1f6, 0.5f0, 0f0)
 
 """Signed Perlin noise in about [-1, 1], repeating every 100000 to keep its precision."""
-@inline _snoise(p) = _noise_scale(p) * _perlin(_wrap_1e5.(p))
+@inline _snoise(p) = signed_noise(p...)
+
+# Scalar arguments keep this shared function out of line on the GPU. Passing a
+# Vec by reference forced it back into every octave, distortion and colour call.
+@noinline function signed_noise(coords::Vararg{Float32, N}) where {N}
+    p = N == 1 ? coords[1] : Vec{N, Float32}(coords)
+    return _noise_scale(p) * _perlin(_wrap_1e5.(p))
+end
 
 @inline _unoise(p) = 0.5f0 * _snoise(p) + 0.5f0

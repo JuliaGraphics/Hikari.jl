@@ -32,9 +32,9 @@ end
 
 function create_cornell_box(; sphere_material=nothing)
     # Default materials
-    white = Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.73f0, 0.73f0, 0.73f0))
-    red = Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.65f0, 0.05f0, 0.05f0))
-    green = Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.12f0, 0.45f0, 0.15f0))
+    white = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.73f0, 0.73f0, 0.73f0))
+    red = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.65f0, 0.05f0, 0.05f0))
+    green = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.12f0, 0.45f0, 0.15f0))
 
     sphere_mat = isnothing(sphere_material) ? white : sphere_material
 
@@ -108,11 +108,7 @@ function example_foggy_glass_sphere()
     # Glass material wrapped with MediumInterface
     # inside=fog: fog medium inside the sphere
     # outside=nothing: vacuum outside
-    glass = Hikari.Dielectric(
-        Kr = Hikari.RGBSpectrum(1f0),
-        Kt = Hikari.RGBSpectrum(1f0),
-        index = 1.5f0
-    )
+    glass = Hikari.Glass(ior = 1.5f0)
     glass_with_fog = Hikari.MediumInterface(glass; inside=fog, outside=nothing)
 
     # Create scene with foggy glass sphere
@@ -159,7 +155,7 @@ function example_glowing_sphere()
     )
 
     # Glass sphere containing the glowing medium
-    glass = Hikari.Dielectric(index=1.3f0)
+    glass = Hikari.Glass(ior = 1.3f0)
     glowing_glass = Hikari.MediumInterface(glass; inside=glowing_medium, outside=nothing)
 
     scene = create_cornell_box(sphere_material=glowing_glass)
@@ -209,9 +205,9 @@ function example_foggy_room_clear_sphere()
     )
 
     # Materials
-    white = Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.73f0))
-    red = Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.65f0, 0.05f0, 0.05f0))
-    green = Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.12f0, 0.45f0, 0.15f0))
+    white = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.73f0))
+    red = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.65f0, 0.05f0, 0.05f0))
+    green = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.12f0, 0.45f0, 0.15f0))
 
     # Walls embedded in fog (fog on both sides)
     white_in_fog = Hikari.MediumInterface(white, room_fog)
@@ -219,11 +215,7 @@ function example_foggy_room_clear_sphere()
     green_in_fog = Hikari.MediumInterface(green, room_fog)
 
     # Glass sphere: vacuum inside, fog outside
-    glass = Hikari.Dielectric(
-        Kr = Hikari.RGBSpectrum(1f0),
-        Kt = Hikari.RGBSpectrum(1f0),
-        index = 1.5f0
-    )
+    glass = Hikari.Glass(ior = 1.5f0)
     clear_bubble = Hikari.MediumInterface(glass; inside=nothing, outside=room_fog)
 
     # Box dimensions
@@ -419,11 +411,7 @@ function example_heterogeneous_cloud()
 
     # Transparent boundary (no refraction) to clearly see internal structure
     # Use index=1.0 to avoid glass distortion obscuring the cloud structure
-    transparent = Hikari.Dielectric(
-        Kr = Hikari.RGBSpectrum(0f0),
-        Kt = Hikari.RGBSpectrum(1f0),
-        index = 1.0f0
-    )
+    transparent = Hikari.Glass(ior = 1.0f0)
     cloud_material = Hikari.MediumInterface(transparent; inside=cloud_medium, outside=nothing)
 
     # Create scene with cloud sphere in Cornell box

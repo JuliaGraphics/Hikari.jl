@@ -31,7 +31,7 @@ value(h) = Hikari.const_float(h, NaN32)
         @test value(m.v_roughness) == 0.3f0
         @test value(m.thickness) == 0.05f0
         @test value(m.g) == 0.5f0
-        @test m.albedo != Hikari.matparam(Hikari.RGBSpectrum(0f0))
+        @test m.albedo != Hikari.TexHandle(Hikari.RGBSpectrum(0f0))
         @test (m.max_depth, m.n_samples) == (4, 3)
     end
 
@@ -51,7 +51,7 @@ value(h) = Hikari.const_float(h, NaN32)
         m = material("""Material "conductor" "spectrum eta" "metal-Au-eta" "spectrum k" "metal-Au-k"
                         "float uroughness" 0.02 "float vroughness" 0.4""")
         @test (value(m.u_roughness), value(m.v_roughness)) == (0.02f0, 0.4f0)
-        @test m.eta === Hikari.AU_ETA_SPECTRUM && m.k === Hikari.AU_K_SPECTRUM
+        @test m.ior === Hikari.AU_ETA_SPECTRUM && m.extinction === Hikari.AU_K_SPECTRUM
     end
 
     @testset "a dielectric's textured roughness" begin
@@ -62,8 +62,8 @@ value(h) = Hikari.const_float(h, NaN32)
 
     @testset "CoatedConductor's default conductor is copper" begin
         m = Hikari.CoatedConductor()
-        @test m.conductor_eta === Hikari.CU_ETA_SPECTRUM
-        @test m.conductor_k === Hikari.CU_K_SPECTRUM
+        @test m.conductor_ior === Hikari.CU_ETA_SPECTRUM
+        @test m.conductor_extinction === Hikari.CU_K_SPECTRUM
     end
 
     @testset "the pearl's coat is pbrt's" begin

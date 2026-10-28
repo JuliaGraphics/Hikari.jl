@@ -40,6 +40,11 @@ struct VPRayWorkItem
     medium_idx::SetKey         # Current medium (0 = vacuum)
 end
 
+"""`w` with the path throughput `beta`."""
+@inline with_beta(w::VPRayWorkItem, beta::SpectralRadiance) =
+    VPRayWorkItem(w.ray, w.depth, w.lambda, w.pixel_index, beta, w.r_u, w.r_l, w.prev_intr_p, w.prev_intr_n,
+                  w.eta_scale, w.specular_bounce, w.any_non_specular_bounces, w.medium_idx)
+
 "Prepare a curved chord before either hardware or software intersection."
 @propagate_inbounds function prepare_medium_work(work::VPRayWorkItem, media)
     has_medium(work.medium_idx) || return work

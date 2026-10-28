@@ -202,14 +202,31 @@ vertex-colour bump height indexes with them.
 end
 
 """The shading frame at the hit `geom` of `primitive`, perturbed by the material's bump, if it has one."""
-@propagate_inbounds function bumped_shading_frame(materials, mat_idx, camera, work, geom, primitive,
-                                                  samples_per_pixel::Int32, bary)
+@propagate_inbounds function bumped_shading_frame(::Type{T}, materials, mat_idx, camera, work, geom, primitive,
+                                                  samples_per_pixel::Int32, bary) where {T}
     face_idx = primitive.metadata.primitive_index
     bump_inputs() = (vp_compute_normal_derivatives(primitive)...,
                      bump_filter_context(camera, work, geom, samples_per_pixel, face_idx, SVector{3, Float32}(bary)))
-    return get_perturbed_shading_frame(materials, mat_idx, geom.ns, geom.dpdus, geom.dpdu, geom.dpdv, geom.n,
-                                       bump_inputs)
+    return perturbed_frame(T, materials, mat_idx, geom.ns, geom.dpdus, geom.dpdu, geom.dpdv, geom.n, bump_inputs)
 end
+
+# The kernel of a material type knows the material: only its own bump is compiled. A mix's
+# component is known per hit, so its kernel asks every type in the set.
+@propagate_inbounds perturbed_frame(::Type{T}, materials, idx::SetKey, ns, dpdus, dpdu, dpdv, ng, bump_inputs) where {T} =
+    perturb_shading_frame_impl(material_of_type(materials, T, idx.vec_idx), materials, ns, dpdus, dpdu, dpdv, ng,
+                               bump_inputs)
+@propagate_inbounds perturbed_frame(::Type{<:MixMaterial}, materials, idx::SetKey, ns, dpdus, dpdu, dpdv, ng, bump_inputs) =
+    get_perturbed_shading_frame(materials, idx, ns, dpdus, dpdu, dpdv, ng, bump_inputs)
+
+"""
+    shaded_material(T, materials, key, p, wo, tfc) -> SetKey
+
+The material a hit in the queue of type `T` is shaded with: the mesh's (`key`), and for a mix the
+component it picks at this hit (`resolve_mix_material`).
+"""
+@propagate_inbounds shaded_material(::Type, materials, key::SetKey, p::Point3f, wo::Vec3f, tfc::TextureFilterContext) = key
+@propagate_inbounds shaded_material(::Type{<:MixMaterial}, materials, key::SetKey, p::Point3f, wo::Vec3f,
+                                    tfc::TextureFilterContext) = resolve_mix_material(materials, key, p, wo, tfc)
 
 """
     compute_uv_derivatives(dpdu, dpdv, dpdx, dpdy) -> (dudx, dudy, dvdx, dvdy)
@@ -310,13 +327,13 @@ end
 #     BxDF carrier `get_bxdf` built for this hit and call
 #     `evaluate_bsdf_spectral` / `sample_bsdf_spectral` on it directly. Sobol
 #     inlined, shadow trace inlined.
-#   * `vp_shade_kernel!` — reads `TypedHitRef{T}`, loads the `VPSurfaceHit`
+#   * `vp_shade_kernel!` — reads a `TypedHitRef{T}` from its `SlotQueue{T}`, loads the `VPSurfaceHit`
 #     from the shared `surface_hits` store and its path, expands the surface,
 #     looks up the concrete instance via `material_of_type(materials, T,
 #     vec_idx)` (one array load resolved at compile time), accumulates emission,
 #     runs DL + indirect path.
-#   * the "shade" pass (graph.jl) — one dispatch per queue of the
-#     `MultiTypeMaterialQueue`, all in ONE pass, because they are independent:
+#   * the "shade" pass (graph.jl) — one dispatch per slot of the
+#     `MaterialQueues`, all in ONE pass, because they are independent:
 #     each per-type kernel writes disjoint slots of the shared `next_ray_queue`
 #     and atomic `pixel_L`. A pass is the unit barriers go between, so they
 #     overlap on idle SMs rather than serialising.
@@ -466,6 +483,7 @@ carrier, applies Russian roulette, pushes the continuation ray."""
     rgb2spec_table,
     max_depth::Int32,
     do_regularize::Bool,
+    emitters_reachable::Bool,
     sobol_rng,
     sample_idx::Int32,
     camera,
@@ -474,8 +492,9 @@ carrier, applies Russian roulette, pushes the continuation ray."""
 ) where B
     # Null material → never sees a typed kernel (routed at push site).
     new_depth = work.depth + Int32(1)
-    # The deepest vertex samples the BSDF for the emission its ray reaches, if any can be.
-    (new_depth < max_depth || emission_reachable(lights, materials)) || return
+    # The deepest vertex samples the BSDF for the emission its ray reaches, if any can be
+    # (`emission_reachable`, decided for the scene when the plans are built).
+    (new_depth < max_depth || emitters_reachable) || return
 
     px, py, sample_idx = path_pixel_sample(sobol_rng, work.pixel_index, sample_idx)
     base_dim = Int32(6) + Int32(7) * work.depth
@@ -562,61 +581,73 @@ end
 """
     vp_shade_kernel!(q, surface_hits, cur, arrivals, …)
 
-Shade the hits of one material type: drains one queue of the
-`MultiTypeMaterialQueue`, so each specialisation compiles exactly one material's
-code (and a `MixMaterial`'s, its components').
+Shade the hits of one material type: drains the `SlotQueue{T}` of its slot of the
+`MaterialQueues`, so each specialisation compiles exactly one material's code (and
+a `MixMaterial`'s, its components').
 """
 @kernel inbounds = true function vp_shade_kernel!(
     q, surface_hits, cur, arrivals,
     next_ray_queue, pixel_L, film_pdf, accel, media_interfaces, media, materials, lights,
     rgb2spec_table, bvh_nodes, infinite_light_indices, light_to_bit_trail,
     num_infinite_lights::Int32, num_bvh_lights::Int32, num_lights::Int32,
-    max_depth::Int32, do_regularize::Bool, sobol_rng, sample_idx_ref, camera_ref,
+    max_depth::Int32, do_regularize::Bool, emitters_reachable::Bool, sobol_rng, sample_idx_ref, camera_ref,
     samples_per_pixel::Int32, rr_depth::Int32,
 )
     j = @index(Global)
-    if j <= q.size[1]
-        vp_shade_surface_hit!(q.items[j], surface_hits, cur, arrivals,
+    if j <= queuelength(q)
+        vp_shade_surface_hit!(q[j], surface_hits, cur, arrivals,
             next_ray_queue, pixel_L, film_pdf, accel, media_interfaces, media, materials, lights,
             rgb2spec_table, bvh_nodes, infinite_light_indices, light_to_bit_trail,
             num_infinite_lights, num_bvh_lights, num_lights,
-            max_depth, do_regularize, sobol_rng, sample_idx_ref, camera_ref,
+            max_depth, do_regularize, emitters_reachable, sobol_rng, sample_idx_ref, camera_ref,
             samples_per_pixel, rr_depth)
     end
 end
 
 """
-    vp_shade_surface_hit!(ref::TypedHitRef{T}, surface_hits, cur, arrivals, …)
+    expanded_hit(idx, surface_hits, cur, arrivals, accel, media_interfaces)
 
-Expand one surface hit and shade it with its material of type `T`: the path
-state (the round's ray, or the arrival a medium delivered), the surface from the
-hit record, the bump-perturbed shading frame, the emission of an area light it
-landed on (MIS-weighted against light sampling), then the material's BSDF
-sampling and direct lighting (`vp_shade_resolved_hit!`).
+The surface hit `idx` of `surface_hits` expanded: its path state (the round's ray, or the arrival a
+medium delivered), record, primitive, barycentrics, medium interface, surface and `wo`. A shader's
+values kernel and its closure kernel expand a hit by this one function, so both see one surface.
+"""
+@propagate_inbounds function expanded_hit(idx::Int32, surface_hits, cur, arrivals, accel, media_interfaces)
+    sh = surface_hits.items[idx]
+    work = sh.path > Int32(0) ? cur.items[sh.path] : arrivals.items[-sh.path]
+    rec = sh.hit
+    primitive = Raycore.hit_primitive(accel, rec)
+    bary = Raycore.hit_barycentric(accel, rec)
+    mi = media_interfaces[resolve_mi_idx(rec.custom, primitive)]
+    geom = vp_compute_surface_geometry(primitive, bary, work.ray.o, work.ray.d, rec.t)
+    return (; work, rec, primitive, bary, mi, geom, wo = -work.ray.d)
+end
+
+"""
+    vp_shade_surface_hit!(ref, surface_hits, cur, arrivals, …)
+
+Expand one surface hit and shade it with its material (`shaded_type(ref)`): the surface from the
+hit record, the bump-perturbed shading frame, the emission of an area light it landed on
+(MIS-weighted against light sampling), then the material's BSDF sampling and direct lighting
+(`vp_shade_resolved_hit!`).
 """
 @propagate_inbounds function vp_shade_surface_hit!(
-    ref::TypedHitRef{T}, surface_hits, cur, arrivals,
+    ref, surface_hits, cur, arrivals,
     next_ray_queue, pixel_L, film_pdf, accel, media_interfaces, media, materials, lights,
     rgb2spec_table, bvh_nodes, infinite_light_indices, light_to_bit_trail,
     num_infinite_lights::Int32, num_bvh_lights::Int32, num_lights::Int32,
-    max_depth::Int32, do_regularize::Bool, sobol_rng, sample_idx_ref, camera_ref,
+    max_depth::Int32, do_regularize::Bool, emitters_reachable::Bool, sobol_rng, sample_idx_ref, camera_ref,
     samples_per_pixel::Int32, rr_depth::Int32,
-) where {T}
+)
+    T = shaded_type(ref)
     # Behind `GPURef`s: a new sample index or a moved camera is an update in the
     # run's own submission, not a new plan.
     sample_idx = sample_idx_ref[Int32(1)]
     camera = camera_ref[Int32(1)]
-    sh = surface_hits.items[ref.idx]
-    work = sh.path > Int32(0) ? cur.items[sh.path] : arrivals.items[-sh.path]
-    rec = sh.hit
+    (; work, rec, primitive, bary, mi, geom, wo) = expanded_hit(ref.idx, surface_hits, cur, arrivals, accel,
+                                                               media_interfaces)
     t_hit = rec.t
-    primitive = Raycore.hit_primitive(accel, rec)
-    bary = Raycore.hit_barycentric(accel, rec)
-    mi = media_interfaces[resolve_mi_idx(rec.custom, primitive)]
-    geom = vp_compute_surface_geometry(primitive, bary, work.ray.o, work.ray.d, t_hit)
-    wo = -work.ray.d
     # The mesh's material; a `MixMaterial` picks its component here, per hit.
-    resolved = resolve_mix_material(materials, mi.material, geom.pi, wo,
+    resolved = shaded_material(T, materials, mi.material, geom.pi, wo,
         TextureFilterContext(geom.uv, primitive.metadata.primitive_index, bary, geom.pi))
 
     # A mix that resolved to no material: emission, then the ray goes on, as at a
@@ -643,7 +674,7 @@ sampling and direct lighting (`vp_shade_resolved_hit!`).
 
     # True ray differentials on camera rays, camera approximation deeper, as
     # pbrt-v4's ComputeDifferentials.
-    ns_b, dpdus_b = bumped_shading_frame(materials, resolved, camera, work, geom, primitive,
+    ns_b, dpdus_b = bumped_shading_frame(T, materials, resolved, camera, work, geom, primitive,
                                          samples_per_pixel, bary)
     hit_work = VPHitSurfaceWorkItem(
         work,
@@ -666,17 +697,17 @@ sampling and direct lighting (`vp_shade_resolved_hit!`).
             materials, lights, rgb2spec_table,
             bvh_nodes, infinite_light_indices,
             num_infinite_lights, num_bvh_lights, num_lights,
-            max_depth, do_regularize, sobol_rng, sample_idx,
+            max_depth, do_regularize, emitters_reachable, sobol_rng, sample_idx,
             camera, samples_per_pixel, rr_depth)
     else
-        mat = material_of_type(materials, T, resolved.vec_idx)
+        mat = shaded_instance(ref, materials, resolved)
         vp_shade_resolved_hit!(mat,
             hit_work, wo, resolved,
             next_ray_queue, pixel_L, film_pdf, accel, media_interfaces, media,
             materials, lights, rgb2spec_table,
             bvh_nodes, infinite_light_indices,
             num_infinite_lights, num_bvh_lights, num_lights,
-            max_depth, do_regularize, sobol_rng, sample_idx,
+            max_depth, do_regularize, emitters_reachable, sobol_rng, sample_idx,
             camera, samples_per_pixel, rr_depth)
     end
     return nothing
@@ -722,7 +753,7 @@ end
     materials, lights, rgb2spec_table,
     bvh_nodes, infinite_light_indices,
     num_infinite_lights::Int32, num_bvh_lights::Int32, num_lights::Int32,
-    max_depth::Int32, do_regularize::Bool, sobol_rng, sample_idx::Int32,
+    max_depth::Int32, do_regularize::Bool, emitters_reachable::Bool, sobol_rng, sample_idx::Int32,
     camera, samples_per_pixel::Int32, rr_depth::Int32,
 )
     # The depth limit ends a path after the emission at its vertex, as pbrt-v4's VolPath:
@@ -750,7 +781,7 @@ end
         bxdf,
         next_ray_queue, film_pdf,
         mat_work, materials, media, lights, num_infinite_lights, num_bvh_lights, rgb2spec_table, max_depth,
-        do_regularize,
+        do_regularize, emitters_reachable,
         sobol_rng, sample_idx,
         camera, samples_per_pixel,
         rr_depth,

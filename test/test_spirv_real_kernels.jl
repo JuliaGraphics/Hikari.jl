@@ -288,7 +288,7 @@ import .SPIRVTestUtils: check, check_not, check_vendor_safety, spirv_opt_roundtr
         job = only(unique(filter(isshade, jobs)))
         # The queue the kernel drains holds hits on the measured-spectrum conductor.
         @test job.source.specTypes.parameters[3] <:
-              Hikari.WorkQueue{<:Hikari.TypedHitRef{<:Hikari.Conductor{Hikari.PiecewiseLinearSpectrum{56}}}}
+              Hikari.SlotQueue{<:Hikari.Conductor{Hikari.PiecewiseLinearSpectrum{56}}}
 
         bytes = Lava.compile_or_lookup(job).spirv_bytes
         @test !isempty(bytes)

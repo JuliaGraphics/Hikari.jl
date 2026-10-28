@@ -20,8 +20,8 @@ to_mesh(prim) = normal_mesh(prim isa Sphere ? Tesselation(prim, 64) : prim)
 
 ```@example getstarted
 # 1. Create materials
-red   = Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.8f0, 0.25f0, 0.1f0))
-white = Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.85f0))
+red   = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.8f0, 0.25f0, 0.1f0))
+white = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.85f0))
 gold  = Hikari.Gold(roughness=0.05f0)
 
 # 2. Build the scene

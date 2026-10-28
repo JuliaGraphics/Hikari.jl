@@ -26,7 +26,7 @@
 #   lobe_f(l, wo, wi, lambda)          -> (f, pdf)   f without any cosine
 #   lobe_sample(l, wo, u, uc, lambda)  -> (wi, f, pdf, flags, eta), f and pdf for a singular
 #                                         sample only; `uc` picks between reflection and refraction
-#   lift(l, table, lambda, regularize) -> the lobe with spectral colours
+#   lift(l, table, lambda)             -> the lobe with spectral colours
 #   is_diffuse_lobe(l)                 -> whether a bump's shadowing applies to it as to a diffuse lobe
 
 abstract type BSDFLobe end
@@ -109,7 +109,7 @@ Lambert where the roughness is almost zero.
     return DiffuseLobe{Vec3f}(a, b, e_ms .* (1f0 - e_v))
 end
 
-@inline lift(l::DiffuseLobe{Vec3f}, table, lambda, ::Bool) =
+@inline lift(l::DiffuseLobe{Vec3f}, table, lambda) =
     DiffuseLobe{SpectralRadiance}(l.a, l.b, l.b == 0f0 ? SpectralRadiance(0f0) : _uplift(table, l.ms, lambda))
 @inline is_diffuse_lobe(::DiffuseLobe) = true
 
@@ -138,7 +138,7 @@ end
 """Lambert's lobe through the surface: Blender's Translucent BSDF."""
 struct TranslucentLobe <: BSDFLobe end
 
-@inline lift(l::TranslucentLobe, table, lambda, ::Bool) = l
+@inline lift(l::TranslucentLobe, table, lambda) = l
 @inline can_scatter(::TranslucentLobe, s::Scattering) = allows_transmission(s)
 @inline is_diffuse_lobe(::TranslucentLobe) = true
 
@@ -189,8 +189,8 @@ Weighted(lobe::BSDFLobe, weight::Vec3f, n::Vec3f; t::Vec3f = Vec3f(0), sample_we
     Weighted(lobe, weight, sample_weight, n, t)
 
 """`w` with its colours at the path's wavelengths, its weight scaled by `scale`."""
-@inline lift(w::Weighted{<:BSDFLobe, Vec3f}, scale::Float32, table, lambda::Wavelengths, regularize::Bool) =
-    Weighted(lift(w.lobe, table, lambda, regularize), _uplift(table, _saturate3(w.weight * scale), lambda),
+@inline lift(w::Weighted{<:BSDFLobe, Vec3f}, scale::Float32, table, lambda::Wavelengths) =
+    Weighted(lift(w.lobe, table, lambda), _uplift(table, _saturate3(w.weight * scale), lambda),
              w.sample_weight, w.n, w.t)
 
 """
@@ -225,11 +225,11 @@ which its `D` needs.
     return (max(alpha_x, 1f-4), max(alpha_y, 1f-4))
 end
 
-"""pbrt-v4's `DielectricBxDF` of relative IOR `eta`, tinted by `kr` and `kt`, as a lobe."""
-@inline function pbrt_dielectric(eta::Float32, alpha_x::Float32, alpha_y::Float32;
-                                 kr::SpectralRadiance = SpectralRadiance(1f0), kt::SpectralRadiance = SpectralRadiance(1f0))
+"""pbrt-v4's `DielectricBxDF` of relative IOR `eta` as a lobe."""
+@inline function pbrt_dielectric(eta::Float32, alpha_x::Float32, alpha_y::Float32)
     ax, ay = pbrt_alphas(alpha_x, alpha_y)
-    return MicrofacetLobe{:glass}(DielectricFresnel(kr, kt); alpha_x = ax, alpha_y = ay, ior = eta, convention = PbrtRadiance())
+    one = SpectralRadiance(1f0)
+    return MicrofacetLobe{:glass}(DielectricFresnel(one, one); alpha_x = ax, alpha_y = ay, ior = eta, convention = PbrtRadiance())
 end
 
 """pbrt-v4's `ConductorBxDF` of complex IOR `eta` + i`k` as a lobe."""
@@ -519,12 +519,10 @@ MicrofacetLobe{Mode}(fresnel::FresnelModel; alpha_x::Float32, alpha_y::Float32 =
 with_energy(l::MicrofacetLobe{Mode, F, C}, energy::Float32) where {Mode, F, C} =
     MicrofacetLobe{Mode, F, C}(l.alpha_x, l.alpha_y, l.ior, energy, l.inv_abbe, l.fresnel)
 
-@inline function lift(l::MicrofacetLobe{Mode, F, C}, table, lambda::Wavelengths, regularize::Bool) where {Mode, F, C}
-    ax = regularize ? regularize_alpha(l.alpha_x) : l.alpha_x
-    ay = regularize ? regularize_alpha(l.alpha_y) : l.alpha_y
+@inline function lift(l::MicrofacetLobe{Mode, F, C}, table, lambda::Wavelengths) where {Mode, F, C}
     ior = l.inv_abbe > 0f0 ? _dispersed_ior(l.ior, l.inv_abbe, lambda.lambda[1]) : l.ior
     fresnel = lift(l.fresnel, table, lambda)
-    return MicrofacetLobe{Mode, typeof(fresnel), C}(ax, ay, ior, l.energy, l.inv_abbe, fresnel)
+    return MicrofacetLobe{Mode, typeof(fresnel), C}(l.alpha_x, l.alpha_y, ior, l.energy, l.inv_abbe, fresnel)
 end
 
 @inline disperses(l::MicrofacetLobe) = l.inv_abbe > 0f0
@@ -712,15 +710,36 @@ the view angle, and darken it by the Fresnel of the light that scatters more tha
 end
 
 """
+What a shader's lobes are set up with: Cycles' lookup tables, and whether the path regularizes
+(`regularizes`), which roughens a near-specular lobe as pbrt-v4's `BSDF::Regularize` does.
+
+A lobe is roughened before its albedo and energy compensation are taken from the tables
+(`setup_fresnel`). Roughened after, as it was, it kept the compensation of the smoother lobe, and
+a rough glass lost 3 % of the light at each pass through it: a white furnace showed 0.967.
+"""
+struct LobeSetup{T}
+    lut::T
+    regularize::Bool
+end
+
+"""
 A microfacet lobe set up the way Cycles' `bsdf_microfacet_setup_fresnel_*` do: its share of the
 samples scaled by its albedo seen from `wo`, at the cosine `mu` with its normal, and its energy
-compensation; and what it reflects, which the layers under it give up.
+compensation, of the lobe roughened first where the path regularizes; and what it reflects, which
+the layers under it give up.
 """
-@inline function setup_fresnel(lut, w::Weighted{<:MicrofacetLobe{Mode}, Vec3f}, mu::Float32) where {Mode}
-    refl, trans = estimate_albedo(lut, w.lobe, mu)
+@inline function setup_fresnel(s::LobeSetup, w::Weighted{<:MicrofacetLobe{Mode}, Vec3f}, mu::Float32) where {Mode}
+    w = s.regularize ? regularized(w) : w
+    refl, trans = estimate_albedo(s.lut, w.lobe, mu)
     w = Weighted(w.lobe, w.weight, w.sample_weight * _avg(refl .+ trans), w.n, w.t)
-    return preserve_energy(lut, w, mu, single_scatter_fresnel(w.lobe.fresnel, w.lobe, Mode === :glass)), refl
+    return preserve_energy(s.lut, w, mu, single_scatter_fresnel(w.lobe.fresnel, w.lobe, Mode === :glass)), refl
 end
+@inline sheen(s::LobeSetup, weight::Vec3f, n::Vec3f, roughness::Float32, wo::Vec3f) = sheen(s.lut, weight, n, roughness, wo)
+
+"""`w` with its microfacet distribution roughened as pbrt-v4's `TrowbridgeReitzDistribution::Regularize` does."""
+@inline regularized(w::Weighted{MicrofacetLobe{Mode, F, C}}) where {Mode, F, C} =
+    Weighted(MicrofacetLobe{Mode, F, C}(regularize_alpha(w.lobe.alpha_x), regularize_alpha(w.lobe.alpha_y), w.lobe.ior,
+                                        w.lobe.energy, w.lobe.inv_abbe, w.lobe.fresnel), w.weight, w.sample_weight, w.n, w.t)
 
 # ── Thin dielectric ─────────────────────────────────────────────────────────
 
@@ -758,7 +777,7 @@ struct SheenLobe <: BSDFLobe
     b::Float32
 end
 
-@inline lift(l::SheenLobe, table, lambda, ::Bool) = l
+@inline lift(l::SheenLobe, table, lambda) = l
 @inline is_diffuse_lobe(::SheenLobe) = true
 @inline function lobe_frame(::SheenLobe, n::Vec3f, t::Vec3f, wo::Vec3f)
     tangent = _unit(wo - dot(wo, n) * n, coordinate_system(n)[1])
@@ -816,7 +835,7 @@ end
 SubsurfaceLobe(albedo::Vec3f, radius::Vec3f, alpha::Float32, ior::Float32, anisotropy::Float32) =
     SubsurfaceLobe{Vec3f}(albedo, radius, alpha, clamp(ior, 1.01f0, 3.8f0), clamp(anisotropy, -0.99f0, 0.99f0), false)
 
-@inline lift(l::SubsurfaceLobe{Vec3f}, table, lambda, ::Bool) =
+@inline lift(l::SubsurfaceLobe{Vec3f}, table, lambda) =
     SubsurfaceLobe{SpectralRadiance}(_uplift(table, _saturate3(l.albedo), lambda), _uplift_unbounded(table, l.radius, lambda),
                                      l.alpha, l.ior, l.anisotropy, false)
 @inline is_diffuse_lobe(::SubsurfaceLobe) = true

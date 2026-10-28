@@ -90,11 +90,14 @@ end
 
 function PerspectiveCamera(eyepos, lookat, film; up=Vec3f(0, 1, 0), fov=55)
     screen = Hikari.Bounds2(Point2f(-1f0), Point2f(1f0))
-    # Camera positioned to match the original perspective
-    # Low angle view showing spheres with their reflections on the mirror floor
+    # An `up` along the view leaves the camera's frame undefined: the image came out black.
+    dir = Vec3f(lookat) - Vec3f(eyepos)
+    norm(cross(normalize(dir), normalize(Vec3f(up)))) > 1f-6 || throw(ArgumentError(
+        "PerspectiveCamera: `up` = $up is parallel to the view direction $dir, which leaves no frame to " *
+        "orient the image by; pass an `up` across it"))
     return PerspectiveCamera(
         Hikari.look_at(eyepos, lookat, up),
-        screen, 0f0, 1f0, 0f0, 1f6, fov, film,
+        screen, 0f0, 1f0, 0f0, 1f6, Float32(fov), film,
     )
 end
 

@@ -50,7 +50,7 @@ function null_only_render(backend; unused_material::Bool, samples = 8, max_depth
     bounds = Raycore.Bounds3(Point3f(0), Point3f(2))
     push!(scene, normal_mesh(Rect3f(Vec3f(0), Vec3f(2))),
           Hikari.MediumInterface(Hikari.NullMaterial(); inside = null_only_medium(bounds)))
-    unused_material && push!(scene.materials, Hikari.Diffuse(Kd = Hikari.RGBSpectrum(1.0f0)))
+    unused_material && push!(scene.materials, Hikari.Diffuse(color = Hikari.RGBSpectrum(1.0f0)))
     push!(scene, Hikari.PointLight(Point3f(4, -6, 6), Hikari.RGBSpectrum(60.0f0)))
     Hikari.sync!(scene)
 

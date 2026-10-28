@@ -13,9 +13,9 @@ include("software_backend.jl")
     function make_noisy_scene(backend = Mantle.defaultbackend())
         scene = Hikari.Scene(; backend = backend)
         push!(scene, to_mesh(Sphere(Point3f(0, 0.5, 0), 0.5f0)),
-              Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.8f0, 0.3f0, 0.2f0)))
+              Hikari.Diffuse(color = Hikari.RGBSpectrum(0.8f0, 0.3f0, 0.2f0)))
         push!(scene, to_mesh(Rect3f(Vec3f(-2, 0, -2), Vec3f(4, 0.01, 4))),
-              Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.85f0)))
+              Hikari.Diffuse(color = Hikari.RGBSpectrum(0.85f0)))
         push!(scene, Hikari.PointLight(Point3f(2f0, 3f0, -1f0), Hikari.RGBSpectrum(40f0)))
         Hikari.sync!(scene)
         return scene

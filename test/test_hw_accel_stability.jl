@@ -29,7 +29,7 @@ using LinearAlgebra: I
 function _make_scene(backend; n_spheres::Int=3)
     scene = Hikari.Scene(; backend=backend, hw_accel=true)
     floor = normal_mesh(Rect3f(Vec3f(-3, -3, -0.05), Vec3f(6, 6, 0.05)))
-    push!(scene, floor, Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.6f0, 0.6f0, 0.6f0)))
+    push!(scene, floor, Hikari.Diffuse(color = Hikari.RGBSpectrum(0.6f0, 0.6f0, 0.6f0)))
     sphere = normal_mesh(Tesselation(Sphere(Point3f(0, 0, 0), 0.35f0), 16))
     cols = [(1f0, 0.2f0, 0.2f0), (0.2f0, 1f0, 0.2f0), (0.2f0, 0.2f0, 1f0),
             (1f0, 1f0, 0.2f0), (0.2f0, 1f0, 1f0), (1f0, 0.2f0, 1f0)]
@@ -38,7 +38,7 @@ function _make_scene(backend; n_spheres::Int=3)
         c = cols[mod1(i, length(cols))]
         x = 0.9f0 * (i - (n_spheres + 1) / 2)
         tf = Raycore.Mat4f([1 0 0 x; 0 1 0 0f0; 0 0 1 0.35f0; 0 0 0 1])
-        h = push!(scene, sphere, Hikari.Diffuse(Kd=c); transform=tf)
+        h = push!(scene, sphere, Hikari.Diffuse(color = c); transform=tf)
         push!(handles, h)
     end
     push!(scene, Hikari.PointLight(Point3f(0, -2, 3), Hikari.RGBSpectrum(30f0)))
@@ -73,13 +73,13 @@ function _snapshot()
     # onto the returned named tuple. This file had not been updated and could
     # not run.
     (live_bytes = mem.live_bytes, live_bufs = mem.live_buffers,
-     pool_blocks = length(Mantle.pool(Mantle.vk_context()).blocks))
+     pool_blocks = length(Mantle.pool(Mantle.Device()).blocks))
 end
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
 const BACKEND = Mantle.defaultbackend()
-const CTX = Mantle.vk_context()
+const CTX = Mantle.Device()
 
 @testset "HW RT stability — many renders on single scene" begin
     scene, handles = _make_scene(BACKEND)
@@ -132,7 +132,7 @@ end
         z_offset = 0.35f0 + 0.02f0 * iter  # nudge each cycle so any UAF shows as wrong pixel
         tf = Raycore.Mat4f([1 0 0 x; 0 1 0 0f0; 0 0 1 z_offset; 0 0 0 1])
         new_h = push!(scene, new_mesh,
-                      Hikari.Diffuse(Kd=(0.2f0+0.1f0*iter, 0.5f0, 0.8f0)); transform=tf)
+                      Hikari.Diffuse(color = (0.2f0+0.1f0*iter, 0.5f0, 0.8f0)); transform=tf)
         handles[victim_idx] = new_h
         Hikari.sync!(scene)
 

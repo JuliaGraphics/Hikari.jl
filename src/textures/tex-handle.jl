@@ -253,31 +253,17 @@ end
 # ============================================================================
 #
 # A material can be built long before any scene exists — RayMakie constructs
-# `Diffuse(color_texture, …)` inside a plot's argument-conversion node, and the
-# Hikari scene is only created when the screen renders. So a texture parameter
-# has to survive on the host as the texture itself, and become a `TexHandle`
-# only when the material is pushed, which is the first moment a texture store
-# exists to put it in.
+# `Diffuse(color = color_texture)` inside a plot's argument-conversion node, and
+# the Hikari scene is only created when the screen renders. So a material keeps
+# each field as it was given, and a field becomes a `TexHandle` only when the
+# material is pushed, which is the first moment a texture store exists to put it
+# in.
 #
-# That is why the texture-carrying fields of every material are TYPE
-# PARAMETERS: the host form is whatever the caller passed, and
-# `to_device_material` rewrites every one of them to a `TexHandle`, so the form
-# that reaches the GPU is the same concrete type for all spellings. A
-# constant-coloured `Diffuse` and an image-mapped one are one shading
-# kernel, not two.
-
-"""
-    matparam(x)
-
-Normalize a material parameter at CONSTRUCTION time. Constants collapse
-straight to an inline `TexHandle`; anything needing a texture store stays as-is
-until [`to_device_material`](@ref) runs at push time.
-"""
-@inline matparam(x::Texture) = x
-@inline matparam(x::CheckerboardTexture) = x
-@inline matparam(x::VertexColorTexture) = x
-@inline matparam(x::PiecewiseLinearSpectrum) = x
-@inline matparam(x) = TexHandle(x)
+# That is why the fields of every material are TYPE PARAMETERS: the host form is
+# whatever the caller passed, and `to_device_material` rewrites every one of them
+# to a `TexHandle`, so the form that reaches the GPU is the same concrete type for
+# all spellings. A constant-coloured `Diffuse` and an image-mapped one are one
+# shading kernel, not two.
 
 """
     device_param(dhv, x) -> TexHandle
@@ -285,6 +271,8 @@ until [`to_device_material`](@ref) runs at push time.
 Resolve one host material parameter against the set's texture store.
 """
 device_param(dhv, h::TexHandle) = h
+device_param(dhv, ::Nothing) = TexHandle()      # an unset field (no displacement, no reflectance)
+device_param(dhv, img::AbstractMatrix{<:Colorant}) = device_param(dhv, to_texture(img))
 device_param(dhv, s::PiecewiseLinearSpectrum) = s   # lives inline on the device
 device_param(dhv, t::Texture{T, 0}) where {T} = TexHandle(t)
 device_param(dhv, t::Texture{T, N}) where {T, N} =
@@ -375,4 +363,8 @@ function Raycore.update_item(dhv::Raycore.MultiTypeSet, old::TexHandle, new::Tex
     Raycore.copyto_texture!(dhv, ref, new.data)
     return old
 end
+
+# An image given as a matrix of colours, as `device_param` stores one.
+Raycore.update_item(dhv::Raycore.MultiTypeSet, old::TexHandle, new::AbstractMatrix{<:Colorant}) =
+    Raycore.update_item(dhv, old, to_texture(new))
 

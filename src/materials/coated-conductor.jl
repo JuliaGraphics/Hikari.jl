@@ -12,183 +12,58 @@
 # Reference: pbrt-v4 src/pbrt/bxdfs.h CoatedConductorBxDF (lines 911-918)
 
 """
-    CoatedConductor
+    CoatedConductor(; interface_roughness = 0, interface_ior = 1.5, conductor_ior, conductor_extinction,
+                    reflectance, conductor_roughness = 0.01, thickness = 0.01, albedo = (0, 0, 0), g = 0,
+                    max_depth = 10, n_samples = 1, remap_roughness = true, displacement = nothing)
 
-A layered material with a dielectric coating over a conductor (metal) base.
-This implements pbrt-v4's coatedconductor material using random walk
-sampling between the layers (LayeredBxDF algorithm).
+pbrt-v4's coated conductor: a dielectric coat over a [`Conductor`](@ref), with a slab of medium
+between them, its BSDF estimated by a random walk between the two (pbrt's `LayeredBxDF`).
 
-# Fields
-## Interface (coating) layer
-- `interface_u_roughness`: U roughness for the dielectric coating
-- `interface_v_roughness`: V roughness for the dielectric coating
-- `interface_eta`: Index of refraction of the dielectric coating
+* `interface_roughness`, `interface_ior`: the coat's roughness (one value or `(u, v)`) and IOR,
+  a number or a spectrum that disperses the path's wavelengths.
+* `conductor_ior`, `conductor_extinction`: the metal's complex IOR, colours or spectra; or instead
+  its `reflectance`, its colour at normal incidence. Neither is pbrt's default, copper.
+* `conductor_roughness`: the metal's, one value or `(u, v)`.
+* `thickness`, `albedo`, `g`, `max_depth`, `n_samples`, `remap_roughness`: as [`CoatedDiffuse`](@ref)'s.
 
-## Conductor (base) layer
-- `conductor_eta`: Complex index of refraction (real part) - OR use reflectance
-- `conductor_k`: Complex index of refraction (imaginary part)
-- `reflectance`: Alternative to eta/k - artist-friendly reflectance color
-- `conductor_u_roughness`: U roughness for the conductor
-- `conductor_v_roughness`: V roughness for the conductor
-
-## Volumetric scattering (between layers)
-- `thickness`: Thickness of the coating layer (affects absorption)
-- `albedo`: Single-scattering albedo of medium between layers (0 = no absorption)
-- `g`: Henyey-Greenstein asymmetry parameter for medium scattering
-
-## Random walk parameters
-- `max_depth`: Maximum random walk depth
-- `n_samples`: Number of samples for estimating the BSDF
-- `remap_roughness`: Whether to remap roughness to microfacet alpha
-
-# Notes
-- **Critical:** Conductor eta/k are scaled by interface IOR: ce /= ieta, ck /= ieta
-- If `conductor_eta` is nothing, uses reflectance-based approach
+The conductor's IOR is taken relative to the coat's, as pbrt-v4 does.
 """
-# Non-parametric texture parameters: constant-vs-texture must not change the
-# material's TYPE. Spectral IOR fields stay parametric because a
-# PiecewiseLinearSpectrum cannot live inline in a handle.
-struct CoatedConductor{IURoughT, IVRoughT, IEtaT, CETex, CKTex, CReflT, CURoughT, CVRoughT, ThickT, AlbedoT, GT, DispT} <: Material
-    # Interface parameters
+struct CoatedConductor{IURoughT, IVRoughT, IIorT, CIorT, CExtT, CReflT, CURoughT, CVRoughT, ThickT, AlbedoT, GT, DispT} <: Material
     interface_u_roughness::IURoughT
     interface_v_roughness::IVRoughT
-    interface_eta::IEtaT               # Interface IOR: a number, or a spectrum that disperses
-
-    # Conductor parameters: eta/k, or a reflectance pbrt-v4 converts at each wavelength (`conductor_ior`)
-    conductor_eta::CETex               # Spectral complex IOR real part
-    conductor_k::CKTex                 # Spectral complex IOR imaginary part
-    conductor_reflectance::CReflT      # Instead of eta/k (`TexHandle()` where they are given)
+    interface_ior::IIorT
+    conductor_ior::CIorT
+    conductor_extinction::CExtT
+    conductor_reflectance::CReflT
     conductor_u_roughness::CURoughT
     conductor_v_roughness::CVRoughT
-
-    # Volumetric scattering
     thickness::ThickT
     albedo::AlbedoT
     g::GT
-
-    # Algorithm parameters
     max_depth::Int32
     n_samples::Int32
     remap_roughness::Bool
-    displacement::DispT       # pbrt-v4 `Material::displacement` height field (NONE = flat)
+    displacement::DispT
 end
 
-# Full constructor with all textures. Texture args are unannotated on purpose:
-# fields accept any texture-like value (Texture, CheckerboardTexture, raw
-# constants, TextureRef).
-function CoatedConductor(
-    interface_u_roughness, interface_v_roughness, interface_eta,
-    conductor_eta,  # PiecewiseLinearSpectrum (named metal) or RGB-ish
-    conductor_k,
-    conductor_reflectance,
-    conductor_u_roughness, conductor_v_roughness,
-    thickness, albedo, g, max_depth::Int, n_samples::Int,
-    remap_roughness::Bool, displacement = TexHandle(),
-)
-    CoatedConductor(
-        matparam(interface_u_roughness), matparam(interface_v_roughness),
-        matparam(interface_eta),
-        matparam(conductor_eta), matparam(conductor_k), matparam(conductor_reflectance),
-        matparam(conductor_u_roughness), matparam(conductor_v_roughness),
-        matparam(thickness), matparam(albedo), matparam(g),
-        Int32(max_depth), Int32(n_samples), remap_roughness, matparam(displacement),
-    )
-end
-
-"""
-    CoatedConductor(; interface_roughness=0.0, interface_eta=1.5, ...)
-
-Create a coated conductor material with keyword arguments.
-
-# Arguments
-## Interface (coating)
-- `interface_roughness`: Coating roughness (scalar or (u,v) tuple), default 0
-- `interface_eta`: Coating IOR (default 1.5)
-
-## Conductor (base) - use EITHER eta/k OR reflectance
-- `conductor_eta`: Complex IOR real part (RGBSpectrum, tuple, or Texture)
-- `conductor_k`: Complex IOR imaginary part
-- `reflectance`: Alternative artist-friendly color (if eta/k not specified)
-- `conductor_roughness`: Conductor roughness (scalar or (u,v) tuple), default 0.01
-
-## Volumetric
-- `thickness`: Coating thickness (default 0.01)
-- `albedo`: Medium albedo (default 0 = no medium)
-- `g`: HG asymmetry (default 0 = isotropic)
-
-## Algorithm
-- `max_depth`: Max random walk depth (default 10)
-- `n_samples`: Number of samples (default 1)
-- `remap_roughness`: Remap roughness to alpha (default true)
-
-# Examples
-```julia
-# Glossy coated gold
-CoatedConductor(
-    interface_roughness=0.05,
-    conductor_eta=(0.143, 0.374, 1.442),  # Gold
-    conductor_k=(3.983, 2.385, 1.603)
-)
-
-# Coated copper using reflectance
-CoatedConductor(
-    reflectance=(0.95, 0.64, 0.54),  # Copper-like
-    conductor_roughness=0.1
-)
-
-# Car paint effect (rough coating over smooth metal)
-CoatedConductor(
-    interface_roughness=0.3,
-    conductor_roughness=0.01,
-    reflectance=(0.9, 0.1, 0.1)  # Red metallic
-)
-```
-"""
-function CoatedConductor(;
-    # Interface parameters
-    interface_roughness = 0f0,
-    interface_eta = 1.5f0,
-    # Conductor parameters — eta/k OR reflectance (converted to eta/k at construction)
-    conductor_eta = nothing,
-    conductor_k = nothing,
-    reflectance = nothing,
-    conductor_roughness = 0.01f0,
-    # Volumetric
-    thickness = 0.01f0,
-    albedo = RGBSpectrum(0f0),
-    g = 0f0,
-    # Algorithm
-    max_depth::Int = 10,
-    n_samples::Int = 1,
-    remap_roughness::Bool = true,
-    bump = nothing,
-)
-    iu_rough, iv_rough = roughness_pair(interface_roughness)
-    cu_rough, cv_rough = roughness_pair(conductor_roughness)
-
-    # Either eta/k or a reflectance, as pbrt-v4's; neither is its copper.
-    ce, ck, cr = if !isnothing(reflectance)
-        (isnothing(conductor_eta) && isnothing(conductor_k)) ||
-            throw(ArgumentError("a CoatedConductor takes either `conductor_eta` and `conductor_k` or a `reflectance`, not both"))
-        TexHandle(), TexHandle(), reflectance
-    elseif !isnothing(conductor_eta)
-        isnothing(conductor_k) && throw(ArgumentError("`conductor_k` must be given with `conductor_eta`"))
-        conductor_eta, conductor_k, TexHandle()
+function CoatedConductor(; interface_roughness = 0f0, interface_ior = 1.5f0, conductor_ior = nothing,
+                         conductor_extinction = nothing, reflectance = nothing, conductor_roughness = 0.01f0,
+                         thickness = 0.01f0, albedo = (0f0, 0f0, 0f0), g = 0f0, max_depth::Integer = 10,
+                         n_samples::Integer = 1, remap_roughness::Bool = true, displacement = nothing)
+    if !isnothing(reflectance)
+        (isnothing(conductor_ior) && isnothing(conductor_extinction)) ||
+            throw(ArgumentError("a CoatedConductor takes either `conductor_ior` and `conductor_extinction` or a `reflectance`, not both"))
+    elseif !isnothing(conductor_ior)
+        isnothing(conductor_extinction) &&
+            throw(ArgumentError("`conductor_extinction` must be given with `conductor_ior`"))
     else
-        CU_ETA_SPECTRUM, CU_K_SPECTRUM, TexHandle()
+        conductor_ior, conductor_extinction = CU_ETA_SPECTRUM, CU_K_SPECTRUM
     end
-
-    CoatedConductor(
-        matparam(iu_rough), matparam(iv_rough), interface_eta,
-        ce, ck, cr,
-        matparam(cu_rough), matparam(cv_rough),
-        matparam(thickness), matparam(albedo), matparam(g),
-        max_depth, n_samples, remap_roughness, matparam(bump),
-    )
+    return CoatedConductor(roughness_pair(interface_roughness)..., interface_ior, conductor_ior, conductor_extinction,
+                           reflectance, roughness_pair(conductor_roughness)..., thickness, albedo, g,
+                           Int32(max_depth), Int32(n_samples), remap_roughness, displacement)
 end
 
-# Mark as non-emissive
-is_emissive(::CoatedConductor) = false
 
 
 """
@@ -197,7 +72,7 @@ over its conductor, whose IOR is relative to the coat's.
 """
 @propagate_inbounds function get_bxdf(mat::CoatedConductor, table, textures, tfc::TextureFilterContext,
                                       lambda::Wavelengths, regularize::Bool, wo::Vec3f, ns::Vec3f, dpdus::Vec3f)
-    ieta, dispersive = eval_dielectric_ior(textures, mat.interface_eta, tfc, lambda)
+    ieta, dispersive = eval_dielectric_ior(textures, mat.interface_ior, tfc, lambda)
     ieta == 0f0 && (ieta = 1f0)
     iu_roughness = eval_handle(textures, mat.interface_u_roughness, tfc)
     iv_roughness = eval_handle(textures, mat.interface_v_roughness, tfc)
@@ -217,7 +92,7 @@ over its conductor, whose IOR is relative to the coat's.
     albedo = uplift_rgb(table, clamp(eval_handle_spectrum(textures, mat.albedo, tfc)), lambda)
     g = clamp(eval_handle(textures, mat.g, tfc), -0.99f0, 0.99f0)
     # pbrt-v4 materials.cpp: the conductor's IOR relative to the coat's.
-    ce, ck = conductor_ior(table, textures, mat.conductor_eta, mat.conductor_k, mat.conductor_reflectance, tfc, lambda)
+    ce, ck = conductor_ior(table, textures, mat.conductor_ior, mat.conductor_extinction, mat.conductor_reflectance, tfc, lambda)
     ce, ck = ce / ieta, ck / ieta
     top = (local_lobe(pbrt_dielectric(ieta, i_alpha_x, i_alpha_y), SpectralRadiance(1f0)),)
     bottom = (local_lobe(pbrt_conductor(ce, ck, c_alpha_x, c_alpha_y), SpectralRadiance(1f0)),)

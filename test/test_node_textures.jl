@@ -6,6 +6,7 @@ using Hikari: TextureFilterContext, TexKind, RGBSpectrum, device_param, eval_han
 using GeometryBasics
 using GeometryBasics: Point2f, Point3f, Vec3f
 using KernelAbstractions: CPU
+import KernelAbstractions as KA
 using LinearAlgebra
 using Raycore
 using Mantle
@@ -93,6 +94,17 @@ const CYCLES_VALUES = [
     ("brick_low", (0.09375f0, 0.91875f0, 0.37f0), (0.49332, 0.49332, 0.49332)),
     ("white_noise1", (-0.034375f0, 0.928125f0, 0.37f0), (0.64655, 0.64655, 0.64655)),
 ]
+
+KA.@kernel function noise_dimensions!(out, points)
+    i=KA.@index(Global)
+    p=points[i]
+    @inbounds begin
+        out[1,i]=Hikari._snoise(p[1])
+        out[2,i]=Hikari._snoise(Vec2f(p[1],p[2]))
+        out[3,i]=Hikari._snoise(Vec3f(p[1],p[2],p[3]))
+        out[4,i]=Hikari._snoise(p)
+    end
+end
 
 @testset "Node textures" begin
     @testset "inputs" begin
@@ -286,8 +298,13 @@ const CYCLES_VALUES = [
         features(g) = typeof(Hikari.compile_nodes(g)).parameters[1]
         p = xyz()
         F = Hikari.NodeFeature
-        @test features(p.x * 2 + 1) & ~(UInt32(0x3) << Hikari.STACK_SHIFT) == 0
-        @test features(sin(p.x) * 2) & ~(UInt32(0x3) << Hikari.STACK_SHIFT) == F.MATH_TRIG
+        families = ~(UInt32(0x3) << Hikari.STACK_SHIFT | F.TEXTURE)
+        @test features(p.x * 2 + 1) & families == 0
+        @test features(sin(p.x) * 2) & families == F.MATH_TRIG
+        # A texture's program says so, a shader's never does: a texture read runs only the former.
+        @test features(p.x * 2 + 1) & F.TEXTURE == F.TEXTURE
+        shader = Hikari.ShaderGraph(Hikari.shader_node(Hikari.Principled(base_color = noise(p).color)))
+        @test typeof(Hikari.compile_shader(shader.closures)).parameters[1] & F.TEXTURE == 0
         @test features(floor(p) + sqrt(p)) & (F.MATH_ROUND | F.MATH_POWER | F.MATH_TRIG) == F.MATH_ROUND | F.MATH_POWER
         @test features(noise(p)) & (F.NOISE | F.NOISE_DIMS | F.NOISE_TYPES | F.VORONOI) == F.NOISE
         @test features(noise(p; dimensions = 4, type = :ridged_multifractal)) & (F.NOISE_DIMS | F.NOISE_TYPES) == F.NOISE_DIMS | F.NOISE_TYPES
@@ -359,7 +376,7 @@ const CYCLES_VALUES = [
         backend = Mantle.defaultbackend()
         scene = Hikari.Scene(; backend, hw_accel = hw)
         sphere = GeometryBasics.normal_mesh(GeometryBasics.Tesselation(GeometryBasics.Sphere(Point3f(0), 1f0), 32))
-        push!(scene, sphere, Hikari.Diffuse(Kd = mix((0.8, 0.05, 0.05), (0.05, 0.05, 0.8), greater(xyz().x, 0))))
+        push!(scene, sphere, Hikari.Diffuse(color = mix((0.8, 0.05, 0.05), (0.05, 0.05, 0.8), greater(xyz().x, 0))))
         push!(scene, Hikari.PointLight(Point3f(0, 0.5, 4), RGBSpectrum(40f0)))
         Hikari.sync!(scene)
         film = Hikari.Film(backend, Hikari.Film(Point2f(32, 32)))
@@ -373,4 +390,19 @@ const CYCLES_VALUES = [
         @test negative_x.r > 10 * negative_x.b
         @test positive_x.b > 10 * positive_x.r
     end
+    @testset "noise dimensions agree on host and device" begin
+        points=[Vec4f(-3.17,0.23,9.71,0.31),Vec4f(0.27,0.73,-0.19,4.37),
+                Vec4f(100002.3,-200001.7,0.13,3.71),Vec4f(-1000003.4,1.2,3.5,5.7)]
+        expected=hcat([Float32[Hikari._snoise(p[1]), Hikari._snoise(Vec2f(p[1],p[2])),
+                              Hikari._snoise(Vec3f(p[1],p[2],p[3])),Hikari._snoise(p)] for p in points]...)
+        backend=Mantle.defaultbackend()
+        device_points=KA.allocate(backend,Vec4f,length(points)); copyto!(device_points,points)
+        out=KA.zeros(backend,Float32,4,length(points))
+        noise_dimensions!(backend)(out,device_points;ndrange=length(points))
+        Mantle.waitidle(Mantle.Device(backend))
+        got=Array(out)
+        @test maximum(abs,expected)>0.05f0
+        @test got ≈ expected atol=2f-6 rtol=2f-5
+    end
+
 end

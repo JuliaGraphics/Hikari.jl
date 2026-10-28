@@ -145,6 +145,11 @@ end
 The reflectance at wavelength `lambda` (nm) of a substrate under a thin film, by the Airy sum of
 the film's two interfaces, averaged over both polarizations. The substrate is a dielectric of
 `eta3`, or with `k3 > 0` a conductor.
+
+In `Float32` throughout (`complex_div`, `complex_sqrt`), as pbrt's complex arithmetic: Base's
+complex division widens to `Complex{Float64}` and its square root rescales with `ldexp`, which made
+this function a fifth of every Principled shading kernel, in `Float64` code that Apple GPUs cannot
+compile at all.
 """
 @noinline function _thin_film_reflectance(cos_i::Float32, thickness::Float32, eta2::Float32, eta3::Float32,
                                         k3::Float32, lambda::Float32)
@@ -153,16 +158,16 @@ the film's two interfaces, averaged over both polarizations. The substrate is a 
     sin2_2 >= 1f0 && return 1f0
     cos_2 = sqrt(1f0 - sin2_2)
     n3 = Complex{Float32}(eta3, k3)
-    cos_3 = sqrt(Complex{Float32}(1f0, 0f0) - Complex{Float32}(sin2_i, 0f0) / (n3 * n3))
-    phase = Complex{Float32}(0f0, 4f0 * Float32(π) * eta2 * thickness * cos_2 / lambda)
-    shift = exp(phase)
+    cos_3 = complex_sqrt(Complex{Float32}(1f0, 0f0) - complex_div(sin2_i, n3 * n3))
+    # The film's phase is imaginary, so its exponential is a rotation.
+    shift = cis(4f0 * Float32(π) * eta2 * thickness * cos_2 / lambda)
     r = 0f0
     for polarization in (0x00, 0x01)
         r12 = polarization == 0x00 ? (cos_i - eta2 * cos_2) / (cos_i + eta2 * cos_2) :
                                      (eta2 * cos_i - cos_2) / (eta2 * cos_i + cos_2)
-        r23 = polarization == 0x00 ? (eta2 * cos_2 - n3 * cos_3) / (eta2 * cos_2 + n3 * cos_3) :
-                                     (n3 * cos_2 - eta2 * cos_3) / (n3 * cos_2 + eta2 * cos_3)
-        rr = (r12 + r23 * shift) / (1f0 + r12 * r23 * shift)
+        r23 = polarization == 0x00 ? complex_div(eta2 * cos_2 - n3 * cos_3, eta2 * cos_2 + n3 * cos_3) :
+                                     complex_div(n3 * cos_2 - eta2 * cos_3, n3 * cos_2 + eta2 * cos_3)
+        rr = complex_div(r12 + r23 * shift, 1f0 + r12 * r23 * shift)
         r += abs2(rr)
     end
     return clamp(0.5f0 * r, 0f0, 1f0)

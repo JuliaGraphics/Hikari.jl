@@ -809,10 +809,8 @@ function Base.push!(scene::Scene, m::MetaballSurface, mi::UInt32; transform = Ma
 end
 
 # The stored material of a metaball surface is its interface (its geometry is rebuilt
-# by `push!` into the slot). Two methods, not one on a `Union`: the slot-index method
-# for any material is equally specific on the key and Julia calls that a tie.
-update_material!(scene::Scene, key::UInt32, m::MetaballSurface) = update_material!(scene, key, m.interface)
-update_material!(scene::Scene, key::MediumInterfaceIdx, m::MetaballSurface) = update_material!(scene, key, m.interface)
+# by `push!` into the slot).
+store_interface!(scene::Scene, mi::MediumInterfaceIdx, m::MetaballSurface) = store_interface!(scene, mi, m.interface)
 
 # ─── water with air in it ────────────────────────────────────────────────────
 

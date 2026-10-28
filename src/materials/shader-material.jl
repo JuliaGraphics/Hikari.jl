@@ -12,34 +12,45 @@
 """
     ShaderMaterial(shader)
 
-A material made of a shader graph, as Blender's Material Output takes one: BSDF nodes such as
-[`principled_bsdf`](@ref TextureNodes.principled_bsdf), combined by `mix_shader` and
-`add_shader`, with node textures and `bump` at any of their inputs. The graph's values are
-compiled to one program, and its BSDF nodes are the material's type (`bsdf_nodes`): a kernel holds
-the lobes those nodes produce and nothing else, and graphs that differ in their values alone share
-it. A shader with transparency holds a second program, of its transparency alone
-(`transparency_graph`), which is all an alpha test runs.
+What Hikari renders Blender's BSDFs with (`surface_material`): a shader graph, as Blender's
+Material Output takes one, of BSDF nodes combined by mixes and sums, with node textures and `bump`
+at any of their inputs. The graph's values are compiled to one program, and its BSDF nodes are the
+material's type (`bsdf_nodes`): a kernel holds the lobes those nodes produce and nothing else, and
+graphs that differ in their values alone share it. A shader with transparency holds a second
+program, of its transparency alone (`transparency_graph`), which is all an alpha test runs.
+
+On the device it also names its closure program (`closure_program`): its BSDF nodes reading
+`inputs` floats the values kernel gathers, which the closure kernel of its nodes runs, a kernel no
+graph's node families change.
 """
 struct ShaderMaterial{ProgT, AlphaT, Nodes} <: Material
     program::ProgT
     alpha::AlphaT
+    closures::Int32
+    inputs::Int32
 end
 
 ShaderMaterial(shader::ShaderNode) = ShaderMaterial(ShaderGraph(shader))
 
 function ShaderMaterial(graph::ShaderGraph)
     alpha = has_transparency(graph) ? transparency_graph(graph) : nothing
-    return ShaderMaterial{ShaderGraph, typeof(alpha), bsdf_nodes(graph)}(graph, alpha)
+    return ShaderMaterial{ShaderGraph, typeof(alpha), bsdf_nodes(graph)}(graph, alpha, Int32(0), Int32(0))
 end
 
 """
     bind_mesh(mesh, material) -> (mesh, material)
 
-The mesh and material to push for `material` on `mesh`: for a shader that reads mesh attributes,
-the mesh in triangles and the shader with the attributes of its corners; otherwise both as they
-are. `push!(scene, mesh, material)` does this; call it yourself to update a material in a slot.
+The mesh and material to push for the surface material `material` on `mesh`: for a shader that
+reads mesh attributes, the mesh in triangles and the shader with the attributes of its corners;
+otherwise both as they are. `push!(scene, mesh, material)` does this; call it yourself, on
+`surface_material(material)`, to update a material in a slot.
 """
 bind_mesh(mesh::GeometryBasics.Mesh, material::Material) = (mesh, material)
+function bind_mesh(mesh::GeometryBasics.Mesh, mi::MediumInterface)
+    bound_mesh, material = bind_mesh(mesh, mi.material)
+    return (bound_mesh, MediumInterface(material; inside = mi.inside, outside = mi.outside, emission = mi.emission,
+                                        shadows = mi.shadows))
+end
 function bind_mesh(mesh::GeometryBasics.Mesh, mat::ShaderMaterial{ShaderGraph})
     isempty(_attribute_cores(mat.program)) && return (mesh, mat)
     triangles = GeometryBasics.mesh(GeometryBasics.expand_faceviews(mesh); facetype = GLTriangleFace)
@@ -50,9 +61,13 @@ end
 # are stored once.
 function to_device_material(dhv, mat::ShaderMaterial{ShaderGraph, A, M}) where {A, M}
     placed = Places()
-    program = shader_program(dhv, mat.program, placed)
+    store_lookup_tables!(dhv)
+    c = compiled(mat.program)
+    program = ShaderProgram(c, last(stored_program!(dhv, c, placed)))
     alpha = shader_program(dhv, mat.alpha, placed)
-    return ShaderMaterial{typeof(program), typeof(alpha), M}(program, alpha)
+    closures, inputs = closure_program(c)
+    return ShaderMaterial{typeof(program), typeof(alpha), M}(program, alpha, Int32(last(stored!(dhv, closures))),
+                                                              Int32(inputs))
 end
 
 """
@@ -62,36 +77,59 @@ A stored shader material updated to a new graph: each program where `old`'s is, 
 and attributes it reads where that one's are (`updated_program!`). The set takes no array and
 keeps its layout, so the scene keeps its recorded plans.
 
-A graph of other node families or other BSDF nodes is another material type, compiled into
-other kernels; it is pushed, not updated.
+A graph of other node families, other BSDF nodes or another transparency is another material
+type, compiled into other kernels: `new` itself, which `Raycore.store!` gives a slot of its type.
 """
 function Raycore.update_item(dhv::Raycore.MultiTypeSet, old::ShaderMaterial{P, A, M},
                              new::ShaderMaterial{ShaderGraph, AG, M}) where {P <: ShaderProgram, A, AG, M}
     # Both compiled, and so checked, before anything is placed: compiling stores nothing.
-    program, alpha = compiled_over(old.program, new.program), compiled_over(old.alpha, new.alpha)
+    program, alpha = compiled(new.program), compiled(new.alpha)
+    (compiles_over(old.program, program) && compiles_over(old.alpha, alpha)) || return new
     placed = Places()
+    closures, inputs = closure_program(program)
     return ShaderMaterial{P, A, M}(updated_program!(dhv, old.program, program, placed),
-                                   updated_program!(dhv, old.alpha, alpha, placed))
+                                   updated_program!(dhv, old.alpha, alpha, placed),
+                                   updated_closures!(dhv, old.closures, closures), Int32(inputs))
 end
 
-function Raycore.update_item(::Raycore.MultiTypeSet, ::ShaderMaterial{<:ShaderProgram, A, M},
-                             ::ShaderMaterial{ShaderGraph, A2, M2}) where {A, M, A2, M2}
-    error("the updated shader has other BSDF nodes than the one in its slot, so it is another material type: " *
-          "push it as a new material")
+"""The most floats the BSDF nodes of any shader stored in `materials` read of computed values."""
+function shader_inputs_width(materials::Raycore.MultiTypeSet)
+    width = 0
+    for (T, items) in materials.data_vectors
+        T <: ShaderMaterial{<:ShaderProgram} || continue
+        for m in items
+            width = max(width, Int(m.inputs))
+        end
+    end
+    return width
 end
 
-"""`g` compiled to replace the program `old`: of `old`'s node families, or the material would change type."""
-function compiled_over(::ShaderProgram{F}, g::ShaderGraph) where {F}
-    c = compile_shader(g.closures)
-    c isa CompiledProgram{F} ||
-        error("the updated shader uses other node families than the one in its slot, so it is another material " *
-              "type: push it as a new material")
-    return c
+"""The slot of the set `dhv` that holds the closure programs, which every shader's are of one type."""
+closure_slot(dhv::Raycore.MultiTypeSet) = findfirst(AT -> eltype(AT) === NodeInstr{NodeFeature.CLOSURES}, dhv.texture_order)
+
+"""The closure program `instructions` in place of the one at index `idx`, by the rule programs are placed by."""
+function updated_closures!(dhv::Raycore.MultiTypeSet, idx::Int32, instructions)
+    place = (closure_slot(dhv), Int(idx))
+    return Int32(last(holds(dhv, place, instructions) ? copied!(dhv, place, instructions) : stored!(dhv, instructions)))
 end
-compiled_over(::Nothing, ::Nothing) = nothing
-compiled_over(old, new) =
-    error("the updated shader differs from the one in its slot in transparency, so it is another material type: " *
-          "push it as a new material")
+
+Raycore.update_item(::Raycore.MultiTypeSet, ::ShaderMaterial{<:ShaderProgram}, new::ShaderMaterial{ShaderGraph}) = new
+
+"""The node families of the programs the shading of a material of device type `T` runs, its colour's and its transparency's."""
+program_families(::Type) = ()
+program_families(::Type{ShaderMaterial{ShaderProgram{F}, A, M}}) where {F, A, M} = (F, alpha_families(ShaderMaterial{ShaderProgram{F}, A, M})...)
+
+"""The node families of the transparency program of a material of device type `T`: none but a shader's with one."""
+alpha_families(::Type) = ()
+alpha_families(::Type{<:ShaderMaterial{P, ShaderProgram{F}}}) where {P, F} = (F,)
+
+compiled(g::ShaderGraph) = compile_shader(g.closures)
+compiled(::Nothing) = nothing
+
+"""Whether the compiled program `c` can replace the stored program `old`: of `old`'s node families."""
+compiles_over(::ShaderProgram{F}, ::CompiledProgram{F}) where {F} = true
+compiles_over(::Nothing, ::Nothing) = true
+compiles_over(old, c) = false
 
 updated_program!(dhv::Raycore.MultiTypeSet, old::ShaderProgram{F}, c::CompiledProgram{F}, placed::Places) where {F} =
     ShaderProgram(c, last(updated_program!(dhv, (program_slot(dhv, old), Int(old.idx)), c, placed)))
@@ -126,8 +164,8 @@ end
                                            samples_per_pixel::Int32, lambda::Wavelengths,
                                            regularize::Bool) where {P, T, M <: Tuple}
     sc = shader_context(work, camera, samples_per_pixel)
-    produced = shader_lobes(M, shader_programs(textures, mat.program)[mat.program.idx], textures, sc)
-    return lobe_bsdf(M, produced, table, lambda, regularize)
+    produced = shader_lobes(M, shader_programs(textures, mat.program)[mat.program.idx], textures, sc, regularize)
+    return lobe_bsdf(M, produced, table, lambda)
 end
 
 """
@@ -169,17 +207,15 @@ end
 
 # ── Alpha and guides ────────────────────────────────────────────────────────
 
-@propagate_inbounds get_surface_alpha(::ShaderMaterial{P, Nothing}, textures, tfc::TextureFilterContext) where {P} = 1f0
-@propagate_inbounds function get_surface_alpha(mat::ShaderMaterial{P, <:ShaderProgram}, textures,
-                                               tfc::TextureFilterContext) where {P}
+@propagate_inbounds function surface_transparency(mat::ShaderMaterial{P, <:ShaderProgram}, textures,
+                                                  tfc::TextureFilterContext) where {P}
     sc = ShaderContext(tfc, tfc.n, Vec3f(0), Vec3f(0), Vec3f(0), tfc.n, 1f0, Vec3f(0), Point2f(0))
-    return clamp(1f0 - _avg(program_transparency(shader_programs(textures, mat.alpha)[mat.alpha.idx], textures, sc)),
-                 0f0, 1f0)
+    return clamp.(program_transparency(shader_programs(textures, mat.alpha)[mat.alpha.idx], textures, sc), 0f0, 1f0)
 end
 
 @propagate_inbounds function guide_material(mat::ShaderMaterial{P, A, M}, materials, tfc, ::Val{D}) where {P, A, M <: Tuple, D}
     sc = ShaderContext(tfc, tfc.n, Vec3f(0), Vec3f(0), Vec3f(0), tfc.n, 1f0, Vec3f(0), Point2f(0))
-    lobes, _, _ = shader_lobes(M, shader_programs(materials, mat.program)[mat.program.idx], materials, sc)
+    lobes, _, _ = shader_lobes(M, shader_programs(materials, mat.program)[mat.program.idx], materials, sc, false)
     a = reduce(+, map(w -> w.sample_weight > 0f0 ? guide_albedo(w.lobe, w.weight) : Vec3f(0), lobes); init = Vec3f(0))
     return guide_rgb(RGBSpectrum(a[1], a[2], a[3]))
 end

@@ -42,6 +42,8 @@ import Raycore: is_dir_negative, increase_hit, intersect_p!
 import Raycore: to_gpu
 import Raycore: sum_unrolled, reduce_unrolled, for_unrolled, map_unrolled, getindex_unrolled
 import Raycore: SetKey, MultiTypeSet, StaticMultiTypeSet, with_index, is_invalid, n_slots
+"""A set as device code reads it: the whole `StaticMultiTypeSet`, or a view of some of its slots (`shade_set`)."""
+const DeviceSet = Union{StaticMultiTypeSet, Raycore.SetView}
 
 abstract type Spectrum end
 abstract type Light end
@@ -176,11 +178,13 @@ include("materials/mix-material.jl")
 include("materials/coated-conductor.jl")
 include("materials/coated-diffuse-transmission.jl")
 include("materials/diffuse-transmission.jl")
-include("materials/emissive.jl")
+include("materials/emission.jl")
 include("materials/lobes.jl")
 include("materials/layered.jl")
 include("materials/bsdf-nodes.jl")
 include("materials/shader-material.jl")
+include("materials/descriptions.jl")
+include("materials/standards.jl")
 include("materials/bump-mapped.jl")
 include("materials/merge-color.jl")
 include("materials/dispatch.jl")
@@ -237,6 +241,7 @@ include("metaballs.jl")
 include("levelset.jl")
 include("water.jl")
 include("integrators/volpath/surface-eval.jl")
+include("integrators/volpath/shader-values.jl")
 # The sample as Mantle graphs — needs every stage's kernel to exist
 include("integrators/volpath/graph.jl")
 include("integrators/volpath/volpath.jl")

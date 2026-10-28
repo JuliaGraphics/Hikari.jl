@@ -47,7 +47,7 @@ import StructArrays
 # declares them.
 #
 # The walk is `Mantle.resourceleaves!` — it opens up any container it is handed,
-# so a `WorkQueue`, a `StructArray` and a `MultiTypeWorkQueue` need no method of
+# so a `WorkQueue`, a `StructArray` and the `MaterialQueues` need no method of
 # their own. The declarations are not written at all: `dispatch!` reads what the
 # kernel does to each argument off the kernel, which is where the answer was.
 #
@@ -90,13 +90,14 @@ render_refs(accel, media_interfaces, media, materials, lights,
             camera::Mantle.GPURef, initial_medium::Mantle.GPURef{SetKey},
             filter_params::Mantle.GPURef{GPUFilterParams}, filter_sampler,
             sample_idx::Mantle.GPURef{Int32},
-            regularize::Bool, samples_per_pixel::Int32,
+            regularize::Bool, emitters_reachable::Bool, samples_per_pixel::Int32,
             max_component_value::Float32) =
     (accel = accel, media_interfaces = media_interfaces,
      media = media, materials = materials, lights = lights,
      camera = camera, initial_medium = initial_medium,
      filter_params = filter_params, filter_sampler = filter_sampler,
      sample_idx = sample_idx, regularize = regularize,
+     emitters_reachable = emitters_reachable,
      samples_per_pixel = samples_per_pixel,
      max_component_value = max_component_value)
 
@@ -133,24 +134,24 @@ end
 """Every queue a round fills, so the reset covers all of them and nothing
 carries a count over from the previous bounce."""
 function round_queues(state::VolPathState, nxt::WorkQueue)
-    pmq = state.per_material_queue
-    base = (nxt, state.medium_sample_queue, state.medium_scatter_queue,
-            state.surface_hits, state.arrivals, state.shadow_queue, state.escaped_queue)
-    return pmq === nothing ? base : (base..., pmq)
+    return (nxt, state.medium_sample_queue, state.medium_scatter_queue,
+            state.surface_hits, state.arrivals, state.shadow_queue, state.escaped_queue,
+            state.material_queues)
 end
 
 """
 Trace the live rays: each hit leaves as a `VPSurfaceHit` in its material's queue,
 a ray in a medium as a medium sample, a miss as an escaped ray. One compute kernel
 on every traversal: the software BVH, Vulkan's inline ray query and Metal's
-intersector.
+intersector. Of the materials it reads the cut-out ones (`cut_set`), so another
+material type leaves its kernel as it was.
 """
-function trace_pass!(g, state::VolPathState, refs, cur::WorkQueue, nxt::WorkQueue)
+function trace_pass!(g, state::VolPathState, @nospecialize(refs), cur::WorkQueue, nxt::WorkQueue)
     Mantle.dispatch!(g, vp_trace_kernel!,
                      (cur, nxt, state.escaped_queue, state.medium_sample_queue,
-                      state.per_material_queue, state.surface_hits,
+                      state.material_queues, state.surface_hits,
                       state.pixel_L, refs.accel, refs.media_interfaces, refs.media,
-                      refs.materials, refs.lights, state.rgb2spec_table,
+                      cut_set(refs.materials), refs.lights, state.rgb2spec_table,
                       state.bvh_nodes, state.light_to_bit_trail,
                       state.num_infinite_lights, state.num_bvh_lights, state.max_depth),
                      Mantle.DeviceRange(cur.size; max = Int(cur.capacity));
@@ -160,13 +161,13 @@ end
 """Delta tracking through the media the trace deferred. Fills the scatter queue
 and, for rays that leave their medium and land on a surface, the same surface
 queues the trace fills."""
-function medium_sample_pass!(g, state::VolPathState, refs, nxt::WorkQueue)
+function medium_sample_pass!(g, state::VolPathState, @nospecialize(refs), nxt::WorkQueue)
     Mantle.dispatch!(g, workqueue_map_kernel!,
                          (vp_sample_medium_kernel!, state.medium_sample_queue,
-                          state.medium_scatter_queue, state.per_material_queue,
+                          state.medium_scatter_queue, state.material_queues,
                           state.surface_hits, state.arrivals,
                           nxt, state.escaped_queue, state.pixel_L,
-                          refs.accel, refs.media_interfaces, refs.media, refs.materials,
+                          refs.accel, refs.media_interfaces, refs.media,
                           refs.lights, state.rgb2spec_table,
                           state.bvh_nodes, state.light_to_bit_trail,
                           state.num_infinite_lights, state.num_bvh_lights,
@@ -177,7 +178,7 @@ function medium_sample_pass!(g, state::VolPathState, refs, nxt::WorkQueue)
 end
 
 """Direct lighting at a real scatter event. The only producer of shadow rays."""
-function medium_dl_pass!(g, state::VolPathState, refs)
+function medium_dl_pass!(g, state::VolPathState, @nospecialize(refs))
     Mantle.dispatch!(g, workqueue_map_kernel!,
                          (vp_medium_direct_lighting_kernel!,
                           state.medium_scatter_queue, state.shadow_queue,
@@ -192,7 +193,7 @@ function medium_dl_pass!(g, state::VolPathState, refs)
 end
 
 """The phase-function bounce out of a scatter event."""
-function medium_scatter_pass!(g, state::VolPathState, refs, nxt::WorkQueue)
+function medium_scatter_pass!(g, state::VolPathState, @nospecialize(refs), nxt::WorkQueue)
     Mantle.dispatch!(g, workqueue_map_kernel!,
                          (vp_medium_scatter_kernel!, state.medium_scatter_queue,
                           nxt, state.sobol_rng, refs.sample_idx, state.rr_depth, refs.media),
@@ -202,7 +203,7 @@ function medium_scatter_pass!(g, state::VolPathState, refs, nxt::WorkQueue)
 end
 
 """Rays that hit nothing: the environment lights, with MIS."""
-function escaped_pass!(g, state::VolPathState, refs)
+function escaped_pass!(g, state::VolPathState, @nospecialize(refs))
     Mantle.dispatch!(g, workqueue_map_kernel!,
                          (vp_handle_escaped_rays_kernel!, state.escaped_queue,
                           state.pixel_L, state.rgb2spec_table, refs.lights,
@@ -218,36 +219,55 @@ end
 Surface shading, one dispatch per concrete material type.
 
 They go in ONE pass because they are mutually independent — each drains its own
-typed queue and writes atomically-claimed slots in the shared next-ray queue —
+slot's queue and writes atomically-claimed slots in the shared next-ray queue —
 and a pass is the unit Mantle emits barriers between. A hand-placed
 `concurrent_indirect_group` says the same thing; here it follows from the
 dispatches sharing a pass, and the backend fuses their prepares into one.
+
+A shader is shaded in two kernels (`splits`): its values kernel runs its program
+and gathers what its BSDF nodes read (`vp_shader_values_kernel!`), before every
+shading dispatch, and the closure kernel of its nodes shades from that
+(`ClosureQueue`), which no node edit changes.
 """
-function shade_pass!(g, state::VolPathState, refs, cur::WorkQueue, nxt::WorkQueue;
+function shade_pass!(g, state::VolPathState, @nospecialize(refs), cur::WorkQueue, nxt::WorkQueue;
                      group = DEFAULT_WORKGROUPSIZE)
-    for q in state.per_material_queue.queues
+    queues = state.material_queues
+    inputs = state.shader_inputs
+    types = slot_types(refs.materials)
+    for (slot, T) in enumerate(types)
+        splits(T) || continue
+        Mantle.dispatch!(g, vp_shader_values_kernel!,
+                         (SlotQueue{T}(queues, slot), state.surface_hits, cur, state.arrivals,
+                          refs.accel, refs.media_interfaces, values_set(refs.materials, T), inputs,
+                          refs.camera, refs.samples_per_pixel),
+                         Mantle.DeviceRange(queues.sizes; max = Int(queues.capacity), at = slot);
+                         group, name = "shader-values")
+    end
+    for (slot, T) in enumerate(types)
+        q, view = splits(T) ? (ClosureQueue{bsdf_nodes(T)}(queues, slot, inputs), closure_set(refs.materials)) :
+                              (SlotQueue{T}(queues, slot), shade_set(refs.materials, T))
         Mantle.dispatch!(g, vp_shade_kernel!,
                          (q, state.surface_hits, cur, state.arrivals,
                           nxt, state.pixel_L, state.pdf_per_pixel,
                           refs.accel, refs.media_interfaces, refs.media,
-                          refs.materials, refs.lights, state.rgb2spec_table,
+                          view, refs.lights, state.rgb2spec_table,
                           state.bvh_nodes, state.infinite_light_indices,
                           state.light_to_bit_trail,
                           state.num_infinite_lights, state.num_bvh_lights,
-                          state.num_lights, state.max_depth, refs.regularize,
+                          state.num_lights, state.max_depth, refs.regularize, refs.emitters_reachable,
                           state.sobol_rng, refs.sample_idx,
                           refs.camera, refs.samples_per_pixel, state.rr_depth),
-                         Mantle.DeviceRange(q.size; max = Int(q.capacity));
+                         Mantle.DeviceRange(queues.sizes; max = Int(queues.capacity), at = slot);
                          group, name = "shade")
     end
 end
 
 """Transmittance along the shadow rays the medium direct lighting queued."""
-function shadow_pass!(g, state::VolPathState, refs)
+function shadow_pass!(g, state::VolPathState, @nospecialize(refs))
     Mantle.dispatch!(g, workqueue_map_kernel!,
                          (vp_trace_shadow_rays_kernel!, state.shadow_queue,
                           state.pixel_L, state.rgb2spec_table, refs.accel,
-                          refs.media_interfaces, refs.media, refs.materials, refs.lights),
+                          refs.media_interfaces, refs.media, cut_set(refs.materials), refs.lights),
                      Mantle.DeviceRange(state.shadow_queue.size;
                                         max = Int(state.shadow_queue.capacity));
                      group = volume_workgroupsize(), name = "shadow")
@@ -266,7 +286,7 @@ dispatch over an empty queue is left out rather than run for nothing — which i
 also why the shadow pass is gated: medium direct lighting is its only producer.
 The shading follows the medium passes, which deliver surface hits too.
 """
-function round_passes!(g, state::VolPathState, refs, cur::WorkQueue, nxt::WorkQueue;
+function round_passes!(g, state::VolPathState, @nospecialize(refs), cur::WorkQueue, nxt::WorkQueue;
                        has_media::Bool, has_lights::Bool)
     reset_pass!(g, state, nxt)
     trace_pass!(g, state, refs, cur, nxt)
@@ -302,7 +322,7 @@ there is one of these and not two: the ping-pong is now an implementation detail
 of the recording. `n` rounds starting at A end at A when `n` is even, which is
 what lets the same plan run back to back.
 """
-function rounds_passes!(g, state::VolPathState, refs, n::Integer;
+function rounds_passes!(g, state::VolPathState, @nospecialize(refs), n::Integer;
                         has_media::Bool, has_lights::Bool)
     cur, nxt = state.ray_queue_a, state.ray_queue_b
     for _ in 1:n
@@ -320,7 +340,7 @@ The clear and the reset share a pass because they touch disjoint memory, so
 nothing orders them against each other — the fact the `concurrent_dispatch_group`
 around them was there to assert.
 """
-function setup_passes!(g, state::VolPathState, refs, cur::WorkQueue)
+function setup_passes!(g, state::VolPathState, @nospecialize(refs), cur::WorkQueue)
     Mantle.dispatch!(g, vp_clear_kernel!, (state.pixel_L, 0f0),
                      length(state.pixel_L); name = "clear")
     Mantle.dispatch!(g, zero_size_counters_kernel!, ((cur.size,),), 1;
@@ -336,7 +356,7 @@ end
 
 
 """This sample's spectral radiance, weighted into the RGB accumulators."""
-function accumulate_passes!(g, state::VolPathState, refs)
+function accumulate_passes!(g, state::VolPathState, @nospecialize(refs))
     n_pixels = Int(state.width) * Int(state.height)
     Mantle.dispatch!(g, vp_accumulate_to_rgb_kernel!,
                      (state.pixel_rgb, state.pixel_weight_sum, state.pixel_L,
@@ -407,7 +427,7 @@ the test on the device there is nothing left to amortise.
 it between samples: a per-call decision, which is the one thing a single
 recording cannot express.
 """
-function sample_graph(dev, state::VolPathState, refs, d::Int;
+function sample_graph(dev, state::VolPathState, @nospecialize(refs), d::Int;
                       has_media::Bool, has_lights::Bool)
     a = state.ray_queue_a
     g = Mantle.Graph(dev)
@@ -621,7 +641,7 @@ batches, and accumulation happens once. This avoids keeping
 a long curved-transport workload in one GPU submission. Ordinary short paths
 retain their single-graph fast path.
 """
-function build_plans(backend, state::VolPathState, framebuffer, refs, perrun::PerRun,
+function build_plans(backend, state::VolPathState, framebuffer, @nospecialize(refs), perrun::PerRun,
                      max_depth::Int32;
                      has_media::Bool, has_lights::Bool,
                      emitters_reachable::Bool, crossings::Bool)
@@ -699,7 +719,8 @@ fields; the film is a call argument, and the caller reads its identity once
 per sample.
 """
 function rebuild_plans!(state::VolPathState, film::Film, backend,
-                        accel, media_interfaces, media, materials, lights,
+                        @nospecialize(accel), @nospecialize(media_interfaces), @nospecialize(media),
+                        @nospecialize(materials), @nospecialize(lights),
                         camera, initial_medium::SetKey, filter_params, filter_sampler,
                         regularize::Bool, samples_per_pixel::Int32,
                         max_component_value::Float32, max_depth::Int32;
@@ -719,7 +740,7 @@ function rebuild_plans!(state::VolPathState, film::Film, backend,
     refs = render_refs(accel, media_interfaces, media, materials, lights,
                        perrun.camera, perrun.initial_medium, perrun.filter_params,
                        filter_sampler, perrun.sample_idx,
-                       regularize, samples_per_pixel, max_component_value)
+                       regularize, emitters_reachable, samples_per_pixel, max_component_value)
     state.plans = build_plans(backend, state, film.framebuffer, refs, perrun, max_depth;
                               has_media, has_lights, emitters_reachable, crossings)
     return nothing

@@ -24,9 +24,9 @@ isdefined(@__MODULE__, :render_scene) || include(joinpath(@__DIR__, "pbrt", "sui
                 Shape "trianglemesh" "point3 P" [ 0 0 0  1 0 0  0 1 0 ] "integer indices" [ 0 1 2 ]""")
             Hikari.build_pbrt_material(only(pb.shapes).material_inline, pb)
         end
-        @test glass("\"spectrum eta\" \"glass-BK7\"").index === Hikari.GLASS_BK7_ETA_SPECTRUM
+        @test glass("\"spectrum eta\" \"glass-BK7\"").ior === Hikari.GLASS_BK7_ETA_SPECTRUM
         @test Hikari.sample(Hikari.GLASS_BK7_ETA_SPECTRUM, 587.6f0) ≈ 1.5168f0 atol = 1f-4
-        inline = glass("\"spectrum eta\" [ 400 1.6  700 1.5 ]").index
+        inline = glass("\"spectrum eta\" [ 400 1.6  700 1.5 ]").ior
         @test Hikari.sample(inline, 550f0) ≈ 1.55f0
         @test_throws ArgumentError glass("\"spectrum eta\" \"glass-unknown\"")
     end
@@ -42,18 +42,24 @@ isdefined(@__MODULE__, :render_scene) || include(joinpath(@__DIR__, "pbrt", "sui
         end
         d = coat("""Material "coateddiffuse" "spectrum eta" "glass-F11" """)
         c = coat("""Material "coatedconductor" "spectrum interface.eta" [ 400 1.6  700 1.5 ]""")
-        @test d.eta === Hikari.GLASS_SF11_ETA_SPECTRUM
-        @test Hikari.sample(c.interface_eta, 550f0) ≈ 1.55f0
-        @test Hikari.const_float(coat("""Material "coateddiffuse" "float eta" 1.33""").eta) == 1.33f0
+        @test d.ior === Hikari.GLASS_SF11_ETA_SPECTRUM
+        @test Hikari.sample(c.interface_ior, 550f0) ≈ 1.55f0
+        @test coat("""Material "coateddiffuse" "float eta" 1.33""").ior == 1.33f0
 
         table = Hikari.get_srgb_table()
         lambda = Hikari.sample_wavelengths_visible(0.3f0)
         tfc = Hikari.TextureFilterContext(Hikari.Point2f(0.5f0, 0.5f0))
-        bsdf(m) = Hikari.get_bxdf(m, table, nothing, tfc, lambda, false, Hikari.Vec3f(0, 0, 1),
-                                  Hikari.Vec3f(0, 0, 1), Hikari.Vec3f(1, 0, 0))
+        # The material as the device holds it, and its BSDF.
+        function bsdf(m)
+            scene = Hikari.Scene(; hw_accel = false)
+            key = scene.media_interfaces[push!(scene, m)].material
+            static = scene.materials.static
+            return Hikari.get_bxdf(static.data[key.type_idx][key.vec_idx], table, static, tfc, lambda, false,
+                                   Hikari.Vec3f(0, 0, 1), Hikari.Vec3f(0, 0, 1), Hikari.Vec3f(1, 0, 0))
+        end
         @test Hikari.terminates_at_vertex(bsdf(d))
         @test Hikari.terminates_at_vertex(bsdf(c))
-        @test !Hikari.terminates_at_vertex(bsdf(Hikari.CoatedDiffuse(eta = 1.5)))
+        @test !Hikari.terminates_at_vertex(bsdf(Hikari.CoatedDiffuse(ior = 1.5)))
     end
 
     @testset "renders as pbrt's" begin

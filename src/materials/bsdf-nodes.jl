@@ -114,9 +114,10 @@ emits(::Type{EmissionBSDF}) = true
 The lobes, transparency and emission a shader program produces at a hit. The interpreter and the
 nodes are in one function, out of line, so the stack is not copied out of it.
 """
-@noinline function shader_lobes(::Type{M}, prog::AbstractVector{<:NodeInstr}, textures, sc::ShaderContext) where {M <: Tuple}
+@noinline function shader_lobes(::Type{M}, prog::AbstractVector{<:NodeInstr}, textures, sc::ShaderContext,
+                               regularize::Bool) where {M <: Tuple}
     s, i = run_values(prog, textures, sc)
-    return node_lobes(M, s, prog, i, sc, lookup_tables(textures))
+    return node_lobes(M, s, prog, i, sc, LobeSetup(lookup_tables(textures), regularize))
 end
 
 """Whether any lobe disperses the path's wavelengths."""
@@ -124,11 +125,11 @@ end
 @inline disperses(::BSDFLobe) = false
 
 """The BSDF of the lobes, transparency and emission a material's nodes produced."""
-@propagate_inbounds function lobe_bsdf(::Type{M}, (rgb, transparency, emission), table, lambda::Wavelengths,
-                                       regularize::Bool) where {M <: Tuple}
+@propagate_inbounds function lobe_bsdf(::Type{M}, (rgb, transparency, emission), table,
+                                       lambda::Wavelengths) where {M <: Tuple}
     alpha = 1f0 - _avg(transparency)
     scale = alpha > 1f-6 ? 1f0 / alpha : 0f0
-    lobes = map(w -> lift(w, scale, table, lambda, regularize), rgb)
+    lobes = map(w -> lift(w, scale, table, lambda), rgb)
     total = reduce(+, map(w -> w.sample_weight, lobes); init = 0f0)
     L = emits(M) && _max(emission) > 0f0 ?
         uplift_rgb_illuminant(table, RGBSpectrum(emission[1], emission[2], emission[3]), lambda) / D65_PHOTOMETRIC :

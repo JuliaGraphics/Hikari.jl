@@ -24,13 +24,13 @@ isdefined(@__MODULE__, :render_scene) || include(joinpath(@__DIR__, "pbrt", "sui
 
     @testset "and not its IOR as well" begin
         m = Hikari.Conductor(reflectance = (0.9, 0.5, 0.2))
-        @test Hikari.is_none(m.eta) && Hikari.is_none(m.k) && !Hikari.is_none(m.reflectance)
-        @test Hikari.is_none(Hikari.Conductor(eta = (0.2, 0.3, 0.4), k = (3, 3, 3)).reflectance)
-        @test Hikari.is_none(Hikari.Gold().reflectance)
-        @test_throws ArgumentError Hikari.Conductor(eta = (0.2, 0.3, 0.4), reflectance = (0.9, 0.5, 0.2))
+        @test isnothing(m.ior) && isnothing(m.extinction) && !isnothing(m.reflectance)
+        @test isnothing(Hikari.Conductor(ior = (0.2, 0.3, 0.4), extinction = (3, 3, 3)).reflectance)
+        @test isnothing(Hikari.Gold().reflectance)
+        @test_throws ArgumentError Hikari.Conductor(ior = (0.2, 0.3, 0.4), reflectance = (0.9, 0.5, 0.2))
         c = Hikari.CoatedConductor(reflectance = (0.85, 0.1, 0.1))
-        @test Hikari.is_none(c.conductor_eta) && !Hikari.is_none(c.conductor_reflectance)
-        @test_throws ArgumentError Hikari.CoatedConductor(conductor_eta = (0.2, 0.3, 0.4), conductor_k = (3, 3, 3),
+        @test isnothing(c.conductor_ior) && !isnothing(c.conductor_reflectance)
+        @test_throws ArgumentError Hikari.CoatedConductor(conductor_ior = (0.2, 0.3, 0.4), conductor_extinction = (3, 3, 3),
                                                           reflectance = (0.9, 0.5, 0.2))
     end
 

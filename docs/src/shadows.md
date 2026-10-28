@@ -11,11 +11,11 @@ to_mesh(prim) = normal_mesh(prim isa Sphere ? Tesselation(prim, 64) : prim)
 
 ```@example rendering
 # --- Materials ---
-white  = Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.88f0))
-red    = Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.65f0, 0.1f0, 0.1f0))
-green  = Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.1f0, 0.6f0, 0.1f0))
-mirror = Hikari.Mirror(Kr=Hikari.RGBSpectrum(0.95f0))
-glass  = Hikari.Dielectric(index=1.5f0)
+white  = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.88f0))
+red    = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.65f0, 0.1f0, 0.1f0))
+green  = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.1f0, 0.6f0, 0.1f0))
+mirror = Hikari.Glossy(roughness = 0, color = Hikari.RGBSpectrum(0.95f0))
+glass  = Hikari.Glass(ior = 1.5f0)
 gold   = Hikari.Gold(roughness=0.04f0)
 
 # --- Scene ---
@@ -35,7 +35,7 @@ push!(scene, to_mesh(Rect3f(Vec3f(2-0.01, 0, -2),  Vec3f(0.01, 3, 4))),   green)
 
 # Ceiling area light
 push!(scene, to_mesh(Rect3f(Vec3f(-0.4f0, 2.98f0, -0.4f0), Vec3f(0.8f0, 0.01f0, 0.8f0))),
-      Hikari.Emissive(Le=(3.0, 3.0, 2.85), scale=1f0, two_sided=true))
+      Hikari.Emission(color = (3.0, 3.0, 2.85), strength = 1f0, two_sided=true))
 
 Hikari.sync!(scene)
 

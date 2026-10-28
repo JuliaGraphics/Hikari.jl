@@ -52,9 +52,8 @@ material_cases() = [
     "Diffuse"                   => Hikari.Diffuse(),
     "DiffuseTransmission"       => Hikari.DiffuseTransmission(),
     "Conductor"                 => Hikari.Conductor(),
-    "Mirror"                    => Hikari.Mirror(),
     "Dielectric"                => Hikari.Dielectric(),
-    "Dielectric eta=1"          => Hikari.Dielectric(index = 1.0f0),
+    "Dielectric eta=1"          => Hikari.Dielectric(ior = 1.0f0),
     "Dielectric rough"          => Hikari.Dielectric(roughness = 0.3f0),
     "ThinDielectric"            => Hikari.ThinDielectric(),
     "CoatedDiffuse"             => Hikari.CoatedDiffuse(),
@@ -105,7 +104,7 @@ bsdf_argtypes(M, static) = Tuple{M, typeof(TABLE), typeof(static), Vec3f, Vec3f,
     # a cosine-sampled hemisphere direction instead, which is what trapped every
     # ray inside the smoke box.
     @testset "eta=1 dielectric transmits" begin
-        stored, static = device_material(Hikari.Dielectric(index = 1.0f0))
+        stored, static = device_material(Hikari.Dielectric(ior = 1.0f0))
         bxdf = Hikari.get_bxdf(stored, TABLE, static, TFC, LAMBDA, false, WO, NS, DPDUS)
         s = Hikari.sample_bsdf_spectral(bxdf, TABLE, static, WO, NS, DPDUS,
                                         TFC, LAMBDA, U, RNG, false)
@@ -115,13 +114,13 @@ bsdf_argtypes(M, static) = Tuple{M, typeof(TABLE), typeof(static), Vec3f, Vec3f,
         @test all(isapprox.(s.wi, -WO; atol = 1f-6))
     end
 
-    # `MixMaterial` and `Emissive` never shade a hit — mix is re-pointed at a
-    # sub-material at the push site, emissive lives in `MediumInterface.emission`
+    # `MixMaterial` and `Emission` never shade a hit — mix is re-pointed at a
+    # sub-material at the push site, emission lives in `MediumInterface.emission`
     # — but `foreach_type` still generates a kernel for every type in the set, so
     # they need methods. Those methods contribute nothing, on purpose: an
     # unreachable path that renders black is a path you can see.
     @testset "BSDF-less materials are inert" begin
-        for mat in (Hikari.Emissive(Le = (1, 1, 1)),
+        for mat in (Hikari.Emission(color = (1, 1, 1)),
                     Hikari.MixMaterial(Hikari.TexHandle(0.5f0), Raycore.SetKey(), Raycore.SetKey()))
             stored, static = device_material(mat)
             @test typeof(stored) <: Hikari.BSDFLessMaterial

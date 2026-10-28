@@ -5,7 +5,7 @@ import KernelAbstractions as KA
 function test_scene_mesh_texture_reuse(backend; hw_accel = false)
     scene = Hikari.Scene(; backend, hw_accel)
     mesh = normal_mesh(GeometryBasics.Tessellation(Sphere(Point3f(0), 0.5f0), 12))
-    material(v) = Hikari.Diffuse(; Kd = Hikari.Texture(fill(Hikari.RGBSpectrum(v), 4, 4)))
+    material(v) = Hikari.Diffuse(; color = Hikari.Texture(fill(Hikari.RGBSpectrum(v), 4, 4)))
     handle = push!(scene, mesh, material(0.2f0))
     interface = handle.interface
     slots = length(scene.materials.texture_gpu_arrays)

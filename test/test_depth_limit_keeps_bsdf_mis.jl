@@ -15,18 +15,17 @@
 # depth limit only a material that emits is shaded (`emits`), and this one must be.
 
 using Test, Hikari, Mantle, GeometryBasics
-using Hikari.TextureNodes: emission
 using Statistics: mean
 
 const AREA_LIGHT = Hikari.MediumInterface(Hikari.NullMaterial();
-                                          emission = Hikari.Emissive(; Le = (1, 1, 1), scale = 1f0, two_sided = true))
+                                          emission = Hikari.Emission(; color = (1, 1, 1), strength = 1f0, two_sided = true))
 
 function depth_limit_render(max_depth, emitter; hw_accel)
     backend = Mantle.defaultbackend()
     scene = Hikari.Scene(; backend, hw_accel)
     quad(z, s) = GeometryBasics.Mesh(Point3f[(-s, -s, z), (s, -s, z), (s, s, z), (-s, s, z)],
                                      GLTriangleFace[(1, 2, 3), (1, 3, 4)])
-    push!(scene, quad(0f0, 4f0), Hikari.Diffuse(Kd = (0.5, 0.5, 0.5)))
+    push!(scene, quad(0f0, 4f0), Hikari.Diffuse(color = (0.5, 0.5, 0.5)))
     push!(scene, quad(0.5f0, 1f0), emitter)
     Hikari.sync!(scene)
     film = Hikari.Film(backend, Hikari.Film(Point2f(24, 24)))
@@ -40,7 +39,7 @@ end
 
 @testset "the deepest vertex keeps the BSDF's share of its direct light ($(hw ? "hardware" : "software") tracing)" for hw in (false, true)
     @testset "$name" for (name, emitter) in (("an area light", AREA_LIGHT),
-                                             ("an Emission shader", Hikari.ShaderMaterial(emission(strength = 1))))
+                                             ("an Emission shader", Hikari.ShaderMaterial(Hikari.shader_node(Hikari.Emission(strength = 1)))))
         first_hit, second_bounce = depth_limit_render(1, emitter; hw_accel = hw), depth_limit_render(2, emitter; hw_accel = hw)
         @test second_bounce > 0
         @test first_hit ≈ second_bounce rtol = 0.01

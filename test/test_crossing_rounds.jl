@@ -17,7 +17,7 @@ function crossing_render(sheets::Int; hw_accel)
     scene = Hikari.Scene(; backend, hw_accel)
     quad(z, s) = GeometryBasics.Mesh(Point3f[(-s, -s, z), (s, -s, z), (s, s, z), (-s, s, z)],
                                      GLTriangleFace[(1, 2, 3), (1, 3, 4)])
-    push!(scene, quad(0f0, 4f0), Hikari.Diffuse(Kd = (0.5, 0.5, 0.5)))
+    push!(scene, quad(0f0, 4f0), Hikari.Diffuse(color = (0.5, 0.5, 0.5)))
     for k in 1:sheets
         push!(scene, quad(0.5f0 * k, 4f0), Hikari.MediumInterface(Hikari.NullMaterial()))
     end

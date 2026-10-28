@@ -43,7 +43,7 @@ function _make_film_camera(res=48)
     return film, camera
 end
 
-_colors_of(materials, idx) = Raycore.is_valid(idx) ? materials[idx].Kd : nothing
+_colors_of(materials, idx) = Raycore.is_valid(idx) ? materials[idx].color : nothing
 
 function _render(scene, film, camera; backend, hw::Bool, samples::Int=2, depth::Int=3)
     gpu_film = Hikari.Film(backend, film)
@@ -119,10 +119,10 @@ _channel_maxes(img) = (
     @testset "push!(scene, mesh, materials, transforms) — 1 BLAS + N instances" begin
         scene = Hikari.Scene()
         push!(scene, _floor_mesh(),
-              Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.5f0, 0.5f0, 0.5f0)))
+              Hikari.Diffuse(color = Hikari.RGBSpectrum(0.5f0, 0.5f0, 0.5f0)))
         sphere = normal_mesh(Tesselation(Sphere(GeometryBasics.Point3f(0,0,0), 0.25f0), 12))
         colors = [(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 1.0, 0.0)]
-        materials = Hikari.Material[Hikari.Diffuse(Kd=c) for c in colors]
+        materials = Hikari.Material[Hikari.Diffuse(color = c) for c in colors]
         transforms = Raycore.Mat4f[_shift_mat(-1.5, 0), _shift_mat(-0.5, 0),
                                     _shift_mat(0.5, 0),  _shift_mat(1.5, 0)]
 
@@ -143,7 +143,7 @@ _channel_maxes(img) = (
 
         # Emissive materials rejected (clear boundary — emission needs per-
         # instance area lights which isn't implemented yet)
-        em_mat = Hikari.Emissive(Le=Hikari.RGBSpectrum(1f0, 1f0, 1f0), scale=1f0, two_sided=false)
+        em_mat = Hikari.Emission(color = Hikari.RGBSpectrum(1f0, 1f0, 1f0), strength = 1f0, two_sided=false)
         @test_throws ArgumentError push!(scene, sphere,
                                           Hikari.Material[em_mat, materials[1]],
                                           transforms[1:2])
@@ -158,12 +158,12 @@ _channel_maxes(img) = (
         # to adapt is intentionally ignored). See instanced-bvh.jl docstring.
         scene = Hikari.Scene(; backend=backend)
         push!(scene, _floor_mesh(),
-              Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.3f0, 0.3f0, 0.3f0)))
+              Hikari.Diffuse(color = Hikari.RGBSpectrum(0.3f0, 0.3f0, 0.3f0)))
 
         sphere = normal_mesh(Tesselation(Sphere(GeometryBasics.Point3f(0,0,0), 0.35f0), 16))
         # Pure R, G, B, Yellow — guarantees channel separation
         colors = [(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 1.0, 0.0)]
-        materials = Hikari.Material[Hikari.Diffuse(Kd=c) for c in colors]
+        materials = Hikari.Material[Hikari.Diffuse(color = c) for c in colors]
         transforms = Raycore.Mat4f[_shift_mat(-1.5, 0, 0.5), _shift_mat(-0.5, 0, 0.5),
                                     _shift_mat(0.5, 0, 0.5),  _shift_mat(1.5, 0, 0.5)]
         push!(scene, sphere, materials, transforms)
@@ -196,11 +196,11 @@ _channel_maxes(img) = (
         backend = Mantle.defaultbackend()
         scene = Hikari.Scene(; backend=backend, hw_accel=true)
         push!(scene, _floor_mesh(),
-              Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.3f0, 0.3f0, 0.3f0)))
+              Hikari.Diffuse(color = Hikari.RGBSpectrum(0.3f0, 0.3f0, 0.3f0)))
 
         sphere = normal_mesh(Tesselation(Sphere(GeometryBasics.Point3f(0,0,0), 0.35f0), 16))
         colors = [(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 1.0, 0.0)]
-        materials = Hikari.Material[Hikari.Diffuse(Kd=c) for c in colors]
+        materials = Hikari.Material[Hikari.Diffuse(color = c) for c in colors]
         transforms = Raycore.Mat4f[_shift_mat(-1.5, 0, 0.5), _shift_mat(-0.5, 0, 0.5),
                                     _shift_mat(0.5, 0, 0.5),  _shift_mat(1.5, 0, 0.5)]
         push!(scene, sphere, materials, transforms)
@@ -239,14 +239,14 @@ _channel_maxes(img) = (
     @testset "rapid push/delete cycles: BLAS count stays bounded" begin
         scene = Hikari.Scene()
         push!(scene, _floor_mesh(),
-              Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.5f0, 0.5f0, 0.5f0)))
+              Hikari.Diffuse(color = Hikari.RGBSpectrum(0.5f0, 0.5f0, 0.5f0)))
         sphere = normal_mesh(Tesselation(Sphere(GeometryBasics.Point3f(0,0,0), 0.25f0), 12))
 
         # 10 push/delete cycles, each with 8 scatter instances. If the old
         # N-BLASes-per-scatter bug were back, we'd see 10*8 = 80 BLASes grow
         # without bound. Under the fix: 1 floor + 1 scatter BLAS = 2, stable.
         for cycle in 1:10
-            mats = Hikari.Material[Hikari.Diffuse(Kd=(i/8.0, 0.5, 0.5)) for i in 1:8]
+            mats = Hikari.Material[Hikari.Diffuse(color = (i/8.0, 0.5, 0.5)) for i in 1:8]
             xfs = Raycore.Mat4f[_shift_mat(i*0.3, cycle*0.1) for i in 1:8]
             handles = push!(scene, sphere, mats, xfs)
             Hikari.sync!(scene)
@@ -266,10 +266,10 @@ _channel_maxes(img) = (
     @testset "update_instance_transform! preserves override" begin
         scene = Hikari.Scene()
         push!(scene, _floor_mesh(),
-              Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.5f0, 0.5f0, 0.5f0)))
+              Hikari.Diffuse(color = Hikari.RGBSpectrum(0.5f0, 0.5f0, 0.5f0)))
         sphere = normal_mesh(Tesselation(Sphere(GeometryBasics.Point3f(0,0,0), 0.25f0), 12))
 
-        mats = Hikari.Material[Hikari.Diffuse(Kd=c) for c in ((1.0,0,0), (0,1.0,0))]
+        mats = Hikari.Material[Hikari.Diffuse(color = c) for c in ((1.0,0,0), (0,1.0,0))]
         xfs = Raycore.Mat4f[_shift_mat(-1,0), _shift_mat(1,0)]
         push!(scene, sphere, mats, xfs)
         Hikari.sync!(scene)
@@ -290,9 +290,9 @@ _channel_maxes(img) = (
         # Build a scene via the legacy (non-scattering) push! — every instance
         # gets instance_id=0.
         scene = Hikari.Scene()
-        red_mat = Hikari.Diffuse(Kd=(1.0, 0.1, 0.1))
+        red_mat = Hikari.Diffuse(color = (1.0, 0.1, 0.1))
         push!(scene, _floor_mesh(),
-              Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.5f0, 0.5f0, 0.5f0)))
+              Hikari.Diffuse(color = Hikari.RGBSpectrum(0.5f0, 0.5f0, 0.5f0)))
         sphere = normal_mesh(Tesselation(Sphere(GeometryBasics.Point3f(0,0,0.5), 0.35f0), 16))
         push!(scene, sphere, red_mat)
         Hikari.sync!(scene)

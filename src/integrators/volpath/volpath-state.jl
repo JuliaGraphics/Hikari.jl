@@ -112,14 +112,14 @@ mutable struct VolPathState{Backend}
     # Sobol RNG for low-discrepancy sampling (allocated once, reused across frames)
     sobol_rng::SobolRNG
 
-    # Per-material-type shading queues (one `WorkQueue{TypedHitRef{T}}` per
-    # concrete material type `T` in the scene).  Built lazily on first render
-    # from the scene's adapted `StaticMultiTypeSet` of materials; rebuilt
-    # when the type tuple changes (different scene).  Type is left `Any`
-    # because the concrete `MultiTypeMaterialQueue{Qs}` signature depends on
-    # which materials are present.
-    per_material_queue::Any              # MultiTypeMaterialQueue{...} | nothing
-    per_material_queue_signature::Any    # type tuple, used as freshness check
+    # The surface hits waiting for their material's shading kernel, a segment per
+    # slot of the scene's materials (`MaterialQueues`). Built on the first render
+    # from the scene's adapted `StaticMultiTypeSet` of materials, and again when
+    # its types change: a segment per slot, and which slots emit.
+    material_queues::Any                 # MaterialQueues | nothing
+    material_queues_signature::Any       # type tuple and inputs width, used as freshness check
+    # What the shaders' values kernels hand their closure kernels per hit (`ShaderInputs`).
+    shader_inputs::Any                   # ShaderInputs | nothing
 
     # Their own `DeviceMemory` and not the one above, because they have their own
     # lifetime: a scene with different material types replaces them, and regions
@@ -255,9 +255,9 @@ function VolPathState(
         num_bvh_lights, num_infinite_lights, Int32(n_lights),
         Int32(max_depth), Int32(rr_depth), Int32(width), Int32(height),
         sobol_rng,
-        # Per-material typed queues (built lazily once we see the scene's
-        # adapted materials).
-        nothing, nothing, DeviceMemory(backend),
+        # The material queues (built once the scene's adapted materials are
+        # known).
+        nothing, nothing, nothing, DeviceMemory(backend),
         # Plans (built lazily on the first render, once the scene shape and the
         # film are known).
         nothing,
@@ -265,26 +265,25 @@ function VolPathState(
 end
 
 """
-    ensure_per_material_queue!(state, materials_static, capacity)
+    ensure_material_queues!(state, materials_static, capacity, inputs_width)
 
-Lazily build the per-material typed queue from the scene's adapted
-`StaticMultiTypeSet` of materials.  Rebuilt when the type signature
-changes (different scene); a no-op cache hit otherwise.  Called once at
-the start of each `render!` after scene adaptation.
+Build the material queues for the scene's adapted `StaticMultiTypeSet` of materials, and the
+shader inputs `inputs_width` floats a hit wide (`shader_inputs_width`), again when its types or
+that width changed; a no-op otherwise. Called on every rebuild of the render state.
 """
-function ensure_per_material_queue!(state::VolPathState, materials_static, capacity::Integer)
-    sig = typeof(materials_static).parameters[1]   # Data tuple of StaticMultiTypeSet
-    if state.per_material_queue === nothing || state.per_material_queue_signature !== sig
+function ensure_material_queues!(state::VolPathState, materials_static, capacity::Integer, inputs_width::Integer)
+    sig = (typeof(materials_static).parameters[1], inputs_width)   # Data tuple of StaticMultiTypeSet
+    if state.material_queues === nothing || state.material_queues_signature != sig
         # The previous scene's queues go back before the new ones are taken, so
         # switching scenes does not accumulate a set per scene. No wait: the
         # regions are retired, and the allocator that wants them next is the one
         # that decides whether the device is done with them.
-        state.per_material_queue === nothing || free!(state.per_material_memory)
-        state.per_material_queue =
-            build_per_material_queues(materials_static, capacity, state.per_material_memory)
-        state.per_material_queue_signature = sig
+        state.material_queues === nothing || free!(state.per_material_memory)
+        state.material_queues = MaterialQueues(materials_static, capacity, state.per_material_memory)
+        state.shader_inputs = ShaderInputs(state.surface_hits.capacity, inputs_width, state.per_material_memory)
+        state.material_queues_signature = sig
     end
-    return state.per_material_queue
+    return state.material_queues
 end
 
 # ============================================================================
