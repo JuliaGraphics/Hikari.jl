@@ -115,10 +115,33 @@ struct NanoBlend{A<:NanoTree,B<:NanoTree}
     end
 end
 Adapt.@adapt_structure NanoBlend
-const NanoField = Union{NanoTree,NanoBlend}
+
+"""
+    NanoRegion(field, centre, inner, outer)
+
+`field` (a `NanoTree` or `NanoBlend`) only round a vertical axis through `centre`
+(x, y): in full out to `inner`, eased to nothing at `outer` (smoothstep in the
+distance from the axis), nothing beyond. For a field recorded over a box but drawn
+only where a round region of the scene is, such as a whirlpool's whitewater beside
+the water traced inside a cylinder. Majorants of `field` bound it.
+"""
+struct NanoRegion{F<:Union{NanoTree,NanoBlend}}
+    field::F
+    centre::Point2f
+    inner::Float32
+    outer::Float32
+    function NanoRegion(field::F, centre, inner::Real, outer::Real) where {F<:Union{NanoTree,NanoBlend}}
+        0 <= inner < outer || throw(ArgumentError("A NanoRegion needs 0 <= inner < outer"))
+        return new{F}(field, Point2f(centre[1], centre[2]), Float32(inner), Float32(outer))
+    end
+end
+Adapt.@adapt_structure NanoRegion
+const NanoField = Union{NanoTree,NanoBlend,NanoRegion}
 
 "The same two field buffers with a new interpolation weight."
 with_blend_weight(t::NanoBlend, weight::Real) = NanoBlend(t.a,t.b,weight)
+with_blend_weight(t::NanoTree, ::Real) = t
+with_blend_weight(t::NanoRegion, weight::Real) = NanoRegion(with_blend_weight(t.field, weight), t.centre, t.inner, t.outer)
 
 @inline nanofield_sample(t::NanoTree, media, p) = nanosample(t, Raycore.deref(media, t.words), p)
 @inline nanofield_sample(t::NanoTree, ::Nothing, p) = nanosample(t, t.words, p)
@@ -128,6 +151,14 @@ with_blend_weight(t::NanoBlend, weight::Real) = NanoBlend(t.a,t.b,weight)
     t.weight == 1f0 && return nanofield_sample(t.b, media, p)
     return (1f0-t.weight)*nanofield_sample(t.a, media, p) + t.weight*nanofield_sample(t.b, media, p)
 end
+@inline function nanofield_sample(t::NanoRegion, media, p)
+    dx = p[1] - t.centre[1]; dy = p[2] - t.centre[2]
+    r2 = dx * dx + dy * dy
+    r2 >= t.outer * t.outer && return 0f0
+    r2 <= t.inner * t.inner && return nanofield_sample(t.field, media, p)
+    s = (t.outer - sqrt(r2)) / (t.outer - t.inner)
+    return s * s * (3f0 - 2f0 * s) * nanofield_sample(t.field, media, p)
+end
 
 function nanobounds(t::NanoTree)
     return Bounds3(Point3f(t.lo + (Vec3f(t.imin) .- 0.5f0)*t.voxel),
@@ -136,6 +167,12 @@ end
 function nanobounds(t::NanoBlend)
     a, b = nanobounds(t.a), nanobounds(t.b)
     return Bounds3(Point3f(min.(a.p_min,b.p_min)), Point3f(max.(a.p_max,b.p_max)))
+end
+function nanobounds(t::NanoRegion)
+    f = nanobounds(t.field)
+    c = Point3f(t.centre[1], t.centre[2], 0f0); r = Vec3f(t.outer, t.outer, 0f0)
+    lo = max.(f.p_min, c - r); hi = min.(f.p_max, c + r)
+    return Bounds3(Point3f(lo[1], lo[2], f.p_min[3]), Point3f(hi[1], hi[2], f.p_max[3]))
 end
 
 function nanomajorant(t::NanoBlend, bounds::Bounds3, res::Vec{3,Int32}; tight::Bool=true,sparse::Bool=false)
@@ -147,3 +184,5 @@ function nanomajorant(t::NanoBlend, bounds::Bounds3, res::Vec{3,Int32}; tight::B
     a.voxels .= max.(a.voxels, b.voxels)
     return a
 end
+"The region only lowers its field, so the field's majorants bound it."
+nanomajorant(t::NanoRegion, bounds::Bounds3, res::Vec{3,Int32}; kw...) = nanomajorant(t.field, bounds, res; kw...)
