@@ -214,7 +214,8 @@ function gen_gpu_test_scene()
     adapted = Adapt.adapt(backend, scene)
 
     # Get rgb2spec_table directly
-    rgb2spec_table = Hikari.to_gpu(Hikari.DeviceMemory(backend), Hikari.get_srgb_table())
+    memory = Hikari.DeviceMemory(backend)
+    rgb2spec_table = Hikari.to_gpu(memory, Hikari.get_srgb_table())
 
     (
         scene=adapted,
@@ -222,6 +223,7 @@ function gen_gpu_test_scene()
         media=adapted.media,
         lights=adapted.lights,
         rgb2spec_table=rgb2spec_table,
+        memory=memory,
         lambda=Hikari.SampledWavelengths{4}((400f0, 500f0, 600f0, 700f0), (1f0, 1f0, 1f0, 1f0)),
         mat_idx=Hikari.SetKey(UInt32(1), UInt32(1)),
         ray=Raycore.Ray(o=Point3f(0,0,0), d=Vec3f(0,0,1), t_max=Inf32),

@@ -4,6 +4,7 @@ import Raycore
 import Mantle
 import KernelAbstractions as KA
 using Statistics: mean
+include("software_backend.jl")
 
 # An off-centre emitter makes a Y flip observable. Compare independently
 # rendered radiance with primary-hit depth, not with a copy of the indexing
@@ -42,7 +43,12 @@ function test_aux_alignment(backend; hw_accel = false)
 end
 
 @testset "Auxiliary buffers align with radiance" begin
-    test_aux_alignment(KA.CPU())
+    reference = software_reference_backend()
+    if reference === nothing
+        @test_skip false # No CPU Vulkan driver installed.
+    else
+        test_aux_alignment(reference)
+    end
     backend = Mantle.defaultbackend()
     if !Mantle.supports_hwtlas(backend)
         @test_skip false

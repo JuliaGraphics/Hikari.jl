@@ -33,7 +33,7 @@ end
 @inline world_radius(scene::Scene) = scene.bounds[][2].r
 
 """
-    Scene(; backend=KA.CPU())
+    Scene(; backend=Mantle.defaultbackend())
 
 Create an empty mutable Scene for incremental construction.
 
@@ -55,7 +55,7 @@ sync!(scene)  # Build acceleration structure
 default_accel(backend, ::Val{false}) = TLAS(backend; primtype = Raycore.Triangle{TriangleMeta})
 # Val{true} defined in hw-rt.jl -> HWTLAS(backend) for any HW-capable backend
 
-function Scene(; backend=KA.CPU(), accel=nothing, hw_accel::Bool=false)
+function Scene(; backend=Mantle.defaultbackend(), accel=nothing, hw_accel::Bool=false)
     tlas = accel !== nothing ? accel : default_accel(backend, Val(hw_accel))
     lights = MultiTypeSet(backend)
     materials = MultiTypeSet(backend)
@@ -64,7 +64,7 @@ function Scene(; backend=KA.CPU(), accel=nothing, hw_accel::Bool=false)
     Scene(lights, tlas, materials, media, media_interfaces, Ref((Bounds3(), Sphere(Point3f(0), 0f0))))
 end
 
-function Scene(mesh_material_pairs::Vector{<:Tuple}; lights = (), backend = KA.CPU(), accel = nothing, hw_accel::Bool=false)
+function Scene(mesh_material_pairs::Vector{<:Tuple}; lights = (), backend = Mantle.defaultbackend(), accel = nothing, hw_accel::Bool=false)
     scene = Scene(; backend=backend, accel=accel, hw_accel=hw_accel)
     for light in lights
         push!(scene, light)

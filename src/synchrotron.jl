@@ -70,6 +70,19 @@ The simulation mass unit and black-hole mass must be supplied in CGS grams;
 the adapter does not choose a particular astronomical object or flux calibration.
 """
 function radiative_volume end
+
+"""
+    native_radiative_volume(path; mass_unit, black_hole_mass, fade=(11f0, 14f0),
+                            normalization=nothing, emission_params=EmissionParams())
+
+The fields of [`radiative_volume`](@ref) on the snapshot's own spherical grid
+instead of a Cartesian resampling: emissivity, absorption and the fluid's
+static-frame Cartesian velocity per native cell, `(φ, θ, r)`, radial shells up to
+the first one at `fade[2]`, faded out from `fade[1]` on. The grid comes along as
+the colatitude of every cell (`theta[r, θ]`), the log-uniform radial spacing and
+the uniform azimuth spacing. Radii are in Schwarzschild radii.
+"""
+function native_radiative_volume end
 function emissivity_grid end
 function absorption_grid end
 function emission_contribution_grid end

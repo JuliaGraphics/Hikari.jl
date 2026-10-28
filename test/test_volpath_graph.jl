@@ -13,6 +13,7 @@ using GeometryBasics
 using GeometryBasics: normal_mesh, Tesselation
 import KernelAbstractions as KA
 import Adapt
+include("software_backend.jl")
 
 # Every stage of the round: four material types, a medium, an area light and a
 # point light, so nothing in the graph is skipped for want of work.
@@ -111,19 +112,23 @@ end
         @test sum(px -> Float64(px.r) + px.g + px.b, fb) > 0
     end
 
-    @testset "the same scene on the host backend" begin
-        # The graph is backend-independent: the Host extension runs the same
-        # passes with the count read at launch instead of on the device.
-        cpu = KA.CPU()
-        cpu_scene = volpath_graph_scene(cpu; with_media = true)
-        film = Hikari.Film(Point2f(16, 16))
-        cam = Hikari.PerspectiveCamera(Point3f(0f0, 1f0, -3.5f0), Point3f(0f0, 1f0, 0f0),
-                                       film; fov = 40f0)
-        Hikari.clear!(film)
-        vp = Hikari.VolPath(samples = 1, max_depth = 3)
-        vp(cpu_scene, film, cam)
-        fb = Array(film.framebuffer)
-        @test all(px -> isfinite(px.r) && isfinite(px.g) && isfinite(px.b), fb)
-        @test sum(px -> Float64(px.r) + px.g + px.b, fb) > 0
+    @testset "the same scene on a CPU Vulkan backend" begin
+        reference = software_reference_backend()
+        if reference === nothing
+            @test_skip false # No CPU Vulkan driver installed.
+        else
+            cpu_scene = volpath_graph_scene(reference; with_media = true)
+            film, cam = volpath_graph_film(reference, 16)
+            vp = Hikari.VolPath(samples = 1, max_depth = 3)
+            try
+                vp(cpu_scene, film, cam)
+                fb = Array(film.framebuffer)
+                @test all(px -> isfinite(px.r) && isfinite(px.g) && isfinite(px.b), fb)
+                @test sum(px -> Float64(px.r) + px.g + px.b, fb) > 0
+            finally
+                close(vp)
+                Hikari.free!(film)
+            end
+        end
     end
 end

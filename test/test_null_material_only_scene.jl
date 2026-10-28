@@ -27,6 +27,7 @@ using Hikari, Mantle, Raycore, GeometryBasics
 using GeometryBasics: normal_mesh, Tesselation, Rect3f, Sphere, Point3f, Point2f, Vec3f
 using Colors: red, green, blue
 import KernelAbstractions as KA
+include("software_backend.jl")
 
 # A Gaussian blob of pure scattering, dense enough that a ray entering the cube
 # cannot cross it unscattered.
@@ -102,13 +103,14 @@ end
         end
     end
 
-    @testset "the host backend agrees" begin
-        # On the CPU the same defect was a THROWN `with_index: empty
-        # StaticMultiTypeSet` rather than a silently dead invocation, which is
-        # how it was found. Cheap, and it fails loudly if a fourth call site
-        # ever appears.
-        img = null_only_render(KA.CPU(); unused_material = false, hw_accel = false,
-                               samples = 2, max_depth = 8, res = 16)
-        @test maximum(c -> (red(c) + green(c) + blue(c)) / 3, img) > 0.01
+    @testset "the CPU Vulkan backend renders the null boundary" begin
+        reference = software_reference_backend()
+        if reference === nothing
+            @test_skip false # No CPU Vulkan driver installed.
+        else
+            img = null_only_render(reference; unused_material = false, hw_accel = false,
+                                   samples = 2, max_depth = 8, res = 16)
+            @test maximum(c -> (red(c) + green(c) + blue(c)) / 3, img) > 0.01
+        end
     end
 end

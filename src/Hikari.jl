@@ -50,7 +50,7 @@ abstract type Integrator end
 abstract type Medium end
 
 include("synchrotron.jl")
-public radiative_volume, EmissionParams, MagneticEtaNe, RhoNe,
+public radiative_volume, native_radiative_volume, EmissionParams, MagneticEtaNe, RhoNe,
     synchrotron_jν, synchrotron_αν
 
 """

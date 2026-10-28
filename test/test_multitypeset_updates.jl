@@ -55,10 +55,13 @@ function _render(scene; backend=_BACKEND, hw::Bool=false, res::Int=32,
     camera = Hikari.PerspectiveCamera(Point3f(0, -3, 1.5), Point3f(0, 0, 0.35),
                                       film; fov=50f0)
     vp = Hikari.VolPath(samples=samples, max_depth=depth, hw_accel=hw)
-    vp(scene, gpu_film, camera)
-    img = Array(gpu_film.framebuffer)
-    close(vp)
-    return img
+    try
+        vp(scene, gpu_film, camera)
+        return Array(gpu_film.framebuffer)
+    finally
+        close(vp)
+        Hikari.free!(gpu_film)
+    end
 end
 
 # What the device's pool holds once collected garbage is returned to it: the bytes
