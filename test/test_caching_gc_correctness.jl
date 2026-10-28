@@ -41,7 +41,7 @@ function _make_test_camera_film(; res=32)
     camera = Hikari.PerspectiveCamera(
         Point3f(0f0, -3f0, 1f0), Point3f(0f0, 0f0, 0.5f0), film; fov=40f0,
     )
-    return camera, film
+    return camera, Hikari.Film(Mantle.defaultbackend(), film)
 end
 
 @testset "Hikari Caching, GC & Correctness" begin
@@ -97,43 +97,53 @@ end
             pool = Mantle.pool(Hikari.mantle_device(backend))
 
             scene = _make_test_scene()
-            state = Hikari.VolPathState(
-                backend, 16, 16, scene.lights;
-                max_depth=4, samples_per_pixel=1
-            )
-            Mantle.flush!(Mantle.Device())
-            @test Hikari.nallocations(state.memory) > 10   # queues, accumulators, BVH, Sobol
-            reserved = Mantle.reserved(pool)
-
-            Hikari.free!(state)
-            Mantle.flush!(Mantle.Device())
-            @test Hikari.nallocations(state.memory) == 0
-            @test Hikari.nallocations(state.per_material_memory) == 0
-
-            # And the regions really are back: more identical states cost the
-            # device nothing, which a leak could not do.
-            #
-            # `live_buffer_count` is checked alongside the pool because the two
-            # catch different mistakes. The pool number stays flat if an
-            # allocation never reached the pool at all; Lava's count is what
-            # notices a `KA.allocate` that crept back into the constructor and
-            # was never given back. Everything the state owns — the queues, the
-            # accumulators, the light BVH, the Sobol matrices and both spectral
-            # tables — has to go through `DeviceMemory` for both to hold.
-            buffers = Mantle.live_buffer_count()
-            for _ in 1:3
-                st = Hikari.VolPathState(
+            # Keep the scene's own buffers alive at both measurements; it is
+            # otherwise dead after the last state constructor, and the final
+            # GC can release those unrelated buffers before the assertion.
+            GC.@preserve scene begin
+                state = Hikari.VolPathState(
                     backend, 16, 16, scene.lights;
                     max_depth=4, samples_per_pixel=1
                 )
                 Mantle.flush!(Mantle.Device())
-                Hikari.free!(st)
+                @test Hikari.nallocations(state.memory) > 10   # queues, accumulators, BVH, Sobol
+                reserved = Mantle.reserved(pool)
+
+                Hikari.free!(state)
+                Mantle.flush!(Mantle.Device())
+                @test Hikari.nallocations(state.memory) == 0
+                @test Hikari.nallocations(state.per_material_memory) == 0
+
+                # And the regions really are back: more identical states cost the
+                # device nothing, which a leak could not do.
+                #
+                # `live_buffer_count` is checked alongside the pool because the two
+                # catch different mistakes. The pool number stays flat if an
+                # allocation never reached the pool at all; Lava's count is what
+                # notices a `KA.allocate` that crept back into the constructor and
+                # was never given back. Everything the state owns — the queues, the
+                # accumulators, the light BVH, the Sobol matrices and both spectral
+                # tables — has to go through `DeviceMemory` for both to hold.
+                # Scene/BVH construction also creates temporary GPU arrays.
+                # Retire those before the baseline, just as at the final
+                # measurement, so collecting them cannot lower this count.
+                GC.gc(true)
+                Mantle.drain!(Mantle.batchqueue(Mantle.Device()))
+                buffers = Mantle.live_buffer_count()
+                for _ in 1:3
+                    st = Hikari.VolPathState(
+                        backend, 16, 16, scene.lights;
+                        max_depth=4, samples_per_pixel=1
+                    )
+                    Mantle.flush!(Mantle.Device())
+                    Hikari.free!(st)
+                end
+                Mantle.flush!(Mantle.Device())
+                GC.gc(true)
+                Mantle.drain!(Mantle.batchqueue(Mantle.Device()))
+                @test Mantle.reserved(pool) == reserved
+                @test Mantle.live_buffer_count() == buffers
             end
-            Mantle.flush!(Mantle.Device())
-            GC.gc(true)
-            Mantle.drain!(Mantle.batchqueue(Mantle.Device()))
-            @test Mantle.reserved(pool) == reserved
-            @test Mantle.live_buffer_count() == buffers
         end
 
         # The reason `DeviceMemory` carries a finalizer at all. `free!` is still
