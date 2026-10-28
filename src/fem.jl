@@ -809,5 +809,7 @@ end
 # The geometry is NOT updated: the elements live in the acceleration structure,
 # and a material update is for what changes in place — the tolerance, which only
 # the raster path reads, and the field ramp.
-update_material!(scene::Scene, key::Union{UInt32, MediumInterfaceIdx}, material::FEMMaterial) =
+update_material!(scene::Scene, key::UInt32, material::FEMMaterial) =
+    update_material!(scene, key, femsurface(material))
+update_material!(scene::Scene, key::MediumInterfaceIdx, material::FEMMaterial) =
     update_material!(scene, key, femsurface(material))

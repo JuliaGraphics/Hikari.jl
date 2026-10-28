@@ -20,15 +20,16 @@ const D65_PHOTOMETRIC = 10567.0f0
 # =============================================================================
 
 """
-    CIEXYZTable{V <: AbstractVector{Float32}}
+    CIEXYZTable{X,Y,Z}
 
 GPU-compatible table for CIE XYZ color matching functions.
 Use `to_gpu(mem, table)` to put it on the device.
 """
-struct CIEXYZTable{V <: AbstractVector{Float32}}
-    cie_x::V
-    cie_y::V
-    cie_z::V
+struct CIEXYZTable{X <: AbstractVector{Float32},Y <: AbstractVector{Float32},Z <: AbstractVector{Float32}}
+    # Access inference can independently wrap each curve as read-only.
+    cie_x::X
+    cie_y::Y
+    cie_z::Z
 end
 
 """
@@ -341,7 +342,7 @@ const CIE_Z = Float32[
 ]
 
 """
-    CIEXYZTable() -> CIEXYZTable{Vector{Float32}}
+    CIEXYZTable() -> CIEXYZTable{Vector{Float32},Vector{Float32},Vector{Float32}}
 
 Create the default CPU CIE XYZ table from built-in data.
 """

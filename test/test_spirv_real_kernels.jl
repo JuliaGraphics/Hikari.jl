@@ -126,7 +126,7 @@ import .SPIRVTestUtils: check, check_not, check_vendor_safety, spirv_opt_roundtr
             @inbounds begin
                 val = values[i]
                 if val > 0.0f0
-                    idx = Lava.Atomix.@atomic counter[1] += Int32(1)
+                    idx = Lava.Atomix.@atomic :monotonic counter[1] += Int32(1)
                     items[idx + Int32(1)] = val
                 end
             end
@@ -217,7 +217,7 @@ import .SPIRVTestUtils: check, check_not, check_vendor_safety, spirv_opt_roundtr
                 ld = Hikari.SampledSpectrum{4}(NTuple{4, Float32}((val, val, val, val)))
                 item = Hikari.VPShadowRayWorkItem(
                     ray, 100.0f0, lambda, ld, ld, ld,
-                    Int32(i), Raycore.SetKey(UInt32(0), UInt32(0)))
+                    Int32(i), Raycore.SetKey(UInt32(0), UInt32(0)), false)
                 output[i] = item
             end
             return nothing
