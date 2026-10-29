@@ -56,7 +56,9 @@ const CYCLES_PRINCIPLED_CASES = [
 ]
 
 """A Blender BSDF node `node` with its `inputs` by socket name, as `cycles_render.py` builds it."""
-bsdf(node; inputs...) = Dict("type" => "bsdf", "node" => node, "inputs" => Dict(String(k) => v for (k, v) in inputs))
+bsdf(node; properties = (;), inputs...) =
+    Dict("type" => "bsdf", "node" => node, "inputs" => Dict(String(k) => v for (k, v) in inputs),
+          "properties" => Dict(String(k) => v for (k, v) in pairs(properties)))
 mix_spec(a, b, factor) = Dict("type" => "mix", "a" => a, "b" => b, "factor" => factor)
 add_spec(a, b) = Dict("type" => "add", "a" => a, "b" => b)
 
@@ -117,6 +119,16 @@ const CYCLES_FILM_NODE_CASES = [
               Roughness = 0.5, var"Thin Film Thickness" = 500, var"Thin Film IOR" = 1.5)),
 ]
 
+const CYCLES_TOON_NODE_CASES = [
+    "toon_diffuse" => (H -> H.Toon(), bsdf("ShaderNodeBsdfToon")),
+    "toon_diffuse_smooth" => (H -> H.Toon(color = (0.2, 0.5, 0.8), size = 0.3, smooth = 0.2),
+        bsdf("ShaderNodeBsdfToon"; Color = [0.2, 0.5, 0.8], Size = 0.3, Smooth = 0.2)),
+    "toon_glossy" => (H -> H.Toon(component = :glossy, size = 0.15),
+        bsdf("ShaderNodeBsdfToon"; properties = (component = "GLOSSY",), Size = 0.15)),
+    "toon_glossy_smooth" => (H -> H.Toon(color = (0.7, 0.7, 0.7), component = :glossy, size = 0.4, smooth = 0.2),
+        bsdf("ShaderNodeBsdfToon"; properties = (component = "GLOSSY",), Color = [0.7, 0.7, 0.7], Size = 0.4, Smooth = 0.2)),
+]
+
 principled_case((name, inputs)) =
     name => (H -> H.Principled(; inputs...), Dict("type" => "principled", "inputs" => Dict(pairs(inputs))))
 
@@ -126,11 +138,12 @@ const CYCLES_STANDARD_CASES = [
     CYCLES_NODE_CASES;
     map(principled_case, CYCLES_THIN_WALL_CASES)
 ]
-const CYCLES_CASES = [CYCLES_STANDARD_CASES; CYCLES_FILM_NODE_CASES]
+const CYCLES_CASES = [CYCLES_STANDARD_CASES; CYCLES_FILM_NODE_CASES; CYCLES_TOON_NODE_CASES]
 # Keep existing reference scenes unchanged: filling their last batch would add
 # interreflections from new spheres and change the old comparison values.
 cycles_batches() = [collect(Iterators.partition(CYCLES_STANDARD_CASES, 8));
-                    collect(Iterators.partition(CYCLES_FILM_NODE_CASES, 8))]
+                    collect(Iterators.partition(CYCLES_FILM_NODE_CASES, 8));
+                    collect(Iterators.partition(CYCLES_TOON_NODE_CASES, 8))]
 
 const CYCLES_CENTERS = [Point3f(x, y, 0.5f0) for y in (1.4f0, 0f0) for x in (-2.25f0, -0.75f0, 0.75f0, 2.25f0)]
 const CYCLES_SCENE = (radius = 0.5f0, res = 512, world = 0.1f0, max_depth = 8,

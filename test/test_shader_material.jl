@@ -78,6 +78,8 @@ features(::Hikari.ShaderProgram{F}) where {F} = F & ~(UInt32(3) << Hikari.STACK_
                         thin_film_thickness = wave(xyz()).fac * 500, thin_film_ior = 1.33),
         Hikari.Mix(Hikari.Glass(color = (0.8, 0.9, 1.0), thin_film_thickness = noise(xyz()).fac * 400),
                    Hikari.Diffuse(color = (0.4, 0.6, 0.2)); factor = 0.6),
+        Hikari.Mix(Hikari.Toon(color = noise(xyz()).color, size = wave(xyz()).fac, smooth = 0.2),
+                   Hikari.Toon(component = :glossy, size = 0.3, smooth = noise(xyz()).fac); factor = 0.4),
     ]
     for shader in split_shaders
         store = Raycore.MultiTypeSet(CPU())
@@ -103,6 +105,16 @@ features(::Hikari.ShaderProgram{F}) where {F} = F & ~(UInt32(3) << Hikari.STACK_
 end
 
 @testset "Shader materials" begin
+    @testset "Toon's component fixes its lobe type" begin
+        diffuse = only(lobes(Hikari.Toon(color = (0.2, 0.4, 0.6), size = 0.3, smooth = 0.2)))
+        glossy = only(lobes(Hikari.Toon(component = :glossy)))
+        @test diffuse.lobe isa Hikari.ToonLobe{false}
+        @test diffuse.weight ≈ Vec3f(0.2, 0.4, 0.6)
+        @test diffuse.lobe.size ≈ 0.3f0 * Float32(π) / 2f0
+        @test diffuse.lobe.smooth ≈ 0.2f0 * Float32(π) / 2f0
+        @test glossy.lobe isa Hikari.ToonLobe{true}
+        @test_throws ArgumentError Hikari.shader_node(Hikari.Toon(component = :invalid))
+    end
     @testset "Glass and Metallic take Blender's thin-film inputs" begin
         glass = Hikari.Glass(ior = 1.5, thin_film_thickness = 450, thin_film_ior = 1.33)
         front = only(lobes(glass)).lobe

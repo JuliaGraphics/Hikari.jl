@@ -104,6 +104,8 @@ def shader(nt, m):
     """The output socket of a node tree for a shader spec: a BSDF node, or a mix or sum of two."""
     if m["type"] == "bsdf":
         node = nt.nodes.new(m["node"])
+        for key, value in m.get("properties", {}).items():
+            setattr(node, key, value)
         for key, value in m.get("inputs", {}).items():
             sock = next(s for s in node.inputs if s.name == key)
             if isinstance(value, list):

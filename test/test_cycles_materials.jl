@@ -89,6 +89,10 @@ const CYCLES_REFERENCE = Dict(
     # differs by 15.3%. This case records that spectral limitation explicitly.
     # The F82 interface itself has independent, tight tests in test_shader_material.
     "metallic_node_film_tint" => ((0.31183529, 0.13597366, 0.04308292), 0.17),
+    "toon_diffuse" =>       ((0.34610169, 0.34632216, 0.34654118), 0.015),
+    "toon_diffuse_smooth" => ((0.06453134, 0.16133001, 0.25812733), 0.015),
+    "toon_glossy" =>        ((0.36588239, 0.36741225, 0.36894404), 0.02),
+    "toon_glossy_smooth" => ((0.19346430, 0.19346974, 0.19347365), 0.015),
 )
 
 function render_cycles_batch(cases; samples)

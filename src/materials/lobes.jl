@@ -1,7 +1,7 @@
 # Ported from Blender Cycles v5.2.1: intern/cycles/kernel/closure/bsdf_diffuse.h,
 # bsdf_oren_nayar.h, bsdf_sheen.h, bssrdf.h and svm/closure.h, copyright 2011-2022 Blender
 # Foundation, SPDX-License-Identifier: Apache-2.0; and kernel/closure/bsdf_microfacet.h,
-# bsdf_util.h, adapted by Cycles from Open Shading Language, copyright 2009-2010 Sony Pictures
+# bsdf_util.h and bsdf_toon.h, adapted by Cycles from Open Shading Language, copyright 2009-2010 Sony Pictures
 # Imageworks Inc., et al. All Rights Reserved, copyright 2011-2022 Blender Foundation,
 # SPDX-License-Identifier: BSD-3-Clause. Modified: rewritten in Julia as typed lobes, spectral.
 # See LICENSES/Apache-2.0.txt and LICENSES/BSD-3-Clause.txt.
@@ -151,6 +151,52 @@ end
 @inline function lobe_sample(::TranslucentLobe, wo::Vec3f, u::Point2f, ::Float32, ::Wavelengths)
     wi = cosine_sample_hemisphere(u)
     return (Vec3f(wi[1], wi[2], -wi[3]), SpectralRadiance(0f0), 0f0, BXDF_DIFFUSE_TRANSMISSION, 1f0)
+end
+
+# ── Toon ────────────────────────────────────────────────────────────────────
+
+"""Cycles' Toon lobe: a uniform cone with a flat centre and a linearly fading angular edge."""
+struct ToonLobe{Glossy} <: BSDFLobe
+    size::Float32
+    smooth::Float32
+    sample_angle::Float32
+    one_minus_cos_angle::Float32
+end
+
+@inline function ToonLobe{G}(size::Float32, smooth::Float32) where {G}
+    size = clamp(size, 1f-5, 1f0) * (Float32(π) / 2f0)
+    smooth = clamp(smooth, 0f0, 1f0) * (Float32(π) / 2f0)
+    angle = min(size + smooth, Float32(π) / 2f0)
+    return ToonLobe{G}(size, smooth, angle, 2f0 * sin(angle / 2f0)^2)
+end
+@inline lift(l::ToonLobe, table, lambda) = l
+@inline is_diffuse_lobe(::ToonLobe{G}) where {G} = !G
+@inline toon_axis(::ToonLobe{false}, wo::Vec3f) = Vec3f(0, 0, 1)
+@inline toon_axis(::ToonLobe{true}, wo::Vec3f) = Vec3f(-wo[1], -wo[2], wo[3])
+
+@inline function lobe_f(l::ToonLobe{G}, wo::Vec3f, wi::Vec3f, ::Wavelengths) where {G}
+    (wi[3] > 0f0 && (!G || wo[3] > 0f0)) || return (SpectralRadiance(0f0), 0f0)
+    angle = acos(clamp(dot(toon_axis(l, wo), wi), 0f0, 1f0))
+    angle < l.sample_angle || return (SpectralRadiance(0f0), 0f0)
+    intensity = angle < l.size ? 1f0 : (l.smooth > 0f0 ? 1f0 - (angle - l.size) / l.smooth : 0f0)
+    pdf = 1f0 / (2f0 * Float32(π) * l.one_minus_cos_angle)
+    # Cycles' evaluation includes the projected cosine; Hikari's integrator supplies it.
+    return (SpectralRadiance(pdf * intensity / wi[3]), pdf)
+end
+
+@inline function lobe_sample(l::ToonLobe{G}, wo::Vec3f, u::Point2f, ::Float32, ::Wavelengths) where {G}
+    G && wo[3] <= 0f0 && return NO_LOBE_SAMPLE
+    axis = toon_axis(l, wo)
+    # Cycles' concentric uniform-cone mapping, retaining precision for tiny cones.
+    xy = concentric_sample_disk(u)
+    r2 = dot(xy, xy)
+    z = 1f0 - r2 * l.one_minus_cos_angle
+    xy *= sqrt(max(l.one_minus_cos_angle * (2f0 - l.one_minus_cos_angle * r2), 0f0))
+    t, b = coordinate_system(axis)
+    wi = xy[1] * t + xy[2] * b + z * axis
+    wi[3] > 0f0 || return NO_LOBE_SAMPLE
+    flags = G ? BXDF_GLOSSY_REFLECTION : BXDF_DIFFUSE_REFLECTION
+    return (wi, SpectralRadiance(0f0), 0f0, flags, 1f0)
 end
 
 # ── Weighted lobes and the BSDF they make ───────────────────────────────────

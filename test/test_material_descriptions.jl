@@ -41,6 +41,7 @@ program(m) = Hikari.link(Hikari.compile_shader(Hikari.ShaderGraph(Hikari.shader_
         @test p.base_color isa Hikari.TexNode && p.coat_weight === 1
         @test Hikari.with_field(d, :roughness, 0.25).roughness === 0.25
         @test Hikari.merge_color_with_material((0, 1, 0), p).base_color === (0, 1, 0)
+        @test Hikari.merge_color_with_material((0, 1, 0), Hikari.Toon(component = :glossy)).color === (0, 1, 0)
     end
 
     @testset "what renders a description" begin

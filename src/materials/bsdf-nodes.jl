@@ -216,6 +216,18 @@ instruction_count(::Type{SheenBSDF}) = 1
     return ((kept(sheen(lut, weight, n, node_f(s, prog, i, 3, 1, sc), sc.wo)),), Vec3f(0), Vec3f(0))
 end
 
+# ── Toon ────────────────────────────────────────────────────────────────────
+
+"""Blender's diffuse or glossy Toon BSDF, with its component fixed in the shader's type."""
+struct ToonBSDF{Glossy} <: ShaderBSDF end
+instruction_count(::Type{<:ToonBSDF}) = 1
+@inline function node_lobes(::Type{ToonBSDF{Glossy}}, s, prog, i::Int32, sc::ShaderContext, lut) where {Glossy}
+    n = _closure_normal(node_v(s, prog, i, 5, 1, sc), sc)
+    weight = node_f(s, prog, i, 1, 1, sc) * max.(node_v(s, prog, i, 2, 1, sc), 0f0)
+    lobe = ToonLobe{Glossy}(node_f(s, prog, i, 3, 1, sc), node_f(s, prog, i, 4, 1, sc))
+    return ((kept(Weighted(lobe, weight, n)),), Vec3f(0), Vec3f(0))
+end
+
 # ── Principled ──────────────────────────────────────────────────────────────
 
 """

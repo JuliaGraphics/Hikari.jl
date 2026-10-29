@@ -7,7 +7,7 @@
 
 """The field of a material that is its colour; `nothing` for a material that has none."""
 color_field(::Material) = nothing
-color_field(::Union{Diffuse, Glass, Glossy, Translucent, Sheen, Transparent, Emission}) = :color
+color_field(::Union{Diffuse, Glass, Glossy, Translucent, Sheen, Toon, Transparent, Emission}) = :color
 color_field(::Union{Principled, Metallic, OpenPBR}) = :base_color
 # glTF's base colour texture multiplies its factor, so a colour put there is the colour.
 color_field(::GLTF) = :base_color_texture

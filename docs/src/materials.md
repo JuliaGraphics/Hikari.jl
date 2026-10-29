@@ -37,7 +37,7 @@ shader graph does.
 
 | Blender's BSDFs | pbrt-v4's models |
 |-----------------|------------------|
-| `Principled`, `Diffuse`, `Glossy`, `Metallic`, `Glass`, `Translucent`, `Sheen`, `Transparent`, `Emission` | `Conductor` (and `Gold()`, `Silver()`, `Copper()`, `Aluminum()`, `Brass()`), `CoatedDiffuse` (`Plastic()`), `CoatedConductor`, `CoatedDiffuseTransmission`, `DiffuseTransmission` |
+| `Principled`, `Diffuse`, `Glossy`, `Metallic`, `Glass`, `Translucent`, `Sheen`, `Toon`, `Transparent`, `Emission` | `Conductor` (and `Gold()`, `Silver()`, `Copper()`, `Aluminum()`, `Brass()`), `CoatedDiffuse` (`Plastic()`), `CoatedConductor`, `CoatedDiffuseTransmission`, `DiffuseTransmission` |
 | `Mix(a, b; factor)`, `Add(a, b)` combine them | a `Mix` holding one of them picks one material per hit, as pbrt's `MixMaterial` |
 
 ### Principled
@@ -88,6 +88,17 @@ Hikari.Glass(ior = 1.5)                    # clear glass
 Hikari.Glass(ior = 1.33)                   # water
 Hikari.Glass(ior = 2.42)                   # diamond
 Hikari.Glass(roughness = 0.3, ior = 1.5)   # frosted glass
+```
+
+### Toon
+
+`Toon(; color, size, smooth)` uses Blender's diffuse toon response. Set
+`component = :glossy` for its glossy response. The component is constant for a
+shader; `color`, `size`, `smooth` and `normal` can be node graphs or images.
+
+```julia
+Hikari.Toon(color = (0.2, 0.5, 0.8), size = 0.3, smooth = 0.2)
+Hikari.Toon(component = :glossy, size = 0.15)
 ```
 
 ### Transparent

@@ -138,6 +138,22 @@ Blender's Sheen BSDF with the microfiber distribution.
 end
 
 """
+    Toon(; color = (0.8, 0.8, 0.8), size = 0.5, smooth = 0, normal = nothing,
+         component = :diffuse)
+
+Blender's Toon BSDF, with a constant `component` of `:diffuse` or `:glossy`.
+`size` sets the angular extent and `smooth` softens its edge; both range from 0 to 1.
+All inputs other than `component` can be texture nodes or images.
+"""
+@description struct Toon <: Material
+    color = (0.8, 0.8, 0.8)
+    size = 0.5
+    smooth = 0
+    normal = nothing
+    component = :diffuse
+end
+
+"""
     Transparent(; color = (1, 1, 1))
 
 Blender's Transparent BSDF: light passes through unrefracted, by `color`, averaged to a coverage.
@@ -151,7 +167,7 @@ end
 
 Blender's Add Shader: the lobes of both, which is not energy conserving in general. Both must be
 BSDFs a shader graph holds (`Principled`, `Diffuse`, `Glass`, `Glossy`, `Metallic`, `Translucent`,
-`Sheen`, `Transparent`, `Emission`, and mixes and sums of them).
+`Sheen`, `Toon`, `Transparent`, `Emission`, and mixes and sums of them).
 """
 struct Add{A <: Material, B <: Material} <: Material
     a::A
@@ -168,7 +184,7 @@ displacement) and `Emission`, and mixes and sums of them. pbrt's models are not;
 picks between materials.
 """
 nests(::Material) = false
-nests(::Union{Principled, Glass, Glossy, Metallic, Translucent, Sheen, Transparent, Emission}) = true
+nests(::Union{Principled, Glass, Glossy, Metallic, Translucent, Sheen, Toon, Transparent, Emission}) = true
 nests(m::Diffuse) = isnothing(m.displacement)
 nests(m::Union{Mix, Add}) = nests(m.a) && nests(m.b)
 
@@ -230,6 +246,12 @@ function shader_node(m::Metallic)
 end
 shader_node(m::Translucent) = closure(ClosureKind.TRANSLUCENT, node_input(m.color), normal_input(m.normal))
 shader_node(m::Sheen) = closure(ClosureKind.SHEEN, node_input(m.color), node_input(m.roughness), normal_input(m.normal))
+function shader_node(m::Toon)
+    m.component in (:diffuse, :glossy) ||
+        throw(ArgumentError("a Toon's `component` must be :diffuse or :glossy, got $(repr(m.component))"))
+    kind = m.component === :glossy ? ClosureKind.TOON_GLOSSY : ClosureKind.TOON_DIFFUSE
+    return closure(kind, node_input(m.color), node_input(m.size), node_input(m.smooth), normal_input(m.normal))
+end
 shader_node(m::Transparent) = closure(ClosureKind.TRANSPARENT, node_input(m.color))
 shader_node(m::Emission) = closure(ClosureKind.EMISSION, node_input(m.color), node_input(m.strength))
 shader_node(m::Mix) = MixShaderNode(node_input(m.factor), shader_node(m.a), shader_node(m.b))
@@ -268,7 +290,7 @@ holds one of pbrt's models as the material that picks one of its own at each hit
 `update_material!` call it.
 """
 surface_material(m::Material) = m
-surface_material(m::Union{Principled, Glass, Glossy, Metallic, Translucent, Sheen, Transparent, Add}) =
+surface_material(m::Union{Principled, Glass, Glossy, Metallic, Translucent, Sheen, Toon, Transparent, Add}) =
     ShaderMaterial(shader_node(m))
 surface_material(m::Diffuse) = isnothing(m.normal) ? m : ShaderMaterial(shader_node(m))
 surface_material(m::Mix) = nests(m) ? ShaderMaterial(shader_node(m)) :

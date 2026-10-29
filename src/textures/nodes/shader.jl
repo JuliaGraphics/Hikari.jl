@@ -28,6 +28,8 @@ const TRANSPARENT = UInt8(7)
 const EMISSION    = UInt8(8)
 const METALLIC_FILM = UInt8(9)
 const GLASS_FILM = UInt8(10)
+const TOON_DIFFUSE = UInt8(11)
+const TOON_GLOSSY = UInt8(12)
 end
 
 const CLOSURE_WEIGHT_CUTOFF = 1f-5

@@ -63,6 +63,8 @@ function closure_node(kind::UInt8)
     kind == ClosureKind.GLASS && return GlassBSDF
     kind == ClosureKind.GLASS_FILM && return GlassFilmBSDF
     kind == ClosureKind.SHEEN && return SheenBSDF
+    kind == ClosureKind.TOON_DIFFUSE && return ToonBSDF{false}
+    kind == ClosureKind.TOON_GLOSSY && return ToonBSDF{true}
     kind == ClosureKind.TRANSPARENT && return TransparentBSDF
     kind == ClosureKind.EMISSION && return EmissionBSDF
     error("no BSDF node of closure kind $kind")
