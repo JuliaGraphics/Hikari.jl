@@ -154,6 +154,25 @@ All inputs other than `component` can be texture nodes or images.
 end
 
 """
+    SubsurfaceScattering(; color = (0.8, 0.8, 0.8), scale = 0.005, radius = (1, 0.2, 0.1),
+                         ior = 1.4, roughness = 1, anisotropy = 0, normal = nothing)
+
+Blender's standalone Subsurface Scattering node with its default Random Walk model.
+`radius * scale` is the scattering distance in scene units. The node's `roughness`
+is the entry microfacet alpha, as in Cycles; Principled squares its roughness instead.
+Every input can be a number, colour, image or texture-node graph.
+"""
+@description struct SubsurfaceScattering <: Material
+    color = (0.8, 0.8, 0.8)
+    scale = 0.005
+    radius = (1, 0.2, 0.1)
+    ior = 1.4
+    roughness = 1
+    anisotropy = 0
+    normal = nothing
+end
+
+"""
     Transparent(; color = (1, 1, 1))
 
 Blender's Transparent BSDF: light passes through unrefracted, by `color`, averaged to a coverage.
@@ -167,7 +186,7 @@ end
 
 Blender's Add Shader: the lobes of both, which is not energy conserving in general. Both must be
 BSDFs a shader graph holds (`Principled`, `Diffuse`, `Glass`, `Glossy`, `Metallic`, `Translucent`,
-`Sheen`, `Toon`, `Transparent`, `Emission`, and mixes and sums of them).
+`Sheen`, `Toon`, `SubsurfaceScattering`, `Transparent`, `Emission`, and mixes and sums of them).
 """
 struct Add{A <: Material, B <: Material} <: Material
     a::A
@@ -184,7 +203,7 @@ displacement) and `Emission`, and mixes and sums of them. pbrt's models are not;
 picks between materials.
 """
 nests(::Material) = false
-nests(::Union{Principled, Glass, Glossy, Metallic, Translucent, Sheen, Toon, Transparent, Emission}) = true
+nests(::Union{Principled, Glass, Glossy, Metallic, Translucent, Sheen, Toon, SubsurfaceScattering, Transparent, Emission}) = true
 nests(m::Diffuse) = isnothing(m.displacement)
 nests(m::Union{Mix, Add}) = nests(m.a) && nests(m.b)
 
@@ -253,6 +272,14 @@ function shader_node(m::Toon)
     return closure(kind, node_input(m.color), node_input(m.size), node_input(m.smooth), normal_input(m.normal))
 end
 shader_node(m::Transparent) = closure(ClosureKind.TRANSPARENT, node_input(m.color))
+function shader_node(m::SubsurfaceScattering)
+    if _constant(m.scale, 0)
+        # Only color and normal remain live; unused input graphs need no evaluation.
+        return closure(ClosureKind.SUBSURFACE, node_input(m.color), 0f0, 0f0, 1.4f0, 1f0, 0f0, normal_input(m.normal))
+    end
+    return closure(ClosureKind.SUBSURFACE, node_input(m.color), node_input(m.scale), node_input(m.radius),
+                    node_input(m.ior), node_input(m.roughness), node_input(m.anisotropy), normal_input(m.normal))
+end
 shader_node(m::Emission) = closure(ClosureKind.EMISSION, node_input(m.color), node_input(m.strength))
 shader_node(m::Mix) = MixShaderNode(node_input(m.factor), shader_node(m.a), shader_node(m.b))
 shader_node(m::Add) = AddShaderNode(shader_node(m.a), shader_node(m.b))
@@ -290,7 +317,7 @@ holds one of pbrt's models as the material that picks one of its own at each hit
 `update_material!` call it.
 """
 surface_material(m::Material) = m
-surface_material(m::Union{Principled, Glass, Glossy, Metallic, Translucent, Sheen, Toon, Transparent, Add}) =
+surface_material(m::Union{Principled, Glass, Glossy, Metallic, Translucent, Sheen, Toon, SubsurfaceScattering, Transparent, Add}) =
     ShaderMaterial(shader_node(m))
 surface_material(m::Diffuse) = isnothing(m.normal) ? m : ShaderMaterial(shader_node(m))
 surface_material(m::Mix) = nests(m) ? ShaderMaterial(shader_node(m)) :

@@ -83,6 +83,8 @@ features(::Hikari.ShaderProgram{F}) where {F} = F & ~(UInt32(3) << Hikari.STACK_
         Hikari.Mix(Hikari.Principled(subsurface_weight = 1, subsurface_scale = 0.1),
                    Hikari.Principled(subsurface_weight = 1, subsurface_scale = noise(xyz()).fac * 0.02);
                    factor = wave(xyz()).fac),
+        Hikari.SubsurfaceScattering(color = noise(xyz()).color, scale = wave(xyz()).fac * 0.1,
+                                    radius = (1, 0.5, 0.25), roughness = 0.3, normal = bump(noise(xyz()).fac)),
     ]
     for shader in split_shaders
         store = Raycore.MultiTypeSet(CPU())
@@ -202,6 +204,47 @@ end
         @test sss.lobe.radius ≈ Vec3f(0.1, 0.05, 0.025)
         @test sss.lobe.alpha ≈ 0.16f0
         @test !any(w -> w.lobe isa DiffuseLobe, ws)
+    end
+
+    @testset "standalone subsurface inputs and zero-radius channels" begin
+        ws = lobes(Hikari.SubsurfaceScattering(color = (0.9, 0.6, 0.4), radius = (1, 0.5, 0.25),
+                                               scale = 0.1, roughness = 0.3, ior = 1.6, anisotropy = 0.4))
+        walk = only(ws)
+        @test walk.lobe isa SubsurfaceLobe
+        @test walk.lobe.radius ≈ Vec3f(0.1, 0.05, 0.025)
+        @test walk.lobe.albedo ≈ Vec3f(0.9, 0.6, 0.4)
+        @test walk.lobe.alpha == 0.3f0
+        @test walk.lobe.ior == 1.6f0
+        @test walk.lobe.anisotropy == 0.4f0
+        @test walk.sample_weight ≈ 1.9f0
+        @test Hikari.bsdf_nodes(Hikari.ShaderGraph(Hikari.shader_node(Hikari.SubsurfaceScattering(scale = 0)))) ==
+              Tuple{Hikari.SubsurfaceBSDF{false}}
+        tilted = normal_map((1, 0.5, 0.55); space = :world)
+        constant = only(lobes(Hikari.SubsurfaceScattering(scale = 0, normal = tilted)))
+        dynamic = only(lobes(Hikari.SubsurfaceScattering(scale = xyz().x, normal = tilted)))
+        @test constant.n ≈ dynamic.n
+        @test 2f0 * constant.n[3]^2 - 1f0 >= 0.0099f0
+        @test constant.lobe isa DiffuseLobe
+        @test !any(ins -> ins.op == NodeOp.NOISE,
+                   program(Hikari.SubsurfaceScattering(scale = 0, radius = noise(xyz()).color)))
+        for material in (
+            Hikari.SubsurfaceScattering(color = (1, 1, 1), radius = (1, 0, 1), scale = 0.1),
+            Hikari.Principled(base_color = (1, 1, 1), specular_ior_level = 0, subsurface_weight = 1,
+                              subsurface_radius = (1, 0, 1), subsurface_scale = 0.1, diffuse_roughness = 1),
+        )
+            ws = lobes(material)
+            @test length(ws) == 2
+            walk = only(filter(w -> w.lobe isa SubsurfaceLobe, ws))
+            diffuse = only(filter(w -> w.lobe isa DiffuseLobe, ws))
+            @test walk.weight == Vec3f(1, 0, 1)
+            @test diffuse.weight == Vec3f(0, 1, 0)
+            @test diffuse.lobe.a == 1f0 / Float32(π)
+            @test diffuse.lobe.b == 0f0
+        end
+        # Cycles clamps radius after multiplying it by scale.
+        negative = only(filter(w -> w.lobe isa SubsurfaceLobe,
+            lobes(Hikari.Principled(subsurface_weight = 1, subsurface_radius = (-1, -2, -3), subsurface_scale = -0.1))))
+        @test negative.lobe.radius ≈ Vec3f(0.1, 0.2, 0.3)
     end
 
     @testset "the material type is the shader's BSDF nodes" begin
@@ -415,6 +458,7 @@ end
         shader, own = Hikari.Diffuse(color = colour, normal = normal()), Hikari.Diffuse(color = colour)
         @test Hikari.surface_material(shader) isa Hikari.ShaderMaterial && Hikari.surface_material(own) === own
         @test render(shader) ≈ render(own) rtol = 0.02
+        @test render(Hikari.SubsurfaceScattering(color = colour, scale = 0)) ≈ render(shader) rtol = 0.02
     end
 
     # A subsurface material's shading kernel holds the random walk, which traces, and the

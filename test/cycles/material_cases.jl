@@ -143,6 +143,27 @@ const CYCLES_SUBSURFACE_MIX_CASES = let
     ]
 end
 
+const CYCLES_STANDALONE_SUBSURFACE_CASES = [
+    "subsurface_node" => (H -> H.SubsurfaceScattering(),
+        bsdf("ShaderNodeSubsurfaceScattering"; properties = (falloff = "RANDOM_WALK",))),
+    "subsurface_node_inputs" => (H -> H.SubsurfaceScattering(color = (0.8, 0.8, 0.8), scale = 0.15,
+        radius = (1, 1, 1), ior = 1.6, roughness = 0.3, anisotropy = 0.3),
+        bsdf("ShaderNodeSubsurfaceScattering"; properties = (falloff = "RANDOM_WALK",),
+             Color = [0.8, 0.8, 0.8], Scale = 0.15, Radius = [1, 1, 1], IOR = 1.6, Roughness = 0.3, Anisotropy = 0.3)),
+    "subsurface_node_zero_channel" => (H -> H.SubsurfaceScattering(color = (0.8, 0.8, 0.8), scale = 0.1,
+        radius = (1, 0, 0.25), roughness = 0.5),
+        bsdf("ShaderNodeSubsurfaceScattering"; properties = (falloff = "RANDOM_WALK",),
+             Color = [0.8, 0.8, 0.8], Scale = 0.1, Radius = [1, 0, 0.25], Roughness = 0.5)),
+    "mix_subsurface_diffuse" => (H -> H.Mix(H.SubsurfaceScattering(scale = 0.1, radius = (1, 1, 1)),
+        H.Diffuse(color = (0.3, 0.4, 0.6)); factor = 0.35),
+        mix_spec(bsdf("ShaderNodeSubsurfaceScattering"; properties = (falloff = "RANDOM_WALK",),
+                      Scale = 0.1, Radius = [1, 1, 1]), last(diffuse_case((0.3, 0.4, 0.6), 0)), 0.35)),
+    "sss_zero_radius_diffuse" => (H -> H.Principled(base_color = (0.8, 0.8, 0.8), specular_ior_level = 0,
+        subsurface_weight = 1, subsurface_radius = (0, 0, 0), diffuse_roughness = 1),
+        Dict("type" => "principled", "inputs" => Dict("base_color" => [0.8, 0.8, 0.8], "specular_ior_level" => 0,
+             "subsurface_weight" => 1, "subsurface_radius" => [0, 0, 0], "diffuse_roughness" => 1))),
+]
+
 principled_case((name, inputs)) =
     name => (H -> H.Principled(; inputs...), Dict("type" => "principled", "inputs" => Dict(pairs(inputs))))
 
@@ -152,13 +173,15 @@ const CYCLES_STANDARD_CASES = [
     CYCLES_NODE_CASES;
     map(principled_case, CYCLES_THIN_WALL_CASES)
 ]
-const CYCLES_CASES = [CYCLES_STANDARD_CASES; CYCLES_FILM_NODE_CASES; CYCLES_TOON_NODE_CASES; CYCLES_SUBSURFACE_MIX_CASES]
+const CYCLES_CASES = [CYCLES_STANDARD_CASES; CYCLES_FILM_NODE_CASES; CYCLES_TOON_NODE_CASES; CYCLES_SUBSURFACE_MIX_CASES;
+                      CYCLES_STANDALONE_SUBSURFACE_CASES]
 # Keep existing reference scenes unchanged: filling their last batch would add
 # interreflections from new spheres and change the old comparison values.
 cycles_batches() = [collect(Iterators.partition(CYCLES_STANDARD_CASES, 8));
                     collect(Iterators.partition(CYCLES_FILM_NODE_CASES, 8));
                     collect(Iterators.partition(CYCLES_TOON_NODE_CASES, 8));
-                    collect(Iterators.partition(CYCLES_SUBSURFACE_MIX_CASES, 8))]
+                    collect(Iterators.partition(CYCLES_SUBSURFACE_MIX_CASES, 8));
+                    collect(Iterators.partition(CYCLES_STANDALONE_SUBSURFACE_CASES, 8))]
 
 const CYCLES_CENTERS = [Point3f(x, y, 0.5f0) for y in (1.4f0, 0f0) for x in (-2.25f0, -0.75f0, 0.75f0, 2.25f0)]
 const CYCLES_SCENE = (radius = 0.5f0, res = 512, world = 0.1f0, max_depth = 8,

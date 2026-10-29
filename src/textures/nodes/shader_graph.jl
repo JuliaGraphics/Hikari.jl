@@ -53,7 +53,11 @@ has_transparency(g::ShaderGraph) =
 """The types of a shader's BSDF nodes, in program order, as its material's type holds them."""
 bsdf_nodes(g::ShaderGraph) = Tuple{map(bsdf_node, g.closures)...}
 
-bsdf_node(c::NodeCore) = c.op == NodeOp.CLOSURE ? closure_node(c.mode[1]) : principled_node(c)
+function bsdf_node(c::NodeCore)
+    c.op == NodeOp.CLOSURE || return principled_node(c)
+    c.mode[1] == ClosureKind.SUBSURFACE && _zero(c.inputs[3]) && return SubsurfaceBSDF{false}
+    return closure_node(c.mode[1])
+end
 function closure_node(kind::UInt8)
     kind == ClosureKind.DIFFUSE && return DiffuseBSDF
     kind == ClosureKind.TRANSLUCENT && return TranslucentBSDF
@@ -65,6 +69,7 @@ function closure_node(kind::UInt8)
     kind == ClosureKind.SHEEN && return SheenBSDF
     kind == ClosureKind.TOON_DIFFUSE && return ToonBSDF{false}
     kind == ClosureKind.TOON_GLOSSY && return ToonBSDF{true}
+    kind == ClosureKind.SUBSURFACE && return SubsurfaceBSDF{true}
     kind == ClosureKind.TRANSPARENT && return TransparentBSDF
     kind == ClosureKind.EMISSION && return EmissionBSDF
     error("no BSDF node of closure kind $kind")

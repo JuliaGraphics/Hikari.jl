@@ -95,6 +95,11 @@ const CYCLES_REFERENCE = Dict(
     "toon_glossy_smooth" => ((0.19346430, 0.19346974, 0.19347365), 0.015),
     "mix_subsurface_nodes" => ((0.23269447, 0.23269447, 0.23269447), 0.015),
     "add_subsurface_nodes" => ((0.50359048, 0.50359048, 0.50359062), 0.015),
+    "subsurface_node" => ((0.29179828, 0.28876894, 0.28837572), 0.026),
+    "subsurface_node_inputs" => ((0.31176228, 0.31059843, 0.31093441), 0.015),
+    "subsurface_node_zero_channel" => ((0.34665405, 0.34221945, 0.35082311), 0.028),
+    "mix_subsurface_diffuse" => ((0.22544353, 0.23685347, 0.2621893), 0.015),
+    "sss_zero_radius_diffuse" => ((0.20486622, 0.20482743, 0.20487508), 0.015),
 )
 
 function render_cycles_batch(cases; samples)

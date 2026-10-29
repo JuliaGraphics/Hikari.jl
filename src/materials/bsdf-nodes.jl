@@ -228,6 +228,40 @@ instruction_count(::Type{<:ToonBSDF}) = 1
     return ((kept(Weighted(lobe, weight, n)),), Vec3f(0), Vec3f(0))
 end
 
+# ── Subsurface ──────────────────────────────────────────────────────────────
+
+"""Blender's standalone Random Walk Subsurface Scattering node."""
+struct SubsurfaceBSDF{Walk} <: ShaderBSDF end
+instruction_count(::Type{<:SubsurfaceBSDF}) = 1
+
+# Constant zero scale removes the walk while retaining the BSSRDF's normal correction.
+@inline function node_lobes(::Type{SubsurfaceBSDF{false}}, s, prog, i::Int32, sc::ShaderContext, lut)
+    color = max.(node_v(s, prog, i, 2, 1, sc), 0f0)
+    n = _valid_normal(_closure_normal(node_v(s, prog, i, 8, 1, sc), sc), sc)
+    return ((kept(Weighted(LambertLobe(), node_f(s, prog, i, 1, 1, sc) * color, n)),), Vec3f(0), Vec3f(0))
+end
+
+@inline function subsurface_channel_weights(weight::Vec3f, radius::Vec3f)
+    active = Vec3f(radius[1] >= SUBSURFACE_MIN_RADIUS, radius[2] >= SUBSURFACE_MIN_RADIUS,
+                   radius[3] >= SUBSURFACE_MIN_RADIUS)
+    return weight .* active, weight .* (1f0 .- active), sum(active)
+end
+
+@inline function node_lobes(::Type{SubsurfaceBSDF{true}}, s, prog, i::Int32, sc::ShaderContext, lut)
+    color = max.(node_v(s, prog, i, 2, 1, sc), 0f0)
+    radius = max.(node_v(s, prog, i, 4, 1, sc) * node_f(s, prog, i, 3, 1, sc), 0f0)
+    n = _valid_normal(_closure_normal(node_v(s, prog, i, 8, 1, sc), sc), sc)
+    walk = SubsurfaceLobe(_saturate3(color), radius, clamp(node_f(s, prog, i, 6, 1, sc), 0f0, 1f0),
+                          node_f(s, prog, i, 5, 1, sc), node_f(s, prog, i, 7, 1, sc))
+    w = node_f(s, prog, i, 1, 1, sc) * color
+    walk_weight, diffuse_weight, channels = subsurface_channel_weights(w, radius)
+    # Cycles sends every sub-threshold channel to Lambert, rather than letting
+    # a zero-distance walk absorb it. Its BSSRDF sampling share counts channels.
+    scattering = Weighted(walk, walk_weight, n; sample_weight = _avg(walk_weight) * channels)
+    diffuse = Weighted(LambertLobe(), diffuse_weight, n)
+    return ((kept(scattering), kept(diffuse)), Vec3f(0), Vec3f(0))
+end
+
 # ── Principled ──────────────────────────────────────────────────────────────
 
 """
@@ -343,7 +377,7 @@ end
     end
 
     # Subsurface
-    subsurface_lobes = principled_subsurface(Val(Thin), Val(SS), subsurface, w, n, roughness, ior, diffuse_roughness,
+    subsurface_lobes = principled_subsurface(Val(Thin), Val(SS), subsurface, w, Thin ? n : vn, roughness, ior, diffuse_roughness,
                                              base_clamped, p, wo)
 
     # Diffuse
@@ -422,11 +456,11 @@ end
 @inline function principled_subsurface(::Val{false}, ::Val{true}, subsurface::Float32, w::Vec3f, n::Vec3f, roughness::Float32,
                                        ior::Float32, diffuse_roughness::Float32, base_clamped::Vec3f, p::PrincipledInputs,
                                        wo::Vec3f)
-    radius = max.(p.subsurface_radius, 0f0) * max(p.subsurface_scale, 0f0)
+    radius = max.(p.subsurface_radius * p.subsurface_scale, 0f0)
     walk = SubsurfaceLobe(base_clamped, radius, roughness^2, _specular_eta(ior, p.specular_level), p.subsurface_anisotropy)
-    diffuse = DiffuseLobe(diffuse_roughness, base_clamped, n, wo)
+    diffuse = LambertLobe()
     subsurface > CLOSURE_WEIGHT_CUTOFF || return (absent(walk, n), absent(diffuse, n))
     ss = base_clamped .* subsurface .* w
-    _max(radius) < 1f-8 && return (absent(walk, n), Weighted(diffuse, ss, n))
-    return (Weighted(walk, ss, n), absent(diffuse, n))
+    walk_weight, diffuse_weight, _ = subsurface_channel_weights(ss, radius)
+    return (Weighted(walk, walk_weight, n), Weighted(diffuse, diffuse_weight, n))
 end

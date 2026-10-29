@@ -37,7 +37,7 @@ shader graph does.
 
 | Blender's BSDFs | pbrt-v4's models |
 |-----------------|------------------|
-| `Principled`, `Diffuse`, `Glossy`, `Metallic`, `Glass`, `Translucent`, `Sheen`, `Toon`, `Transparent`, `Emission` | `Conductor` (and `Gold()`, `Silver()`, `Copper()`, `Aluminum()`, `Brass()`), `CoatedDiffuse` (`Plastic()`), `CoatedConductor`, `CoatedDiffuseTransmission`, `DiffuseTransmission` |
+| `Principled`, `Diffuse`, `Glossy`, `Metallic`, `Glass`, `Translucent`, `Sheen`, `Toon`, `SubsurfaceScattering`, `Transparent`, `Emission` | `Conductor` (and `Gold()`, `Silver()`, `Copper()`, `Aluminum()`, `Brass()`), `CoatedDiffuse` (`Plastic()`), `CoatedConductor`, `CoatedDiffuseTransmission`, `DiffuseTransmission` |
 | `Mix(a, b; factor)`, `Add(a, b)` combine them | a `Mix` holding one of them picks one material per hit, as pbrt's `MixMaterial` |
 
 ### Principled
@@ -99,6 +99,18 @@ shader; `color`, `size`, `smooth` and `normal` can be node graphs or images.
 ```julia
 Hikari.Toon(color = (0.2, 0.5, 0.8), size = 0.3, smooth = 0.2)
 Hikari.Toon(component = :glossy, size = 0.15)
+```
+
+### Subsurface Scattering
+
+`SubsurfaceScattering` implements Blender's standalone node with its default
+Random Walk model. `radius * scale` gives the scattering distance in scene
+units. Channels with zero scattering distance use Lambert diffuse reflection.
+`color`, `scale`, `radius`, `ior`, `roughness`, `anisotropy` and `normal` can be
+node graphs or images. Other Blender subsurface models are not implemented.
+
+```julia
+Hikari.SubsurfaceScattering(color = (0.8, 0.6, 0.4), scale = 0.05)
 ```
 
 ### Transparent

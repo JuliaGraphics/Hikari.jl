@@ -30,10 +30,12 @@ const METALLIC_FILM = UInt8(9)
 const GLASS_FILM = UInt8(10)
 const TOON_DIFFUSE = UInt8(11)
 const TOON_GLOSSY = UInt8(12)
+const SUBSURFACE = UInt8(13)
 end
 
 const CLOSURE_WEIGHT_CUTOFF = 1f-5
 const THIN_FILM_THICKNESS_CUTOFF = 0.1f0
+const SUBSURFACE_MIN_RADIUS = 1f-8
 
 """
 What a shader program reads besides the texture inputs: where the hit is seen from, the
