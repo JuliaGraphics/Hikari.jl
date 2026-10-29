@@ -39,7 +39,8 @@ tc_mean(img) = mean(p -> Float64(p.r + p.g + p.b), img)
     noisy = Hikari.Principled(base_color = noise(xyz()).color, roughness = 0.4)
 
     @testset "renders as the same material pushed" begin
-        for target in (glass, noisy, Hikari.Principled(distribution = :ggx, base_color = (0.05, 0.05, 0.05), metallic = 1, roughness = 0.7))
+        for target in (glass, noisy, Hikari.Principled(distribution = :ggx, base_color = (0.05, 0.05, 0.05), metallic = 1, roughness = 0.7),
+                       Hikari.Metallic(fresnel_type = :physical_conductor, ior = (1.5, 1.5, 1.5), extinction = (0.1, 0.1, 0.1), roughness = 0.7))
             scene, handle = tc_scene(red)
             original = tc_render(scene)
             Hikari.update_material!(scene, handle.interface, target)

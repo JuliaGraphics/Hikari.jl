@@ -88,6 +88,10 @@ features(::Hikari.ShaderProgram{F}) where {F} = F & ~(UInt32(3) << Hikari.STACK_
                       thin_film_thickness = noise(xyz()).fac * 400),
         Hikari.Metallic(distribution = :beckmann, base_color = noise(xyz()).color,
                          thin_film_thickness = wave(xyz()).fac * 300),
+        Hikari.Metallic(fresnel_type = :physical_conductor, ior = 1 + noise(xyz()).color * 2,
+                        extinction = (3, 3, 3), roughness = wave(xyz()).fac, anisotropy = 0.5),
+        Hikari.Metallic(fresnel_type = :physical_conductor, ior = (0.2, 0.2, 0.2), extinction = (3.9, 3.9, 3.9),
+                        distribution = :beckmann, thin_film_thickness = noise(xyz()).fac * 400),
         Hikari.Metallic(base_color = noise(xyz()).color, edge_tint = (0.9, 0.8, 0.7), roughness = 0.3,
                         thin_film_thickness = wave(xyz()).fac * 500, thin_film_ior = 1.33),
         Hikari.Mix(Hikari.Glass(color = (0.8, 0.9, 1.0), thin_film_thickness = noise(xyz()).fac * 400),
@@ -149,6 +153,71 @@ end
         @test metal.fresnel.film_ior ≈ 1.4f0
         @test Hikari.bsdf_nodes(Hikari.ShaderGraph(Hikari.shader_node(Hikari.Glass()))) == Tuple{Hikari.GlassBSDF}
         @test Hikari.bsdf_nodes(Hikari.ShaderGraph(Hikari.shader_node(Hikari.Metallic()))) == Tuple{Hikari.MetallicBSDF}
+    end
+
+    @testset "physical Metallic uses complex IOR and Cycles energy compensation" begin
+        # Independent double-precision complex Fresnel values, including real IORs.
+        function reference(mu, eta, k)
+            n = ComplexF64(eta, k)
+            ct = sqrt(1 - (1 - mu^2) / n^2)
+            rp = (n * mu - ct) / (n * mu + ct)
+            rs = (mu - n * ct) / (mu + n * ct)
+            return (abs2(rp) + abs2(rs)) / 2
+        end
+        for eta in (0.2f0, 1f0, 2.757f0), k in (0f0, 0.5f0, 3.867f0), mu in (0.1f0, 0.5f0, 1f0)
+            @test Hikari._conductor_reflectance(mu, eta, k) ≈ reference(Float64(mu), Float64(eta), Float64(k)) atol = 2e-6
+        end
+        @test Hikari._conductor_reflectance(1f0, 0f0, 0f0) == 0.5f0
+        @test Hikari._conductor_reflectance(0.5f0, 0f0, 0f0) == 1f0
+        for distribution in (:multi_ggx, :ggx, :beckmann)
+            m = Hikari.Metallic(fresnel_type = :physical_conductor, ior = (0.2, 0.2, 0.2),
+                                extinction = (3.9, 3.9, 3.9), roughness = 0.7, distribution = distribution)
+            lobe = only(lobes(m)).lobe
+            @test lobe.fresnel isa Hikari.PhysicalConductorFresnel
+            @test lobe.fresnel.eta == Vec3f(0.2)
+            @test lobe.fresnel.k == Vec3f(3.9)
+            @test (lobe.energy > 1f0) == (distribution === :multi_ggx)
+        end
+        physical = Hikari.MicrofacetLobe{:reflection}(Hikari.PhysicalConductorFresnel(Vec3f(0.2), Vec3f(3.9), 0f0, 0f0); alpha_x = 0.25f0)
+        @test Hikari.guide_albedo(physical, Vec3f(0.5)) ≈ Vec3f(0.47597598)
+        lambda = Hikari.sample_wavelengths_visible(0.4f0)
+        for thickness in (0f0, 400f0)
+            f = Hikari.PhysicalConductorFresnel(Vec3f(0.2), Vec3f(3.9), thickness, 1f0)
+            spectral = Hikari.lift(f, Hikari.get_srgb_table(), lambda)
+            @test all(x -> isapprox(x, 3.9; rtol = 2e-6), spectral.k.data)
+            for mu in (0.1f0, 0.5f0, 1f0)
+                r, t = Hikari.fresnel_rt(spectral, mu, 1f0, lambda)
+                @test all(x -> isapprox(x, reference(Float64(mu), 0.2, 3.9); atol = 2e-6), r.data)
+                @test Hikari.is_black(t)
+            end
+        end
+        # Physical Metallic and pbrt's Conductor interpret the same RGB complex IOR identically.
+        eta, k = (0.2, 0.9, 1.1), (3.9, 2.45, 2.14)
+        store = Raycore.MultiTypeSet(CPU())
+        mat = Hikari.to_device_material(store, Hikari.Conductor(; ior = eta, extinction = k))
+        n = Vec3f(0, 0, 1)
+        pbrt = Hikari.get_bxdf(mat, Hikari.get_srgb_table(), static_textures(store), TextureFilterContext(Point2f(0)),
+                               lambda, false, n, n, Vec3f(1, 0, 0))
+        f = Hikari.lift(Hikari.PhysicalConductorFresnel(Vec3f(eta), Vec3f(k), 0f0, 1f0), Hikari.get_srgb_table(), lambda)
+        @test f.eta == only(pbrt.lobes).lobe.fresnel.eta
+        @test f.k == only(pbrt.lobes).lobe.fresnel.k
+        # Independent double-precision Airy sums at non-matching film interfaces.
+        for (mu, d, nf, n, k, wavelength, expected) in (
+            (0.1f0, 400f0, 1.33f0, 0.2f0, 3.9f0, 450f0, 0.9730731329481667),
+            (0.5f0, 300f0, 1.7f0, 2.757f0, 3.867f0, 550f0, 0.4777693683227485),
+            (1f0, 550f0, 1.4f0, 2.5f0, 0.5f0, 650f0, 0.0366015563841131),
+        )
+            @test Hikari._conductor_film_reflectance(mu, d, nf, n, k, wavelength) ≈ expected atol = 2e-6
+        end
+        for mu in (0f0, 0.1f0, 0.5f0, 1f0), wavelength in (400f0, 550f0, 700f0)
+            @test 0f0 <= Hikari._conductor_film_reflectance(mu, 400f0, 1.33f0, 0f0, 0f0, wavelength) <= 1f0
+            if mu > 0f0
+                @test Hikari._conductor_film_reflectance(mu, 400f0, 1f0, 0f0, 0f0, wavelength) ≈
+                      Hikari._conductor_reflectance(mu, 0f0, 0f0) atol = 2e-6
+            end
+        end
+        @test Hikari.bsdf_nodes(Hikari.ShaderGraph(Hikari.shader_node(Hikari.Metallic()))) == Tuple{Hikari.MetallicBSDF}
+        @test_throws ArgumentError Hikari.shader_node(Hikari.Metallic(fresnel_type = :invalid))
     end
 
     @testset "thin-film interfaces keep the substrate's Fresnel response" begin
@@ -779,4 +848,24 @@ end
     sphere = img[30:80, 25:72]
     @test count(c -> c.b > 1.5f0 * c.r && c.b > 0.05f0, sphere) > length(sphere) ÷ 2    # the glaze
     @test count(c -> c.r > 1.5f0 * c.b && c.r > 0.05f0, sphere) > 0                     # a gold seam
+end
+
+@testset "physical Metallic fills the denoising albedo guide" begin
+    backend = Mantle.defaultbackend()
+    scene = Hikari.Scene(; backend, hw_accel = false)
+    sphere = GeometryBasics.normal_mesh(GeometryBasics.Tesselation(GeometryBasics.Sphere(Point3f(0), 1f0), 32))
+    push!(scene, sphere, Hikari.Metallic(fresnel_type = :physical_conductor,
+        ior = (0.2, 0.2, 0.2), extinction = (3.9, 3.9, 3.9), roughness = 0))
+    Hikari.sync!(scene)
+    film = Hikari.Film(backend, Hikari.Film(Point2f(32, 32)))
+    camera = Hikari.PerspectiveCamera(Point3f(0, -4, 0), Point3f(0), film; up = Vec3f(0, 0, 1), fov = 30f0)
+    try
+        Hikari.fill_aux_buffers!(film, scene, camera; grid = 1)
+        center = Array(film.albedo)[16, 16]
+        @test center.r ≈ 0.95195195f0 atol = 2e-6
+        @test center.g ≈ 0.95195195f0 atol = 2e-6
+        @test center.b ≈ 0.95195195f0 atol = 2e-6
+    finally
+        Hikari.free!(film)
+    end
 end

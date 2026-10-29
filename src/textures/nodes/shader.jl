@@ -33,6 +33,8 @@ const TOON_GLOSSY = UInt8(12)
 const SUBSURFACE = UInt8(13)
 const REFRACTION_BECKMANN = UInt8(14)
 const REFRACTION_GGX = UInt8(15)
+const PHYSICAL_METALLIC = UInt8(16)
+const PHYSICAL_METALLIC_FILM = UInt8(17)
 end
 
 const CLOSURE_WEIGHT_CUTOFF = 1f-5
@@ -143,6 +145,24 @@ end
 end
 @inline _f82_fss(f0::Vec3f, b::Vec3f) = f0 .+ (1f0 .- f0) ./ 21f0 .- b ./ 126f0
 
+# Cycles' fresnel_conductor_polarized, without its optional phase outputs.
+# Keep its safe divisions for zero complex IORs, which are valid socket values.
+@inline function _conductor_reflectance(mu::Float32, eta::Float32, k::Float32)
+    eta2, k2 = eta^2, k^2
+    two_eta_k = 2f0 * eta * k
+    a = eta2 - k2 - (1f0 - mu^2)
+    b = sqrt(a^2 + two_eta_k^2)
+    u = sqrt(max(0.5f0 * (b + a), 0f0))
+    v2 = max(0.5f0 * (b - a), 0f0)
+    v = sqrt(v2)
+    ns, ds = (mu - u)^2 + v2, (mu + u)^2 + v2
+    a, b = (eta2 - k2) * mu, two_eta_k * mu
+    np, dp = (a - u)^2 + (b - v)^2, (a + u)^2 + (b + v)^2
+    return 0.5f0 * ((ds == 0f0 ? 0f0 : ns / ds) + (dp == 0f0 ? 0f0 : np / dp))
+end
+@inline _conductor_reflectance(mu::Float32, eta::Vec3f, k::Vec3f) =
+    Vec3f(ntuple(j -> _conductor_reflectance(mu, eta[j], k[j]), Val(3)))
+
 # ── Lookup-table albedos ────────────────────────────────────────────────────
 
 @inline _ior_index(ior::Float32) = sqrt(abs((ior - 1f0) / (ior + 1f0)))
@@ -192,6 +212,36 @@ compile at all.
             magnitude = abs(r23)
             r23 = magnitude > 0f0 ? r23 * (sqrt(R) / magnitude) : Complex{Float32}(sqrt(R), 0f0)
         end
+        rr = complex_div(r12 + r23 * shift, 1f0 + r12 * r23 * shift)
+        r += abs2(rr)
+    end
+    return clamp(0.5f0 * r, 0f0, 1f0)
+end
+
+# Airy sum for a physical conductor. Use the normal wavevector q directly:
+# n * sqrt(1 - sin²(theta) / n²) is undefined at n == 0, a valid Cycles input.
+@noinline function _conductor_film_reflectance(cos_i::Float32, thickness::Float32, eta2::Float32,
+                                              eta3::Float32, k3::Float32, lambda::Float32)
+    if thickness < 1f0
+        t = clamp(thickness, 0f0, 1f0)
+        eta2 = 1f0 + (eta2 - 1f0) * t^2 * (3f0 - 2f0 * t)
+    end
+    cos_i == 0f0 && return 1f0
+    sin2_i = max(1f0 - cos_i^2, 0f0)
+    sin2_2 = sin2_i / eta2^2
+    sin2_2 >= 1f0 && return 1f0
+    cos_2 = sqrt(1f0 - sin2_2)
+    n3 = Complex{Float32}(eta3, k3)
+    n3sq = n3 * n3
+    q = complex_sqrt(n3sq - sin2_i)
+    shift = cis(4f0 * Float32(π) * eta2 * thickness * cos_2 / lambda)
+    r = 0f0
+    for polarization in (0x00, 0x01)
+        r12 = polarization == 0x00 ? (cos_i - eta2 * cos_2) / (cos_i + eta2 * cos_2) :
+                                     (eta2 * cos_i - cos_2) / (eta2 * cos_i + cos_2)
+        a, b = polarization == 0x00 ? (Complex{Float32}(eta2 * cos_2, 0f0), q) : (n3sq * cos_2, eta2 * q)
+        denominator = a + b
+        r23 = iszero(denominator) ? Complex{Float32}(0f0, 0f0) : complex_div(a - b, denominator)
         rr = complex_div(r12 + r23 * shift, 1f0 + r12 * r23 * shift)
         r += abs2(rr)
     end

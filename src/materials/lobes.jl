@@ -488,8 +488,20 @@ struct ConductorFresnel <: FresnelModel
     k::SpectralRadiance
 end
 
+"""Cycles' physical conductor, with RGB inputs lifted at the path's wavelengths."""
+struct PhysicalConductorFresnel{C} <: FresnelModel
+    eta::C
+    k::C
+    film_thickness::Float32
+    film_ior::Float32
+end
+@inline lift(f::PhysicalConductorFresnel{Vec3f}, table, lambda) =
+    PhysicalConductorFresnel(uplift_rgb_unbounded(table, RGBSpectrum(f.eta[1], f.eta[2], f.eta[3]), lambda),
+                             uplift_rgb_unbounded(table, RGBSpectrum(f.k[1], f.k[2], f.k[3]), lambda),
+                             f.film_thickness, f.film_ior)
+
 @inline has_film(::FresnelModel) = false
-@inline has_film(f::Union{F82Tint, SchlickFresnel}) = f.film_thickness > THIN_FILM_THICKNESS_CUTOFF
+@inline has_film(f::Union{F82Tint, SchlickFresnel, PhysicalConductorFresnel}) = f.film_thickness > THIN_FILM_THICKNESS_CUTOFF
 
 """The reflectance and transmittance at the cosine `cos_i` between the microfacet normal and `wo`, at the path's wavelengths."""
 @inline fresnel_rt(::NoFresnel{SpectralRadiance}, cos_i::Float32, ior::Float32, lambda::Wavelengths) =
@@ -497,6 +509,13 @@ end
 
 @inline fresnel_rt(f::ConductorFresnel, cos_i::Float32, ior::Float32, lambda::Wavelengths) =
     (fr_complex_spectral(abs(cos_i), f.eta, f.k), SpectralRadiance(0f0))
+
+@inline function physical_conductor_reflectance(f::PhysicalConductorFresnel, mu::Float32, j::Int, wavelength::Float32)
+    return has_film(f) ? _conductor_film_reflectance(mu, f.film_thickness, f.film_ior, f.eta[j], f.k[j], wavelength) :
+                        _conductor_reflectance(mu, f.eta[j], f.k[j])
+end
+@inline fresnel_rt(f::PhysicalConductorFresnel{SpectralRadiance}, cos_i::Float32, ior::Float32, lambda::Wavelengths) =
+    (SpectralRadiance(ntuple(j -> physical_conductor_reflectance(f, abs(cos_i), j, lambda.lambda[j]), Val(4))), SpectralRadiance(0f0))
 
 @inline function fresnel_rt(f::F82Tint{SpectralRadiance}, cos_i::Float32, ior::Float32, lambda::Wavelengths)
     if has_film(f)
@@ -612,6 +631,8 @@ reflection lobe its reflection; a thin glass the reflection it mirrors through t
 @inline guide_albedo(::MicrofacetLobe{:reflection}, weight::Vec3f) = Vec3f(0)
 @inline guide_albedo(l::MicrofacetLobe{:reflection, <:F82Tint}, weight::Vec3f) = weight .* l.fresnel.f0
 @inline guide_albedo(::MicrofacetLobe{:reflection, <:NoFresnel}, weight::Vec3f) = weight
+@inline guide_albedo(l::MicrofacetLobe{:reflection, <:PhysicalConductorFresnel{Vec3f}}, weight::Vec3f) =
+    weight .* _conductor_reflectance(1f0, l.fresnel.eta, l.fresnel.k)
 
 @inline microfacet_d(l::MicrofacetLobe, h::Vec3f) = trowbridge_reitz_d(h, l.alpha_x, l.alpha_y)
 @inline microfacet_lambda(l::MicrofacetLobe, w::Vec3f) = trowbridge_reitz_lambda(w, l.alpha_x, l.alpha_y)
@@ -737,6 +758,11 @@ end
 @inline estimate_without_film(lut, ::NoFresnel{Vec3f}, l::MicrofacetLobe, mu::Float32, glass::Bool) =
     (Vec3f(1), glass ? Vec3f(1) : Vec3f(0))
 
+@inline function estimate(lut, f::PhysicalConductorFresnel{Vec3f}, l::MicrofacetLobe, mu::Float32, glass::Bool)
+    wavelengths = (610f0, 550f0, 465f0)
+    return (Vec3f(ntuple(j -> physical_conductor_reflectance(f, mu, j, wavelengths[j]), Val(3))), Vec3f(0))
+end
+
 @inline function schlick_estimate(lut, f0::Vec3f, l::MicrofacetLobe, mu::Float32)
     s = lookup_table_read_3d(lut, rough_index(l), mu, _ior_index(l.ior), Int32(LookupTable.GGX_GEN_SCHLICK_IOR_S),
                              Int32(16), Int32(16), Int32(16))
@@ -752,6 +778,13 @@ end
 @inline single_scatter_fresnel(f::DielectricFresnel{Vec3f}, l::MicrofacetLobe, glass::Bool) =
     # A coat loses its transmitted light; glass keeps it in the lobe.
     glass ? f.transmission_tint : Vec3f(_dielectric_fss(l.ior))
+@inline function single_scatter_fresnel(f::PhysicalConductorFresnel{Vec3f}, l::MicrofacetLobe, glass::Bool)
+    f0 = _conductor_reflectance(1f0, f.eta, f.k)
+    f82 = _conductor_reflectance(1f0 / 7f0, f.eta, f.k)
+    s = 6f0 / 7f0
+    b = (f0 .+ (1f0 .- f0) .* s^5 .- f82) .* (7f0 / s^6)
+    return _saturate3(_f82_fss(f0, b))
+end
 @inline single_scatter_fresnel(f::NoFresnel{Vec3f}, l::MicrofacetLobe, glass::Bool) = f.color
 
 """

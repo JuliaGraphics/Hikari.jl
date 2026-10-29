@@ -126,6 +126,16 @@ const CYCLES_REFERENCE = Dict(
     "principled_ggx_subsurface" => ((0.26079181, 0.26118074, 0.26121715), 0.015),
     # Thin-film interference evaluated spectrally differs by 2% red from Cycles RGB.
     "principled_ggx_film_metal" => ((0.12635433, 0.16221073, 0.14470078), 0.03),
+    "physical_metallic_default" => ((0.23290099, 0.21655925, 0.20191124), 0.015),
+    "physical_metallic_rough" => ((0.40181067, 0.39862148, 0.39789108), 0.015),
+    "physical_metallic_anisotropic" => ((0.39990510, 0.39275357, 0.39090293), 0.015),
+    "physical_metallic_ggx" => ((0.07987367, 0.07991697, 0.08151329), 0.015),
+    "physical_metallic_beckmann" => ((0.13169666, 0.13165798, 0.13168341), 0.015),
+    "physical_metallic_film" => ((0.30142902, 0.30470268, 0.30111283), 0.015),
+    # A 1nm D65 integration of this complex IOR gives 3.18% more red after
+    # spectral uplift, versus independent RGB Fresnel; the sphere differs by 3.0%.
+    "physical_metallic_color" => ((0.30953281, 0.20219082, 0.16571336), 0.04),
+    "add_physical_glossy" => ((0.19881534, 0.20805021, 0.24664555), 0.015),
 )
 
 function render_cycles_batch(cases; samples)

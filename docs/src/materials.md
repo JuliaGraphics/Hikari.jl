@@ -72,6 +72,18 @@ Hikari.Diffuse(color = (0.9, 0.9, 0.9), roughness = 0.5) # rough, like chalk
 `Metallic` is Blender's artist-friendly metal: `base_color` at normal incidence, `edge_tint` at
 grazing angles.
 
+For the complex index of a physical conductor, set `fresnel_type = :physical_conductor` and
+provide `ior` and `extinction` (the real and imaginary components). These inputs accept numbers,
+RGB triples, images and node graphs. The default `fresnel_type = :f82` uses `base_color` and
+`edge_tint`. The chosen Fresnel model is constant for a shader; its numeric inputs remain editable.
+The complex IOR uses the same spectral conversion as `Conductor`. Strongly coloured RGB IORs
+can differ from Cycles' RGB Fresnel result (about 3% in red in the comparison scene).
+
+```julia
+Hikari.Metallic(fresnel_type = :physical_conductor, ior = (0.2, 0.2, 0.2),
+               extinction = (3.9, 3.9, 3.9), roughness = 0.3)
+```
+
 `Glossy`, `Metallic` and `Glass` use `distribution = :multi_ggx` by default, as Blender does.
 Set `distribution = :ggx` or `:beckmann` for single scattering, which loses energy on rough
 surfaces. Distribution choices are fixed in the shader's type; changing one selects a different

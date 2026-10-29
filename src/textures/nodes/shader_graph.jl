@@ -70,6 +70,8 @@ function closure_node(kind::UInt8)
     kind == ClosureKind.GLOSSY && return GlossyBSDF
     kind == ClosureKind.METALLIC && return MetallicBSDF
     kind == ClosureKind.METALLIC_FILM && return MetallicFilmBSDF
+    kind == ClosureKind.PHYSICAL_METALLIC && return PhysicalMetallicBSDF{false}
+    kind == ClosureKind.PHYSICAL_METALLIC_FILM && return PhysicalMetallicBSDF{true}
     kind == ClosureKind.REFRACTION_BECKMANN && return RefractionBSDF{CyclesBeckmann}
     kind == ClosureKind.REFRACTION_GGX && return RefractionBSDF{CyclesGGX}
     kind == ClosureKind.GLASS && return GlassBSDF

@@ -121,10 +121,13 @@ end
 """
     Metallic(; base_color = (0.617, 0.577, 0.540), edge_tint = (0.695, 0.726, 0.770), roughness = 0.5,
              anisotropy = 0, rotation = 0, normal = nothing, tangent = nothing,
-             thin_film_thickness = 0, thin_film_ior = 1.33, distribution = :multi_ggx)
+             thin_film_thickness = 0, thin_film_ior = 1.33, distribution = :multi_ggx,
+             fresnel_type = :f82, ior = (2.757, 2.513, 2.231), extinction = (3.867, 3.404, 3.009))
 
 Blender's Metallic BSDF with the F82 tint Fresnel: `base_color` at normal incidence, `edge_tint`
-towards grazing angles. For a metal of measured complex IOR, as pbrt renders one, use
+towards grazing angles. Set `fresnel_type = :physical_conductor` to use the complex
+index `ior` + i `extinction` instead. All inputs except `fresnel_type` and `distribution`
+can be images or node graphs. For measured spectra and pbrt's roughness convention, use
 [`Conductor`](@ref). `distribution` is the constant `:multi_ggx` (Blender's default),
 `:ggx` or `:beckmann`; the latter two use single scattering.
 """
@@ -139,6 +142,9 @@ towards grazing angles. For a metal of measured complex IOR, as pbrt renders one
     thin_film_thickness = 0
     thin_film_ior = 1.33
     distribution = :multi_ggx
+    fresnel_type = :f82
+    ior = (2.757, 2.513, 2.231)
+    extinction = (3.867, 3.404, 3.009)
 end
 
 """
@@ -305,6 +311,13 @@ shader_node(m::Glossy) =
             node_input(m.rotation), normal_input(m.normal), tangent_input(m.tangent); distribution = distribution_mode(m))
 function shader_node(m::Metallic)
     distribution = distribution_mode(m)
+    if m.fresnel_type === :physical_conductor
+        inputs = (node_input(m.ior), node_input(m.extinction), node_input(m.roughness),
+                  node_input(m.anisotropy), node_input(m.rotation), normal_input(m.normal), tangent_input(m.tangent))
+        _constant(m.thin_film_thickness, 0) && return closure(ClosureKind.PHYSICAL_METALLIC, inputs...; distribution)
+        return closure(ClosureKind.PHYSICAL_METALLIC_FILM, inputs..., node_input(m.thin_film_thickness), node_input(m.thin_film_ior); distribution)
+    end
+    m.fresnel_type === :f82 || throw(ArgumentError("a Metallic's `fresnel_type` must be :f82 or :physical_conductor, got $(repr(m.fresnel_type))"))
     inputs = (node_input(m.base_color), node_input(m.edge_tint), node_input(m.roughness),
               node_input(m.anisotropy), node_input(m.rotation), normal_input(m.normal), tangent_input(m.tangent))
     _constant(m.thin_film_thickness, 0) && return closure(ClosureKind.METALLIC, inputs...; distribution)

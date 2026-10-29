@@ -226,6 +226,31 @@ const CYCLES_DISTRIBUTION_CASES = [
               var"Edge Tint" = [0.8, 0.8, 0.8], Roughness = 0.5, var"Thin Film Thickness" = 400)),
 ]
 
+function physical_metallic_case(; ior = (2.757, 2.513, 2.231), extinction = (3.867, 3.404, 3.009),
+                                  roughness = 0.5, anisotropy = 0, rotation = 0, tangent = (1, 0, 0),
+                                  distribution = :multi_ggx, thin_film_thickness = 0)
+    return (H -> H.Metallic(; fresnel_type = :physical_conductor, ior, extinction, roughness, anisotropy,
+                            rotation, tangent, distribution, thin_film_thickness),
+            bsdf("ShaderNodeBsdfMetallic"; properties = (fresnel_type = "PHYSICAL_CONDUCTOR", distribution = uppercase(string(distribution))),
+                 IOR = collect(ior), Extinction = collect(extinction), Roughness = roughness,
+                 Anisotropy = anisotropy, Rotation = rotation, Tangent = collect(tangent),
+                 var"Thin Film Thickness" = thin_film_thickness))
+end
+const CYCLES_PHYSICAL_METALLIC_CASES = [
+    "physical_metallic_default" => physical_metallic_case(),
+    "physical_metallic_rough" => physical_metallic_case(ior = (0.2, 0.2, 0.2), extinction = (3.9, 3.9, 3.9), roughness = 0.8),
+    "physical_metallic_anisotropic" => physical_metallic_case(ior = (0.2, 0.2, 0.2), extinction = (3.9, 3.9, 3.9),
+        roughness = 0.6, anisotropy = 0.7, rotation = 0.125),
+    "physical_metallic_ggx" => physical_metallic_case(ior = (1.5, 1.5, 1.5), extinction = (1.5, 1.5, 1.5),
+        roughness = 0.7, distribution = :ggx),
+    "physical_metallic_beckmann" => physical_metallic_case(ior = (2.5, 2.5, 2.5), extinction = (2.5, 2.5, 2.5),
+        roughness = 0.5, anisotropy = 0.5, distribution = :beckmann),
+    "physical_metallic_film" => physical_metallic_case(ior = (0.2, 0.2, 0.2), extinction = (3.9, 3.9, 3.9),
+        roughness = 0.3, thin_film_thickness = 400),
+    "physical_metallic_color" => physical_metallic_case(ior = (0.2, 0.9, 1.1), extinction = (3.9, 2.45, 2.14), roughness = 0.3),
+    "add_physical_glossy" => add_case(physical_metallic_case(roughness = 0.4), glossy_case((0.1, 0.2, 0.4), 0.6)),
+]
+
 function principled_case((name, inputs); distribution = :multi_ggx)
     spec = Dict("type" => "principled", "inputs" => Dict(pairs(inputs)))
     distribution === :multi_ggx || (spec["properties"] = Dict("distribution" => uppercase(string(distribution))))
@@ -254,7 +279,7 @@ const CYCLES_STANDARD_CASES = [
     map(principled_case, CYCLES_THIN_WALL_CASES)
 ]
 const CYCLES_CASES = [CYCLES_STANDARD_CASES; CYCLES_FILM_NODE_CASES; CYCLES_TOON_NODE_CASES; CYCLES_SUBSURFACE_MIX_CASES;
-                      CYCLES_STANDALONE_SUBSURFACE_CASES; CYCLES_REFRACTION_CASES; CYCLES_ANISOTROPY_CASES; CYCLES_DISTRIBUTION_CASES; CYCLES_PRINCIPLED_GGX_CASES]
+                      CYCLES_STANDALONE_SUBSURFACE_CASES; CYCLES_REFRACTION_CASES; CYCLES_ANISOTROPY_CASES; CYCLES_DISTRIBUTION_CASES; CYCLES_PRINCIPLED_GGX_CASES; CYCLES_PHYSICAL_METALLIC_CASES]
 # Keep existing reference scenes unchanged: filling their last batch would add
 # interreflections from new spheres and change the old comparison values.
 cycles_batches() = [collect(Iterators.partition(CYCLES_STANDARD_CASES, 8));
@@ -265,7 +290,8 @@ cycles_batches() = [collect(Iterators.partition(CYCLES_STANDARD_CASES, 8));
                     collect(Iterators.partition(CYCLES_REFRACTION_CASES, 8));
                     collect(Iterators.partition(CYCLES_ANISOTROPY_CASES, 8));
                     collect(Iterators.partition(CYCLES_DISTRIBUTION_CASES, 8));
-                    collect(Iterators.partition(CYCLES_PRINCIPLED_GGX_CASES, 8))]
+                    collect(Iterators.partition(CYCLES_PRINCIPLED_GGX_CASES, 8));
+                    collect(Iterators.partition(CYCLES_PHYSICAL_METALLIC_CASES, 8))]
 
 const CYCLES_CENTERS = [Point3f(x, y, 0.5f0) for y in (1.4f0, 0f0) for x in (-2.25f0, -0.75f0, 0.75f0, 2.25f0)]
 const CYCLES_SCENE = (radius = 0.5f0, res = 512, world = 0.1f0, max_depth = 8,

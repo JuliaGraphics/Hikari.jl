@@ -185,6 +185,32 @@ instruction_count(::Type{MetallicFilmBSDF}) = cld(10, NODE_ARGS)
     return ((kept(first(setup_fresnel(lut, weighted, dot(n, sc.wo), multiscatter))),), Vec3f(0), Vec3f(0))
 end
 
+"""Blender's physical Metallic BSDF, optionally coated with a thin film."""
+struct PhysicalMetallicBSDF{Film} <: ShaderBSDF end
+instruction_count(::Type{PhysicalMetallicBSDF{Film}}) where {Film} = Film ? cld(10, NODE_ARGS) : 1
+@inline node_lobes(::Type{PhysicalMetallicBSDF{F}}, s, prog, i::Int32, sc::ShaderContext, lut) where {F} =
+    physical_metallic_node(Val(F), s, prog, i, sc, lut)
+@inline function physical_metallic_node(::Val{Film}, s, prog, i::Int32, sc::ShaderContext, lut,
+                                        convention::MicrofacetConvention = CyclesGGX(),
+                                        multiscatter::Val = Val(true)) where {Film}
+    chunks = instruction_count(PhysicalMetallicBSDF{Film})
+    w = node_f(s, prog, i, 1, chunks, sc)
+    eta = max.(node_v(s, prog, i, 2, chunks, sc), 0f0)
+    k = max.(node_v(s, prog, i, 3, chunks, sc), 0f0)
+    roughness = clamp(node_f(s, prog, i, 4, chunks, sc), 0f0, 1f0)
+    anisotropy = clamp(node_f(s, prog, i, 5, chunks, sc), 0f0, 1f0)
+    rotation = node_f(s, prog, i, 6, chunks, sc)
+    n = _valid_normal(_closure_normal(node_v(s, prog, i, 7, chunks, sc), sc), sc)
+    tangent = node_v(s, prog, i, 8, chunks, sc)
+    ax, ay, t = _anisotropic_alphas(roughness, anisotropy, tangent, n, rotation, sc)
+    thickness = Film ? node_f(s, prog, i, 9, chunks, sc) : 0f0
+    film_ior = Film ? max(node_f(s, prog, i, 10, chunks, sc), 1f-5) : 0f0
+    fresnel = PhysicalConductorFresnel(eta, k, thickness, film_ior)
+    lobe = MicrofacetLobe{:reflection}(fresnel; alpha_x = ax, alpha_y = ay, convention)
+    weighted = Weighted(lobe, Vec3f(w), n; t)
+    return ((kept(first(setup_fresnel(lut, weighted, dot(n, sc.wo), multiscatter))),), Vec3f(0), Vec3f(0))
+end
+
 """Blender's Glass BSDF: GGX reflection and refraction with the real dielectric Fresnel, tinted by `color`."""
 struct GlassBSDF <: ShaderBSDF end
 struct GlassFilmBSDF <: ShaderBSDF end
@@ -222,6 +248,8 @@ emits(::Type{SingleScatterBSDF{B, C}}) where {B, C} = emits(B)
     reflection_node(Val(true), s, prog, i, sc, lut, Val(false), C(), Val(false))
 @inline node_lobes(::Type{SingleScatterBSDF{MetallicFilmBSDF, C}}, s, prog, i::Int32, sc::ShaderContext, lut) where {C} =
     reflection_node(Val(true), s, prog, i, sc, lut, Val(true), C(), Val(false))
+@inline node_lobes(::Type{SingleScatterBSDF{PhysicalMetallicBSDF{F}, C}}, s, prog, i::Int32, sc::ShaderContext, lut) where {F, C} =
+    physical_metallic_node(Val(F), s, prog, i, sc, lut, C(), Val(false))
 @inline node_lobes(::Type{SingleScatterBSDF{GlassBSDF, C}}, s, prog, i::Int32, sc::ShaderContext, lut) where {C} =
     glass_node(Val(false), s, prog, i, sc, lut, C(), Val(false))
 @inline node_lobes(::Type{SingleScatterBSDF{GlassFilmBSDF, C}}, s, prog, i::Int32, sc::ShaderContext, lut) where {C} =
