@@ -13,6 +13,27 @@ nodes(::ShaderMaterial{P, A, M}) where {P, A, M} = M
 program(m) = Hikari.link(Hikari.compile_shader(Hikari.ShaderGraph(Hikari.shader_node(m)).closures), ())
 
 @testset "Material descriptions" begin
+    @testset "a scalar image field stores and updates one texture slot" begin
+        store = Raycore.MultiTypeSet(CPU())
+        image = fill(0.25, 4, 4)
+        mat = Hikari.to_device_material(store, Hikari.Diffuse(roughness = image))
+        h = mat.roughness
+        @test h.kind == Hikari.TexKind.IMAGE
+        @test Hikari.stored_array(store, (Int(h.slot), Int(h.idx))) == fill(0.25f0, 4, 4)
+        arrays, layout = length(store.texture_gpu_arrays), store.layout
+        next = Raycore.update_item(store, h, fill(0.75, 4, 4))
+        @test next === h
+        @test (length(store.texture_gpu_arrays), store.layout) == (arrays, layout)
+        @test Hikari.stored_array(store, (Int(h.slot), Int(h.idx))) == fill(0.75f0, 4, 4)
+        rgb = fill(RGBSpectrum(0.2f0, 0.4f0, 0.6f0), 4, 4)
+        colored = Hikari.to_device_material(store, Hikari.Diffuse(color = rgb))
+        c = colored.color
+        @test Hikari.stored_array(store, (Int(c.slot), Int(c.idx))) == rgb
+        fill!(rgb, RGBSpectrum(0.7f0))
+        @test Raycore.update_item(store, c, rgb) === c
+        @test Hikari.stored_array(store, (Int(c.slot), Int(c.idx))) == rgb
+    end
+
     @testset "a description keeps its fields as given" begin
         d = Hikari.Diffuse(color = (1, 0, 0), roughness = 0.5)
         @test d.color === (1, 0, 0) && d.roughness === 0.5

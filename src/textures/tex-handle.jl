@@ -272,7 +272,7 @@ Resolve one host material parameter against the set's texture store.
 """
 device_param(dhv, h::TexHandle) = h
 device_param(dhv, ::Nothing) = TexHandle()      # an unset field (no displacement, no reflectance)
-device_param(dhv, img::AbstractMatrix{<:Colorant}) = device_param(dhv, to_texture(img))
+device_param(dhv, img::AbstractMatrix{<:Union{Colorant, Real, RGBSpectrum}}) = device_param(dhv, to_texture(img))
 device_param(dhv, s::PiecewiseLinearSpectrum) = s   # lives inline on the device
 device_param(dhv, t::Texture{T, 0}) where {T} = TexHandle(t)
 device_param(dhv, t::Texture{T, N}) where {T, N} =
@@ -365,6 +365,6 @@ function Raycore.update_item(dhv::Raycore.MultiTypeSet, old::TexHandle, new::Tex
 end
 
 # An image given as a matrix of colours, as `device_param` stores one.
-Raycore.update_item(dhv::Raycore.MultiTypeSet, old::TexHandle, new::AbstractMatrix{<:Colorant}) =
+Raycore.update_item(dhv::Raycore.MultiTypeSet, old::TexHandle, new::AbstractMatrix{<:Union{Colorant, Real, RGBSpectrum}}) =
     Raycore.update_item(dhv, old, to_texture(new))
 
