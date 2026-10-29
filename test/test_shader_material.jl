@@ -167,6 +167,26 @@ end
         @test w.n == Vec3f(0, 0, 1)
     end
 
+    @testset "standalone anisotropy and Glass normals match Cycles" begin
+        glossy = only(lobes(Hikari.Glossy(roughness = 0.5, anisotropy = 0.5))).lobe
+        @test glossy.alpha_x ≈ 0.125f0
+        @test glossy.alpha_y ≈ 0.5f0
+        negative = only(lobes(Hikari.Glossy(roughness = 0.5, anisotropy = -0.5))).lobe
+        @test negative.alpha_x ≈ 0.5f0
+        @test negative.alpha_y ≈ 0.125f0
+        metallic = only(lobes(Hikari.Metallic(roughness = 0.5, anisotropy = -0.5))).lobe
+        @test metallic.alpha_x == metallic.alpha_y == 0.25f0
+        for material in (Hikari.Metallic(roughness = 1, anisotropy = 0.7),
+                         Hikari.Principled(metallic = 1, roughness = 1, anisotropic = 0.7))
+            rough = only(lobes(material)).lobe
+            @test rough.alpha_x == 1f0
+            @test rough.alpha_y ≈ sqrt(0.37f0)
+        end
+        tilted = normal_map((1, 0.5, 0.55); space = :world)
+        n = only(lobes(Hikari.Glass(normal = tilted))).n
+        @test 2f0 * n[3]^2 - 1f0 >= 0.0099f0
+    end
+
     @testset "a refraction node retains its distribution and inputs" begin
         for (distribution, convention) in ((:beckmann, Hikari.CyclesBeckmann), (:ggx, Hikari.CyclesGGX))
             material = Hikari.Refraction(color = (0.3, 0.6, 0.9), roughness = 0.4, ior = 1.6; distribution)

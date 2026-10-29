@@ -54,16 +54,30 @@ scene.world = world
 def socket_name(key):
     return " ".join("IOR" if part == "ior" else part.capitalize() for part in key.split("_"))
 
+def set_socket_value(nt, sock, value):
+    # An unlinked Normal/Tangent uses implicit geometry in Cycles, irrespective
+    # of its default_value. Link an explicit vector to test the requested input.
+    if sock.type == "VECTOR" and isinstance(value, list):
+        if len(value) != 3:
+            raise ValueError(f"Vector input {sock.name} needs three components, got {value}")
+        vector = nt.nodes.new("ShaderNodeCombineXYZ")
+        for component, item in zip(vector.inputs, value):
+            component.default_value = item
+        nt.links.new(vector.outputs[0], sock)
+    else:
+        if isinstance(value, list):
+            value = tuple(value) + ((1.0,) if len(sock.default_value) == 4 else ())
+        sock.default_value = value
+
+
 def configure_principled(nt, node, inputs):
     node.subsurface_method = "RANDOM_WALK"
     for key, value in inputs.items():
         # By iteration: a socket the subsurface method leaves unavailable (Subsurface IOR under
         # Random Walk) is not found by name.
         sock = next(s for s in node.inputs if s.name == socket_name(key))
-        if isinstance(value, list):
-            value = tuple(value) + ((1.0,) if len(sock.default_value) == 4 else ())
-        sock.default_value = value
-    if inputs.get("anisotropic", 0) != 0:
+        set_socket_value(nt, sock, value)
+    if inputs.get("anisotropic", 0) != 0 and "tangent" not in inputs:
         # Hikari's default tangent: radial around the world's Z axis, (-y, x, 0) of the position.
         geom = nt.nodes.new("ShaderNodeNewGeometry")
         sep = nt.nodes.new("ShaderNodeSeparateXYZ")
@@ -113,9 +127,7 @@ def shader(nt, m):
             setattr(node, key, value)
         for key, value in m.get("inputs", {}).items():
             sock = next(s for s in node.inputs if s.name == key)
-            if isinstance(value, list):
-                value = tuple(value) + ((1.0,) if len(sock.default_value) == 4 else ())
-            sock.default_value = value
+            set_socket_value(nt, sock, value)
         return node.outputs[0]
     if m["type"] == "mix":
         node = nt.nodes.new("ShaderNodeMixShader")

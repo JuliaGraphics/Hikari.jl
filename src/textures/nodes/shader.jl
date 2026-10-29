@@ -240,7 +240,18 @@ the tangent input where there is one, else the shading tangent, rotated by `rota
     aspect = sqrt(1f0 - abs(anisotropy) * 0.9f0)
     t = _anisotropic_tangent(tangent, n, rotation, sc.dpdus)
     anisotropy < 0f0 && (t = cross(n, t))
-    return alpha / aspect, alpha * aspect, t
+    return min(alpha / aspect, 1f0), min(alpha * aspect, 1f0), t
+end
+
+# Glossy's legacy anisotropy differs from Principled/Metallic's aspect ratio.
+@inline function _glossy_alphas(roughness::Float32, anisotropy::Float32, tangent::Vec3f, n::Vec3f,
+                                rotation::Float32, sc::ShaderContext)
+    alpha = roughness^2
+    abs(anisotropy) <= 1f-4 && return alpha, alpha, Vec3f(0)
+    t = _anisotropic_tangent(tangent, n, rotation, sc.dpdus)
+    stretch = anisotropy < 0f0 ? 1f0 + anisotropy : 1f0 - anisotropy
+    ax, ay = anisotropy < 0f0 ? (alpha / stretch, alpha * stretch) : (alpha * stretch, alpha / stretch)
+    return min(ax, 1f0), min(ay, 1f0), t
 end
 
 """The inputs of a Principled BSDF, read off its instructions before its lobes are set up."""

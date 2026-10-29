@@ -178,6 +178,24 @@ const CYCLES_REFRACTION_CASES = [
                  last(glossy_case((0.8, 0.8, 0.8), 0.2)), 0.35)),
 ]
 
+# Standalone nodes use an explicit tangent, shared with Blender, so the
+# anisotropy mapping is checked independently of object-coordinate generation.
+const CYCLES_ANISOTROPY_CASES = [
+    "glossy_anisotropic" => (H -> H.Glossy(roughness = 0.5, anisotropy = 0.6, tangent = (1, 0, 0)),
+        bsdf("ShaderNodeBsdfGlossy"; Roughness = 0.5, Anisotropy = 0.6, Tangent = [1, 0, 0])),
+    "glossy_anisotropic_negative" => (H -> H.Glossy(roughness = 0.5, anisotropy = -0.6, rotation = 0.125,
+                                                  tangent = (1, 0, 0)),
+        bsdf("ShaderNodeBsdfGlossy"; Roughness = 0.5, Anisotropy = -0.6, Rotation = 0.125, Tangent = [1, 0, 0])),
+    "metallic_anisotropic_rough" => (H -> H.Metallic(base_color = (0.6, 0.6, 0.6), edge_tint = (0.8, 0.8, 0.8),
+                                                    roughness = 1, anisotropy = 0.7, tangent = (1, 0, 0)),
+        bsdf("ShaderNodeBsdfMetallic"; var"Base Color" = [0.6, 0.6, 0.6], var"Edge Tint" = [0.8, 0.8, 0.8],
+              Roughness = 1, Anisotropy = 0.7, Tangent = [1, 0, 0])),
+    "principled_anisotropic_rough" => (H -> H.Principled(base_color = (0.6, 0.6, 0.6), metallic = 1,
+        roughness = 1, anisotropic = 0.7, tangent = (1, 0, 0)),
+        Dict("type" => "principled", "inputs" => Dict("base_color" => [0.6, 0.6, 0.6], "metallic" => 1,
+             "roughness" => 1, "anisotropic" => 0.7, "tangent" => [1, 0, 0]))),
+]
+
 principled_case((name, inputs)) =
     name => (H -> H.Principled(; inputs...), Dict("type" => "principled", "inputs" => Dict(pairs(inputs))))
 
@@ -188,7 +206,7 @@ const CYCLES_STANDARD_CASES = [
     map(principled_case, CYCLES_THIN_WALL_CASES)
 ]
 const CYCLES_CASES = [CYCLES_STANDARD_CASES; CYCLES_FILM_NODE_CASES; CYCLES_TOON_NODE_CASES; CYCLES_SUBSURFACE_MIX_CASES;
-                      CYCLES_STANDALONE_SUBSURFACE_CASES; CYCLES_REFRACTION_CASES]
+                      CYCLES_STANDALONE_SUBSURFACE_CASES; CYCLES_REFRACTION_CASES; CYCLES_ANISOTROPY_CASES]
 # Keep existing reference scenes unchanged: filling their last batch would add
 # interreflections from new spheres and change the old comparison values.
 cycles_batches() = [collect(Iterators.partition(CYCLES_STANDARD_CASES, 8));
@@ -196,7 +214,8 @@ cycles_batches() = [collect(Iterators.partition(CYCLES_STANDARD_CASES, 8));
                     collect(Iterators.partition(CYCLES_TOON_NODE_CASES, 8));
                     collect(Iterators.partition(CYCLES_SUBSURFACE_MIX_CASES, 8));
                     collect(Iterators.partition(CYCLES_STANDALONE_SUBSURFACE_CASES, 8));
-                    collect(Iterators.partition(CYCLES_REFRACTION_CASES, 8))]
+                    collect(Iterators.partition(CYCLES_REFRACTION_CASES, 8));
+                    collect(Iterators.partition(CYCLES_ANISOTROPY_CASES, 8))]
 
 const CYCLES_CENTERS = [Point3f(x, y, 0.5f0) for y in (1.4f0, 0f0) for x in (-2.25f0, -0.75f0, 0.75f0, 2.25f0)]
 const CYCLES_SCENE = (radius = 0.5f0, res = 512, world = 0.1f0, max_depth = 8,

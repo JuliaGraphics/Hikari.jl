@@ -105,6 +105,10 @@ const CYCLES_REFERENCE = Dict(
     "refraction_ggx_rough" => ((0.11959254, 0.1198234, 0.11996028), 0.015),
     "refraction_node_tint" => ((0.05949425, 0.09894281, 0.1225911), 0.045),
     "mix_refraction_glossy" => ((0.15345955, 0.15348487, 0.1534998), 0.015),
+    "glossy_anisotropic" => ((0.21577768, 0.21577772, 0.21577768), 0.015),
+    "glossy_anisotropic_negative" => ((0.2870853, 0.2870853, 0.2870853), 0.015),
+    "metallic_anisotropic_rough" => ((0.18221029, 0.18221029, 0.18221036), 0.015),
+    "principled_anisotropic_rough" => ((0.15090874, 0.15090874, 0.15090874), 0.015),
 )
 
 function render_cycles_batch(cases; samples)

@@ -164,10 +164,13 @@ instruction_count(::Type{MetallicFilmBSDF}) = cld(10, NODE_ARGS)
     base = 2 + Metal
     w = node_f(s, prog, i, 1, chunks, sc)
     roughness = clamp(node_f(s, prog, i, base + 1, chunks, sc), 0f0, 1f0)
-    anisotropy = clamp(node_f(s, prog, i, base + 2, chunks, sc), -1f0, 1f0)
+    raw_anisotropy = node_f(s, prog, i, base + 2, chunks, sc)
+    anisotropy = Metal ? clamp(raw_anisotropy, 0f0, 1f0) : clamp(raw_anisotropy, -0.99f0, 0.99f0)
     n = _valid_normal(_closure_normal(node_v(s, prog, i, base + 4, chunks, sc), sc), sc)
-    ax, ay, t = _anisotropic_alphas(roughness, anisotropy, node_v(s, prog, i, base + 5, chunks, sc), n,
-                                    node_f(s, prog, i, base + 3, chunks, sc), sc)
+    tangent = node_v(s, prog, i, base + 5, chunks, sc)
+    rotation = node_f(s, prog, i, base + 3, chunks, sc)
+    ax, ay, t = Metal ? _anisotropic_alphas(roughness, anisotropy, tangent, n, rotation, sc) :
+                       _glossy_alphas(roughness, anisotropy, tangent, n, rotation, sc)
     weighted = if Metal
         thickness = Film ? node_f(s, prog, i, 9, chunks, sc) : 0f0
         film_ior = Film ? max(node_f(s, prog, i, 10, chunks, sc), 1f-5) : 0f0
@@ -193,7 +196,7 @@ instruction_count(::Type{<:Union{GlassBSDF, GlassFilmBSDF}}) = 1
     color = max.(node_v(s, prog, i, 2, 1, sc), 0f0)
     alpha = clamp(node_f(s, prog, i, 3, 1, sc), 0f0, 1f0)^2
     ior = max(node_f(s, prog, i, 4, 1, sc), 1f-5)
-    n = _closure_normal(node_v(s, prog, i, 5, 1, sc), sc)
+    n = _valid_normal(_closure_normal(node_v(s, prog, i, 5, 1, sc), sc), sc)
     back = _backfacing(sc)
     fresnel = if Film
         film_ior = max(node_f(s, prog, i, 7, 1, sc), 1f-5)
