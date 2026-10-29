@@ -26,7 +26,10 @@ end
 
 """Every BSDF under `s` with the weight the mixes above it give it, as Cycles' compiler flattens a shader tree."""
 _weighted(s::BSDFNode, w) = [(s, w)]
-_weighted(s::MixShaderNode, w) = vcat(_weighted(s.a, w * (1 - s.fac)), _weighted(s.b, w * s.fac))
+function _weighted(s::MixShaderNode, w)
+    fac = clamp(s.fac, 0f0, 1f0)
+    return vcat(_weighted(s.a, w * (1 - fac)), _weighted(s.b, w * fac))
+end
 _weighted(s::AddShaderNode, w) = vcat(_weighted(s.a, w), _weighted(s.b, w))
 
 _weight_input(w::Real) = Float32(w)

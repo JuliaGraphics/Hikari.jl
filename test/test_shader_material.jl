@@ -188,6 +188,17 @@ end
         @test [w.weight for w in lobes(Hikari.Mix(red, blue; factor = xyz().x); p = Point3f(0.3, 0, 0))] ≈
               [Vec3f(0.7, 0, 0), Vec3f(0, 0, 0.3)]
         @test [w.weight for w in lobes(Hikari.Add(red, blue))] ≈ [Vec3f(1, 0, 0), Vec3f(0, 0, 1)]
+        # Cycles clamps a Mix Shader's factor before propagating its weights.
+        # Without it, a factor of 2 doubled the second shader's brightness.
+        a, b = Hikari.Diffuse(color = (0.2, 0.1, 0.1)), Hikari.Diffuse(color = (0.1, 0.2, 0.3))
+        for factor in (-1f0, 0f0, 0.4f0, 1f0, 2f0)
+            fac = clamp(factor, 0f0, 1f0)
+            expected = filter(w -> maximum(w) > 0, [Vec3f(a.color...) * (1f0 - fac), Vec3f(b.color...) * fac])
+            for input in (factor, xyz().x)
+                actual = lobes(Hikari.Mix(a, b; factor = input); p = Point3f(factor, 0, 0))
+                @test [w.weight for w in actual] ≈ expected
+            end
+        end
     end
 
     @testset "a metallic principled BSDF is one F82 tint lobe" begin
@@ -477,6 +488,16 @@ end
         @test Hikari.surface_material(shader) isa Hikari.ShaderMaterial && Hikari.surface_material(own) === own
         @test render(shader) ≈ render(own) rtol = 0.02
         @test render(Hikari.SubsurfaceScattering(color = colour, scale = 0)) ≈ render(shader) rtol = 0.02
+        # Both constant and node-driven factors saturate before weighting;
+        # a dim second closure must not be scaled past the selected shader.
+        expected = render(shader)
+        dim = Hikari.Diffuse(color = (0.1, 0.1, 0.1))
+        for factor in (2f0, xyz().x * 0 + 2)
+            @test render(Hikari.Mix(dim, shader; factor)) ≈ expected rtol = 0.02
+        end
+        for factor in (-1f0, xyz().x * 0 - 1)
+            @test render(Hikari.Mix(shader, dim; factor)) ≈ expected rtol = 0.02
+        end
     end
 
     # A subsurface material's shading kernel holds the random walk, which traces, and the
