@@ -40,5 +40,18 @@ end
     @test furnace_mean(Hikari.Glass(roughness = 0.3, thin_film_thickness = 400); regularize = false) ≈ 1 atol = 0.003
     walk = Hikari.Principled(base_color = (1, 1, 1), roughness = 0.4, subsurface_weight = 1, subsurface_radius = (1, 1, 1),
                              subsurface_scale = 0.1, ior = 1.45)
-    @test furnace_mean(walk; regularize = false) ≈ 1 atol = 0.003
+    walk_mean = furnace_mean(walk; regularize = false)
+    @test walk_mean ≈ 1 atol = 0.003
+    # Both BSSRDFs of a mixed shader must be eligible for a walk. Selecting
+    # only the last left the zero-factor case at 0.032 instead of white.
+    other_walk = Hikari.with_field(walk, :subsurface_scale, 0.02)
+    other_mean = furnace_mean(other_walk; regularize = false)
+    # At this smaller radius the bounded 256-bounce walk loses some energy in
+    # both renderers (Blender 5.2.1, 4096 spp: 0.931157). A mixture must retain
+    # the linear combination of its two independently rendered components.
+    @test other_mean ≈ 0.931157 atol = 0.005
+    for factor in (0, 0.35, 1)
+        expected = (1 - factor) * walk_mean + factor * other_mean
+        @test furnace_mean(Hikari.Mix(walk, other_walk; factor); regularize = false) ≈ expected atol = 0.005
+    end
 end

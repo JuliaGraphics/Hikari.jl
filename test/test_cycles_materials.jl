@@ -93,6 +93,8 @@ const CYCLES_REFERENCE = Dict(
     "toon_diffuse_smooth" => ((0.06453134, 0.16133001, 0.25812733), 0.015),
     "toon_glossy" =>        ((0.36588239, 0.36741225, 0.36894404), 0.02),
     "toon_glossy_smooth" => ((0.19346430, 0.19346974, 0.19347365), 0.015),
+    "mix_subsurface_nodes" => ((0.23269447, 0.23269447, 0.23269447), 0.015),
+    "add_subsurface_nodes" => ((0.50359048, 0.50359048, 0.50359062), 0.015),
 )
 
 function render_cycles_batch(cases; samples)

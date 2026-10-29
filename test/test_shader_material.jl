@@ -65,7 +65,7 @@ features(::Hikari.ShaderProgram{F}) where {F} = F & ~(UInt32(3) << Hikari.STACK_
 @testset "the values and closure halves produce what one program does" begin
     split_shaders = [
         Hikari.Principled(base_color = noise(xyz()).color, roughness = wave(xyz()).fac * 0.5, metallic = checker(xyz()).fac,
-                          normal = bump(noise(xyz(); scale = 4).fac), coat_weight = 1, coat_tint = magic(xyz()).color,
+                          normal = bump(noise(xyz(); scale = 4).fac), coat_weight = 1, coat_tint = Hikari.TextureNodes.magic(xyz()).color,
                           sheen_weight = 0.5, sheen_tint = voronoi(xyz()).color, emission_strength = xyz().x,
                           emission_color = gradient(xyz()).color, alpha = mix(0.3, 1.0, xyz().y)),
         Hikari.Principled(base_color = (0.8, 0.3, 0.2), transmission_weight = brick(xyz()).fac, roughness = 0.2,
@@ -80,6 +80,9 @@ features(::Hikari.ShaderProgram{F}) where {F} = F & ~(UInt32(3) << Hikari.STACK_
                    Hikari.Diffuse(color = (0.4, 0.6, 0.2)); factor = 0.6),
         Hikari.Mix(Hikari.Toon(color = noise(xyz()).color, size = wave(xyz()).fac, smooth = 0.2),
                    Hikari.Toon(component = :glossy, size = 0.3, smooth = noise(xyz()).fac); factor = 0.4),
+        Hikari.Mix(Hikari.Principled(subsurface_weight = 1, subsurface_scale = 0.1),
+                   Hikari.Principled(subsurface_weight = 1, subsurface_scale = noise(xyz()).fac * 0.02);
+                   factor = wave(xyz()).fac),
     ]
     for shader in split_shaders
         store = Raycore.MultiTypeSet(CPU())

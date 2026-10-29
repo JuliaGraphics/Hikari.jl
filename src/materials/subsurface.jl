@@ -14,7 +14,7 @@ const VOLUME_THROUGHPUT_EPSILON = 1f-6
 """
     subsurface_scatter(bsdf, work, accel, sample_idx) -> (bsdf, work)
 
-Pick between a shader's BSDF and its subsurface lobe, in proportion to their shares of the
+Pick between a shader's BSDF and each subsurface lobe, in proportion to their shares of the
 samples, as Cycles' `surface_shader_bsdf_bssrdf_pick` does. Picking the BSDF leaves it without the
 subsurface lobe and the path's throughput divided by its chance; picking subsurface walks inside
 the object to where the light leaves it, and returns a diffuse BSDF there with the work item moved
@@ -23,7 +23,7 @@ BSDF of no samples, which ends the path. A BSDF without a subsurface lobe is ret
 """
 @inline subsurface_scatter(bsdf, work, accel, sample_idx) = (bsdf, work)
 
-# The BSDF keeps its type through every outcome: picking the BSDF takes the subsurface lobe's share
+# The BSDF keeps its type through every outcome: picking the BSDF takes all subsurface shares
 # away, a walk that gets out turns that lobe into the diffuse lobe it exits by and takes every other
 # lobe's share away, and a walk that does not leaves no share at all.
 @propagate_inbounds function subsurface_scatter(bsdf::LobeBSDF{L}, work, accel, sample_idx::Int32) where {L}
@@ -33,30 +33,65 @@ end
 @inline subsurface_scatter(bsdf::LobeBSDF, ::Val{0}, work, accel, sample_idx::Int32) = (bsdf, work)
 
 @propagate_inbounds function subsurface_scatter(bsdf::LobeBSDF, ::Val{K}, work, accel, sample_idx::Int32) where {K}
-    sss = bsdf.lobes[K]
-    sss.sample_weight > 0f0 || return (bsdf, work)
+    weight = subsurface_weight(bsdf.lobes)
+    weight > 0f0 || return (bsdf, work)
     total = bsdf.total
     rng = pcg32_init(UInt64(work.pixel_index) << 32 | UInt64(reinterpret(UInt32, sample_idx)), UInt64(work.depth) + UInt64(0x5353))
     u, rng = pcg32_uniform_f32(rng)
-    if u >= sss.sample_weight / total
-        rest = total - sss.sample_weight
+    selected = subsurface_choice(bsdf.lobes, u * total)
+    if selected == 0
+        rest = total - weight
         rest > 0f0 || return (no_samples(typeof(bsdf.lobes), bsdf.lambda), work)
-        lobes = with_lobe(bsdf.lobes, Val(K), without_samples, identity)
+        lobes = map(without_subsurface_samples, bsdf.lobes)
         return (LobeBSDF(lobes, rest, bsdf.lambda, bsdf.emission, bsdf.dispersive), with_beta(work, work.beta * (total / rest)))
     end
     # The walk traces rays, so what is live across it is held through every traversal: the walk's
     # parameters and the wavelengths, not the lobes. The other slots come back blank, which no
     # evaluation reads, as they take no samples.
-    params, lambda = WalkParams(sss), bsdf.lambda
-    exited, exit_work, n = random_walk(params, work, accel, rng, total / sss.sample_weight)
+    params, sample_weight = picked_walk_params(bsdf.lobes, selected, Val(K))
+    lambda = bsdf.lambda
+    exited, exit_work, n = random_walk(params, work, accel, rng, total / sample_weight)
     exited || return (no_samples(typeof(bsdf.lobes), lambda), work)
-    lobes = with_lobe(typeof(bsdf.lobes), Val(K), exit_lobe(typeof(sss), params, n))
+    # After exiting, only one diffuse lobe remains. Use a fixed subsurface slot
+    # for it regardless of which walk was picked, so the expensive walk and
+    # traversal appear once in the kernel even for a mix of many BSSRDFs.
+    lobes = with_lobe(typeof(bsdf.lobes), Val(K), exit_lobe(typeof(bsdf.lobes[K]), params, n))
     return (LobeBSDF(lobes, 1f0, lambda, SpectralRadiance(0f0), false), exit_work)
 end
 
-"""The position of the last subsurface lobe in a BSDF's lobes, 0 for none: the one a walk starts from, as Cycles picks the last."""
+"""A fixed slot for the diffuse lobe at a walk's exit, or 0 when there are no subsurface lobes."""
 @generated subsurface_slot(::Type{L}) where {L <: Tuple} =
     something(findlast(T -> T <: Weighted{<:SubsurfaceLobe}, fieldtypes(L)), 0)
+
+@generated function subsurface_weight(lobes::L) where {L <: Tuple}
+    weights = [:(lobes[$k].sample_weight) for k in 1:fieldcount(L) if fieldtype(L, k) <: Weighted{<:SubsurfaceLobe}]
+    return foldl((a, b) -> :($a + $b), weights; init = :(0f0))
+end
+
+# The surface BSDFs are one group; each BSSRDF has its own weighted interval.
+# A target outside those intervals selects the surface group (slot zero).
+@generated function subsurface_choice(lobes::L, target::Float32) where {L <: Tuple}
+    slots = findall(T -> T <: Weighted{<:SubsurfaceLobe}, fieldtypes(L))
+    choices = [quote
+        target < lobes[$k].sample_weight && return Int32($k)
+        target -= lobes[$k].sample_weight
+    end for k in slots]
+    return quote
+        $(Expr(:meta, :inline))
+        $(choices...)
+        return Int32(0)
+    end
+end
+
+@generated function picked_walk_params(lobes::L, selected::Int32, ::Val{K}) where {L <: Tuple, K}
+    result = :((WalkParams(lobes[$K]), lobes[$K].sample_weight))
+    for k in 1:fieldcount(L)
+        k == K && continue
+        fieldtype(L, k) <: Weighted{<:SubsurfaceLobe} || continue
+        result = :(selected == $k ? (WalkParams(lobes[$k]), lobes[$k].sample_weight) : $result)
+    end
+    return result
+end
 
 """The lobes with `f` applied to the `K`-th and `g` to every other, unrolled when compiled."""
 @generated with_lobe(lobes::L, ::Val{K}, f, g) where {L <: Tuple, K} =
@@ -74,6 +109,8 @@ end
 end
 
 @inline without_samples(w::Weighted) = Weighted(w.lobe, w.weight, 0f0, w.n, w.t)
+@inline without_subsurface_samples(w::Weighted) = w
+@inline without_subsurface_samples(w::Weighted{<:SubsurfaceLobe}) = without_samples(w)
 """A BSDF of lobes of the types `L` that takes no samples and reflects nothing."""
 @inline no_samples(::Type{L}, lambda::Wavelengths) where {L <: Tuple} =
     LobeBSDF(blank(L), 0f0, lambda, SpectralRadiance(0f0), false)

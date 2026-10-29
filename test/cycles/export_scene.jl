@@ -3,7 +3,7 @@
 # made (Blender 5.2.1, OptiX, 4096 samples):
 #
 #     include("test/cycles/export_scene.jl"); export_cycles_scenes("out/cycles"; samples = 4096)
-#     blender -b -P test/cycles/cycles_render.py -- out/cycles/b1/scene.json out/cycles/b1/cycles.exr OPTIX 1
+#     blender -b --python-exit-code 1 -P test/cycles/cycles_render.py -- out/cycles/b1/scene.json out/cycles/b1/cycles.exr OPTIX 1
 #
 # and the means of each sphere taken with `cycles_sphere_pixels` and `cycles_mean`.
 include(joinpath(@__DIR__, "material_cases.jl"))

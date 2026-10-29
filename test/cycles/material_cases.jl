@@ -129,6 +129,20 @@ const CYCLES_TOON_NODE_CASES = [
         bsdf("ShaderNodeBsdfToon"; properties = (component = "GLOSSY",), Color = [0.7, 0.7, 0.7], Size = 0.4, Smooth = 0.2)),
 ]
 
+const CYCLES_SUBSURFACE_MIX_CASES = let
+    a = (base_color = (0.8, 0.8, 0.8), subsurface_weight = 1, subsurface_scale = 0.15,
+         subsurface_radius = (1, 1, 1), roughness = 0.4)
+    b = (base_color = (0.4, 0.4, 0.4), subsurface_weight = 1, subsurface_scale = 0.03,
+         subsurface_radius = (1, 1, 1), roughness = 0.4)
+    spec(inputs) = Dict("type" => "principled", "inputs" => Dict(pairs(inputs)))
+    [
+        "mix_subsurface_nodes" => (H -> H.Mix(H.Principled(; a...), H.Principled(; b...); factor = 0.35),
+            mix_spec(spec(a), spec(b), 0.35)),
+        "add_subsurface_nodes" => (H -> H.Add(H.Principled(; a...), H.Principled(; b...)),
+            add_spec(spec(a), spec(b))),
+    ]
+end
+
 principled_case((name, inputs)) =
     name => (H -> H.Principled(; inputs...), Dict("type" => "principled", "inputs" => Dict(pairs(inputs))))
 
@@ -138,12 +152,13 @@ const CYCLES_STANDARD_CASES = [
     CYCLES_NODE_CASES;
     map(principled_case, CYCLES_THIN_WALL_CASES)
 ]
-const CYCLES_CASES = [CYCLES_STANDARD_CASES; CYCLES_FILM_NODE_CASES; CYCLES_TOON_NODE_CASES]
+const CYCLES_CASES = [CYCLES_STANDARD_CASES; CYCLES_FILM_NODE_CASES; CYCLES_TOON_NODE_CASES; CYCLES_SUBSURFACE_MIX_CASES]
 # Keep existing reference scenes unchanged: filling their last batch would add
 # interreflections from new spheres and change the old comparison values.
 cycles_batches() = [collect(Iterators.partition(CYCLES_STANDARD_CASES, 8));
                     collect(Iterators.partition(CYCLES_FILM_NODE_CASES, 8));
-                    collect(Iterators.partition(CYCLES_TOON_NODE_CASES, 8))]
+                    collect(Iterators.partition(CYCLES_TOON_NODE_CASES, 8));
+                    collect(Iterators.partition(CYCLES_SUBSURFACE_MIX_CASES, 8))]
 
 const CYCLES_CENTERS = [Point3f(x, y, 0.5f0) for y in (1.4f0, 0f0) for x in (-2.25f0, -0.75f0, 0.75f0, 2.25f0)]
 const CYCLES_SCENE = (radius = 0.5f0, res = 512, world = 0.1f0, max_depth = 8,

@@ -1,5 +1,5 @@
 # Builds a scene.json of export_scene.jl in Blender and renders it with Cycles on the GPU, a linear EXR, timed.
-#   blender -b -P cycles_render.py -- scene.json out.exr device runs
+#   blender -b --python-exit-code 1 -P cycles_render.py -- scene.json out.exr device runs
 import bpy, json, sys, time, math, mathutils
 
 args = sys.argv[sys.argv.index("--") + 1:]
@@ -54,10 +54,7 @@ scene.world = world
 def socket_name(key):
     return " ".join("IOR" if part == "ior" else part.capitalize() for part in key.split("_"))
 
-def principled(inputs):
-    mat = bpy.data.materials.new("principled")
-    mat.use_nodes = True
-    node = mat.node_tree.nodes["Principled BSDF"]
+def configure_principled(nt, node, inputs):
     node.subsurface_method = "RANDOM_WALK"
     for key, value in inputs.items():
         # By iteration: a socket the subsurface method leaves unavailable (Subsurface IOR under
@@ -68,7 +65,6 @@ def principled(inputs):
         sock.default_value = value
     if inputs.get("anisotropic", 0) != 0:
         # Hikari's default tangent: radial around the world's Z axis, (-y, x, 0) of the position.
-        nt = mat.node_tree
         geom = nt.nodes.new("ShaderNodeNewGeometry")
         sep = nt.nodes.new("ShaderNodeSeparateXYZ")
         neg = nt.nodes.new("ShaderNodeMath"); neg.operation = "MULTIPLY"; neg.inputs[1].default_value = -1.0
@@ -78,6 +74,12 @@ def principled(inputs):
         nt.links.new(neg.outputs[0], comb.inputs["X"])
         nt.links.new(sep.outputs["X"], comb.inputs["Y"])
         nt.links.new(comb.outputs[0], node.inputs["Tangent"])
+    return node
+
+def principled(inputs):
+    mat = bpy.data.materials.new("principled")
+    mat.use_nodes = True
+    configure_principled(mat.node_tree, mat.node_tree.nodes["Principled BSDF"], inputs)
     return mat
 
 def diffuse(color):
@@ -102,6 +104,9 @@ def emission(strength):
 
 def shader(nt, m):
     """The output socket of a node tree for a shader spec: a BSDF node, or a mix or sum of two."""
+    if m["type"] == "principled":
+        node = configure_principled(nt, nt.nodes.new("ShaderNodeBsdfPrincipled"), m["inputs"])
+        return node.outputs[0]
     if m["type"] == "bsdf":
         node = nt.nodes.new(m["node"])
         for key, value in m.get("properties", {}).items():
