@@ -1,18 +1,4 @@
-# Resolve backend types by inference, without probing hardware or constructing
-# a device. This keeps the workload portable and avoids baking one backend's
-# concrete names into generated precompile statements.
-function _precompile_device_types()
-    result = DataType[]
-    for method in methods(Mantle.makedevice)
-        signature = Base.unwrap_unionall(method.sig)
-        length(signature.parameters) == 4 || continue
-        api = signature.parameters[2]
-        api isa DataType && isconcretetype(api) && api <: Mantle.Backend || continue
-        device = Core.Compiler.return_type(Mantle.makedevice, Tuple{api, Nothing, Mantle.DebugConfig})
-        device <: Mantle.Device && isconcretetype(device) && push!(result, device)
-    end
-    return unique(result)
-end
+_precompile_device_types() = Mantle._precompile_device_types()
 
 function _precompile_statements()
     mesh = normal_mesh(Tesselation(Sphere(Point3f(0), 1f0), 8))
