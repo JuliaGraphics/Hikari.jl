@@ -4,6 +4,6 @@ if !@isdefined(software_reference_backend)
     function software_reference_backend()
         infos = Mantle.devices()
         index = findfirst(info -> info.kind === :cpu, infos)
-        return index === nothing ? nothing : Mantle.backend(Mantle.Device(infos[index].index))
+        return index === nothing ? nothing : Mantle.Device(infos[index].index)
     end
 end
