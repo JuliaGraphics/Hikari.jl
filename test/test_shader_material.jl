@@ -77,6 +77,11 @@ features(::Hikari.ShaderProgram{F}) where {F} = F & ~(UInt32(3) << Hikari.STACK_
         Hikari.Refraction(color = noise(xyz()).color, roughness = wave(xyz()).fac,
                            ior = 1.3 + xyz().x, normal = bump(noise(xyz()).fac)),
         Hikari.Refraction(distribution = :ggx, roughness = noise(xyz()).fac),
+        Hikari.Glossy(distribution = :beckmann, roughness = noise(xyz()).fac, anisotropy = 0.4),
+        Hikari.Glass(distribution = :ggx, roughness = wave(xyz()).fac,
+                      thin_film_thickness = noise(xyz()).fac * 400),
+        Hikari.Metallic(distribution = :beckmann, base_color = noise(xyz()).color,
+                         thin_film_thickness = wave(xyz()).fac * 300),
         Hikari.Metallic(base_color = noise(xyz()).color, edge_tint = (0.9, 0.8, 0.7), roughness = 0.3,
                         thin_film_thickness = wave(xyz()).fac * 500, thin_film_ior = 1.33),
         Hikari.Mix(Hikari.Glass(color = (0.8, 0.9, 1.0), thin_film_thickness = noise(xyz()).fac * 400),
@@ -185,6 +190,32 @@ end
         tilted = normal_map((1, 0.5, 0.55); space = :world)
         n = only(lobes(Hikari.Glass(normal = tilted))).n
         @test 2f0 * n[3]^2 - 1f0 >= 0.0099f0
+    end
+
+    @testset "standalone microfacet distributions use the selected scattering model" begin
+        for constructor in (Hikari.Glossy, Hikari.Glass, Hikari.Metallic)
+            default = only(lobes(constructor(roughness = 0.7))).lobe
+            @test default.energy > 1f0
+            for (distribution, convention) in ((:beckmann, Hikari.CyclesBeckmann), (:ggx, Hikari.CyclesGGX))
+                m = constructor(roughness = 0.7; distribution)
+                w = only(lobes(m))
+                @test w.lobe isa MicrofacetLobe{<:Any, <:Hikari.FresnelModel, convention}
+                @test w.lobe.energy == 1f0
+                @test w.lobe.alpha_x ≈ 0.49f0
+                @test w.lobe.alpha_y ≈ 0.49f0
+            end
+            @test_throws ArgumentError Hikari.shader_node(constructor(distribution = :invalid))
+        end
+        for constructor in (Hikari.Glass, Hikari.Metallic), distribution in (:beckmann, :ggx)
+            w = only(lobes(constructor(roughness = 0.5, thin_film_thickness = 350; distribution)))
+            @test w.lobe.energy == 1f0
+            @test w.lobe.fresnel.film_thickness == 350f0
+        end
+        glossy = only(lobes(Hikari.Glossy(distribution = :beckmann, roughness = 0.5,
+                                         color = (0.2, 0.4, 0.6), anisotropy = 0.5)))
+        @test glossy.lobe.alpha_x ≈ 0.125f0
+        @test glossy.lobe.alpha_y ≈ 0.5f0
+        @test glossy.weight ≈ Vec3f(0.2, 0.4, 0.6)
     end
 
     @testset "a refraction node retains its distribution and inputs" begin

@@ -64,11 +64,12 @@ end
 
 """
     Glass(; color = (1, 1, 1), roughness = 0, ior = 1.5, normal = nothing,
-          thin_film_thickness = 0, thin_film_ior = 1.33)
+          thin_film_thickness = 0, thin_film_ior = 1.33, distribution = :multi_ggx)
 
 Blender's Glass BSDF: GGX reflection and refraction with the dielectric Fresnel, both tinted by
 `color`, with the multiscatter energy compensation of Cycles' default distribution. `roughness` is
-Blender's, the square root of the GGX alpha.
+Blender's, the square root of the microfacet alpha. `distribution` is the constant
+`:multi_ggx` (Blender's default), `:ggx` or `:beckmann`; the latter two use single scattering.
 """
 @description struct Glass <: Material
     color = (1, 1, 1)
@@ -77,6 +78,7 @@ Blender's, the square root of the GGX alpha.
     normal = nothing
     thin_film_thickness = 0
     thin_film_ior = 1.33
+    distribution = :multi_ggx
 end
 
 """
@@ -97,10 +99,11 @@ end
 
 """
     Glossy(; color = (0.8, 0.8, 0.8), roughness = 0.5, anisotropy = 0, rotation = 0, normal = nothing,
-           tangent = nothing)
+           tangent = nothing, distribution = :multi_ggx)
 
 Blender's Glossy BSDF with the multiscatter GGX distribution: a microfacet reflection tinted by
-`color` at every angle, a mirror at no `roughness`.
+`color` at every angle, a mirror at no `roughness`. `distribution` is the constant
+`:multi_ggx` (Blender's default), `:ggx` or `:beckmann`; the latter two use single scattering.
 """
 @description struct Glossy <: Material
     color = (0.8, 0.8, 0.8)
@@ -109,16 +112,18 @@ Blender's Glossy BSDF with the multiscatter GGX distribution: a microfacet refle
     rotation = 0
     normal = nothing
     tangent = nothing
+    distribution = :multi_ggx
 end
 
 """
     Metallic(; base_color = (0.617, 0.577, 0.540), edge_tint = (0.695, 0.726, 0.770), roughness = 0.5,
              anisotropy = 0, rotation = 0, normal = nothing, tangent = nothing,
-             thin_film_thickness = 0, thin_film_ior = 1.33)
+             thin_film_thickness = 0, thin_film_ior = 1.33, distribution = :multi_ggx)
 
 Blender's Metallic BSDF with the F82 tint Fresnel: `base_color` at normal incidence, `edge_tint`
 towards grazing angles. For a metal of measured complex IOR, as pbrt renders one, use
-[`Conductor`](@ref).
+[`Conductor`](@ref). `distribution` is the constant `:multi_ggx` (Blender's default),
+`:ggx` or `:beckmann`; the latter two use single scattering.
 """
 @description struct Metallic <: Material
     base_color = (0.617, 0.577, 0.540)
@@ -130,6 +135,7 @@ towards grazing angles. For a metal of measured complex IOR, as pbrt renders one
     tangent = nothing
     thin_film_thickness = 0
     thin_film_ior = 1.33
+    distribution = :multi_ggx
 end
 
 """
@@ -251,7 +257,15 @@ normal_input(n) = node_input(n)
 tangent_input(::Nothing) = TextureNodes.radial_tangent()
 tangent_input(t) = node_input(t)
 
-closure(kind::UInt8, inputs...) = BSDFNode(NodeOp.CLOSURE, (kind, 0x00, 0x00), Any[inputs...])
+closure(kind::UInt8, inputs...; distribution::UInt8 = 0x00) =
+    BSDFNode(NodeOp.CLOSURE, (kind, distribution, 0x00), Any[inputs...])
+
+function distribution_mode(m::Union{Glass, Glossy, Metallic})
+    m.distribution === :multi_ggx && return 0x00
+    m.distribution === :ggx && return 0x01
+    m.distribution === :beckmann && return 0x02
+    throw(ArgumentError("a $(nameof(typeof(m)))'s `distribution` must be :multi_ggx, :ggx or :beckmann, got $(repr(m.distribution))"))
+end
 
 """
     shader_node(material) -> ShaderNode
@@ -266,9 +280,10 @@ function shader_node(m::Diffuse)
     return closure(ClosureKind.DIFFUSE, node_input(m.color), node_input(m.roughness), normal_input(m.normal))
 end
 function shader_node(m::Glass)
+    distribution = distribution_mode(m)
     inputs = (node_input(m.color), node_input(m.roughness), node_input(m.ior), normal_input(m.normal))
-    _constant(m.thin_film_thickness, 0) && return closure(ClosureKind.GLASS, inputs...)
-    return closure(ClosureKind.GLASS_FILM, inputs..., node_input(m.thin_film_thickness), node_input(m.thin_film_ior))
+    _constant(m.thin_film_thickness, 0) && return closure(ClosureKind.GLASS, inputs...; distribution)
+    return closure(ClosureKind.GLASS_FILM, inputs..., node_input(m.thin_film_thickness), node_input(m.thin_film_ior); distribution)
 end
 function shader_node(m::Refraction)
     m.distribution in (:beckmann, :ggx) ||
@@ -278,12 +293,13 @@ function shader_node(m::Refraction)
 end
 shader_node(m::Glossy) =
     closure(ClosureKind.GLOSSY, node_input(m.color), node_input(m.roughness), node_input(m.anisotropy),
-            node_input(m.rotation), normal_input(m.normal), tangent_input(m.tangent))
+            node_input(m.rotation), normal_input(m.normal), tangent_input(m.tangent); distribution = distribution_mode(m))
 function shader_node(m::Metallic)
+    distribution = distribution_mode(m)
     inputs = (node_input(m.base_color), node_input(m.edge_tint), node_input(m.roughness),
               node_input(m.anisotropy), node_input(m.rotation), normal_input(m.normal), tangent_input(m.tangent))
-    _constant(m.thin_film_thickness, 0) && return closure(ClosureKind.METALLIC, inputs...)
-    return closure(ClosureKind.METALLIC_FILM, inputs..., node_input(m.thin_film_thickness), node_input(m.thin_film_ior))
+    _constant(m.thin_film_thickness, 0) && return closure(ClosureKind.METALLIC, inputs...; distribution)
+    return closure(ClosureKind.METALLIC_FILM, inputs..., node_input(m.thin_film_thickness), node_input(m.thin_film_ior); distribution)
 end
 shader_node(m::Translucent) = closure(ClosureKind.TRANSLUCENT, node_input(m.color), normal_input(m.normal))
 shader_node(m::Sheen) = closure(ClosureKind.SHEEN, node_input(m.color), node_input(m.roughness), normal_input(m.normal))

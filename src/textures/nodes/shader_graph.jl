@@ -59,7 +59,10 @@ bsdf_nodes(g::ShaderGraph) = Tuple{map(bsdf_node, g.closures)...}
 function bsdf_node(c::NodeCore)
     c.op == NodeOp.CLOSURE || return principled_node(c)
     c.mode[1] == ClosureKind.SUBSURFACE && _zero(c.inputs[3]) && return SubsurfaceBSDF{false}
-    return closure_node(c.mode[1])
+    node = closure_node(c.mode[1])
+    c.mode[2] == 0x00 && return node
+    convention = c.mode[2] == 0x02 ? CyclesBeckmann : CyclesGGX
+    return SingleScatterBSDF{node, convention}
 end
 function closure_node(kind::UInt8)
     kind == ClosureKind.DIFFUSE && return DiffuseBSDF

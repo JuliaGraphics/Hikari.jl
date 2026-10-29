@@ -624,6 +624,14 @@ reflection lobe its reflection; a thin glass the reflection it mirrors through t
 @inline microfacet_sample_wm(l::MicrofacetLobe{<:Any, <:FresnelModel, CyclesBeckmann}, wo::Vec3f, u::Point2f) =
     beckmann_sample_wm(wo, u, l.alpha_x, l.alpha_y)
 
+# Cycles 5.2.1 evaluates all opposite-hemisphere pairs (its evaluator has a
+# TODO for refraction-configuration validation). pbrt rejects pairs whose
+# directions lie on the same side of the half vector. Keep the conventions
+# separate: this changes direct-light evaluation, even for unsampleable pairs.
+@inline valid_refraction_pair(::MicrofacetLobe, cos_hi::Float32, cos_ht::Float32) = cos_hi > 0f0 && cos_ht < 0f0
+@inline valid_refraction_pair(::MicrofacetLobe{<:Any, <:FresnelModel, <:Union{CyclesGGX, CyclesBeckmann}},
+                              ::Float32, ::Float32) = true
+
 @inline function lobe_f(l::MicrofacetLobe{Mode}, wo::Vec3f, wi::Vec3f, lambda::Wavelengths,
                         s::Scattering = AnyScattering()) where {Mode}
     zero = (SpectralRadiance(0f0), 0f0)
@@ -640,8 +648,8 @@ reflection lobe its reflection; a thin glass the reflection it mirrors through t
     H = H / len_h
     H[3] < 0f0 && (H = -H)
     cos_hi = dot(H, wo)
-    (transmission && (cos_hi <= 0f0 || dot(H, wi) >= 0f0)) && return zero
-    R, T = fresnel_rt(l.fresnel, cos_hi, l.ior, lambda)
+    (transmission && !valid_refraction_pair(l, cos_hi, dot(H, wi))) && return zero
+    R, T = fresnel_rt(l.fresnel, abs(cos_hi), l.ior, lambda)
     average(R) + average(T) > 0f0 || return zero
     pr, pt = microfacet_choice(l, R, T, s)
     lobe_pdf = pr + pt > 0f0 ? (transmission ? pt : pr) / (pr + pt) : 0f0
@@ -795,11 +803,12 @@ samples scaled by its albedo seen from `wo`, at the cosine `mu` with its normal,
 compensation, of the lobe roughened first where the path regularizes; and what it reflects, which
 the layers under it give up.
 """
-@inline function setup_fresnel(s::LobeSetup, w::Weighted{<:MicrofacetLobe{Mode}, Vec3f}, mu::Float32) where {Mode}
+@inline function setup_fresnel(s::LobeSetup, w::Weighted{<:MicrofacetLobe{Mode}, Vec3f}, mu::Float32,
+                               ::Val{Multi} = Val(true)) where {Mode, Multi}
     w = s.regularize ? regularized(w) : w
     refl, trans = estimate_albedo(s.lut, w.lobe, mu)
     w = Weighted(w.lobe, w.weight, w.sample_weight * _avg(refl .+ trans), w.n, w.t)
-    return preserve_energy(s.lut, w, mu, single_scatter_fresnel(w.lobe.fresnel, w.lobe, Mode === :glass)), refl
+    return Multi ? preserve_energy(s.lut, w, mu, single_scatter_fresnel(w.lobe.fresnel, w.lobe, Mode === :glass)) : w, refl
 end
 @inline sheen(s::LobeSetup, weight::Vec3f, n::Vec3f, roughness::Float32, wo::Vec3f) = sheen(s.lut, weight, n, roughness, wo)
 

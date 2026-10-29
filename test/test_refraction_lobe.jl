@@ -5,6 +5,26 @@ using GeometryBasics: Vec3f, Point2f
     lambda = Hikari.sample_wavelengths_visible(0.4f0)
     color = Hikari.SpectralRadiance(1f0)
     n = Vec3f(0, 0, 1)
+    @testset "Cycles and pbrt keep their transmission evaluation conventions" begin
+        # Double-precision evaluations of Cycles 5.2.1's bsdf_microfacet_eval.
+        # Cycles evaluates these direction pairs, while pbrt rejects them:
+        # both directions lie on the same side of their transmission half vector.
+        for (ior, wo, wi, expected_f, expected_pdf) in (
+            (1.5f0, n, normalize(Vec3f(1, 0, -0.2)), 0.05073076513968418, 0.015217808409584664),
+            (1f0 / 1.5f0, normalize(Vec3f(0.9, 0, 0.44)), normalize(Vec3f(0.99, 0, -0.1)),
+             0.06347375942319713, 0.014066290727341803),
+        )
+            fresnel = Hikari.DielectricFresnel(color, color)
+            cycles = Hikari.MicrofacetLobe{:glass}(fresnel; alpha_x = 0.36f0, ior)
+            f, pdf = Hikari.lobe_f(cycles, wo, wi, lambda)
+            @test all(x -> isapprox(x, expected_f; rtol = 2e-5), f.data)
+            @test pdf ≈ expected_pdf rtol = 2e-5
+            for convention in (Hikari.PbrtRadiance(), Hikari.PbrtImportance())
+                pbrt = Hikari.MicrofacetLobe{:glass}(fresnel; alpha_x = 0.36f0, ior, convention)
+                @test Hikari.lobe_f(pbrt, wo, wi, lambda) == (Hikari.SpectralRadiance(0f0), 0f0)
+            end
+        end
+    end
     @testset "Beckmann math" begin
         # Independently evaluated double-precision reference values.
         for (x, expected) in (
@@ -61,14 +81,22 @@ using GeometryBasics: Vec3f, Point2f
         rough = Hikari.MicrofacetLobe{:refraction}(Hikari.NoFresnel(color); alpha_x = 0.25f0, ior = 1.45f0, convention)
         @test Hikari.lobe_f(rough, n, n, lambda) == (Hikari.SpectralRadiance(0f0), 0f0)
         # At normal incidence every sampled microfacet refracts below the
-        # surface for eta > 1. Integrate the directional PDF independently.
+        # surface for eta > 1. The sampleable part of the directional PDF
+        # integrates to one. Cycles' evaluator also assigns density to pairs
+        # the sampler cannot generate; do not confuse that with sampling mass.
         count = 65536
-        mass = sum(1:count) do i
+        mass, extra = sum(1:count) do i
             z = Float32((i - 0.5) / count)
             wi = Vec3f(sqrt(max(1f0 - z^2, 0f0)), 0, -z)
-            last(Hikari.lobe_f(rough, n, wi, lambda))
+            h = normalize(-(rough.ior * wi + n))
+            pdf = last(Hikari.lobe_f(rough, n, wi, lambda))
+            sampleable = dot(h, n) * dot(h, wi) < 0f0
+            Hikari.SVector{2, Float64}(sampleable ? pdf : 0f0, sampleable ? 0f0 : pdf)
         end * (2π / count)
         @test mass ≈ 1 atol = 0.003
+        # Independent double-precision quadrature of the evaluator-only part.
+        expected_extra = convention isa Hikari.CyclesGGX ? 0.0288683602763 : 0.0
+        @test extra ≈ expected_extra atol = 1e-5
         samples = [Hikari.lobe_sample(rough, wo, Point2f((i - 0.5) / 1024, mod(i * 0.61803398875, 1)),
                                      0.5f0, lambda) for i in 1:1024]
         valid = filter(s -> s[4] != 0x00, samples)

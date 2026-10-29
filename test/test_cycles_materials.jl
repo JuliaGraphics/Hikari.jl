@@ -109,6 +109,14 @@ const CYCLES_REFERENCE = Dict(
     "glossy_anisotropic_negative" => ((0.2870853, 0.2870853, 0.2870853), 0.015),
     "metallic_anisotropic_rough" => ((0.18221029, 0.18221029, 0.18221036), 0.015),
     "principled_anisotropic_rough" => ((0.15090874, 0.15090874, 0.15090874), 0.015),
+    "glossy_ggx" => ((0.15402619, 0.15404563, 0.15406099), 0.015),
+    "glossy_beckmann_anisotropic" => ((0.34355261, 0.34362446, 0.34367045), 0.015),
+    "glass_ggx" => ((0.12449886, 0.12495617, 0.12498373), 0.025),
+    "glass_beckmann" => ((0.12330530, 0.12354221, 0.12405646), 0.015),
+    "metallic_ggx" => ((0.11103971, 0.11104051, 0.11104309), 0.015),
+    "metallic_beckmann_anisotropic" => ((0.17549248, 0.17556473, 0.17569356), 0.015),
+    "glass_beckmann_film" => ((0.13129043, 0.13589388, 0.13863789), 0.03),
+    "metallic_ggx_film" => ((0.10928626, 0.14351861, 0.13278424), 0.035),
 )
 
 function render_cycles_batch(cases; samples)
@@ -124,7 +132,8 @@ function render_cycles_batch(cases; samples)
     film = Hikari.Film(backend, Hikari.Film(Point2f(CYCLES_SCENE.res, CYCLES_SCENE.res)))
     cam = CYCLES_SCENE.camera
     camera = Hikari.PerspectiveCamera(cam.position, cam.lookat, film; up = cam.up, fov = cam.fov)
-    vp = Hikari.VolPath(; samples, max_depth = CYCLES_SCENE.max_depth, regularize = false)
+    # Cycles disables direct and indirect clamping in the reference render.
+    vp = Hikari.VolPath(; samples, max_depth = CYCLES_SCENE.max_depth, regularize = false, max_component_value = Inf32)
     vp(scene, film, camera)
     img = Array(film.framebuffer)
     close(vp)

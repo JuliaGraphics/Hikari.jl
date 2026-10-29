@@ -196,6 +196,36 @@ const CYCLES_ANISOTROPY_CASES = [
              "roughness" => 1, "anisotropic" => 0.7, "tangent" => [1, 0, 0]))),
 ]
 
+# Single-scattering alternatives to the default multiscatter GGX. Explicit
+# tangents make anisotropic cases independent of object-coordinate generation.
+const CYCLES_DISTRIBUTION_CASES = [
+    "glossy_ggx" => (H -> H.Glossy(color = (0.6, 0.6, 0.6), roughness = 0.7, distribution = :ggx),
+        bsdf("ShaderNodeBsdfGlossy"; properties = (distribution = "GGX",), Color = [0.6, 0.6, 0.6], Roughness = 0.7)),
+    "glossy_beckmann_anisotropic" => (H -> H.Glossy(roughness = 0.6, anisotropy = -0.5, tangent = (1, 0, 0),
+                                                   distribution = :beckmann),
+        bsdf("ShaderNodeBsdfGlossy"; properties = (distribution = "BECKMANN",), Roughness = 0.6,
+              Anisotropy = -0.5, Tangent = [1, 0, 0])),
+    "glass_ggx" => (H -> H.Glass(roughness = 0.6, distribution = :ggx),
+        bsdf("ShaderNodeBsdfGlass"; properties = (distribution = "GGX",), Roughness = 0.6)),
+    "glass_beckmann" => (H -> H.Glass(roughness = 0.6, distribution = :beckmann),
+        bsdf("ShaderNodeBsdfGlass"; properties = (distribution = "BECKMANN",), Roughness = 0.6)),
+    "metallic_ggx" => (H -> H.Metallic(base_color = (0.6, 0.6, 0.6), edge_tint = (0.8, 0.8, 0.8),
+                                      roughness = 0.7, distribution = :ggx),
+        bsdf("ShaderNodeBsdfMetallic"; properties = (distribution = "GGX",), var"Base Color" = [0.6, 0.6, 0.6],
+              var"Edge Tint" = [0.8, 0.8, 0.8], Roughness = 0.7)),
+    "metallic_beckmann_anisotropic" => (H -> H.Metallic(base_color = (0.6, 0.6, 0.6), edge_tint = (0.8, 0.8, 0.8),
+        roughness = 0.6, anisotropy = 0.5, tangent = (1, 0, 0), distribution = :beckmann),
+        bsdf("ShaderNodeBsdfMetallic"; properties = (distribution = "BECKMANN",), var"Base Color" = [0.6, 0.6, 0.6],
+              var"Edge Tint" = [0.8, 0.8, 0.8], Roughness = 0.6, Anisotropy = 0.5, Tangent = [1, 0, 0])),
+    "glass_beckmann_film" => (H -> H.Glass(roughness = 0.4, distribution = :beckmann, thin_film_thickness = 400),
+        bsdf("ShaderNodeBsdfGlass"; properties = (distribution = "BECKMANN",), Roughness = 0.4,
+              var"Thin Film Thickness" = 400)),
+    "metallic_ggx_film" => (H -> H.Metallic(base_color = (0.6, 0.6, 0.6), edge_tint = (0.8, 0.8, 0.8),
+        roughness = 0.5, distribution = :ggx, thin_film_thickness = 400),
+        bsdf("ShaderNodeBsdfMetallic"; properties = (distribution = "GGX",), var"Base Color" = [0.6, 0.6, 0.6],
+              var"Edge Tint" = [0.8, 0.8, 0.8], Roughness = 0.5, var"Thin Film Thickness" = 400)),
+]
+
 principled_case((name, inputs)) =
     name => (H -> H.Principled(; inputs...), Dict("type" => "principled", "inputs" => Dict(pairs(inputs))))
 
@@ -206,7 +236,7 @@ const CYCLES_STANDARD_CASES = [
     map(principled_case, CYCLES_THIN_WALL_CASES)
 ]
 const CYCLES_CASES = [CYCLES_STANDARD_CASES; CYCLES_FILM_NODE_CASES; CYCLES_TOON_NODE_CASES; CYCLES_SUBSURFACE_MIX_CASES;
-                      CYCLES_STANDALONE_SUBSURFACE_CASES; CYCLES_REFRACTION_CASES; CYCLES_ANISOTROPY_CASES]
+                      CYCLES_STANDALONE_SUBSURFACE_CASES; CYCLES_REFRACTION_CASES; CYCLES_ANISOTROPY_CASES; CYCLES_DISTRIBUTION_CASES]
 # Keep existing reference scenes unchanged: filling their last batch would add
 # interreflections from new spheres and change the old comparison values.
 cycles_batches() = [collect(Iterators.partition(CYCLES_STANDARD_CASES, 8));
@@ -215,7 +245,8 @@ cycles_batches() = [collect(Iterators.partition(CYCLES_STANDARD_CASES, 8));
                     collect(Iterators.partition(CYCLES_SUBSURFACE_MIX_CASES, 8));
                     collect(Iterators.partition(CYCLES_STANDALONE_SUBSURFACE_CASES, 8));
                     collect(Iterators.partition(CYCLES_REFRACTION_CASES, 8));
-                    collect(Iterators.partition(CYCLES_ANISOTROPY_CASES, 8))]
+                    collect(Iterators.partition(CYCLES_ANISOTROPY_CASES, 8));
+                    collect(Iterators.partition(CYCLES_DISTRIBUTION_CASES, 8))]
 
 const CYCLES_CENTERS = [Point3f(x, y, 0.5f0) for y in (1.4f0, 0f0) for x in (-2.25f0, -0.75f0, 0.75f0, 2.25f0)]
 const CYCLES_SCENE = (radius = 0.5f0, res = 512, world = 0.1f0, max_depth = 8,

@@ -159,7 +159,8 @@ instruction_count(::Type{MetallicFilmBSDF}) = cld(10, NODE_ARGS)
     reflection_node(Val(true), s, prog, i, sc, lut, Val(true))
 
 @inline function reflection_node(::Val{Metal}, s, prog, i::Int32, sc::ShaderContext, lut,
-                                 ::Val{Film} = Val(false)) where {Metal, Film}
+                                 ::Val{Film} = Val(false), convention::MicrofacetConvention = CyclesGGX(),
+                                 multiscatter::Val = Val(true)) where {Metal, Film}
     chunks = Film ? instruction_count(MetallicFilmBSDF) : 1
     base = 2 + Metal
     w = node_f(s, prog, i, 1, chunks, sc)
@@ -176,12 +177,12 @@ instruction_count(::Type{MetallicFilmBSDF}) = cld(10, NODE_ARGS)
         film_ior = Film ? max(node_f(s, prog, i, 10, chunks, sc), 1f-5) : 0f0
         fresnel = F82Tint(_saturate3(node_v(s, prog, i, 2, chunks, sc)),
                           _saturate3(node_v(s, prog, i, 3, chunks, sc)), thickness, film_ior)
-        Weighted(MicrofacetLobe{:reflection}(fresnel; alpha_x = ax, alpha_y = ay), Vec3f(w), n; t)
+        Weighted(MicrofacetLobe{:reflection}(fresnel; alpha_x = ax, alpha_y = ay, convention), Vec3f(w), n; t)
     else
         color = max.(node_v(s, prog, i, 2, chunks, sc), 0f0)
-        Weighted(MicrofacetLobe{:reflection}(NoFresnel(color); alpha_x = ax, alpha_y = ay), w * color, n; t)
+        Weighted(MicrofacetLobe{:reflection}(NoFresnel(color); alpha_x = ax, alpha_y = ay, convention), w * color, n; t)
     end
-    return ((kept(first(setup_fresnel(lut, weighted, dot(n, sc.wo)))),), Vec3f(0), Vec3f(0))
+    return ((kept(first(setup_fresnel(lut, weighted, dot(n, sc.wo), multiscatter))),), Vec3f(0), Vec3f(0))
 end
 
 """Blender's Glass BSDF: GGX reflection and refraction with the real dielectric Fresnel, tinted by `color`."""
@@ -192,7 +193,8 @@ instruction_count(::Type{<:Union{GlassBSDF, GlassFilmBSDF}}) = 1
     glass_node(Val(false), s, prog, i, sc, lut)
 @inline node_lobes(::Type{GlassFilmBSDF}, s, prog, i::Int32, sc::ShaderContext, lut) =
     glass_node(Val(true), s, prog, i, sc, lut)
-@inline function glass_node(::Val{Film}, s, prog, i::Int32, sc::ShaderContext, lut) where {Film}
+@inline function glass_node(::Val{Film}, s, prog, i::Int32, sc::ShaderContext, lut,
+                             convention::MicrofacetConvention = CyclesGGX(), multiscatter::Val = Val(true)) where {Film}
     color = max.(node_v(s, prog, i, 2, 1, sc), 0f0)
     alpha = clamp(node_f(s, prog, i, 3, 1, sc), 0f0, 1f0)^2
     ior = max(node_f(s, prog, i, 4, 1, sc), 1f-5)
@@ -205,10 +207,24 @@ instruction_count(::Type{<:Union{GlassBSDF, GlassFilmBSDF}}) = 1
     else
         DielectricFresnel(color, color)
     end
-    lobe = MicrofacetLobe{:glass}(fresnel; alpha_x = alpha, ior = back ? 1f0 / ior : ior)
+    lobe = MicrofacetLobe{:glass}(fresnel; alpha_x = alpha, ior = back ? 1f0 / ior : ior, convention)
     weighted = Weighted(lobe, Vec3f(node_f(s, prog, i, 1, 1, sc)), n)
-    return ((kept(first(setup_fresnel(lut, weighted, dot(n, sc.wo)))),), Vec3f(0), Vec3f(0))
+    return ((kept(first(setup_fresnel(lut, weighted, dot(n, sc.wo), multiscatter))),), Vec3f(0), Vec3f(0))
 end
+
+"""A Glass, Glossy or Metallic node using single-scattering GGX or Beckmann, fixed in its type."""
+struct SingleScatterBSDF{B <: ShaderBSDF, C <: MicrofacetConvention} <: ShaderBSDF end
+instruction_count(::Type{SingleScatterBSDF{B, C}}) where {B, C} = instruction_count(B)
+@inline node_lobes(::Type{SingleScatterBSDF{GlossyBSDF, C}}, s, prog, i::Int32, sc::ShaderContext, lut) where {C} =
+    reflection_node(Val(false), s, prog, i, sc, lut, Val(false), C(), Val(false))
+@inline node_lobes(::Type{SingleScatterBSDF{MetallicBSDF, C}}, s, prog, i::Int32, sc::ShaderContext, lut) where {C} =
+    reflection_node(Val(true), s, prog, i, sc, lut, Val(false), C(), Val(false))
+@inline node_lobes(::Type{SingleScatterBSDF{MetallicFilmBSDF, C}}, s, prog, i::Int32, sc::ShaderContext, lut) where {C} =
+    reflection_node(Val(true), s, prog, i, sc, lut, Val(true), C(), Val(false))
+@inline node_lobes(::Type{SingleScatterBSDF{GlassBSDF, C}}, s, prog, i::Int32, sc::ShaderContext, lut) where {C} =
+    glass_node(Val(false), s, prog, i, sc, lut, C(), Val(false))
+@inline node_lobes(::Type{SingleScatterBSDF{GlassFilmBSDF, C}}, s, prog, i::Int32, sc::ShaderContext, lut) where {C} =
+    glass_node(Val(true), s, prog, i, sc, lut, C(), Val(false))
 
 """Blender's single-scattering Refraction BSDF, with its distribution fixed in the shader's type."""
 struct RefractionBSDF{C <: MicrofacetConvention} <: ShaderBSDF end

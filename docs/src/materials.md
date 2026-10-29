@@ -31,9 +31,9 @@ end
 ```
 
 Materials are Blender's BSDFs, with Blender's inputs and defaults, plus the pbrt-v4 models Hikari
-needs to match pbrt's renders. Any input takes a number, a colour, an image (`Hikari.Texture`) or a
-node graph from [`Hikari.TextureNodes`](@ref), and the BSDFs nest into one another as a Blender
-shader graph does.
+needs to match pbrt's renders. Numeric and colour inputs take a number, a colour, an image
+(`Hikari.Texture`) or a node graph from [`Hikari.TextureNodes`](@ref). Distribution and component
+choices are constants. The BSDFs nest into one another as a Blender shader graph does.
 
 | Blender's BSDFs | pbrt-v4's models |
 |-----------------|------------------|
@@ -67,6 +67,11 @@ Hikari.Diffuse(color = (0.9, 0.9, 0.9), roughness = 0.5) # rough, like chalk
 `Metallic` is Blender's artist-friendly metal: `base_color` at normal incidence, `edge_tint` at
 grazing angles.
 
+`Glossy`, `Metallic` and `Glass` use `distribution = :multi_ggx` by default, as Blender does.
+Set `distribution = :ggx` or `:beckmann` for single scattering, which loses energy on rough
+surfaces. Distribution choices are fixed in the shader's type; changing one selects a different
+shading kernel, while edits to roughness and colour reuse that kernel.
+
 `Metallic` and `Glass` also take `thin_film_thickness` in nanometres and
 `thin_film_ior`, as their Blender nodes do. A zero thickness uses the original
 shader layout. Hikari evaluates interference at the path's wavelengths; Cycles
@@ -77,6 +82,7 @@ metal regression scene), even when the interface equations agree.
 ```julia
 Hikari.Glossy(color = (0.95, 0.95, 0.95), roughness = 0)                    # mirror
 Hikari.Metallic(base_color = (0.9, 0.64, 0.54), roughness = 0.2)            # copper
+Hikari.Glossy(distribution = :beckmann, roughness = 0.4, anisotropy = 0.5)
 ```
 
 ### Glass
