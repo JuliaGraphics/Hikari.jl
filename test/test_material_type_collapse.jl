@@ -31,14 +31,7 @@ device_types(scene) = [eltype(v) for v in scene.materials.static.data]
 
 fresh_scene() = Hikari.Scene(; hw_accel = false)
 
-# Download texture owners, not the device pointer table: Array(static.textures)
-# copies handles whose payloads still name device memory.
-function host_materials(mats)
-    data = Tuple(copy(mats.data_vectors[T]) for T in mats.data_order)
-    textures = Tuple([Array(a) for a in mats.texture_gpu_arrays if typeof(a) === T]
-                     for T in mats.texture_order)
-    return Raycore.StaticMultiTypeSet(data, textures)
-end
+include("host_materials.jl")
 
 img_tex(v) = Hikari.Texture(fill(Hikari.RGBSpectrum(v, v, v), 4, 4))
 float_tex(v) = Hikari.Texture(fill(Float32(v), 4, 4))
