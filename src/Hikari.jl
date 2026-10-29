@@ -302,9 +302,8 @@ Mantle.@setup_workload begin
         # (Measured when the CPU build was still here: it was worth 0.96 s of
         # load_pbrt time.)
         parse_pbrt_string(_PRECOMPILE_SCENE)
-        # What is parameterised on `LavaBackend` is where the time is: ~29 s of
-        # Julia inference per session, 22 s of it in ten signatures. `precompile`
-        # infers those without running them.
+        # Scene insertion and synchronization need concrete device types. Infer
+        # those types and precompile their host methods without running them.
         _precompile_statements()
     end
 end

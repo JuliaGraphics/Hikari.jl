@@ -11,9 +11,6 @@ ordinary kernels, which Mantle lowers to a ray query, so it needs no device-side
 name from Lava either. The count is **zero names in zero files**, and any
 reference at all is the split coming undone.
 
-`src/precompile_statements.jl` is skipped: generated from a compile trace, it
-names whatever types the run saw.
-
 Parsed rather than grepped — `import Lava: a, b,` continues across lines, and a
 regex either misses the continuation or matches the word in a comment.
 """
@@ -24,8 +21,6 @@ using Test
 # Lava, which can only be a runtime reference: the shader vocabulary is
 # `KernelInterface`'s and reaches Hikari through Mantle.
 const ALLOWED_LAVA_REFS = Dict{String, Dict{String, Int}}()
-
-const GENERATED_SOURCES = ["precompile_statements.jl"]
 
 """
 Every `Lava.<name>` and every name in an `import Lava: …` list, as `name =>
@@ -70,7 +65,6 @@ end
     actual = Dict{String, Dict{String, Int}}()
     for (root, _, files) in walkdir(src), file in files
         endswith(file, ".jl") || continue
-        file in GENERATED_SOURCES && continue
         path = joinpath(root, file)
         refs = lava_references(path)
         isempty(refs) || (actual[relpath(path, pkgdir(Hikari))] = refs)
