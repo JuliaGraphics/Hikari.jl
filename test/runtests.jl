@@ -60,6 +60,7 @@ const TEST_FILES = [
     "test_environment_map_domain.jl",
     "test_empty_scene.jl",
     "materials.jl",
+    "test_spectrum_equality.jl",
     "test_curved_transport.jl",
     "test_step_integral.jl",
     "test_synchrotron.jl",

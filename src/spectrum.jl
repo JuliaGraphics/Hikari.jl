@@ -13,7 +13,10 @@ end
     )
 end
 
-Base.:(==)(c::C, i) where C<:Spectrum = all(c.c .== i)
+# Keep component comparisons limited to component values. Accepting every RHS
+# also intersects unrelated comparisons inferred as `==(Any, T)`, invalidating
+# their callers whenever Hikari loads.
+Base.:(==)(c::C, i::Union{Number, AbstractArray, Tuple}) where C<:Spectrum = all(c.c .== i)
 Base.:(==)(c1::C, c2::C) where C<:Spectrum = all(c1.c .== c2.c)
 Base.:+(c1::C, c2::C) where C<:Spectrum = C(c1.c .+ c2.c)
 Base.:+(c1::C, c) where C<:Spectrum = C(c1.c .+ c)
