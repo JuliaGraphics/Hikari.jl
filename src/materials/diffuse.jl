@@ -22,6 +22,13 @@ renders the same lobe faster.
     displacement = nothing
 end
 
+# A normal changes Diffuse to a ShaderMaterial before conversion. Its own
+# kernel never reads this field, so absence stays a zero-size Nothing instead
+# of another 32-byte handle in every material record.
+to_device_material(store, mat::Diffuse{C, R, Nothing, D}) where {C, R, D} =
+    Diffuse(device_param(store, mat.color), device_param(store, mat.roughness), nothing,
+            device_param(store, mat.displacement))
+
 """
 A diffuse material's BSDF: Lambert of `color` clamped to [0, 1], as pbrt-v4's `DiffuseMaterial`, or
 the energy-preserving Oren-Nayar lobe with roughness.

@@ -306,7 +306,8 @@ Rewrite every texture-carrying field of `mat` into a `TexHandle`, storing
 whatever needs a slot in `dhv`. A field carries a texture exactly when its
 declared type is a free type parameter of the struct — concretely-typed fields
 (`eta::Float32`, `remap_roughness::Bool`, `max_depth::Int32`, `SetKey`s) are
-left to Raycore's own conversion.
+left to Raycore's own conversion. A material-specific conversion may retain a
+statically unused field without a handle, such as Diffuse's absent normal.
 """
 @generated function to_device_material(dhv, mat::M) where {M <: Material}
     wrapper = Base.typename(M).wrapper

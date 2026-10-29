@@ -59,10 +59,11 @@ host_static(store) = host_materials(store)
         ts = device_types(scene)
         @test length(ts) == 1
         @test ts[1] <: Hikari.Diffuse
-        # Every parameter is a handle — checked without pinning the arity, so
-        # adding a parameter (as `displacement` did) doesn't break the test for
-        # the wrong reason.
-        @test all(p -> p === Hikari.TexHandle, ts[1].parameters)
+        # A default normal is unused by Diffuse's own kernel and takes no
+        # space; every texture-carrying field still collapses to one handle.
+        @test fieldtype(ts[1], :normal) === Nothing
+        @test all(f -> fieldtype(ts[1], f) === Hikari.TexHandle, (:color, :roughness, :displacement))
+        @test sizeof(ts[1]) == 3sizeof(Hikari.TexHandle)
     end
 
     @testset "roughness texture does not fork Conductor" begin
