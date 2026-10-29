@@ -12,6 +12,7 @@ function _precompile_statements()
     state_kwargs = NamedTuple{(:max_depth, :rr_depth, :lanes, :scene_radius, :samples_per_pixel,
                                 :sampler_seed, :accumulation_eltype, :sensor, :has_media),
                                Tuple{Int32, Int32, Int, Float32, Int, UInt32, DataType, PixelSensor, Bool}}
+    render_kwargs = NamedTuple{(:samples, :finalize_framebuffer), Tuple{Int, Bool}}
     for device in _precompile_device_types()
         films = Base.uniontypes(Core.Compiler.return_type(Film, Tuple{device, typeof(film)}))
         flags = NamedTuple{(:has_media, :has_lights, :emitters_reachable, :crossings), Tuple{Bool, Bool, Bool, Bool}}
@@ -28,6 +29,17 @@ function _precompile_statements()
         for scene in scenes
             isconcretetype(scene) && scene <: Scene || continue
             push!(signatures, Tuple{typeof(sync!), scene})
+            # Compile the render entry points with the same concrete scene and
+            # film types as the initializers above. These only infer and emit
+            # host code; no scene, device, or GPU kernel is constructed here.
+            for gpu_film in films
+                isconcretetype(gpu_film) && gpu_film <: Film || continue
+                for camera in (PerspectiveCamera, MatrixCamera)
+                    push!(signatures, Tuple{VolPath, scene, gpu_film, camera})
+                    push!(signatures, Tuple{typeof(Core.kwcall), render_kwargs,
+                                            typeof(render!), VolPath, scene, gpu_film, camera})
+                end
+            end
             push!(signatures, Tuple{typeof(Core.kwcall), state_kwargs, Type{VolPathState},
                                     device, Int, Int, Raycore.MultiTypeSet{device}})
             triangles = Core.Compiler.return_type(Adapt.adapt, Tuple{device, Vector{Raycore.Triangle{TriangleMeta}}})
