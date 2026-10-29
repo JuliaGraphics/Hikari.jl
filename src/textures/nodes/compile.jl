@@ -131,6 +131,7 @@ const _OP_FEATURES = Dict(
     NodeOp.INVERT => NodeFeature.COLOR, NodeOp.RGB_TO_BW => NodeFeature.COLOR, NodeOp.SEPARATE_COLOR => NodeFeature.COLOR,
     NodeOp.COMBINE_COLOR => NodeFeature.COLOR, NodeOp.RAMP => NodeFeature.RAMP, NodeOp.MAPPING => NodeFeature.VECTOR,
     NodeOp.VECTOR_ROTATE => NodeFeature.VECTOR, NodeOp.IMAGE => NodeFeature.IMAGE, NodeOp.NOISE => NodeFeature.NOISE,
+    NodeOp.CAMERA => NodeFeature.VECTOR, NodeOp.WINDOW => NodeFeature.VECTOR, NodeOp.REFLECTION => NodeFeature.VECTOR,
     NodeOp.VORONOI => NodeFeature.VORONOI, NodeOp.WHITE_NOISE => NodeFeature.WHITE_NOISE, NodeOp.WAVE => NodeFeature.WAVE,
     NodeOp.GRADIENT => NodeFeature.GRADIENT, NodeOp.MAGIC => NodeFeature.MAGIC, NodeOp.CHECKER => NodeFeature.CHECKER,
     NodeOp.BRICK => NodeFeature.BRICK, NodeOp.VECTOR_MATH => NodeFeature.VECTOR_MATH, NodeOp.AFFINE_ROW => NodeFeature.VECTOR,
@@ -138,7 +139,20 @@ const _OP_FEATURES = Dict(
     NodeOp.ATTRIBUTE => NodeFeature.ATTRIBUTE, NodeOp.ATTRIBUTE_DX => NodeFeature.ATTRIBUTE,
     NodeOp.ATTRIBUTE_DY => NodeFeature.ATTRIBUTE,
     NodeOp.BUMP => NodeFeature.BUMP, NodeOp.POSITION_DX => NodeFeature.BUMP,
-    NodeOp.POSITION_DY => NodeFeature.BUMP, NodeOp.UV_DX => NodeFeature.BUMP, NodeOp.UV_DY => NodeFeature.BUMP)
+    NodeOp.POSITION_DY => NodeFeature.BUMP, NodeOp.UV_DX => NodeFeature.BUMP, NodeOp.UV_DY => NodeFeature.BUMP,
+    NodeOp.PBRT_BUMP => NodeFeature.PBRT_BUMP, NodeOp.POSITION_U => NodeFeature.PBRT_BUMP,
+    NodeOp.POSITION_V => NodeFeature.PBRT_BUMP, NodeOp.UV_U => NodeFeature.PBRT_BUMP,
+    NodeOp.UV_V => NodeFeature.PBRT_BUMP, NodeOp.ATTRIBUTE_U => NodeFeature.ATTRIBUTE | NodeFeature.PBRT_BUMP,
+    NodeOp.ATTRIBUTE_V => NodeFeature.ATTRIBUTE | NodeFeature.PBRT_BUMP,
+    NodeOp.PARAMETER => NodeFeature.IMAGE,
+    NodeOp.PARAMETER_U => NodeFeature.IMAGE | NodeFeature.PBRT_BUMP,
+    NodeOp.PARAMETER_V => NodeFeature.IMAGE | NodeFeature.PBRT_BUMP,
+    NodeOp.PARAMETER_BUMP => NodeFeature.IMAGE | NodeFeature.PBRT_BUMP,
+    NodeOp.PARAMETER_DX => NodeFeature.IMAGE | NodeFeature.BUMP,
+    NodeOp.PARAMETER_DY => NodeFeature.IMAGE | NodeFeature.BUMP)
+
+const _PARAMETER_OPS = (NodeOp.PARAMETER, NodeOp.PARAMETER_U, NodeOp.PARAMETER_V,
+                        NodeOp.PARAMETER_DX, NodeOp.PARAMETER_DY, NodeOp.PARAMETER_BUMP)
 
 """The `NodeFeature` bits the interpreter needs to run node `c`."""
 function _features(c::NodeCore)
@@ -159,11 +173,13 @@ function _features(c::NodeCore)
     return f
 end
 
-const _ATTRIBUTE_OPS = (NodeOp.ATTRIBUTE, NodeOp.ATTRIBUTE_DX, NodeOp.ATTRIBUTE_DY)
+const _ATTRIBUTE_OPS = (NodeOp.ATTRIBUTE, NodeOp.ATTRIBUTE_DX, NodeOp.ATTRIBUTE_DY, NodeOp.ATTRIBUTE_U, NodeOp.ATTRIBUTE_V)
 
 const _SHADER_OPS = (NodeOp.CLOSURE, NodeOp.PRINCIPLED, NodeOp.BUMP, NodeOp.POSITION_DX, NodeOp.POSITION_DY,
                      NodeOp.UV_DX, NodeOp.UV_DY, NodeOp.NORMAL_MAP, NodeOp.ATTRIBUTE, NodeOp.ATTRIBUTE_DX,
-                     NodeOp.ATTRIBUTE_DY, NodeOp.CAMERA, NodeOp.WINDOW, NodeOp.REFLECTION)
+                     NodeOp.ATTRIBUTE_DY, NodeOp.CAMERA, NodeOp.WINDOW, NodeOp.REFLECTION,
+                     NodeOp.PBRT_BUMP, NodeOp.POSITION_U, NodeOp.POSITION_V, NodeOp.UV_U, NodeOp.UV_V,
+                     NodeOp.ATTRIBUTE_U, NodeOp.ATTRIBUTE_V, _PARAMETER_OPS...)
 
 """
 A compiled node program before it is linked: its instructions, each read of a stored array (an
@@ -235,6 +251,7 @@ end
 
 """A BSDF input the compiler folds into the BSDF's instruction: the shading normal, as `normal()` reads it."""
 struct ShadingNormal end
+struct ShadingTangent end
 """A BSDF input the compiler folds into the data after the BSDF's instructions: a constant colour."""
 struct WideConstant
     value::Vec3f
@@ -242,6 +259,7 @@ end
 
 """The argument code of a BSDF input that is the shading normal; codes from `WIDE_CONSTANT_ARG` up are folded colours."""
 const SHADING_NORMAL_ARG = 0xFF
+const SHADING_TANGENT_ARG = 0xFE
 const WIDE_CONSTANT_ARG = 0xC0
 
 """
@@ -258,9 +276,10 @@ function fold_input(x::TexNode)
 end
 
 input_arg(::ShadingNormal, wides) = SHADING_NORMAL_ARG
+input_arg(::ShadingTangent, wides) = SHADING_TANGENT_ARG
 input_arg(x::WideConstant, wides) = (push!(wides, x.value); WIDE_CONSTANT_ARG + UInt8(length(wides) - 1))
 input_arg(x, wides) = NO_SLOT
-input_k(::Union{ShadingNormal, WideConstant}) = 0f0
+input_k(::Union{ShadingNormal, ShadingTangent, WideConstant}) = 0f0
 input_k(x) = Float32(something(x, 0f0))
 
 """Folded colours packed three to a `DATA` instruction, each at a multiple of three floats."""
@@ -361,8 +380,8 @@ function _compile(order::Vector{NodeCore}, root, kind::UInt32)
         chunks = collect(Iterators.partition(eachindex(args), NODE_ARGS))
         first_chunk = isempty(chunks) ? Int[] : collect(first(chunks))
         kt = _pad(k[first_chunk], NODE_ARGS, 0f0)
-        if c.op == NodeOp.IMAGE || (c.op in _ATTRIBUTE_OPS && c.data isa BoundAttribute)
-            push!(data, c.op == NodeOp.IMAGE ? c.data : c.data.corners)
+        if c.op == NodeOp.IMAGE || c.op in _PARAMETER_OPS || (c.op in _ATTRIBUTE_OPS && c.data isa BoundAttribute)
+            push!(data, c.op in _ATTRIBUTE_OPS ? c.data.corners : c.data)
             kt = located(kt, length(data), 0)
         end
         data_count = cld(length(wides), 3)
@@ -373,8 +392,10 @@ function _compile(order::Vector{NodeCore}, root, kind::UInt32)
             push!(instructions, (NodeOp.ARGS, (0x00, 0x00, 0x00), _pad(UInt8[], NODE_OUTS, NO_SLOT), 0x00,
                                  _pad(args[chunk], NODE_ARGS, NO_SLOT), _wide_bits(wide[chunk]), _pad(k[chunk], NODE_ARGS, 0f0)))
         end
+        payload = inline_node_data(c.data)
+        inline_before_colors(c.data) && append!(instructions, _data_instructions(payload))
         append!(instructions, wide_constant_instructions(wides))
-        c.data isa Vector{Float32} && append!(instructions, _data_instructions(c.data))
+        !inline_before_colors(c.data) && append!(instructions, _data_instructions(payload))
     end
     result_args = root === nothing ? UInt8[] : [UInt8(offset[root_key])]
     result_wide = root !== nothing && _width(root) == 3 ? UInt16(1) : UInt16(0)
@@ -384,12 +405,17 @@ function _compile(order::Vector{NodeCore}, root, kind::UInt32)
     return CompiledProgram([NodeInstr{F}(fields...) for fields in instructions], data)
 end
 
+inline_node_data(data) = Float32[]
+inline_node_data(data::Vector{Float32}) = data
+inline_before_colors(data) = false
+
 "`k` with the place of a stored array in the two constants a read of it takes it from."
 located(k::NTuple{NODE_ARGS, Float32}, slot, idx) =
     Base.setindex(Base.setindex(k, reinterpret(Float32, Int32(slot)), 9), reinterpret(Float32, Int32(idx)), 10)
 
 "Whether `ins` reads a stored array: an image, or a mesh attribute bound to one (slot 0 is none, as the device reads it)."
-reads_array(ins::NodeInstr) = (ins.op == NodeOp.IMAGE || ins.op in _ATTRIBUTE_OPS) && reinterpret(Int32, ins.k[9]) > Int32(0)
+reads_array(ins::NodeInstr) = (ins.op == NodeOp.IMAGE || ins.op in _ATTRIBUTE_OPS || ins.op in _PARAMETER_OPS) &&
+    reinterpret(Int32, ins.k[9]) > Int32(0)
 
 "The place each read of a linked `program` takes its array from, in program order: what `link` put in."
 array_places(program::AbstractVector{<:NodeInstr}) =
@@ -437,11 +463,14 @@ function place!(dhv::Raycore.MultiTypeSet, data, placed::Places, over = ())
     end
     return map(enumerate(data)) do (k, datum)
         get!(placed, datum) do
-            stored = texels(datum)
-            k <= length(over) && holds(dhv, over[k], stored) && !(over[k] in values(placed)) ?
-                copied!(dhv, over[k], stored) : stored!(dhv, stored)
+            place_datum!(dhv, datum, k <= length(over) ? over[k] : nothing, placed)
         end
     end
+end
+function place_datum!(dhv, datum, over, placed)
+    stored = texels(datum)
+    return over !== nothing && holds(dhv, over, stored) && !(over in values(placed)) ?
+        copied!(dhv, over, stored) : stored!(dhv, stored)
 end
 
 """A datum as a program reads it: an image of colours as `RGBSpectrum`s, one of numbers as `Float32`s."""

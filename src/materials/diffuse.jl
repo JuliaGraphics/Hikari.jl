@@ -12,8 +12,8 @@ Cycles and OpenPBR use. Any field takes a number, a colour, an image or a node g
 * `normal`: the shading normal, for a `bump` or `normal_map` node; `nothing` is the surface's own.
 * `displacement`: a height the shading normal is bumped by, as pbrt's `displacement`.
 
-A `Diffuse` with a `normal` is shaded as a shader graph; without one by its own kernel, which
-renders the same lobe faster.
+A `Diffuse` is a shader graph node, including when it is the only node.
+Its constants are folded into its BSDF program and need no values dispatch.
 """
 @description struct Diffuse <: Material
     color = (0.8, 0.8, 0.8)
@@ -22,9 +22,9 @@ renders the same lobe faster.
     displacement = nothing
 end
 
-# A normal changes Diffuse to a ShaderMaterial before conversion. Its own
-# kernel never reads this field, so absence stays a zero-size Nothing instead
-# of another 32-byte handle in every material record.
+# The direct evaluator is also used by pbrt graph nodes and reference checks.
+# It never reads this field, so absence stays a zero-size Nothing instead of
+# another 32-byte handle in every material record.
 to_device_material(store, mat::Diffuse{C, R, Nothing, D}) where {C, R, D} =
     Diffuse(device_param(store, mat.color), device_param(store, mat.roughness), nothing,
             device_param(store, mat.displacement))

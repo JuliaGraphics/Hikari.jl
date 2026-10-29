@@ -366,7 +366,7 @@ end
     ln, lt, lb = local_frame(b)
     o, i = world_to_local(wo, ln, lt, lb), world_to_local(wi, ln, lt, lb)
     (o[3] == 0f0 || i[3] == 0f0) && return (SpectralRadiance(0f0), 0f0)
-    return (layered_f(b, o, i), layered_pdf(b, o, i))
+    return (layered_f(b, o, i) * layered_cosine_transfer(b, wi, n), layered_pdf(b, o, i))
 end
 
 @propagate_inbounds function sample_bsdf_spectral(
@@ -379,5 +379,14 @@ end
     ok, wi, f, pdf, flags = layered_sample(b, world_to_local(wo, ln, lt, lb), uc, sample_u)
     ok || return SpectralBSDFSample()
     # The pdf is proportional only: the integrator asks `evaluate_bsdf_spectral` for the real one.
-    return SpectralBSDFSample(f, normalize(local_to_world(wi, ln, lt, lb)), pdf, flags, 1f0, true, false)
+    world_wi = normalize(local_to_world(wi, ln, lt, lb))
+    return SpectralBSDFSample(f * layered_cosine_transfer(b, world_wi, n), world_wi, pdf, flags, 1f0, true, false)
+end
+
+# The integrator multiplies by its surface cosine. A graph node may have its
+# own bumped normal, just as each ordinary weighted lobe does.
+@inline function layered_cosine_transfer(b::LayeredBSDF, wi, n)
+    n == b.n && return 1f0
+    cosine = abs(dot(wi, n))
+    return cosine > 1f-7 ? abs(dot(wi, b.n)) / cosine : 0f0
 end

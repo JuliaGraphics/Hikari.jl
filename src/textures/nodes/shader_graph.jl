@@ -11,7 +11,9 @@ struct BSDFNode <: ShaderNode
     op::UInt8
     mode::NTuple{3, UInt8}
     inputs::Vector{Any}
+    data::Any
 end
+BSDFNode(op, mode, inputs) = BSDFNode(op, mode, inputs, nothing)
 
 struct MixShaderNode <: ShaderNode
     fac::Any
@@ -37,7 +39,7 @@ _weight_input(w::TexNode) = w
 
 """The closure nodes of a shader, one per BSDF, each reading its weight first."""
 closure_cores(shader::ShaderNode) =
-    [NodeCore(b.op, b.mode, Any[_weight_input(w); b.inputs], Int[], nothing) for (b, w) in _weighted(shader, 1f0)]
+    [NodeCore(b.op, b.mode, Any[_weight_input(w); b.inputs], Int[], b.data) for (b, w) in _weighted(shader, 1f0)]
 
 """A shader graph as a material holds it until it is compiled at push."""
 struct ShaderGraph
@@ -51,12 +53,20 @@ _constant(x, value) = x isa Real && Float32(x) == Float32(value)
 """Whether a shader lets light through unrefracted: a transparent closure, or a Principled BSDF whose alpha is not one."""
 has_transparency(g::ShaderGraph) =
     any(c -> (c.op == NodeOp.CLOSURE && c.mode[1] == ClosureKind.TRANSPARENT) ||
-             (c.op == NodeOp.PRINCIPLED && !_constant(c.inputs[6], 1)), g.closures)
+             (c.op == NodeOp.PRINCIPLED && !_constant(c.inputs[6], 1)) ||
+             node_has_transparency(c.data, c), g.closures)
+node_has_transparency(data, c::NodeCore) = false
+node_transparency(data, c::NodeCore) = nothing
+node_has_transparency(::Nothing, c::NodeCore) = c.op == NodeOp.CLOSURE && c.mode[1] == ClosureKind.DIFFUSE &&
+    !_one(c.inputs[5])
+node_transparency(::Nothing, c::NodeCore) = 1 - c.inputs[5]
 
 """The types of a shader's BSDF nodes, in program order, as its material's type holds them."""
 bsdf_nodes(g::ShaderGraph) = Tuple{map(bsdf_node, g.closures)...}
 
 function bsdf_node(c::NodeCore)
+    native = bsdf_node_data(c.data, c)
+    native === nothing || return native
     c.op == NodeOp.CLOSURE || return principled_node(c)
     c.mode[1] == ClosureKind.SUBSURFACE && _zero(c.inputs[3]) && return SubsurfaceBSDF{false}
     node = closure_node(c.mode[1])
@@ -64,6 +74,7 @@ function bsdf_node(c::NodeCore)
     convention = c.mode[2] == 0x02 ? CyclesBeckmann : CyclesGGX
     return SingleScatterBSDF{node, convention}
 end
+bsdf_node_data(data, c::NodeCore) = nothing
 function closure_node(kind::UInt8)
     kind == ClosureKind.DIFFUSE && return DiffuseBSDF
     kind == ClosureKind.TRANSLUCENT && return TranslucentBSDF
@@ -107,6 +118,9 @@ function transparency_graph(g::ShaderGraph)
         elseif c.op == NodeOp.PRINCIPLED && !_constant(c.inputs[6], 1)
             push!(cores, NodeCore(NodeOp.CLOSURE, (ClosureKind.TRANSPARENT, 0x00, 0x00),
                                   Any[c.inputs[1], 1 - c.inputs[6]], Int[], nothing))
+        elseif node_has_transparency(c.data, c)
+            push!(cores, NodeCore(NodeOp.CLOSURE, (ClosureKind.TRANSPARENT, 0x00, 0x00),
+                                  Any[c.inputs[1], node_transparency(c.data, c)], Int[], nothing))
         end
     end
     return ShaderGraph(cores)
@@ -120,19 +134,31 @@ struct ShaderProgram{F}
     idx::Int32
 end
 
+# Small value programs and BSDF setup in one dispatch. The compiler gives
+# inexpensive native graphs one common feature set, so edits among those node
+# families keep this program type and its compiled shading kernel.
+struct FusedShaderProgram{F}
+    idx::Int32
+end
+
 ShaderProgram(::CompiledProgram{F}, idx::Integer) where {F} = ShaderProgram{F}(Int32(idx))
+FusedShaderProgram(::CompiledProgram{F}, idx::Integer) where {F} = FusedShaderProgram{F}(Int32(idx))
+device_shader_program(g::ShaderGraph, c, idx) = length(g.closures) == 1 ?
+    device_node_program(first(g.closures).data, c, idx) : ShaderProgram(c, idx)
+device_node_program(data, c, idx) = ShaderProgram(c, idx)
 
 """The program of `g` stored in `dhv`, its data placed with `placed`; no program for no graph."""
 function shader_program(dhv, g::ShaderGraph, placed::Places)
     store_lookup_tables!(dhv)
-    c = compile_shader(g.closures)
-    return ShaderProgram(c, last(stored_program!(dhv, c, placed)))
+    c = compiled(g)
+    return device_shader_program(g, c, last(stored_program!(dhv, c, placed)))
 end
 shader_program(dhv, ::Nothing, placed::Places) = nothing
 
 """The slot of the set `dhv` that holds the programs of `p`'s node families."""
 program_slot(dhv::Raycore.MultiTypeSet, ::ShaderProgram{F}) where {F} =
     findfirst(AT -> eltype(AT) === NodeInstr{F}, dhv.texture_order)
+program_slot(dhv::Raycore.MultiTypeSet, p::FusedShaderProgram{F}) where {F} = program_slot(dhv, ShaderProgram{F}(p.idx))
 
 """The programs stored with the features of `p`, found by their element type."""
 @generated function shader_programs(textures::Union{Raycore.StaticMultiTypeSet{D, Tex}, Raycore.SetView{<:Any, <:Any, D, Tex}},
@@ -140,6 +166,7 @@ program_slot(dhv::Raycore.MultiTypeSet, ::ShaderProgram{F}) where {F} =
     slot = findfirst(T -> eltype(eltype(T)) === NodeInstr{F}, Tex.parameters)
     return :(@inbounds textures.textures[$slot])
 end
+@inline shader_programs(textures, p::FusedShaderProgram{F}) where {F} = shader_programs(textures, ShaderProgram{F}(p.idx))
 
 """
 `n` with every position and uv it reads moved by `filter_width` of the screen-space differential
@@ -152,18 +179,27 @@ function shifted_graph(n::TexNode, axis::Symbol, filter_width::Float32)
 end
 
 _reads_coordinates(c::NodeCore, memo) =
-    get!(() -> c.op in (NodeOp.POSITION, NodeOp.UV, NodeOp.ATTRIBUTE) || any(i -> _reads_coordinates(i, memo), _input_cores(c)),
+    get!(() -> c.op in (NodeOp.POSITION, NodeOp.UV, NodeOp.ATTRIBUTE, NodeOp.PARAMETER) || any(i -> _reads_coordinates(i, memo), _input_cores(c)),
          memo, c)
 
 function _shifted(c::NodeCore, axis::Symbol, fw::Float32, memo, reads)
     _reads_coordinates(c, reads) || return c
     return get!(memo, c) do
         if c.op == NodeOp.POSITION
-            NodeCore(axis === :dx ? NodeOp.POSITION_DX : NodeOp.POSITION_DY, c.mode, Any[fw], c.widths, nothing)
+            op = axis === :pbrt_u ? NodeOp.POSITION_U : axis === :pbrt_v ? NodeOp.POSITION_V :
+                 axis === :dx ? NodeOp.POSITION_DX : NodeOp.POSITION_DY
+            NodeCore(op, c.mode, Any[fw], c.widths, nothing)
         elseif c.op == NodeOp.UV
-            NodeCore(axis === :dx ? NodeOp.UV_DX : NodeOp.UV_DY, c.mode, Any[fw], c.widths, nothing)
+            op = axis === :pbrt_u ? NodeOp.UV_U : axis === :pbrt_v ? NodeOp.UV_V : axis === :dx ? NodeOp.UV_DX : NodeOp.UV_DY
+            NodeCore(op, c.mode, Any[fw], c.widths, nothing)
         elseif c.op == NodeOp.ATTRIBUTE
-            NodeCore(axis === :dx ? NodeOp.ATTRIBUTE_DX : NodeOp.ATTRIBUTE_DY, c.mode, Any[fw], c.widths, c.data)
+            op = axis === :pbrt_u ? NodeOp.ATTRIBUTE_U : axis === :pbrt_v ? NodeOp.ATTRIBUTE_V :
+                 axis === :dx ? NodeOp.ATTRIBUTE_DX : NodeOp.ATTRIBUTE_DY
+            NodeCore(op, c.mode, Any[fw], c.widths, c.data)
+        elseif c.op == NodeOp.PARAMETER
+            op = axis === :pbrt_u ? NodeOp.PARAMETER_U : axis === :pbrt_v ? NodeOp.PARAMETER_V :
+                 axis === :dx ? NodeOp.PARAMETER_DX : NodeOp.PARAMETER_DY
+            NodeCore(op, c.mode, Any[fw], c.widths, c.data)
         else
             inputs = Any[x isa TexNode ? TexNode(_shifted(getfield(x, :core), axis, fw, memo, reads), getfield(x, :output)) : x
                          for x in c.inputs]

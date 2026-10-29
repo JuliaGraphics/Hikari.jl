@@ -465,6 +465,7 @@ end
 # which is how `CheckerboardTexture` does it, minus the nesting.
 
 cutout(t::FEMFieldTexture) = any(c -> get_alpha(c) < 1f0, t.ramp)
+node_input(t::FEMFieldTexture) = parameter_node(t)
 
 function device_param(dhv, t::FEMFieldTexture)
     stored = FEMFieldTexture(Raycore.store_texture(dhv, t.coeffs), t.ramp, t.vmin, t.vmax)

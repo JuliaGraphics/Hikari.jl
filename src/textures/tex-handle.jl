@@ -279,6 +279,7 @@ device_param(dhv, t::Texture{T, N}) where {T, N} =
     TexHandle(Raycore.store_texture(dhv, t.data))
 device_param(dhv, r::Raycore.TextureRef) = TexHandle(r)
 device_param(dhv, v::Union{Real, RGBSpectrum, Colorant, Tuple{Real,Real,Real}}) = TexHandle(v)
+device_param(dhv, pair::Tuple{Any, Any}) = map(x -> device_param(dhv, x), pair)
 
 # Procedurals and per-face colours go into the same store as a one-element /
 # (3, n_faces) array, so a single `(slot, idx)` pair reaches all of them.
@@ -369,3 +370,16 @@ end
 Raycore.update_item(dhv::Raycore.MultiTypeSet, old::TexHandle, new::AbstractMatrix{<:Union{Colorant, Real, RGBSpectrum}}) =
     Raycore.update_item(dhv, old, to_texture(new))
 
+
+# A procedural parameter has a reusable record just like an image parameter.
+# Rebuild its nested references before copying, so edits retain child image
+# slots as well as the one-element procedural array itself.
+function Raycore.update_item(dhv::Raycore.MultiTypeSet, old::TexHandle, new::CheckerboardTexture)
+    old.kind == TexKind.CHECKER || return device_param(dhv, new)
+    place = (Int(old.slot), Int(old.idx))
+    previous = only(Array(stored_array(dhv, place)))
+    replacement = Raycore.update_item(dhv, previous, new)
+    holds(dhv, place, [replacement]) || return device_param(dhv, new)
+    copied!(dhv, place, [replacement])
+    return old
+end

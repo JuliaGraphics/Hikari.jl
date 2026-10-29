@@ -25,10 +25,9 @@ its BSDF estimated by a random walk between the two (pbrt's `LayeredBxDF`).
 * `ior`: the coat's, a number or a spectrum that disperses the path's wavelengths.
 * `max_depth`, `n_samples`: the random walk's length and how many it averages.
 """
-struct CoatedDiffuse{ReflT, URoughT, VRoughT, ThickT, IorT, AlbedoT, GT, DispT} <: Material
+struct CoatedDiffuse{ReflT, RoughT, ThickT, IorT, AlbedoT, GT, DispT} <: Material
     reflectance::ReflT
-    u_roughness::URoughT
-    v_roughness::VRoughT
+    roughness::RoughT
     thickness::ThickT
     ior::IorT
     albedo::AlbedoT
@@ -42,7 +41,7 @@ end
 CoatedDiffuse(; reflectance = (0.5f0, 0.5f0, 0.5f0), roughness = 0f0, thickness = 0.01f0, ior = 1.5f0,
               albedo = (0f0, 0f0, 0f0), g = 0f0, max_depth::Integer = 10, n_samples::Integer = 1,
               remap_roughness::Bool = true, displacement = nothing) =
-    CoatedDiffuse(reflectance, roughness_pair(roughness)..., thickness, ior, albedo, g, Int32(max_depth),
+    CoatedDiffuse(reflectance, roughness, thickness, ior, albedo, g, Int32(max_depth),
                   Int32(n_samples), remap_roughness, displacement)
 
 
@@ -53,8 +52,9 @@ coat over Lambert of its reflectance clamped to [0, 1].
 """
 @propagate_inbounds function get_bxdf(mat::CoatedDiffuse, table, textures, tfc::TextureFilterContext, lambda::Wavelengths,
                                       regularize::Bool, wo::Vec3f, ns::Vec3f, dpdus::Vec3f)
-    u_roughness = eval_handle(textures, mat.u_roughness, tfc)
-    v_roughness = eval_handle(textures, mat.v_roughness, tfc)
+    u, v = roughness_pair(mat.roughness)
+    u_roughness = eval_handle(textures, u, tfc)
+    v_roughness = eval_handle(textures, v, tfc)
     alpha_x = mat.remap_roughness ? roughness_to_α(u_roughness) : u_roughness
     alpha_y = mat.remap_roughness ? roughness_to_α(v_roughness) : v_roughness
     if regularize

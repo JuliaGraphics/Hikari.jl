@@ -57,6 +57,7 @@ gathered and its closure program.
 struct GatheredShader{M, S <: ShaderInputs}
     inputs::S
     hit::Int32
+    program_offset::Int32
 end
 
 emits(::GatheredShader{M}) where {M} = emits(M)
@@ -65,7 +66,7 @@ emits(::GatheredShader{M}) where {M} = emits(M)
 @propagate_inbounds shaded_instance(ref::TypedHitRef{T}, materials, key::SetKey) where {T} =
     material_of_type(materials, T, key.vec_idx)
 @propagate_inbounds shaded_instance(ref::GatheredRef{M, S}, materials, key::SetKey) where {M, S} =
-    GatheredShader{M, S}(ref.inputs, ref.idx)
+    GatheredShader{M, S}(ref.inputs, ref.idx, ref.program_offset)
 
 # A shader has no displacement: its normals are its BSDF nodes' inputs.
 @propagate_inbounds perturbed_frame(::Type{<:ShaderClosures}, materials, idx::SetKey, ns, dpdus, dpdu, dpdv, ng,
@@ -74,17 +75,25 @@ emits(::GatheredShader{M}) where {M} = emits(M)
 """The closure programs stored in `textures`, which every shader's are of one type."""
 @inline closure_programs(textures) = shader_programs(textures, ShaderProgram{NodeFeature.CLOSURES}(Int32(0)))
 
+# Every coordinate and derivative has already been evaluated by the values
+# program. BSDF setup only reads the position and shading frame; constructing a
+# camera/filter context here repeats work and keeps it live across helper calls.
+@inline function closure_context(work)
+    tfc = TextureFilterContext(work.uv, 0f0, 0f0, 0f0, 0f0, work.face_idx, work.bary, work.pi, work.ns)
+    sign = dot(cross(work.ns, work.dpdus), work.dpdv) < 0f0 ? -1f0 : 1f0
+    return ShaderContext(tfc, work.wo, Vec3f(0), Vec3f(0), work.dpdus, work.n, sign, Vec3f(0), Point2f(0))
+end
+
 @propagate_inbounds function material_bxdf(mat::GatheredShader{M}, table, textures, work, camera,
                                            samples_per_pixel::Int32, lambda::Wavelengths,
                                            regularize::Bool) where {M <: Tuple}
-    sc = shader_context(work, camera, samples_per_pixel)
+    sc = closure_context(work)
     key = work.material_idx
-    offset = @inbounds mat.inputs.program[key.type_idx]
-    program = @inbounds mat.inputs.program[offset + key.vec_idx]
+    program = @inbounds mat.inputs.program[mat.program_offset + key.vec_idx]
     prog = closure_programs(textures)[program]
     s = GatheredStack(mat.inputs.values, mat.inputs.capacity, mat.hit)
     produced = node_lobes(M, s, prog, Int32(1), sc, LobeSetup(lookup_tables(textures), regularize))
-    return lobe_bsdf(M, produced, table, lambda)
+    return material_bsdf(M, produced, table, lambda)
 end
 
 """
@@ -118,8 +127,11 @@ end
         h.geom.uv, key, h.mi,
         h.primitive.metadata.primitive_index, h.bary,
     )
-    sc = shader_context(VPMaterialEvalWorkItem(hit_work, h.wo, key), camera, samples_per_pixel)
     mat = material_of_type(materials, T, key.vec_idx)
+    sc = shader_context(VPMaterialEvalWorkItem(hit_work, h.wo, key), camera, samples_per_pixel,
+                        shader_geometry(mat.program, h.geom, h.primitive,
+                            () -> bump_filter_context(camera, h.work, h.geom, samples_per_pixel,
+                                                      h.primitive.metadata.primitive_index, SVector{3, Float32}(h.bary))))
     prog = shader_programs(materials, mat.program)[mat.program.idx]
     s, i = run_values(prog, materials, sc)
     gather_inputs!(inputs, ref.idx, s, prog, i)

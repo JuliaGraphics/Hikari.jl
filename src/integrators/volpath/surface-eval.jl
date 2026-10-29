@@ -708,7 +708,9 @@ hit record, the bump-perturbed shading frame, the emission of an area light it l
             bvh_nodes, infinite_light_indices,
             num_infinite_lights, num_bvh_lights, num_lights,
             max_depth, do_regularize, emitters_reachable, sobol_rng, sample_idx,
-            camera, samples_per_pixel, rr_depth)
+            camera, samples_per_pixel, rr_depth, shader_geometry(T, geom, primitive,
+                () -> bump_filter_context(camera, work, geom, samples_per_pixel,
+                                           primitive.metadata.primitive_index, SVector{3, Float32}(bary))))
     end
     return nothing
 end
@@ -754,7 +756,7 @@ end
     bvh_nodes, infinite_light_indices,
     num_infinite_lights::Int32, num_bvh_lights::Int32, num_lights::Int32,
     max_depth::Int32, do_regularize::Bool, emitters_reachable::Bool, sobol_rng, sample_idx::Int32,
-    camera, samples_per_pixel::Int32, rr_depth::Int32,
+    camera, samples_per_pixel::Int32, rr_depth::Int32, bump_geometry = nothing,
 )
     # The depth limit ends a path after the emission at its vertex, as pbrt-v4's VolPath:
     # the vertex before it sampled the lights AND the BSDF, and the BSDF ray's share of
@@ -766,7 +768,8 @@ end
 
     regularize_for_bxdf = regularizes(hit_work, media, do_regularize)
     bxdf = material_bxdf(mat, rgb2spec_table, materials, mat_work, camera, samples_per_pixel,
-                         hit_work.lambda, regularize_for_bxdf)
+                         hit_work.lambda, regularize_for_bxdf, bump_geometry)
+    bxdf, mat_work = material_vertex(bxdf, mat_work)
     add_emission!(pixel_L, bxdf, mat_work)
     at_limit && return
     mat_work = end_dispersion(bxdf, mat_work, film_pdf)

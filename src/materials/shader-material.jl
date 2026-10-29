@@ -19,9 +19,11 @@ material's type (`bsdf_nodes`): a kernel holds the lobes those nodes produce and
 graphs that differ in their values alone share it. A shader with transparency holds a second
 program, of its transparency alone (`transparency_graph`), which is all an alpha test runs.
 
-On the device it also names its closure program (`closure_program`): its BSDF nodes reading
-`inputs` floats the values kernel gathers, which the closure kernel of its nodes runs, a kernel no
-graph's node families change.
+On the device it also names its BSDF program (`closure_program`): its BSDF nodes read
+`inputs` floats gathered by the values kernel. Constant graphs skip that pass. A single
+pbrt node with elementary arithmetic or texture reads runs both programs in one small
+kernel; more involved graphs retain separate values and BSDF kernels so changes to
+their value-node families leave the BSDF kernel unchanged.
 """
 struct ShaderMaterial{ProgT, AlphaT, Nodes} <: Material
     program::ProgT
@@ -48,8 +50,12 @@ otherwise both as they are. `push!(scene, mesh, material)` does this; call it yo
 bind_mesh(mesh::GeometryBasics.Mesh, material::Material) = (mesh, material)
 function bind_mesh(mesh::GeometryBasics.Mesh, mi::MediumInterface)
     bound_mesh, material = bind_mesh(mesh, mi.material)
-    return (bound_mesh, MediumInterface(material; inside = mi.inside, outside = mi.outside, emission = mi.emission,
-                                        shadows = mi.shadows))
+    return (
+        bound_mesh, MediumInterface(
+            material; inside = mi.inside, outside = mi.outside, emission = mi.emission,
+            shadows = mi.shadows
+        ),
+    )
 end
 function bind_mesh(mesh::GeometryBasics.Mesh, mat::ShaderMaterial{ShaderGraph})
     isempty(_attribute_cores(mat.program)) && return (mesh, mat)
@@ -63,11 +69,13 @@ function to_device_material(dhv, mat::ShaderMaterial{ShaderGraph, A, M}) where {
     placed = Places()
     store_lookup_tables!(dhv)
     c = compiled(mat.program)
-    program = ShaderProgram(c, last(stored_program!(dhv, c, placed)))
+    program = device_shader_program(mat.program, c, last(stored_program!(dhv, c, placed)))
     alpha = shader_program(dhv, mat.alpha, placed)
     closures, inputs = closure_program(c)
-    return ShaderMaterial{typeof(program), typeof(alpha), M}(program, alpha, Int32(last(stored!(dhv, closures))),
-                                                              Int32(inputs))
+    return ShaderMaterial{typeof(program), typeof(alpha), M}(
+        program, alpha, Int32(last(stored!(dhv, closures))),
+        Int32(inputs)
+    )
 end
 
 """
@@ -80,16 +88,21 @@ keeps its layout, so the scene keeps its recorded plans.
 A graph of other node families, other BSDF nodes or another transparency is another material
 type, compiled into other kernels: `new` itself, which `Raycore.store!` gives a slot of its type.
 """
-function Raycore.update_item(dhv::Raycore.MultiTypeSet, old::ShaderMaterial{P, A, M},
-                             new::ShaderMaterial{ShaderGraph, AG, M}) where {P <: ShaderProgram, A, AG, M}
+function Raycore.update_item(
+        dhv::Raycore.MultiTypeSet, old::ShaderMaterial{P, A, M},
+        new::ShaderMaterial{ShaderGraph, AG, M}
+    ) where {P <: Union{ShaderProgram, FusedShaderProgram}, A, AG, M}
     # Both compiled, and so checked, before anything is placed: compiling stores nothing.
     program, alpha = compiled(new.program), compiled(new.alpha)
     (compiles_over(old.program, program) && compiles_over(old.alpha, alpha)) || return new
+    typeof(device_shader_program(new.program, program, old.program.idx)) === P || return new
     placed = Places()
     closures, inputs = closure_program(program)
-    return ShaderMaterial{P, A, M}(updated_program!(dhv, old.program, program, placed),
-                                   updated_program!(dhv, old.alpha, alpha, placed),
-                                   updated_closures!(dhv, old.closures, closures), Int32(inputs))
+    return ShaderMaterial{P, A, M}(
+        updated_program!(dhv, old.program, program, placed),
+        updated_program!(dhv, old.alpha, alpha, placed),
+        updated_closures!(dhv, old.closures, closures), Int32(inputs)
+    )
 end
 
 """The computed-input width, values passes and per-material BSDF programs of a material set."""
@@ -121,35 +134,47 @@ function updated_closures!(dhv::Raycore.MultiTypeSet, idx::Int32, instructions)
     return Int32(last(holds(dhv, place, instructions) ? copied!(dhv, place, instructions) : stored!(dhv, instructions)))
 end
 
-Raycore.update_item(::Raycore.MultiTypeSet, ::ShaderMaterial{<:ShaderProgram}, new::ShaderMaterial{ShaderGraph}) = new
+Raycore.update_item(::Raycore.MultiTypeSet, ::ShaderMaterial{<:Union{ShaderProgram, FusedShaderProgram}}, new::ShaderMaterial{ShaderGraph}) = new
 
 """The node families of the programs the shading of a material of device type `T` runs, its colour's and its transparency's."""
 program_families(::Type) = ()
 program_families(::Type{ShaderMaterial{ShaderProgram{F}, A, M}}) where {F, A, M} = (F, alpha_families(ShaderMaterial{ShaderProgram{F}, A, M})...)
+program_families(::Type{ShaderMaterial{FusedShaderProgram{F}, A, M}}) where {F, A, M} =
+    (F, alpha_families(ShaderMaterial{FusedShaderProgram{F}, A, M})...)
 
 """The node families of the transparency program of a material of device type `T`: none but a shader's with one."""
 alpha_families(::Type) = ()
 alpha_families(::Type{<:ShaderMaterial{P, ShaderProgram{F}}}) where {P, F} = (F,)
 
-compiled(g::ShaderGraph) = compile_shader(g.closures)
+function compiled(g::ShaderGraph)
+    c = compile_shader(g.closures)
+    return length(g.closures) == 1 ? canonical_node_program(first(g.closures).data, c) : c
+end
+canonical_node_program(data, c) = c
 compiled(::Nothing) = nothing
 
 """Whether the compiled program `c` can replace the stored program `old`: of `old`'s node families."""
 compiles_over(::ShaderProgram{F}, ::CompiledProgram{F}) where {F} = true
+compiles_over(::FusedShaderProgram{F}, ::CompiledProgram{F}) where {F} = true
 compiles_over(::Nothing, ::Nothing) = true
 compiles_over(old, c) = false
 
 updated_program!(dhv::Raycore.MultiTypeSet, old::ShaderProgram{F}, c::CompiledProgram{F}, placed::Places) where {F} =
     ShaderProgram(c, last(updated_program!(dhv, (program_slot(dhv, old), Int(old.idx)), c, placed)))
+updated_program!(dhv::Raycore.MultiTypeSet, old::FusedShaderProgram{F}, c::CompiledProgram{F}, placed::Places) where {F} =
+    FusedShaderProgram(c, last(updated_program!(dhv, (program_slot(dhv, old), Int(old.idx)), c, placed)))
 updated_program!(::Raycore.MultiTypeSet, ::Nothing, ::Nothing, ::Places) = nothing
 
-@propagate_inbounds function shader_context(work, camera, samples_per_pixel::Int32)
+@propagate_inbounds function shader_context(work, camera, samples_per_pixel::Int32, bump = nothing)
+    return shader_context(work, camera, samples_per_pixel, bump, Val(true))
+end
+@propagate_inbounds function shader_context(work, camera, samples_per_pixel::Int32, bump, ::Val{Camera}) where {Camera}
     dpdx, dpdy = approximate_dp_dxy(work.pi, work.n, camera, samples_per_pixel)
     dudx, dudy, dvdx, dvdy = compute_uv_derivatives(work.dpdu, work.dpdv, dpdx, dpdy)
     tfc = TextureFilterContext(work.uv, dudx, dudy, dvdx, dvdy, work.face_idx, work.bary, work.pi, work.ns)
-    tangent_sign = dot(cross(work.ns, work.dpdus), work.dpdv) < 0f0 ? -1f0 : 1f0
-    p_camera, window = camera_coordinates(camera, work.pi)
-    return ShaderContext(tfc, work.wo, dpdx, dpdy, work.dpdus, work.n, tangent_sign, p_camera, window)
+    tangent_sign = dot(cross(work.ns, work.dpdus), work.dpdv) < 0.0f0 ? -1.0f0 : 1.0f0
+    p_camera, window = Camera ? camera_coordinates(camera, work.pi) : (Vec3f(0), Point2f(0))
+    return ShaderContext(tfc, work.wo, dpdx, dpdy, work.dpdus, work.n, tangent_sign, p_camera, window, bump)
 end
 
 """
@@ -158,23 +183,36 @@ end
 The BSDF of `mat` at the hit `work`: `get_bxdf` with the hit's texture filter context and shading
 frame, and for a shader the lobes its BSDF nodes produce there from what its program computes.
 """
-@propagate_inbounds function material_bxdf(mat, table, textures, work, camera, samples_per_pixel::Int32,
-                                           lambda::Wavelengths, regularize::Bool)
+@propagate_inbounds function material_bxdf(
+        mat, table, textures, work, camera, samples_per_pixel::Int32,
+        lambda::Wavelengths, regularize::Bool
+    )
     tfc = compute_texture_filter_context(work, camera, samples_per_pixel)
     return get_bxdf(mat, table, textures, tfc, lambda, regularize, work.wo, work.ns, work.dpdus)
 end
 
-@propagate_inbounds material_bxdf(mi::MediumInterface, table, textures, work, camera, samples_per_pixel::Int32,
-                                  lambda::Wavelengths, regularize::Bool) =
+@propagate_inbounds material_bxdf(
+    mi::MediumInterface, table, textures, work, camera, samples_per_pixel::Int32,
+    lambda::Wavelengths, regularize::Bool
+) =
     material_bxdf(mi.material, table, textures, work, camera, samples_per_pixel, lambda, regularize)
 
-@propagate_inbounds function material_bxdf(mat::ShaderMaterial{P, T, M}, table, textures, work, camera,
-                                           samples_per_pixel::Int32, lambda::Wavelengths,
-                                           regularize::Bool) where {P, T, M <: Tuple}
-    sc = shader_context(work, camera, samples_per_pixel)
-    produced = shader_lobes(M, shader_programs(textures, mat.program)[mat.program.idx], textures, sc, regularize)
-    return lobe_bsdf(M, produced, table, lambda)
+@propagate_inbounds function material_bxdf(
+        mat::ShaderMaterial{P, T, M}, table, textures, work, camera,
+        samples_per_pixel::Int32, lambda::Wavelengths,
+        regularize::Bool, bump = nothing
+    ) where {P, T, M <: Tuple}
+    sc = program_context(mat.program, work, camera, samples_per_pixel, bump)
+    return shader_bsdf(M, shader_programs(textures, mat.program)[mat.program.idx], textures, sc, regularize, table, lambda)
 end
+@inline program_context(program, work, camera, samples_per_pixel, bump) = shader_context(work, camera, samples_per_pixel, bump)
+@inline program_context(::FusedShaderProgram{F}, work, camera, samples_per_pixel, bump) where {F} =
+    shader_context(work, camera, samples_per_pixel, bump, Val(F & NodeFeature.VECTOR != 0))
+@inline material_bxdf(
+    mat, table, textures, work, camera, samples_per_pixel::Int32, lambda::Wavelengths,
+    regularize::Bool, bump
+) =
+    material_bxdf(mat, table, textures, work, camera, samples_per_pixel, lambda, regularize)
 
 """
     add_emission!(pixel_L, bsdf, work)
@@ -198,32 +236,44 @@ end
 """A positive colour that is not a reflectance, such as a mean free path, lifted by its shape and scaled back."""
 @inline function _uplift_unbounded(table, c::Vec3f, lambda)
     m = _max(c)
-    m > 0f0 || return SpectralRadiance(0f0)
+    m > 0.0f0 || return SpectralRadiance(0.0f0)
     return _uplift(table, c / m, lambda) * m
 end
 
 """OpenPBR's dispersion: the Cauchy IOR at `lambda` nm through the d line's `ior` and the Abbe number."""
 @inline function _dispersed_ior(ior::Float32, inv_abbe::Float32, lambda::Float32)
-    inside = ior < 1f0
-    n = inside ? 1f0 / ior : ior
-    fac = 1f0 / (1f0 / 0.4861f0^2 - 1f0 / 0.6563f0^2)
-    B = (n - 1f0) * inv_abbe * fac
+    inside = ior < 1.0f0
+    n = inside ? 1.0f0 / ior : ior
+    fac = 1.0f0 / (1.0f0 / 0.4861f0^2 - 1.0f0 / 0.6563f0^2)
+    B = (n - 1.0f0) * inv_abbe * fac
     A = n - B / 0.5876f0^2
-    n = A + B / (lambda * 1f-3)^2
-    return inside ? 1f0 / n : n
+    n = A + B / (lambda * 1.0f-3)^2
+    return inside ? 1.0f0 / n : n
 end
 
 # ── Alpha and guides ────────────────────────────────────────────────────────
 
-@propagate_inbounds function surface_transparency(mat::ShaderMaterial{P, <:ShaderProgram}, textures,
-                                                  tfc::TextureFilterContext) where {P}
-    sc = ShaderContext(tfc, tfc.n, Vec3f(0), Vec3f(0), Vec3f(0), tfc.n, 1f0, Vec3f(0), Point2f(0))
-    return clamp.(program_transparency(shader_programs(textures, mat.alpha)[mat.alpha.idx], textures, sc), 0f0, 1f0)
+@propagate_inbounds function surface_transparency(
+        mat::ShaderMaterial{P, <:ShaderProgram}, textures,
+        tfc::TextureFilterContext
+    ) where {P}
+    sc = ShaderContext(tfc, tfc.n, Vec3f(0), Vec3f(0), Vec3f(0), tfc.n, 1.0f0, Vec3f(0), Point2f(0))
+    return clamp.(program_transparency(shader_programs(textures, mat.alpha)[mat.alpha.idx], textures, sc), 0.0f0, 1.0f0)
 end
 
 @propagate_inbounds function guide_material(mat::ShaderMaterial{P, A, M}, materials, tfc, ::Val{D}) where {P, A, M <: Tuple, D}
-    sc = ShaderContext(tfc, tfc.n, Vec3f(0), Vec3f(0), Vec3f(0), tfc.n, 1f0, Vec3f(0), Point2f(0))
-    lobes, _, _ = shader_lobes(M, shader_programs(materials, mat.program)[mat.program.idx], materials, sc, false)
-    a = reduce(+, map(w -> w.sample_weight > 0f0 ? guide_albedo(w.lobe, w.weight) : Vec3f(0), lobes); init = Vec3f(0))
+    sc = ShaderContext(tfc, tfc.n, Vec3f(0), Vec3f(0), Vec3f(0), tfc.n, 1.0f0, Vec3f(0), Point2f(0))
+    a, _ = shader_guides(M, shader_programs(materials, mat.program)[mat.program.idx], materials, sc, Val(D))
     return guide_rgb(RGBSpectrum(a[1], a[2], a[3]))
+end
+@inline shader_guide(w::Weighted, depth) = w.sample_weight > 0.0f0 ? guide_albedo(w.lobe, w.weight) : Vec3f(0)
+
+# Consume native parameter readers before returning, so a value stack never
+# escapes this function through a guide term.
+@noinline function shader_guides(::Type{M}, prog, textures, sc, depth) where {M <: Tuple}
+    s, i = run_values(prog, textures, sc)
+    terms, _, _ = node_lobes(M, s, prog, i, sc, LobeSetup(lookup_tables(textures), false))
+    albedo = reduce(+, map(w -> shader_guide(w, depth), terms); init = Vec3f(0))
+    normal = reduce(+, map(shader_guide_normal, terms); init = Vec3f(0))
+    return albedo, normal
 end

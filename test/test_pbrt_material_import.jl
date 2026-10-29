@@ -27,8 +27,8 @@ value(h) = Hikari.const_float(h, NaN32)
         m = material("""Material "coateddiffuse" "float roughness" 0.3 "float uroughness" 0.001
                         "float thickness" 0.05 "rgb albedo" [0.2 0.3 0.4] "float g" 0.5
                         "integer maxdepth" 4 "integer nsamples" 3""")
-        @test value(m.u_roughness) == 0.001f0
-        @test value(m.v_roughness) == 0.3f0
+        @test value(Hikari.roughness_pair(m.roughness)[1]) == 0.001f0
+        @test value(Hikari.roughness_pair(m.roughness)[2]) == 0.3f0
         @test value(m.thickness) == 0.05f0
         @test value(m.g) == 0.5f0
         @test m.albedo != Hikari.TexHandle(Hikari.RGBSpectrum(0f0))
@@ -40,8 +40,8 @@ value(h) = Hikari.const_float(h, NaN32)
                         "float conductor.uroughness" 0.4 "spectrum conductor.eta" "metal-Au-eta"
                         "spectrum conductor.k" "metal-Au-k" "float thickness" 0.02 "float g" -0.3
                         "integer maxdepth" 6 "integer nsamples" 2 "bool remaproughness" false""")
-        @test (value(m.interface_u_roughness), value(m.interface_v_roughness)) == (0.2f0, 0.05f0)
-        @test (value(m.conductor_u_roughness), value(m.conductor_v_roughness)) == (0.4f0, 0f0)
+        @test map(value, Hikari.roughness_pair(m.interface_roughness)) == (0.2f0, 0.05f0)
+        @test map(value, Hikari.roughness_pair(m.conductor_roughness)) == (0.4f0, 0f0)
         @test value(m.thickness) == 0.02f0
         @test value(m.g) == -0.3f0
         @test (m.max_depth, m.n_samples, m.remap_roughness) == (6, 2, false)
@@ -50,14 +50,14 @@ value(h) = Hikari.const_float(h, NaN32)
     @testset "an anisotropic conductor" begin
         m = material("""Material "conductor" "spectrum eta" "metal-Au-eta" "spectrum k" "metal-Au-k"
                         "float uroughness" 0.02 "float vroughness" 0.4""")
-        @test (value(m.u_roughness), value(m.v_roughness)) == (0.02f0, 0.4f0)
+        @test (value(Hikari.roughness_pair(m.roughness)[1]), value(Hikari.roughness_pair(m.roughness)[2])) == (0.02f0, 0.4f0)
         @test m.ior === Hikari.AU_ETA_SPECTRUM && m.extinction === Hikari.AU_K_SPECTRUM
     end
 
     @testset "a dielectric's textured roughness" begin
         m = material("""Material "dielectric" "texture roughness" "rough" """)
-        @test m.u_roughness === ROUGH_TEXTURE
-        @test m.v_roughness === ROUGH_TEXTURE
+        @test Hikari.roughness_pair(m.roughness)[1] === ROUGH_TEXTURE
+        @test Hikari.roughness_pair(m.roughness)[2] === ROUGH_TEXTURE
     end
 
     @testset "CoatedConductor's default conductor is copper" begin

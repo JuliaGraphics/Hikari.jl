@@ -62,6 +62,19 @@ const ATTRIBUTE_DY    = UInt8(45)
 const CAMERA          = UInt8(46)
 const WINDOW          = UInt8(47)
 const REFLECTION      = UInt8(48)
+const PBRT_BUMP       = UInt8(49)
+const POSITION_U      = UInt8(50)
+const POSITION_V      = UInt8(51)
+const UV_U            = UInt8(52)
+const UV_V            = UInt8(53)
+const ATTRIBUTE_U     = UInt8(54)
+const ATTRIBUTE_V     = UInt8(55)
+const PARAMETER       = UInt8(56)
+const PARAMETER_U     = UInt8(57)
+const PARAMETER_V     = UInt8(58)
+const PARAMETER_DX    = UInt8(59)
+const PARAMETER_DY    = UInt8(60)
+const PARAMETER_BUMP  = UInt8(61)
 end
 
 """
@@ -98,6 +111,7 @@ const MATH_ROUND     = UInt32(1) << 23
 const MATH_COMPARE   = UInt32(1) << 24
 const ATTRIBUTE      = UInt32(1) << 25
 const BUMP           = UInt32(1) << 26
+const PBRT_BUMP      = UInt32(1) << 27
 # Not a node family: the BSDF part of a shader's program as the closure kernel runs it
 # (`closure_program`), its inputs gathered and no value computed, so every shader's has this type.
 const CLOSURES       = UInt32(1) << 28

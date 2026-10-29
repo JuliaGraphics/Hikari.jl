@@ -242,10 +242,11 @@ function shade_pass!(g, state::VolPathState, @nospecialize(refs), cur::WorkQueue
                           refs.accel, refs.media_interfaces, values_set(refs.materials, T), inputs,
                           refs.camera, refs.samples_per_pixel),
                          Mantle.DeviceRange(queues.sizes; max = Int(queues.capacity), at = slot);
-                         group, name = "shader-values")
+                         group = shader_values_workgroupsize(group), name = "shader-values")
     end
     for (slot, T) in enumerate(types)
-        q, view = splits(T) ? (ClosureQueue{bsdf_nodes(T)}(queues, slot, inputs), closure_set(refs.materials)) :
+        q, view = splits(T) ? (ClosureQueue{bsdf_nodes(T)}(queues, slot, inputs,
+                                  state.material_queues_signature.programs[slot]), closure_set(refs.materials)) :
                               (SlotQueue{T}(queues, slot), shade_set(refs.materials, T))
         Mantle.dispatch!(g, vp_shade_kernel!,
                          (q, state.surface_hits, cur, state.arrivals,
@@ -259,9 +260,14 @@ function shade_pass!(g, state::VolPathState, @nospecialize(refs), cur::WorkQueue
                           state.sobol_rng, refs.sample_idx,
                           refs.camera, refs.samples_per_pixel, state.rr_depth),
                          Mantle.DeviceRange(queues.sizes; max = Int(queues.capacity), at = slot);
-                         group, name = "shade")
+                         group = T <: ShaderMaterial ? shader_bsdf_workgroupsize(group) : group, name = "shade")
     end
 end
+
+# Smaller BSDF groups keep the high-register shaders occupied as queues drain.
+# Values use larger groups: their shorter live ranges tolerate more threads.
+shader_values_workgroupsize(group) = min(group, 128)
+shader_bsdf_workgroupsize(group) = min(group, 64)
 
 """Transmittance along the shadow rays the medium direct lighting queued."""
 function shadow_pass!(g, state::VolPathState, @nospecialize(refs))

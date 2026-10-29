@@ -16,14 +16,14 @@ function tc_scene(material)
     scene = Hikari.Scene(; backend = TC_BACKEND)
     handle = push!(scene, normal_mesh(Tesselation(Sphere(Point3f(0, 0, 0.5), 0.5f0), 24)), material)
     push!(scene, normal_mesh(Rect3f(Vec3f(-3, -3, -0.01), Vec3f(6, 6, 0.01))), Hikari.Diffuse(color = (0.6, 0.6, 0.6)))
-    push!(scene, Hikari.PointLight(Point3f(0, -2, 3), Hikari.RGBSpectrum(30f0)))
+    push!(scene, Hikari.PointLight(Point3f(0, -2, 3), Hikari.RGBSpectrum(30.0f0)))
     Hikari.sync!(scene)
     return scene, handle
 end
 
 function tc_render(scene)
     film = Hikari.Film(TC_BACKEND, Hikari.Film(Point2f(48, 48)))
-    camera = Hikari.PerspectiveCamera(Point3f(0, -3, 1.5f0), Point3f(0, 0, 0.5f0), film; fov = 50f0)
+    camera = Hikari.PerspectiveCamera(Point3f(0, -3, 1.5f0), Point3f(0, 0, 0.5f0), film; fov = 50.0f0)
     vp = Hikari.VolPath(samples = 8, max_depth = 4)
     vp(scene, film, camera)
     img = Array(film.framebuffer)
@@ -39,8 +39,10 @@ tc_mean(img) = mean(p -> Float64(p.r + p.g + p.b), img)
     noisy = Hikari.Principled(base_color = noise(xyz()).color, roughness = 0.4)
 
     @testset "renders as the same material pushed" begin
-        for target in (glass, noisy, Hikari.Principled(distribution = :ggx, base_color = (0.05, 0.05, 0.05), metallic = 1, roughness = 0.7),
-                       Hikari.Metallic(fresnel_type = :physical_conductor, ior = (1.5, 1.5, 1.5), extinction = (0.1, 0.1, 0.1), roughness = 0.7))
+        for target in (
+                glass, noisy, Hikari.Principled(distribution = :ggx, base_color = (0.05, 0.05, 0.05), metallic = 1, roughness = 0.7),
+                Hikari.Metallic(fresnel_type = :physical_conductor, ior = (1.5, 1.5, 1.5), extinction = (0.1, 0.1, 0.1), roughness = 0.7),
+            )
             scene, handle = tc_scene(red)
             original = tc_render(scene)
             Hikari.update_material!(scene, handle.interface, target)
@@ -101,8 +103,7 @@ tc_mean(img) = mean(p -> Float64(p.r + p.g + p.b), img)
         @test tc_interface(scene, handle).material == moved
     end
 
-    # A mix of pbrt models is stored as a `MixMaterial` referencing its two materials by key; the
-    # materials go with it when something else takes its place.
+    # A mix occupies one graph slot, with no separately stored sub-materials.
     @testset "a mix in and out" begin
         scene, handle = tc_scene(red)
         store = scene.materials
@@ -110,17 +111,18 @@ tc_mean(img) = mean(p -> Float64(p.r + p.g + p.b), img)
         mix = Hikari.Mix(Hikari.Gold(), Hikari.CoatedDiffuse(reflectance = (0.4, 0.4, 0.4)); factor = 0.3f0)
         Hikari.update_material!(scene, handle, mix)
         stored = store[tc_interface(scene, handle).material]
-        @test stored isa Hikari.MixMaterial
-        @test length(store) == n + 2
+        @test stored isa Hikari.ShaderMaterial
+        @test fieldcount(Hikari.bsdf_nodes(typeof(stored))) == 2
+        @test length(store) == n
         Hikari.update_material!(scene, handle, red)
-        @test !(store[tc_interface(scene, handle).material] isa Hikari.MixMaterial)
+        @test Hikari.bsdf_nodes(typeof(store[tc_interface(scene, handle).material])) === Tuple{Hikari.DiffuseBSDF}
         @test length(store) == n
         @test !isempty(tc_render(scene))
     end
 
     @testset "a medium interface's sides" begin
         scene = Hikari.Scene(; backend = TC_BACKEND)
-        medium(σ) = Hikari.HomogeneousMedium(σ_a = Hikari.RGBSpectrum(0.1f0), σ_s = Hikari.RGBSpectrum(σ), Le = Hikari.RGBSpectrum(0f0))
+        medium(σ) = Hikari.HomogeneousMedium(σ_a = Hikari.RGBSpectrum(0.1f0), σ_s = Hikari.RGBSpectrum(σ), Le = Hikari.RGBSpectrum(0.0f0))
         cube = normal_mesh(Rect3f(Vec3f(0), Vec3f(1)))
         handle = push!(scene, cube, Hikari.MediumInterface(Hikari.NullMaterial(); inside = medium(0.5f0)))
         mi = tc_interface(scene, handle)

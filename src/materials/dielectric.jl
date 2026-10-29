@@ -11,16 +11,15 @@ in pbrt's convention. `ior` is a number, a texture, or a spectrum that disperses
 wavelengths; the roughness along and across the tangent is remapped to the GGX alpha with
 `remap_roughness`, as pbrt does.
 """
-struct Dielectric{IorT, URoughT, VRoughT, DispT} <: Material
+struct Dielectric{IorT, RoughT, DispT} <: Material
     ior::IorT
-    u_roughness::URoughT
-    v_roughness::VRoughT
+    roughness::RoughT
     remap_roughness::Bool
     displacement::DispT
 end
 
 Dielectric(; ior = 1.5f0, roughness = 0f0, remap_roughness = true, displacement = nothing) =
-    Dielectric(ior, roughness_pair(roughness)..., remap_roughness, displacement)
+    Dielectric(ior, roughness, remap_roughness, displacement)
 
 """
 pbrt-v4's `ThinDielectricMaterial`: a slab of no thickness that light passes straight through,
@@ -47,8 +46,9 @@ first wavelength, and ends the others (`dispersive`).
                                       regularize::Bool, wo::Vec3f, ns::Vec3f, dpdus::Vec3f)
     ior, dispersive = eval_dielectric_ior(textures, mat.ior, tfc, lambda)
     ior == 0f0 && (ior = 1f0)
-    u_roughness = eval_handle(textures, mat.u_roughness, tfc)
-    v_roughness = eval_handle(textures, mat.v_roughness, tfc)
+    u, v = roughness_pair(mat.roughness)
+    u_roughness = eval_handle(textures, u, tfc)
+    v_roughness = eval_handle(textures, v, tfc)
     alpha_x = mat.remap_roughness ? roughness_to_α(u_roughness) : u_roughness
     alpha_y = mat.remap_roughness ? roughness_to_α(v_roughness) : v_roughness
     if regularize

@@ -88,6 +88,7 @@ const TEST_FILES = [
     "test_checkerboard_texture.jl",
     "test_node_textures.jl",
     "test_shader_material.jl",
+    "test_pbrt_graph_materials.jl",
     "test_toon_lobe.jl",
     "test_refraction_lobe.jl",
     "test_subsurface_selection.jl",

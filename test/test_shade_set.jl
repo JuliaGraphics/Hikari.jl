@@ -18,17 +18,21 @@ ss_textures(scene, V) = [eltype(eltype(typeof(scene.materials.static.textures).p
 
 @testset "shade_set" begin
     scene = Hikari.Scene(; backend = Mantle.defaultbackend())
-    sphere = normal_mesh(Tesselation(Sphere(Point3f(0), 1f0), 8))
+    sphere = normal_mesh(Tesselation(Sphere(Point3f(0), 1.0f0), 8))
     plain = push!(scene, sphere, Hikari.Principled(base_color = (0.8, 0.2, 0.1), roughness = 0.3))
-    # A pbrt model with a texture graph: its handle names a texture program.
+    # A pbrt model uses a shader value program, just like Principled.
     pbrt = push!(scene, sphere, Hikari.Conductor(roughness = noise(xyz()).fac))
     P, C = ss_type(scene, plain), ss_type(scene, pbrt)
     before = (ss_view(scene, P), ss_view(scene, C))
 
     @testset "other materials leave a kernel's view" begin
         push!(scene, sphere, Hikari.Principled(base_color = voronoi(xyz()).color))
-        push!(scene, sphere, Hikari.Principled(base_color = noise(xyz()).color, emission_strength = 1,
-                                               emission_color = (1, 1, 1)))
+        push!(
+            scene, sphere, Hikari.Principled(
+                base_color = noise(xyz()).color, emission_strength = 1,
+                emission_color = (1, 1, 1)
+            )
+        )
         push!(scene, sphere, Hikari.Glass(ior = 1.5))
         @test length(scene.materials.static.data) == 5
         @test (ss_view(scene, P), ss_view(scene, C)) == before
@@ -39,9 +43,9 @@ ss_textures(scene, V) = [eltype(eltype(typeof(scene.materials.static.textures).p
         texture_program(E) = E <: Hikari.NodeInstr && E.parameters[1] & F.TEXTURE != 0
         shader_program(E) = E <: Hikari.NodeInstr && E.parameters[1] & F.TEXTURE == 0
         @test count(shader_program, ss_textures(scene, ss_view(scene, P))) == 1
-        @test count(texture_program, ss_textures(scene, ss_view(scene, P))) == 1
-        @test count(shader_program, ss_textures(scene, ss_view(scene, C))) == 0
-        @test count(texture_program, ss_textures(scene, ss_view(scene, C))) == 1
+        @test count(texture_program, ss_textures(scene, ss_view(scene, P))) == 0
+        @test count(shader_program, ss_textures(scene, ss_view(scene, C))) == 1
+        @test count(texture_program, ss_textures(scene, ss_view(scene, C))) == 0
     end
 
     # A shadow ray may pass a cut-out material anywhere, so every kernel reads its transparency.
@@ -58,13 +62,15 @@ ss_textures(scene, V) = [eltype(eltype(typeof(scene.materials.static.textures).p
     @testset "a view reads the lookup tables" begin
         static = scene.materials.static
         @test (Raycore.@allowscalar Hikari.lookup_tables(Hikari.shade_set(static, P))) ===
-              (Raycore.@allowscalar Hikari.lookup_tables(static))
+            (Raycore.@allowscalar Hikari.lookup_tables(static))
     end
 
-    @testset "a mix picks among all of them" begin
-        push!(scene, sphere, Hikari.Mix(Hikari.Gold(), Hikari.CoatedDiffuse(reflectance = (0.4, 0.4, 0.4)); factor = 0.3f0))
-        M = only(T for T in map(eltype, scene.materials.static.data) if T <: Hikari.MixMaterial)
-        @test Hikari.shade_set(scene.materials.static, M) === scene.materials.static
+    @testset "a pbrt mix keeps a graph view" begin
+        h = push!(scene, sphere, Hikari.Mix(Hikari.Gold(), Hikari.CoatedDiffuse(reflectance = (0.4, 0.4, 0.4)); factor = 0.3f0))
+        M = ss_type(scene, h)
+        @test M <: Hikari.ShaderMaterial
+        @test all(T -> !(T <: Hikari.MixMaterial), map(eltype, scene.materials.static.data))
+        @test Hikari.shade_set(scene.materials.static, M) isa Raycore.SetView
     end
 end
 
@@ -78,13 +84,15 @@ end
     scene = Hikari.Scene(; backend)
     sphere(x) = normal_mesh(Tesselation(Sphere(Point3f(x, 0, 0.5), 0.4f0), 16))
     push!(scene, sphere(0), Hikari.Principled(base_color = (0.8, 0.2, 0.1), roughness = 0.3))
-    push!(scene, Hikari.PointLight(Point3f(0, -2, 3), Hikari.RGBSpectrum(30f0)))
+    push!(scene, Hikari.PointLight(Point3f(0, -2, 3), Hikari.RGBSpectrum(30.0f0)))
     Hikari.sync!(scene)
     film = Hikari.Film(backend, Hikari.Film(Point2f(16, 16)))
-    camera = Hikari.PerspectiveCamera(Point3f(0, -3, 1), Point3f(0, 0, 0.5), film; up = Vec3f(0, 0, 1), fov = 40f0)
+    camera = Hikari.PerspectiveCamera(Point3f(0, -3, 1), Point3f(0, 0, 0.5), film; up = Vec3f(0, 0, 1), fov = 40.0f0)
     vp = Hikari.VolPath(samples = 1, max_depth = 3)
-    stage(name) = [(d.kernel, Mantle.devicetype(dev, d.args)) for pl in Hikari.allplans(vp.state.plans)
-                   for pp in pl.passes if pp.pass.name == name for d in pp.pass.dispatches]
+    stage(name) = [
+        (d.kernel, Mantle.devicetype(dev, d.args)) for pl in Hikari.allplans(vp.state.plans)
+            for pp in pl.passes if pp.pass.name == name for d in pp.pass.dispatches
+    ]
     vp(scene, film, camera)
     trace = stage("trace")
     @test !isempty(trace)
@@ -113,15 +121,21 @@ end
     backend = Mantle.defaultbackend()
     dev = Hikari.mantle_device(backend)
     scene = Hikari.Scene(; backend)
-    h = push!(scene, normal_mesh(Tesselation(Sphere(Point3f(0, 0, 0.5), 0.4f0), 16)),
-              Hikari.Principled(base_color = wave(xyz()).color, roughness = 0.3))
-    push!(scene, Hikari.PointLight(Point3f(0, -2, 3), Hikari.RGBSpectrum(30f0)))
+    h = push!(
+        scene, normal_mesh(Tesselation(Sphere(Point3f(0, 0, 0.5), 0.4f0), 16)),
+        Hikari.Principled(base_color = wave(xyz()).color, roughness = 0.3)
+    )
+    push!(scene, Hikari.PointLight(Point3f(0, -2, 3), Hikari.RGBSpectrum(30.0f0)))
     Hikari.sync!(scene)
     film = Hikari.Film(backend, Hikari.Film(Point2f(16, 16)))
-    camera = Hikari.PerspectiveCamera(Point3f(0, -3, 1), Point3f(0, 0, 0.5), film; up = Vec3f(0, 0, 1), fov = 40f0)
+    camera = Hikari.PerspectiveCamera(Point3f(0, -3, 1), Point3f(0, 0, 0.5), film; up = Vec3f(0, 0, 1), fov = 40.0f0)
     vp = Hikari.VolPath(samples = 1, max_depth = 3)
-    stage(name) = unique([(d.kernel, Mantle.devicetype(dev, d.args)) for pl in Hikari.allplans(vp.state.plans)
-                          for pp in pl.passes if pp.pass.name == name for d in pp.pass.dispatches])
+    stage(name) = unique(
+        [
+            (d.kernel, Mantle.devicetype(dev, d.args)) for pl in Hikari.allplans(vp.state.plans)
+                for pp in pl.passes if pp.pass.name == name for d in pp.pass.dispatches
+        ]
+    )
     vp(scene, film, camera)
     closures, values = stage("shade"), stage("shader-values")
     @test length(closures) == 1 && length(values) == 1
@@ -129,7 +143,51 @@ end
     vp(scene, film, camera)
     @test stage("shade") == closures
     @test length(stage("shader-values")) == 2 && values[1] in stage("shader-values")
+    # Images introduce a new array type in the scene. An opaque BSDF kernel
+    # consumes gathered inputs and must not start depending on that array.
+    push!(
+        scene, normal_mesh(Tesselation(Sphere(Point3f(1, 0, 0.5), 0.4f0), 8)),
+        Hikari.Principled(base_color = fill(Hikari.RGBSpectrum(0.4f0), 4, 4))
+    )
+    Hikari.sync!(scene)
+    vp(scene, film, camera)
+    @test stage("shade") == closures
     close(vp)
+end
+
+@testset "simple native graph edits reuse the shading kernel" begin
+    backend = Mantle.defaultbackend()
+    dev = Hikari.mantle_device(backend)
+    scene = Hikari.Scene(; backend)
+    checker(x) = Hikari.CheckerboardTexture(5.0f0, 5.0f0, 0.0f0, 0.0f0, x, 0.3f0)
+    material(x) = Hikari.Conductor(roughness = x, reflectance = (0.3, 0.5, 0.7))
+    h = push!(scene, normal_mesh(Tesselation(Sphere(Point3f(0), 0.7f0), 16)), material(checker(0.1f0)))
+    push!(scene, Hikari.PointLight(Point3f(0, -2, 3), Hikari.RGBSpectrum(30.0f0)))
+    Hikari.sync!(scene)
+    film = Hikari.Film(backend, Hikari.Film(Point2f(16, 16)))
+    camera = Hikari.PerspectiveCamera(Point3f(0, -3, 1), Point3f(0), film; fov = 40.0f0)
+    vp = Hikari.VolPath(samples = 1, max_depth = 3)
+    stage() = unique(
+        [
+            (d.kernel, Mantle.devicetype(dev, d.args)) for pl in Hikari.allplans(vp.state.plans)
+                for pp in pl.passes if pp.pass.name == "shade" for d in pp.pass.dispatches
+        ]
+    )
+    try
+        vp(scene, film, camera)
+        original = stage()
+        @test length(original) == 1
+        key = ss_key(scene, h)
+        for roughness in (checker(0.2f0), xyz().x * 0.05f0 + 0.2f0, checker(0.15f0))
+            Hikari.update_material!(scene, h, material(roughness))
+            vp(scene, film, camera)
+            @test ss_key(scene, h) == key
+            @test stage() == original
+        end
+    finally
+        close(vp)
+        Hikari.free!(film)
+    end
 end
 
 @testset "constant graphs skip values without changing the BSDF kernel" begin
@@ -140,13 +198,17 @@ end
     graph(m) = Hikari.ShaderMaterial(Hikari.shader_node(m))
     h = push!(scene, sphere(0), graph(Hikari.Diffuse(color = (0.7, 0.3, 0.2))))
     push!(scene, sphere(1), graph(Hikari.Diffuse(color = noise(xyz()).color)))
-    push!(scene, Hikari.PointLight(Point3f(0, -2, 3), Hikari.RGBSpectrum(30f0)))
+    push!(scene, Hikari.PointLight(Point3f(0, -2, 3), Hikari.RGBSpectrum(30.0f0)))
     Hikari.sync!(scene)
     film = Hikari.Film(backend, Hikari.Film(Point2f(16, 16)))
-    camera = Hikari.PerspectiveCamera(Point3f(0, -3, 1), Point3f(0, 0, 0.5), film; fov = 40f0)
+    camera = Hikari.PerspectiveCamera(Point3f(0, -3, 1), Point3f(0, 0, 0.5), film; fov = 40.0f0)
     vp = Hikari.VolPath(samples = 1, max_depth = 3)
-    stage(name) = unique([(d.kernel, Mantle.devicetype(dev, d.args)) for pl in Hikari.allplans(vp.state.plans)
-                          for pp in pl.passes if pp.pass.name == name for d in pp.pass.dispatches])
+    stage(name) = unique(
+        [
+            (d.kernel, Mantle.devicetype(dev, d.args)) for pl in Hikari.allplans(vp.state.plans)
+                for pp in pl.passes if pp.pass.name == name for d in pp.pass.dispatches
+        ]
+    )
     try
         vp(scene, film, camera)
         shade, key = stage("shade"), ss_key(scene, h)
@@ -177,11 +239,11 @@ end
     function sphere_mean(material)
         scene = Hikari.Scene(; backend)
         push!(scene, normal_mesh(Tesselation(Sphere(Point3f(0, 0, 0.5), 0.5f0), 48)), material)
-        push!(scene, Hikari.PointLight(Point3f(0, -2, 3), Hikari.RGBSpectrum(30f0)))
+        push!(scene, Hikari.PointLight(Point3f(0, -2, 3), Hikari.RGBSpectrum(30.0f0)))
         push!(scene, Hikari.AmbientLight(Hikari.RGBSpectrum(0.2f0)))
         Hikari.sync!(scene)
         film = Hikari.Film(backend, Hikari.Film(Point2f(64, 64)))
-        camera = Hikari.PerspectiveCamera(Point3f(0, -3, 0.5f0), Point3f(0, 0, 0.5f0), film; up = Vec3f(0, 0, 1), fov = 30f0)
+        camera = Hikari.PerspectiveCamera(Point3f(0, -3, 0.5f0), Point3f(0, 0, 0.5f0), film; up = Vec3f(0, 0, 1), fov = 30.0f0)
         vp = Hikari.VolPath(samples = 64, max_depth = 4)
         vp(scene, film, camera)
         img = Array(film.framebuffer)

@@ -35,6 +35,7 @@ const REFRACTION_BECKMANN = UInt8(14)
 const REFRACTION_GGX = UInt8(15)
 const PHYSICAL_METALLIC = UInt8(16)
 const PHYSICAL_METALLIC_FILM = UInt8(17)
+const PBRT = UInt8(18)
 end
 
 const CLOSURE_WEIGHT_CUTOFF = 1f-5
@@ -48,7 +49,7 @@ both facing outwards, the handedness of the tangent frame the uv map makes (1 wh
 bitangent `ns × dpdus` runs along increasing v, -1 where the uv map is mirrored), and where the
 hit is in the camera's space and on the image, for texture coordinates.
 """
-struct ShaderContext
+struct ShaderContext{B}
     tfc::TextureFilterContext
     wo::Vec3f
     dpdx::Vec3f
@@ -58,7 +59,10 @@ struct ShaderContext
     tangent_sign::Float32
     p_camera::Vec3f
     window::Point2f
+    bump::B
 end
+ShaderContext(tfc, wo, dpdx, dpdy, dpdus, ng, sign, p_camera, window) =
+    ShaderContext(tfc, wo, dpdx, dpdy, dpdus, ng, sign, p_camera, window, nothing)
 
 @inline _max(v::Vec3f) = max(v[1], v[2], v[3])
 @inline _pow3(v::Vec3f, e::Float32) = Vec3f(v[1]^e, v[2]^e, v[3]^e)
@@ -412,7 +416,9 @@ of a screen-space differential for a bump's `ATTRIBUTE_DX` and `ATTRIBUTE_DY`. U
     tfc = sc.tfc
     fw = ins.k[1]
     duv = ins.op == NodeOp.ATTRIBUTE_DX ? Vec2f(fw * tfc.dudx, fw * tfc.dvdx) :
-          ins.op == NodeOp.ATTRIBUTE_DY ? Vec2f(fw * tfc.dudy, fw * tfc.dvdy) : Vec2f(0)
+          ins.op == NodeOp.ATTRIBUTE_DY ? Vec2f(fw * tfc.dudy, fw * tfc.dvdy) :
+          _has(ins, NodeFeature.PBRT_BUMP) && ins.op == NodeOp.ATTRIBUTE_U ? Vec2f(pbrt_bump_steps(pbrt_height_context(sc))[1], 0) :
+          _has(ins, NodeFeature.PBRT_BUMP) && ins.op == NodeOp.ATTRIBUTE_V ? Vec2f(0, pbrt_bump_steps(pbrt_height_context(sc))[2]) : Vec2f(0)
     return Raycore.with_texture(_corner_attribute, textures, slot, idx, tfc.face_idx, tfc.bary, duv)
 end
 
@@ -460,18 +466,26 @@ its first BSDF instruction, which a program places after every value (`compile_s
         op = ins.op
         (op == NodeOp.RESULT || op == NodeOp.CLOSURE || op == NodeOp.PRINCIPLED) && return s, i
         skip = Int32(0)
-        if _has(ins, NodeFeature.BUMP) && op == NodeOp.BUMP
+        if _has(ins, NodeFeature.IMAGE) && op in _PARAMETER_OPS
+            value = graph_texture_parameter(textures, ins, sc, s)
+            s = _store(s, ins, Vec3f(value.c[1], value.c[2], value.c[3]), _splat(get_alpha(value)))
+        elseif _has(ins, NodeFeature.PBRT_BUMP) && op == NodeOp.PBRT_BUMP
+            normal, tangent = graph_bump_frame(_f(s, ins, 1), _f(s, ins, 2), _f(s, ins, 3), sc)
+            s = _store(s, ins, normal, tangent)
+        elseif _has(ins, NodeFeature.PBRT_BUMP) && NodeOp.POSITION_U <= op <= NodeOp.UV_V
+            s = _store(s, ins, pbrt_shifted_leaf(op, sc))
+        elseif _has(ins, NodeFeature.BUMP) && op == NodeOp.BUMP
             s = _store(s, ins, _bump(s, ins, sc))
         elseif op == NodeOp.NORMAL_MAP
             s = _store(s, ins, _normal_map(s, ins, sc))
-        elseif _has(ins, NodeFeature.ATTRIBUTE) && NodeOp.ATTRIBUTE <= op <= NodeOp.ATTRIBUTE_DY
+        elseif _has(ins, NodeFeature.ATTRIBUTE) && op in _ATTRIBUTE_OPS
             a = _attribute(textures, ins, sc)
             s = _store(s, ins, a, _splat((a[1] + a[2] + a[3]) / 3f0))
-        elseif op == NodeOp.CAMERA
+        elseif _has(ins, NodeFeature.VECTOR) && op == NodeOp.CAMERA
             s = _store(s, ins, sc.p_camera)
-        elseif op == NodeOp.WINDOW
+        elseif _has(ins, NodeFeature.VECTOR) && op == NodeOp.WINDOW
             s = _store(s, ins, Vec3f(sc.window[1], sc.window[2], 0f0))
-        elseif op == NodeOp.REFLECTION
+        elseif _has(ins, NodeFeature.VECTOR) && op == NodeOp.REFLECTION
             facing = _closure_normal(sc.tfc.n, sc)
             s = _store(s, ins, 2f0 * dot(facing, sc.wo) * facing - sc.wo)
         elseif _has(ins, NodeFeature.BUMP) && NodeOp.POSITION_DX <= op <= NodeOp.UV_DY

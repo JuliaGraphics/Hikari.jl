@@ -5,75 +5,43 @@ using Raycore
 using GeometryBasics: Point2f
 using Colors: RGB
 
-# ============================================================================
-# The material type explosion must stay collapsed
-# ============================================================================
-#
-# The per-material closest-hit path compiles ONE shader per concrete material
-# type that reaches the device, so "the same material spelled differently" used
-# to cost a whole extra shader each. Crown had 12 concrete types where it uses
-# 5 material CLASSES; the other 7 were constant-vs-texture combinatorics and
-# wrapper types, and the two MixMaterial types were the most expensive of them
-# because a mix's shading kernel inlines the whole shading system.
-#
-# These tests pin the three mechanisms that keep it collapsed:
-#
-#   1. `to_device_material` rewrites every texture-carrying field to a
-#      `TexHandle`, so the spelling stops mattering at push time.
-#   2. `displacement` is a field, not a `BumpMapped{…}` wrapper.
-#   3. `MixMaterial` references its sub-materials by `SetKey`, not by value.
-#
-# Each is checked on the DEVICE-SIDE type — what `scene.materials` actually
-# stores — because that, not the host type, is what the SBT is built from.
-
-# The set's stored element types, in slot order.
+# Value-node families can require different value programs, but spellings of
+# the same model share BSDF types. Native spectra live in program data, and
+# mixtures store one graph rather than recursively stored material records.
 device_types(scene) = [eltype(v) for v in scene.materials.static.data]
-
 fresh_scene() = Hikari.Scene(; hw_accel = false)
-
 include("host_materials.jl")
-
 img_tex(v) = Hikari.Texture(fill(Hikari.RGBSpectrum(v, v, v), 4, 4))
 float_tex(v) = Hikari.Texture(fill(Float32(v), 4, 4))
-
-# Evaluate host fixtures against downloaded texture owners, rather than device pointers.
 host_static(store) = host_materials(store)
 
 @testset "Material type collapse" begin
-
-    @testset "constant vs texture is one device type" begin
+    @testset "constant and image spellings share a BSDF kernel" begin
         scene = fresh_scene()
-        # Four spellings of the same material class: raw tuple, RGBSpectrum,
-        # a 0-d ConstTexture, and a real 4x4 image map.
         push!(scene, Hikari.Diffuse(color = (0.5, 0.4, 0.3)))
         push!(scene, Hikari.Diffuse(color = Hikari.RGBSpectrum(0.1f0, 0.2f0, 0.3f0)))
         push!(scene, Hikari.Diffuse(color = Hikari.ConstTexture(Hikari.RGBSpectrum(0.7f0))))
         push!(scene, Hikari.Diffuse(color = img_tex(0.9f0), roughness = float_tex(0.2f0)))
         ts = device_types(scene)
-        @test length(ts) == 1
-        @test ts[1] <: Hikari.Diffuse
-        # A default normal is unused by Diffuse's own kernel and takes no
-        # space; every texture-carrying field still collapses to one handle.
-        @test fieldtype(ts[1], :normal) === Nothing
-        @test all(f -> fieldtype(ts[1], f) === Hikari.TexHandle, (:color, :roughness, :displacement))
-        @test sizeof(ts[1]) == 3sizeof(Hikari.TexHandle)
+        @test length(ts) == 2 # constant and image value programs
+        @test all(T -> T <: Hikari.ShaderMaterial, ts)
+        @test all(T -> Hikari.bsdf_nodes(T) === Tuple{Hikari.DiffuseBSDF}, ts)
+        @test all(T -> sizeof(T) < sizeof(Hikari.TexHandle), ts)
+        @test length(scene.materials) == 4
     end
-
-    @testset "roughness texture does not fork Conductor" begin
+    @testset "named metals share their spectral BSDF representation" begin
         scene = fresh_scene()
         push!(scene, Hikari.Gold(roughness = 0.1f0))
         push!(scene, Hikari.Gold(roughness = float_tex(0.3f0)))
-        # Measured spectra stay out of line: a PiecewiseLinearSpectrum{56} is
-        # 448 bytes and cannot live inline in a 32-byte handle. Every named
-        # metal shares the same representation, so this is one type, not five.
-        push!(scene, Hikari.Silver(roughness = 0f0))
+        push!(scene, Hikari.Silver(roughness = 0.0f0))
         push!(scene, Hikari.Copper(roughness = float_tex(0.05f0)))
         ts = device_types(scene)
-        @test length(ts) == 1
-        @test ts[1] <: Hikari.Conductor
+        @test length(ts) == 2 # split constants and fused image reads
+        @test all(T -> T <: Hikari.ShaderMaterial, ts)
+        @test length(unique(Hikari.bsdf_nodes.(ts))) == 1
+        @test all(T -> sizeof(T) < sizeof(Hikari.TexHandle), ts)
     end
-
-    @testset "bumped and unbumped are one device type" begin
+    @testset "displacement is a graph input" begin
         scene = fresh_scene()
         plain = Hikari.Gold(roughness = 0.05f0)
         bumped = Hikari.set_displacement(plain, Hikari.TexHandle(0.25f0))
@@ -81,47 +49,38 @@ host_static(store) = host_materials(store)
         @test !Hikari.is_none(Hikari.displacement(bumped))
         push!(scene, plain)
         push!(scene, bumped)
-        @test length(device_types(scene)) == 1
+        push!(scene, Hikari.set_displacement(plain, Hikari.TexHandle(0.5f0)))
+        @test length(device_types(scene)) == 2
+        @test all(T -> T <: Hikari.ShaderMaterial, device_types(scene))
     end
-
-    @testset "displacement is absent, not wrong, on materials without the field" begin
-        # `MixMaterial` has no height field — pbrt-v4 resolves the mix to a
-        # sub-material before consulting GetDisplacement. `set_displacement`
-        # must leave such a material alone rather than invent a field.
+    @testset "legacy mix displacement is absent" begin
         mix = Hikari.MixMaterial(Hikari.TexHandle(0.5f0), Raycore.SetKey(), Raycore.SetKey())
         @test Hikari.is_none(Hikari.displacement(mix))
-        @test Hikari.set_displacement(mix, Hikari.TexHandle(1f0)) === mix
+        @test Hikari.set_displacement(mix, Hikari.TexHandle(1.0f0)) === mix
     end
-
-    @testset "MixMaterial is one type whatever it mixes" begin
+    @testset "mixes store graphs without sub-material slots" begin
         scene = fresh_scene()
-        # Two mixes over different sub-material PAIRS, and different amount
-        # spellings. Before, each pair was its own MixMaterial{M1,M2} — and a
-        # mix's shading kernel dispatches over every material type in the scene, so each
-        # extra one is a full copy of the shading system.
         push!(scene, Hikari.Mix(Hikari.Diffuse(color = (0.2, 0.2, 0.2)), Hikari.Gold(); factor = 0.25f0))
-        push!(scene, Hikari.Mix(Hikari.CoatedDiffuse(reflectance = (0.4, 0.4, 0.4)), Hikari.Silver();
-                                factor = float_tex(0.5f0)))
+        push!(
+            scene, Hikari.Mix(
+                Hikari.CoatedDiffuse(reflectance = (0.4, 0.4, 0.4)), Hikari.Silver();
+                factor = float_tex(0.5f0)
+            )
+        )
         ts = device_types(scene)
-        mixes = filter(t -> t <: Hikari.MixMaterial, ts)
-        @test length(mixes) == 1
-        @test mixes[1] === Hikari.MixMaterial{Hikari.TexHandle}
-        # The sub-materials are in the set too, each collapsed to one type.
-        @test count(t -> t <: Hikari.Diffuse, ts) == 1
-        @test count(t -> t <: Hikari.Conductor, ts) == 1
-        @test count(t -> t <: Hikari.CoatedDiffuse, ts) == 1
+        @test length(ts) == 2
+        @test length(scene.materials) == 2
+        @test all(T -> T <: Hikari.ShaderMaterial, ts)
+        @test all(T -> fieldcount(Hikari.bsdf_nodes(T)) == 2, ts)
     end
-
-    @testset "a mix references its sub-materials, and they resolve" begin
+    @testset "a mix's nodes and programs are stored together" begin
         scene = fresh_scene()
-        d = Hikari.Diffuse(color = (0.2, 0.3, 0.4))
-        g = Hikari.Gold()
-        push!(scene, Hikari.Mix(d, g; factor = 0f0))
-        stored = only(filter(m -> m isa Hikari.MixMaterial,
-                             [v[1] for v in host_materials(scene.materials).data if length(v) >= 1]))
-        @test Raycore.is_valid(stored.material1_idx)
-        @test Raycore.is_valid(stored.material2_idx)
-        @test stored.material1_idx != stored.material2_idx
+        push!(scene, Hikari.Mix(Hikari.Diffuse(color = (0.2, 0.3, 0.4)), Hikari.Gold(); factor = 0.0f0))
+        @test length(scene.materials) == 1
+        stored = only(only(host_materials(scene.materials).data))
+        @test stored isa Hikari.ShaderMaterial
+        @test fieldcount(Hikari.bsdf_nodes(typeof(stored))) == 2
+        @test stored.program.idx > 0 && stored.closures > 0
     end
 end
 
@@ -149,8 +108,10 @@ end
     @testset "const_spectrum refuses out-of-line kinds" begin
         # Host-side callers (area-light registration) have no texture store, so
         # this must fail loudly rather than silently register a black light.
-        h = Hikari.TexHandle(Hikari.TexKind.IMAGE, 0f0, Hikari.RGBSpectrum(0f0),
-                             Int32(1), Int32(1))
+        h = Hikari.TexHandle(
+            Hikari.TexKind.IMAGE, 0.0f0, Hikari.RGBSpectrum(0.0f0),
+            Int32(1), Int32(1)
+        )
         @test_throws ErrorException Hikari.const_spectrum(h)
     end
 
@@ -164,8 +125,11 @@ end
         mats = scene.materials
         h_img_f = Hikari.device_param(mats, float_tex(0.5f0))
         h_img_s = Hikari.device_param(mats, img_tex(0.75f0))
-        h_check = Hikari.device_param(mats, Hikari.CheckerboardTexture(
-            2f0, 2f0, 0f0, 0f0, 1f0, 0f0))
+        h_check = Hikari.device_param(
+            mats, Hikari.CheckerboardTexture(
+                2.0f0, 2.0f0, 0.0f0, 0.0f0, 1.0f0, 0.0f0
+            )
+        )
         @test h_img_f.kind == Hikari.TexKind.IMAGE
         @test h_img_s.kind == Hikari.TexKind.IMAGE
         @test h_check.kind == Hikari.TexKind.CHECKER
@@ -184,12 +148,12 @@ end
         @test Hikari.eval_handle(static, h_check, tfc) isa Float32
         @test Hikari.eval_handle_spectrum(static, h_check, tfc) isa Hikari.RGBSpectrum
         # NONE reads as zero, never as garbage.
-        @test Hikari.eval_handle(static, Hikari.TexHandle(), tfc) == 0f0
+        @test Hikari.eval_handle(static, Hikari.TexHandle(), tfc) == 0.0f0
     end
 
     @testset "checker handle matches direct evaluation" begin
         scene = fresh_scene()
-        cb = Hikari.CheckerboardTexture(4f0, 4f0, 0f0, 0f0, 1f0, 0f0)
+        cb = Hikari.CheckerboardTexture(4.0f0, 4.0f0, 0.0f0, 0.0f0, 1.0f0, 0.0f0)
         h = Hikari.device_param(scene.materials, cb)
         static = host_static(scene.materials)
         for uv in (Point2f(0.05f0, 0.05f0), Point2f(0.3f0, 0.1f0), Point2f(0.7f0, 0.6f0))

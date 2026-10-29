@@ -13,6 +13,17 @@ using Raycore
 using Mantle
 using Statistics: mean
 
+# Keep an actual direct-material reference after public Diffuse starts using
+# the graph. Comparing two public descriptions would exercise the same path.
+struct OriginalDiffuse{M} <: Hikari.Material
+    material::M
+end
+@inline Hikari.get_bxdf(m::OriginalDiffuse, table, textures, tfc::TextureFilterContext, lambda::Hikari.Wavelengths,
+                        regularize::Bool, wo::Vec3f, ns::Vec3f, tangent::Vec3f) =
+    Hikari.get_bxdf(m.material, table, textures, tfc, lambda, regularize, wo, ns, tangent)
+@inline Hikari.surface_transparency(m::OriginalDiffuse, textures, tfc::TextureFilterContext) =
+    Hikari.surface_transparency(m.material, textures, tfc)
+
 """A description's shader, whatever `surface_material` would render it with."""
 shader_material(description) = Hikari.ShaderMaterial(Hikari.shader_node(description))
 
@@ -684,8 +695,8 @@ end
             return [mean(getfield(p, c) for p in img) for c in (:r, :g, :b)]
         end
         colour = (0.7, 0.3, 0.1)
-        # With a normal, a Diffuse is a shader; without, it has its own kernel.
-        shader, own = Hikari.Diffuse(color = colour, normal = normal()), Hikari.Diffuse(color = colour)
+        # Compare the public graph against the retained direct-material reference.
+        shader, own = Hikari.Diffuse(color = colour, normal = normal()), OriginalDiffuse(Hikari.Diffuse(color = colour))
         @test Hikari.surface_material(shader) isa Hikari.ShaderMaterial && Hikari.surface_material(own) === own
         @test render(shader) ≈ render(own) rtol = 0.02
         @test render(Hikari.SubsurfaceScattering(color = colour, scale = 0)) ≈ render(shader) rtol = 0.02

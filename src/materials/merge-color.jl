@@ -13,7 +13,7 @@ color_field(::Union{Principled, Metallic, OpenPBR}) = :base_color
 color_field(::GLTF) = :base_color_texture
 # A conductor's colour is its reflectance, as pbrt-v4 gives a conductor one instead of its IOR.
 color_field(::Union{Conductor, CoatedDiffuse, DiffuseTransmission, CoatedDiffuseTransmission}) = :reflectance
-color_field(::CoatedConductor) = :conductor_reflectance
+color_field(::CoatedConductor) = :reflectance
 
 function merge_color_with_material(color_tex, material::Material)
     name = color_field(material)

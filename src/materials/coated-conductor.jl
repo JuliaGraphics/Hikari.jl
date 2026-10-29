@@ -28,15 +28,13 @@ between them, its BSDF estimated by a random walk between the two (pbrt's `Layer
 
 The conductor's IOR is taken relative to the coat's, as pbrt-v4 does.
 """
-struct CoatedConductor{IURoughT, IVRoughT, IIorT, CIorT, CExtT, CReflT, CURoughT, CVRoughT, ThickT, AlbedoT, GT, DispT} <: Material
-    interface_u_roughness::IURoughT
-    interface_v_roughness::IVRoughT
+struct CoatedConductor{IRoughT, IIorT, CIorT, CExtT, CReflT, CRoughT, ThickT, AlbedoT, GT, DispT} <: Material
+    interface_roughness::IRoughT
     interface_ior::IIorT
     conductor_ior::CIorT
     conductor_extinction::CExtT
-    conductor_reflectance::CReflT
-    conductor_u_roughness::CURoughT
-    conductor_v_roughness::CVRoughT
+    reflectance::CReflT
+    conductor_roughness::CRoughT
     thickness::ThickT
     albedo::AlbedoT
     g::GT
@@ -59,8 +57,8 @@ function CoatedConductor(; interface_roughness = 0f0, interface_ior = 1.5f0, con
     else
         conductor_ior, conductor_extinction = CU_ETA_SPECTRUM, CU_K_SPECTRUM
     end
-    return CoatedConductor(roughness_pair(interface_roughness)..., interface_ior, conductor_ior, conductor_extinction,
-                           reflectance, roughness_pair(conductor_roughness)..., thickness, albedo, g,
+    return CoatedConductor(interface_roughness, interface_ior, conductor_ior, conductor_extinction,
+                           reflectance, conductor_roughness, thickness, albedo, g,
                            Int32(max_depth), Int32(n_samples), remap_roughness, displacement)
 end
 
@@ -74,12 +72,14 @@ over its conductor, whose IOR is relative to the coat's.
                                       lambda::Wavelengths, regularize::Bool, wo::Vec3f, ns::Vec3f, dpdus::Vec3f)
     ieta, dispersive = eval_dielectric_ior(textures, mat.interface_ior, tfc, lambda)
     ieta == 0f0 && (ieta = 1f0)
-    iu_roughness = eval_handle(textures, mat.interface_u_roughness, tfc)
-    iv_roughness = eval_handle(textures, mat.interface_v_roughness, tfc)
+    iu, iv = roughness_pair(mat.interface_roughness)
+    iu_roughness = eval_handle(textures, iu, tfc)
+    iv_roughness = eval_handle(textures, iv, tfc)
     i_alpha_x = mat.remap_roughness ? roughness_to_α(iu_roughness) : iu_roughness
     i_alpha_y = mat.remap_roughness ? roughness_to_α(iv_roughness) : iv_roughness
-    cu_roughness = eval_handle(textures, mat.conductor_u_roughness, tfc)
-    cv_roughness = eval_handle(textures, mat.conductor_v_roughness, tfc)
+    cu, cv = roughness_pair(mat.conductor_roughness)
+    cu_roughness = eval_handle(textures, cu, tfc)
+    cv_roughness = eval_handle(textures, cv, tfc)
     c_alpha_x = mat.remap_roughness ? roughness_to_α(cu_roughness) : cu_roughness
     c_alpha_y = mat.remap_roughness ? roughness_to_α(cv_roughness) : cv_roughness
     if regularize
@@ -92,7 +92,7 @@ over its conductor, whose IOR is relative to the coat's.
     albedo = uplift_rgb(table, clamp(eval_handle_spectrum(textures, mat.albedo, tfc)), lambda)
     g = clamp(eval_handle(textures, mat.g, tfc), -0.99f0, 0.99f0)
     # pbrt-v4 materials.cpp: the conductor's IOR relative to the coat's.
-    ce, ck = conductor_ior(table, textures, mat.conductor_ior, mat.conductor_extinction, mat.conductor_reflectance, tfc, lambda)
+    ce, ck = conductor_ior(table, textures, mat.conductor_ior, mat.conductor_extinction, mat.reflectance, tfc, lambda)
     ce, ck = ce / ieta, ck / ieta
     top = (local_lobe(pbrt_dielectric(ieta, i_alpha_x, i_alpha_y), SpectralRadiance(1f0)),)
     bottom = (local_lobe(pbrt_conductor(ce, ck, c_alpha_x, c_alpha_y), SpectralRadiance(1f0)),)

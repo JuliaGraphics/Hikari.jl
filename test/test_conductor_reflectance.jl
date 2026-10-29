@@ -29,7 +29,7 @@ isdefined(@__MODULE__, :render_scene) || include(joinpath(@__DIR__, "pbrt", "sui
         @test isnothing(Hikari.Gold().reflectance)
         @test_throws ArgumentError Hikari.Conductor(ior = (0.2, 0.3, 0.4), reflectance = (0.9, 0.5, 0.2))
         c = Hikari.CoatedConductor(reflectance = (0.85, 0.1, 0.1))
-        @test isnothing(c.conductor_ior) && !isnothing(c.conductor_reflectance)
+        @test isnothing(c.conductor_ior) && !isnothing(c.reflectance)
         @test_throws ArgumentError Hikari.CoatedConductor(conductor_ior = (0.2, 0.3, 0.4), conductor_extinction = (3, 3, 3),
                                                           reflectance = (0.9, 0.5, 0.2))
     end

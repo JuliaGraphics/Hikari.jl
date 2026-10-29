@@ -217,14 +217,15 @@ struct ClosureQueue{M, V <: AbstractVector{Int32}, S <: ShaderInputs}
     slot::Int32
     offset::Int32
     inputs::S
+    program_offset::Int32
 end
 
-ClosureQueue{M}(q::MaterialQueues{V}, slot::Integer, inputs::S) where {M, V, S <: ShaderInputs} =
-    ClosureQueue{M, V, S}(q.items, q.sizes, Int32(slot), Int32((slot - 1) * q.capacity), inputs)
+ClosureQueue{M}(q::MaterialQueues{V}, slot::Integer, inputs::S, program_offset::Integer) where {M, V, S <: ShaderInputs} =
+    ClosureQueue{M, V, S}(q.items, q.sizes, Int32(slot), Int32((slot - 1) * q.capacity), inputs, Int32(program_offset))
 
 function Adapt.adapt_structure(to, q::ClosureQueue{M}) where {M}
     items, sizes, inputs = Adapt.adapt(to, q.items), Adapt.adapt(to, q.sizes), Adapt.adapt(to, q.inputs)
-    return ClosureQueue{M, typeof(items), typeof(inputs)}(items, sizes, q.slot, q.offset, inputs)
+    return ClosureQueue{M, typeof(items), typeof(inputs)}(items, sizes, q.slot, q.offset, inputs, q.program_offset)
 end
 
 @propagate_inbounds queuelength(q::ClosureQueue) = q.sizes[q.slot]
@@ -238,10 +239,11 @@ kernel left its inputs.
 struct GatheredRef{M, S <: ShaderInputs}
     idx::Int32
     inputs::S
+    program_offset::Int32
 end
 
 @propagate_inbounds Base.getindex(q::ClosureQueue{M, V, S}, j::Integer) where {M, V, S} =
-    GatheredRef{M, S}(q.items[q.offset + j], q.inputs)
+    GatheredRef{M, S}(q.items[q.offset + j], q.inputs, q.program_offset)
 
 """The material type a hit reference is shaded as: its queue's, or the closures of its nodes."""
 shaded_type(::TypedHitRef{T}) where {T} = T
@@ -269,7 +271,7 @@ function values_set(@nospecialize(materials::StaticMultiTypeSet), @nospecialize(
 end
 
 read_by_values(::Type, families) = true
-read_by_values(::Type{NodeInstr{F}}, families) where {F} = F in families
+read_by_values(::Type{NodeInstr{F}}, families) where {F} = F & NodeFeature.TEXTURE != zero(UInt32) || F in families
 
 """
     closure_set(materials) -> SetView
@@ -282,6 +284,14 @@ function closure_set(@nospecialize(materials::StaticMultiTypeSet))
     D, X = typeof(materials).parameters
     types = map(eltype, D.parameters)
     data = Tuple(i for (i, M) in enumerate(types) if may_cut(M))
+    if isempty(data)
+        # Computed inputs already contain every texture read. An opaque BSDF
+        # kernel needs only its program and lookup tables; unrelated image or
+        # procedural array types must not change its compilation signature.
+        textures = Tuple(i for (i, A) in enumerate(X.parameters) if
+            eltype(eltype(A)) === LookupValue || eltype(eltype(A)) === NodeInstr{NodeFeature.CLOSURES})
+        return Raycore.setview(materials, data, textures)
+    end
     families = (NodeFeature.CLOSURES, Iterators.flatten(alpha_families(types[i]) for i in data)...)
     textures = Tuple(i for (i, A) in enumerate(X.parameters) if read_by(eltype(eltype(A)), families))
     return Raycore.setview(materials, data, textures)

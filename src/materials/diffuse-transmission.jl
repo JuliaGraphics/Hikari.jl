@@ -16,16 +16,16 @@ pbrt-v4's diffuse transmission: Lambert reflection of `reflectance` and Lambert 
 `transmittance`, both times `scale`, for paper, thin fabric or leaves. Blender's equivalent is an
 `Add` of a `Diffuse` and a `Translucent`.
 """
-struct DiffuseTransmission{ReflT, TransT, DispT} <: Material
+struct DiffuseTransmission{ReflT, TransT, ScaleT, DispT} <: Material
     reflectance::ReflT
     transmittance::TransT
-    scale::Float32
+    scale::ScaleT
     displacement::DispT
 end
 
-DiffuseTransmission(; reflectance = (0.5f0, 0.5f0, 0.5f0), transmittance = (0.5f0, 0.5f0, 0.5f0), scale::Real = 1f0,
+DiffuseTransmission(; reflectance = (0.5f0, 0.5f0, 0.5f0), transmittance = (0.5f0, 0.5f0, 0.5f0), scale = 1f0,
                     displacement = nothing) =
-    DiffuseTransmission(reflectance, transmittance, Float32(scale), displacement)
+    DiffuseTransmission(reflectance, transmittance, scale, displacement)
 
 
 
@@ -36,8 +36,9 @@ clamped to [0, 1], sampled in proportion to their largest values at the path's w
 """
 @propagate_inbounds function get_bxdf(mat::DiffuseTransmission, table, textures, tfc::TextureFilterContext, lambda::Wavelengths,
                                       regularize::Bool, wo::Vec3f, ns::Vec3f, dpdus::Vec3f)
-    r = uplift_rgb(table, clamp(eval_handle_spectrum(textures, mat.reflectance, tfc) * mat.scale), lambda)
-    t_ = uplift_rgb(table, clamp(eval_handle_spectrum(textures, mat.transmittance, tfc) * mat.scale), lambda)
+    scale = eval_handle(textures, mat.scale, tfc)
+    r = uplift_rgb(table, clamp(eval_handle_spectrum(textures, mat.reflectance, tfc) * scale), lambda)
+    t_ = uplift_rgb(table, clamp(eval_handle_spectrum(textures, mat.transmittance, tfc) * scale), lambda)
     n, t = pbrt_frame(wo, ns, dpdus)
     return pbrt_bsdf((Weighted(LambertLobe(SpectralRadiance), r, maximum(r.data), n, t),
                       Weighted(TranslucentLobe(), t_, maximum(t_.data), n, t)), lambda)

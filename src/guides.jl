@@ -38,18 +38,15 @@ end
         alpha = surface_alpha_dispatch(materials, mi.material, tfc)
         if Raycore.is_valid(mi.material) && alpha >= 0.5f0
             geom = vp_compute_surface_geometry(prim, bary, ray.o, ray.d, t)
-            dndu, dndv = vp_compute_normal_derivatives(prim)
-            ns, _ = get_perturbed_shading_frame(
-                materials, mi.material, geom.ns, geom.dpdus,
-                geom.dpdu, geom.dpdv, dndu, dndv, geom.n, tfc
-            )
+            color, ns = Raycore.with_index(material_guides, materials, mi.material,
+                                           materials, tfc, Val(3), geom, prim, -ray.d)
             ns = dot(ns, ray.d) > 0.0f0 ? -ns : ns
             n2 = dot(ns, ns)
             ns = n2 > 0.0f0 ? ns / sqrt(n2) : Vec3f(0)
             # Film.depth also drives overlay/volume coverage. Preserve its
             # nearest-geometry meaning even when guide surfaces lie behind
             # transparent cutouts or null volume boundaries.
-            return (guide_dispatch(materials, mi.material, tfc, Val(3)), ns, first_depth)
+            return (color, ns, first_depth)
         end
         offset = t + max(1.0f-4, abs(t) * 1.0f-5)
         traveled += offset
@@ -57,6 +54,22 @@ end
     end
     return (RGB{Float32}(0, 0, 0), Vec3f(0), first_depth)
 end
+
+@inline function material_guides(mat::Material, materials, tfc, depth, geom, primitive, wo)
+    dndu, dndv = vp_compute_normal_derivatives(primitive)
+    ns, _ = perturb_shading_frame_impl(mat, materials, geom.ns, geom.dpdus, geom.dpdu, geom.dpdv,
+                                       geom.n, () -> (dndu, dndv, tfc))
+    return guide_material(mat, materials, tfc, depth), ns
+end
+@inline function material_guides(mat::ShaderMaterial{P, A, M}, materials, tfc, depth, geom, primitive, wo) where {P, A, M}
+    sign = dot(cross(geom.ns, geom.dpdus), geom.dpdv) < 0f0 ? -1f0 : 1f0
+    context = ShaderContext(tfc, wo, Vec3f(0), Vec3f(0), geom.dpdus, geom.n, sign,
+                            Vec3f(0), Point2f(0), shader_geometry(mat.program, geom, primitive))
+    albedo, normal = shader_guides(M, shader_programs(materials, mat.program)[mat.program.idx], materials, context, depth)
+    return guide_rgb(RGBSpectrum(albedo[1], albedo[2], albedo[3])), normal == Vec3f(0) ? geom.ns : normal
+end
+@inline shader_guide_normal(w::Weighted) = w.sample_weight > 0f0 ? w.sample_weight * w.n : Vec3f(0)
+@inline shader_guide_normal(w::PbrtTerm) = w.weight * first(pbrt_graph_frame(w.context))
 
 const GUIDE_GRID = Int32(9)
 

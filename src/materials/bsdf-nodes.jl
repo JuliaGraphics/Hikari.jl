@@ -36,6 +36,7 @@ stack, a constant, the shading normal, or a colour folded into the data after it
     a = (j - 1) % NODE_ARGS + 1
     o = ins.arg[a]
     o == SHADING_NORMAL_ARG && return sc.tfc.n
+    o == SHADING_TANGENT_ARG && return sc.dpdus
     if o >= WIDE_CONSTANT_ARG
         m = Int32(o - WIDE_CONSTANT_ARG)
         d = @inbounds prog[i + Int32(chunks) + m ÷ Int32(3)]
@@ -73,7 +74,9 @@ instruction_count(::Type{DiffuseBSDF}) = 1
     color = max.(node_v(s, prog, i, 2, 1, sc), 0f0)
     n = _closure_normal(node_v(s, prog, i, 4, 1, sc), sc)
     lobe = DiffuseLobe(node_f(s, prog, i, 3, 1, sc), color, n, sc.wo)
-    return ((kept(Weighted(lobe, node_f(s, prog, i, 1, 1, sc) * color, n)),), Vec3f(0), Vec3f(0))
+    alpha = clamp(node_f(s, prog, i, 5, 1, sc), 0f0, 1f0)
+    weight = node_f(s, prog, i, 1, 1, sc)
+    return ((kept(Weighted(lobe, weight * alpha * color, n)),), Vec3f(weight * (1f0 - alpha)), Vec3f(0))
 end
 
 """Blender's Transparent BSDF: light passes through unrefracted, by `color`, which is no lobe but the hit's transparency."""
@@ -127,15 +130,40 @@ end
 """The BSDF of the lobes, transparency and emission a material's nodes produced."""
 @propagate_inbounds function lobe_bsdf(::Type{M}, (rgb, transparency, emission), table,
                                        lambda::Wavelengths) where {M <: Tuple}
+    selects_component(M) && return component_bsdf(M, rgb, transparency, emission, table, lambda)
     alpha = 1f0 - _avg(transparency)
     scale = alpha > 1f-6 ? 1f0 / alpha : 0f0
-    lobes = map(w -> lift(w, scale, table, lambda), rgb)
+    lobes = lift_shader_terms(rgb, scale, table, lambda)
     total = reduce(+, map(w -> w.sample_weight, lobes); init = 0f0)
     L = emits(M) && _max(emission) > 0f0 ?
         uplift_rgb_illuminant(table, RGBSpectrum(emission[1], emission[2], emission[3]), lambda) / D65_PHOTOMETRIC :
         SpectralRadiance(0f0)
     return LobeBSDF(lobes, total, lambda, L, disperses(lobes))
 end
+
+selects_component(::Type{<:ShaderBSDF}) = false
+selects_component(::Type{Tuple{}}) = false
+selects_component(::Type{M}) where {M <: Tuple} =
+    selects_component(Base.tuple_type_head(M)) || selects_component(Base.tuple_type_tail(M))
+
+@inline lift_shader_terms(::Tuple{}, scale, table, lambda) = ()
+@inline function lift_shader_terms(terms::Tuple, scale, table, lambda)
+    return (lift_shader_term(first(terms), scale, table, lambda)...,
+            lift_shader_terms(Base.tail(terms), scale, table, lambda)...)
+end
+@inline lift_shader_term(w::Weighted, scale, table, lambda) = (lift(w, scale, table, lambda),)
+
+@inline function shader_bsdf(::Type{M}, prog, textures, sc, regularize, table, lambda) where {M <: Tuple}
+    return shader_bsdf(Val(has_pbrt_nodes(M)), M, prog, textures, sc, regularize, table, lambda)
+end
+@inline shader_bsdf(::Val{false}, M, prog, textures, sc, regularize, table, lambda) =
+    material_bsdf(M, shader_lobes(M, prog, textures, sc, regularize), table, lambda)
+@noinline function shader_bsdf(::Val{true}, ::Type{M}, prog, textures, sc, regularize, table, lambda) where {M <: Tuple}
+    s, i = run_values(prog, textures, sc)
+    produced = node_lobes(M, s, prog, i, sc, LobeSetup(lookup_tables(textures), regularize))
+    return material_bsdf(M, produced, table, lambda)
+end
+@inline material_bsdf(M, produced, table, lambda) = lobe_bsdf(M, produced, table, lambda)
 
 """Blender's Translucent BSDF: Lambert through the surface."""
 struct TranslucentBSDF <: ShaderBSDF end
@@ -533,3 +561,7 @@ end
     walk_weight, diffuse_weight, _ = subsurface_channel_weights(ss, radius)
     return (Weighted(walk, walk_weight, n), Weighted(diffuse, diffuse_weight, n))
 end
+
+has_pbrt_nodes(::Type{<:ShaderBSDF}) = false
+has_pbrt_nodes(::Type{Tuple{}}) = false
+has_pbrt_nodes(::Type{M}) where {M <: Tuple} = has_pbrt_nodes(Base.tuple_type_head(M)) || has_pbrt_nodes(Base.tuple_type_tail(M))

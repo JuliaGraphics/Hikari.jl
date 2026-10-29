@@ -37,8 +37,8 @@ choices are constants. The BSDFs nest into one another as a Blender shader graph
 
 | Blender's BSDFs | pbrt-v4's models |
 |-----------------|------------------|
-| `Principled`, `Diffuse`, `Glossy`, `Metallic`, `Glass`, `Refraction`, `Translucent`, `Sheen`, `Toon`, `SubsurfaceScattering`, `Transparent`, `Emission` | `Conductor` (and `Gold()`, `Silver()`, `Copper()`, `Aluminum()`, `Brass()`), `CoatedDiffuse` (`Plastic()`), `CoatedConductor`, `CoatedDiffuseTransmission`, `DiffuseTransmission` |
-| `Mix(a, b; factor)`, `Add(a, b)` combine them | a `Mix` holding one of them picks one material per hit, as pbrt's `MixMaterial` |
+| `Principled`, `Diffuse`, `Glossy`, `Metallic`, `Glass`, `Refraction`, `Translucent`, `Sheen`, `Toon`, `SubsurfaceScattering`, `Transparent`, `Emission` | `Dielectric`, `ThinDielectric`, `Conductor` (and `Gold()`, `Silver()`, `Copper()`, `Aluminum()`, `Brass()`), `CoatedDiffuse` (`Plastic()`), `CoatedConductor`, `CoatedDiffuseTransmission`, `DiffuseTransmission` |
+| `Mix(a, b; factor)`, `Add(a, b)` combine them | the same graph combines these with any Cycles BSDF |
 
 ### Principled
 
@@ -177,6 +177,13 @@ Hikari.Mix(Hikari.Metallic(roughness = 0.2), Hikari.Diffuse(color = (0.4, 0.15, 
 Hikari.Principled(base_color = image_texture(img), normal = bump(noise(xyz()).fac; distance = 0.01))
 ```
 
+All these models compile through `ShaderMaterial`. Constant inputs live in the
+BSDF program. Computed inputs run in a values pass, or in the same kernel for a
+single pbrt node using elementary arithmetic and texture reads. A pbrt `displacement` is
+a graph node using its original bump formula, and measured IOR curves remain
+spectral. Graphs containing layered or dispersive pbrt models select a complete
+BSDF at the vertex, preserving its random-walk PDF and wavelength termination.
+
 ### pbrt-v4's models
 
 `Conductor` is a metal of complex index of refraction `ior` + i`extinction` (or a `reflectance`
@@ -190,6 +197,12 @@ Hikari.Plastic(color = (0.8, 0.1, 0.1), roughness = 0.02)
 Hikari.CoatedDiffuse(reflectance = (0.6, 0.1, 0.1), roughness = 0.05, ior = 1.5, thickness = 0.01)
 Hikari.DiffuseTransmission(reflectance = (0.2, 0.4, 0.1), transmittance = (0.1, 0.3, 0.05))
 ```
+
+For pbrt models, the stored description uses the same names as the constructor:
+`roughness` is a scalar or `(u, v)` pair. `CoatedConductor` uses
+`interface_roughness`, `conductor_roughness`, and `reflectance`. These are actual
+fields, so nested updates such as `plot.material.roughness = 0.2` work directly.
+`DiffuseTransmission.scale` also accepts a texture or value graph.
 
 ### Changing a material
 

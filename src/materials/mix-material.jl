@@ -56,10 +56,9 @@ end
     Mix(a, b; factor = 0.5)
 
 Blender's Mix Shader: `a` where `factor` is 0, `b` where it is 1, which takes a number, an image or
-a node graph. A mix of Blender's BSDFs (and `Diffuse`) is one shader whose lobes are both of theirs,
-weighted. A mix holding one of pbrt's models (`Conductor`, the coated ones, `DiffuseTransmission`)
-picks one of its materials at each hit instead, with probability `factor` for `b`, as pbrt-v4's
-`MixMaterial`: the same image once converged, of other noise.
+a node graph. Cycles and pbrt models combine in one shader graph. Ordinary scattering lobes
+are weighted together. A graph containing a layered pbrt model selects its
+complete BSDF at the vertex so its random-walk sampling PDF remains valid.
 """
 struct Mix{A <: Material, B <: Material, FactorT} <: Material
     a::A

@@ -45,6 +45,8 @@ cutout(::Union{Real, Tuple{Real, Real, Real}, Nothing}) = false
 cutout(c::Colorant) = alpha(c) < 1
 cutout(s::RGBSpectrum) = get_alpha(s) < 1f0
 cutout(img::AbstractMatrix{<:Colorant}) = any(c -> alpha(c) < 1, img)
+cutout(img::AbstractMatrix{<:RGBSpectrum}) = any(c -> get_alpha(c) < 1.0f0, img)
+cutout(::AbstractMatrix{<:Real}) = false
 cutout(::Raycore.TextureRef) = true
 cutout(::TexNode) = false       # a node program carries no alpha (`eval_handle_alpha`)
 

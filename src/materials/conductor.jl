@@ -19,11 +19,10 @@ incidence, as pbrt converts it (IOR 1 + i 2√r/√(1 - r) at each wavelength). 
 
 For Blender's artist-friendly metal with an edge tint, use [`Metallic`](@ref).
 """
-struct Conductor{IorT, ExtinctionT, URoughT, VRoughT, ReflT, DispT} <: Material
+struct Conductor{IorT, ExtinctionT, RoughT, ReflT, DispT} <: Material
     ior::IorT
     extinction::ExtinctionT
-    u_roughness::URoughT
-    v_roughness::VRoughT
+    roughness::RoughT
     reflectance::ReflT
     remap_roughness::Bool
     displacement::DispT
@@ -38,7 +37,7 @@ function Conductor(; ior = nothing, extinction = nothing, reflectance = nothing,
         ior = something(ior, (0.2f0, 0.2f0, 0.2f0))
         extinction = something(extinction, (3.9f0, 3.9f0, 3.9f0))
     end
-    return Conductor(ior, extinction, roughness_pair(roughness)..., reflectance, remap_roughness, displacement)
+    return Conductor(ior, extinction, roughness, reflectance, remap_roughness, displacement)
 end
 
 """    Gold(; roughness = 0, remap_roughness = true, displacement = nothing)
@@ -68,8 +67,9 @@ complex IOR (`ConductorFresnel`), single scattering, in pbrt's convention.
 """
 @propagate_inbounds function get_bxdf(mat::Conductor, table, textures, tfc::TextureFilterContext, lambda::Wavelengths,
                                       regularize::Bool, wo::Vec3f, ns::Vec3f, dpdus::Vec3f)
-    u_roughness = eval_handle(textures, mat.u_roughness, tfc)
-    v_roughness = eval_handle(textures, mat.v_roughness, tfc)
+    u, v = roughness_pair(mat.roughness)
+    u_roughness = eval_handle(textures, u, tfc)
+    v_roughness = eval_handle(textures, v, tfc)
     alpha_x = mat.remap_roughness ? roughness_to_α(u_roughness) : u_roughness
     alpha_y = mat.remap_roughness ? roughness_to_α(v_roughness) : v_roughness
     if regularize

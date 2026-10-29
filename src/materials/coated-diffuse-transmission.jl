@@ -18,11 +18,10 @@ A dielectric coat over a [`DiffuseTransmission`](@ref) base, as [`CoatedDiffuse`
 diffuse one (pbrt-v4's `LayeredBxDF<DielectricBxDF, DiffuseTransmissionBxDF, true>`): leaves, thin
 fabric, paper with a glossy surface.
 """
-struct CoatedDiffuseTransmission{ReflT, TransT, URoughT, VRoughT, ThickT, IorT, AlbedoT, GT, DispT} <: Material
+struct CoatedDiffuseTransmission{ReflT, TransT, RoughT, ThickT, IorT, AlbedoT, GT, DispT} <: Material
     reflectance::ReflT
     transmittance::TransT
-    u_roughness::URoughT
-    v_roughness::VRoughT
+    roughness::RoughT
     thickness::ThickT
     ior::IorT
     albedo::AlbedoT
@@ -37,7 +36,7 @@ CoatedDiffuseTransmission(; reflectance = (0.5f0, 0.5f0, 0.5f0), transmittance =
                           roughness = 0f0, thickness = 0.01f0, ior = 1.5f0, albedo = (0f0, 0f0, 0f0), g = 0f0,
                           max_depth::Integer = 10, n_samples::Integer = 1, remap_roughness::Bool = true,
                           displacement = nothing) =
-    CoatedDiffuseTransmission(reflectance, transmittance, roughness_pair(roughness)..., thickness, ior, albedo, g,
+    CoatedDiffuseTransmission(reflectance, transmittance, roughness, thickness, ior, albedo, g,
                               Int32(max_depth), Int32(n_samples), remap_roughness, displacement)
 
 
@@ -49,8 +48,9 @@ over Lambert reflection and transmission of its reflectance and transmittance, c
 """
 @propagate_inbounds function get_bxdf(mat::CoatedDiffuseTransmission, table, textures, tfc::TextureFilterContext,
                                       lambda::Wavelengths, regularize::Bool, wo::Vec3f, ns::Vec3f, dpdus::Vec3f)
-    u_roughness = eval_handle(textures, mat.u_roughness, tfc)
-    v_roughness = eval_handle(textures, mat.v_roughness, tfc)
+    u, v = roughness_pair(mat.roughness)
+    u_roughness = eval_handle(textures, u, tfc)
+    v_roughness = eval_handle(textures, v, tfc)
     alpha_x = mat.remap_roughness ? roughness_to_α(u_roughness) : u_roughness
     alpha_y = mat.remap_roughness ? roughness_to_α(v_roughness) : v_roughness
     if regularize
