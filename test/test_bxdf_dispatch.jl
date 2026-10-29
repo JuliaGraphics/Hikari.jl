@@ -3,6 +3,7 @@ using Hikari
 using Raycore
 using GeometryBasics: Point2f, Vec3f
 using LinearAlgebra: normalize
+include("host_materials.jl")
 
 # ============================================================================
 # Every material shades through `get_bxdf`, and only through `get_bxdf`
@@ -38,12 +39,13 @@ const DPDUS  = Vec3f(1f0, 0f0, 0f0)
 const U      = Point2f(0.37f0, 0.61f0)
 const RNG    = 0.42f0
 
-# Push `mat` into a fresh CPU scene and hand back what the device would see:
-# the stored (converted) material and the static set backing it.
+# Push `mat` through the production conversion, then download the interface
+# and material owners for host-side shading checks.
 function device_material(mat)
     scene = Hikari.Scene(; hw_accel = false)
-    key = scene.media_interfaces[push!(scene, mat)].material
-    static = scene.materials.static
+    interface = push!(scene, mat)
+    key = Array(scene.media_interfaces)[interface].material
+    static = host_materials(scene.materials)
     return static.data[key.type_idx][key.vec_idx], static
 end
 
