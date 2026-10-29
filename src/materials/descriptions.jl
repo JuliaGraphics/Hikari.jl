@@ -80,6 +80,22 @@ Blender's, the square root of the GGX alpha.
 end
 
 """
+    Refraction(; color = (1, 1, 1), roughness = 0, ior = 1.45, normal = nothing,
+               distribution = :beckmann)
+
+Blender's Refraction BSDF: transmission without Fresnel reflection. `distribution`
+is the constant `:beckmann` (Blender's default) or `:ggx`; other inputs may be node graphs or images.
+Total internal reflection absorbs the path, as in Cycles. These are single-scattering distributions.
+"""
+@description struct Refraction <: Material
+    color = (1, 1, 1)
+    roughness = 0
+    ior = 1.45
+    normal = nothing
+    distribution = :beckmann
+end
+
+"""
     Glossy(; color = (0.8, 0.8, 0.8), roughness = 0.5, anisotropy = 0, rotation = 0, normal = nothing,
            tangent = nothing)
 
@@ -185,7 +201,7 @@ end
     Add(a, b)
 
 Blender's Add Shader: the lobes of both, which is not energy conserving in general. Both must be
-BSDFs a shader graph holds (`Principled`, `Diffuse`, `Glass`, `Glossy`, `Metallic`, `Translucent`,
+BSDFs a shader graph holds (`Principled`, `Diffuse`, `Glass`, `Refraction`, `Glossy`, `Metallic`, `Translucent`,
 `Sheen`, `Toon`, `SubsurfaceScattering`, `Transparent`, `Emission`, and mixes and sums of them).
 """
 struct Add{A <: Material, B <: Material} <: Material
@@ -203,7 +219,7 @@ displacement) and `Emission`, and mixes and sums of them. pbrt's models are not;
 picks between materials.
 """
 nests(::Material) = false
-nests(::Union{Principled, Glass, Glossy, Metallic, Translucent, Sheen, Toon, SubsurfaceScattering, Transparent, Emission}) = true
+nests(::Union{Principled, Glass, Refraction, Glossy, Metallic, Translucent, Sheen, Toon, SubsurfaceScattering, Transparent, Emission}) = true
 nests(m::Diffuse) = isnothing(m.displacement)
 nests(m::Union{Mix, Add}) = nests(m.a) && nests(m.b)
 
@@ -253,6 +269,12 @@ function shader_node(m::Glass)
     inputs = (node_input(m.color), node_input(m.roughness), node_input(m.ior), normal_input(m.normal))
     _constant(m.thin_film_thickness, 0) && return closure(ClosureKind.GLASS, inputs...)
     return closure(ClosureKind.GLASS_FILM, inputs..., node_input(m.thin_film_thickness), node_input(m.thin_film_ior))
+end
+function shader_node(m::Refraction)
+    m.distribution in (:beckmann, :ggx) ||
+        throw(ArgumentError("a Refraction's `distribution` must be :beckmann or :ggx, got $(repr(m.distribution))"))
+    kind = m.distribution === :beckmann ? ClosureKind.REFRACTION_BECKMANN : ClosureKind.REFRACTION_GGX
+    return closure(kind, node_input(m.color), node_input(m.roughness), node_input(m.ior), normal_input(m.normal))
 end
 shader_node(m::Glossy) =
     closure(ClosureKind.GLOSSY, node_input(m.color), node_input(m.roughness), node_input(m.anisotropy),
@@ -317,7 +339,7 @@ holds one of pbrt's models as the material that picks one of its own at each hit
 `update_material!` call it.
 """
 surface_material(m::Material) = m
-surface_material(m::Union{Principled, Glass, Glossy, Metallic, Translucent, Sheen, Toon, SubsurfaceScattering, Transparent, Add}) =
+surface_material(m::Union{Principled, Glass, Refraction, Glossy, Metallic, Translucent, Sheen, Toon, SubsurfaceScattering, Transparent, Add}) =
     ShaderMaterial(shader_node(m))
 surface_material(m::Diffuse) = isnothing(m.normal) ? m : ShaderMaterial(shader_node(m))
 surface_material(m::Mix) = nests(m) ? ShaderMaterial(shader_node(m)) :

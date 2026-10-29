@@ -207,6 +207,20 @@ instruction_count(::Type{<:Union{GlassBSDF, GlassFilmBSDF}}) = 1
     return ((kept(first(setup_fresnel(lut, weighted, dot(n, sc.wo)))),), Vec3f(0), Vec3f(0))
 end
 
+"""Blender's single-scattering Refraction BSDF, with its distribution fixed in the shader's type."""
+struct RefractionBSDF{C <: MicrofacetConvention} <: ShaderBSDF end
+instruction_count(::Type{<:RefractionBSDF}) = 1
+@inline function node_lobes(::Type{RefractionBSDF{C}}, s, prog, i::Int32, sc::ShaderContext, lut) where {C}
+    color = max.(node_v(s, prog, i, 2, 1, sc), 0f0)
+    alpha = clamp(node_f(s, prog, i, 3, 1, sc)^2, 0f0, 1f0)
+    ior = max(node_f(s, prog, i, 4, 1, sc), 1f-5)
+    n = _valid_normal(_closure_normal(node_v(s, prog, i, 5, 1, sc), sc), sc)
+    lobe = MicrofacetLobe{:refraction}(NoFresnel(color); alpha_x = alpha, ior = _backfacing(sc) ? 1f0 / ior : ior,
+                                      convention = C())
+    weighted = Weighted(lobe, node_f(s, prog, i, 1, 1, sc) * color, n)
+    return ((kept(lut.regularize ? regularized(weighted) : weighted),), Vec3f(0), Vec3f(0))
+end
+
 """Blender's Sheen BSDF with the microfiber distribution."""
 struct SheenBSDF <: ShaderBSDF end
 instruction_count(::Type{SheenBSDF}) = 1

@@ -74,6 +74,9 @@ features(::Hikari.ShaderProgram{F}) where {F} = F & ~(UInt32(3) << Hikari.STACK_
                    Hikari.Glossy(roughness = noise(xyz()).fac); factor = xyz().x),
         Hikari.Add(Hikari.Transparent(color = checker(xyz()).color), Hikari.Emission(color = (1, 0.5, 0.2), strength = xyz().z)),
         Hikari.Diffuse(color = (0.2, 0.4, 0.6)),
+        Hikari.Refraction(color = noise(xyz()).color, roughness = wave(xyz()).fac,
+                           ior = 1.3 + xyz().x, normal = bump(noise(xyz()).fac)),
+        Hikari.Refraction(distribution = :ggx, roughness = noise(xyz()).fac),
         Hikari.Metallic(base_color = noise(xyz()).color, edge_tint = (0.9, 0.8, 0.7), roughness = 0.3,
                         thin_film_thickness = wave(xyz()).fac * 500, thin_film_ior = 1.33),
         Hikari.Mix(Hikari.Glass(color = (0.8, 0.9, 1.0), thin_film_thickness = noise(xyz()).fac * 400),
@@ -162,6 +165,21 @@ end
         @test w.lobe isa DiffuseLobe
         @test w.weight ≈ Vec3f(0.2, 0.4, 0.6)
         @test w.n == Vec3f(0, 0, 1)
+    end
+
+    @testset "a refraction node retains its distribution and inputs" begin
+        for (distribution, convention) in ((:beckmann, Hikari.CyclesBeckmann), (:ggx, Hikari.CyclesGGX))
+            material = Hikari.Refraction(color = (0.3, 0.6, 0.9), roughness = 0.4, ior = 1.6; distribution)
+            w = only(lobes(material))
+            @test w.lobe isa MicrofacetLobe{:refraction, <:Hikari.NoFresnel, convention}
+            @test w.lobe.alpha_x ≈ 0.16f0
+            @test w.lobe.ior == 1.6f0
+            @test w.lobe.energy == 1f0
+            @test w.weight ≈ Vec3f(0.3, 0.6, 0.9)
+            back = only(lobes(material; wo = Vec3f(0, 0, -1)))
+            @test back.lobe.ior ≈ 1f0 / 1.6f0
+        end
+        @test_throws ArgumentError Hikari.shader_node(Hikari.Refraction(distribution = :other))
     end
 
     @testset "mix shader weighs its two shaders by its factor" begin

@@ -533,25 +533,26 @@ end
 end
 
 """
-Where Cycles' GGX and pbrt-v4's differ, which a microfacet lobe follows: below which roughness it is
-a mirror, and whether refraction scales the radiance it carries by 1/η². Cycles' (`CyclesGGX`) is
-singular at `αx·αy ≤ 2e-10` and does not scale. pbrt's is singular below `max(αx, αy) = 1e-3`
+Where Cycles' microfacets and pbrt-v4's differ, which convention a lobe follows: below which roughness it is
+a mirror, and whether refraction scales the radiance it carries by 1/η². Cycles' GGX and Beckmann are
+singular at `αx·αy ≤ 2e-10` and do not scale. pbrt's is singular below `max(αx, αy) = 1e-3`
 (`EffectivelySmooth`) and scales the radiance a path carries (`PbrtRadiance`) but not importance
 (`PbrtImportance`), which pbrt's layered BSDF transports on its way back.
 """
-abstract type GGXConvention end
-struct CyclesGGX <: GGXConvention end
-struct PbrtRadiance <: GGXConvention end
-struct PbrtImportance <: GGXConvention end
+abstract type MicrofacetConvention end
+struct CyclesGGX <: MicrofacetConvention end
+struct CyclesBeckmann <: MicrofacetConvention end
+struct PbrtRadiance <: MicrofacetConvention end
+struct PbrtImportance <: MicrofacetConvention end
 
 """
-A GGX microfacet lobe, as Cycles' `bsdf_microfacet`: reflection only (`Mode` `:reflection`),
-reflection and refraction (`:glass`), or the transmission of a thin glass, a reflection mirrored to
-the far side (`:thin`). `energy` scales single scattering up by what it misses, Cycles'
+A microfacet lobe, as Cycles' `bsdf_microfacet`: reflection only (`Mode` `:reflection`),
+refraction only (`:refraction`), reflection and refraction (`:glass`), or the transmission of a thin
+glass, a reflection mirrored to the far side (`:thin`). `energy` scales single scattering up by what it misses, Cycles'
 multiscatter GGX, and is one for pbrt's single-scattering one; `inv_abbe` disperses the IOR over the
-wavelengths. `C` is the `GGXConvention` it follows.
+wavelengths. `C` is the `MicrofacetConvention` it follows.
 """
-struct MicrofacetLobe{Mode, F <: FresnelModel, C <: GGXConvention} <: BSDFLobe
+struct MicrofacetLobe{Mode, F <: FresnelModel, C <: MicrofacetConvention} <: BSDFLobe
     alpha_x::Float32
     alpha_y::Float32
     ior::Float32
@@ -561,7 +562,7 @@ struct MicrofacetLobe{Mode, F <: FresnelModel, C <: GGXConvention} <: BSDFLobe
 end
 
 MicrofacetLobe{Mode}(fresnel::FresnelModel; alpha_x::Float32, alpha_y::Float32 = alpha_x, ior::Float32 = 1f0,
-                     inv_abbe::Float32 = 0f0, convention::GGXConvention = CyclesGGX()) where {Mode} =
+                     inv_abbe::Float32 = 0f0, convention::MicrofacetConvention = CyclesGGX()) where {Mode} =
     MicrofacetLobe{Mode, typeof(fresnel), typeof(convention)}(alpha_x, alpha_y, ior, 1f0, inv_abbe, fresnel)
 
 with_energy(l::MicrofacetLobe{Mode, F, C}, energy::Float32) where {Mode, F, C} =
@@ -574,7 +575,7 @@ with_energy(l::MicrofacetLobe{Mode, F, C}, energy::Float32) where {Mode, F, C} =
 end
 
 @inline disperses(l::MicrofacetLobe) = l.inv_abbe > 0f0
-@inline singular(l::MicrofacetLobe{<:Any, <:FresnelModel, CyclesGGX}) = l.alpha_x * l.alpha_y <= 2f-10
+@inline singular(l::MicrofacetLobe{<:Any, <:FresnelModel, <:Union{CyclesGGX, CyclesBeckmann}}) = l.alpha_x * l.alpha_y <= 2f-10
 @inline singular(l::MicrofacetLobe) = trowbridge_reitz_effectively_smooth(l.alpha_x, l.alpha_y)
 # pbrt's glass of no IOR contrast is a straight pass-through, at any roughness.
 @inline singular(l::MicrofacetLobe{:glass, <:FresnelModel, <:Union{PbrtRadiance, PbrtImportance}}) =
@@ -595,17 +596,33 @@ reflection lobe its reflection; a thin glass the reflection it mirrors through t
 @inline microfacet_choice(::MicrofacetLobe{:reflection}, R, T, s::Scattering) = (allows_reflection(s) ? 1f0 : 0f0, 0f0)
 @inline microfacet_choice(::MicrofacetLobe{:thin}, R, T, s::Scattering) = (allows_transmission(s) ? 1f0 : 0f0, 0f0)
 
+@inline microfacet_choice(::MicrofacetLobe{:refraction}, R, T, s::Scattering) = (0f0, allows_transmission(s) ? 1f0 : 0f0)
+
 @inline can_scatter(::MicrofacetLobe{:glass}, ::Scattering) = true
+@inline can_scatter(::MicrofacetLobe{:refraction}, s::Scattering) = allows_transmission(s)
 @inline can_scatter(::MicrofacetLobe{:thin}, s::Scattering) = allows_transmission(s)
 
-@inline other_side(l::MicrofacetLobe{:glass, F, C}) where {F <: FresnelModel, C <: GGXConvention} =
+@inline other_side(l::MicrofacetLobe{:glass, F, C}) where {F <: FresnelModel, C <: MicrofacetConvention} =
     MicrofacetLobe{:glass, F, C}(l.alpha_x, l.alpha_y, 1f0 / l.ior, l.energy, l.inv_abbe, l.fresnel)
+@inline other_side(l::MicrofacetLobe{:refraction, F, C}) where {F <: FresnelModel, C <: MicrofacetConvention} =
+    MicrofacetLobe{:refraction, F, C}(l.alpha_x, l.alpha_y, 1f0 / l.ior, l.energy, l.inv_abbe, l.fresnel)
 @inline adjoint(l::MicrofacetLobe{Mode, F, PbrtRadiance}) where {Mode, F <: FresnelModel} =
     MicrofacetLobe{Mode, F, PbrtImportance}(l.alpha_x, l.alpha_y, l.ior, l.energy, l.inv_abbe, l.fresnel)
 
 @inline guide_albedo(::MicrofacetLobe{:reflection}, weight::Vec3f) = Vec3f(0)
 @inline guide_albedo(l::MicrofacetLobe{:reflection, <:F82Tint}, weight::Vec3f) = weight .* l.fresnel.f0
 @inline guide_albedo(::MicrofacetLobe{:reflection, <:NoFresnel}, weight::Vec3f) = weight
+
+@inline microfacet_d(l::MicrofacetLobe, h::Vec3f) = trowbridge_reitz_d(h, l.alpha_x, l.alpha_y)
+@inline microfacet_lambda(l::MicrofacetLobe, w::Vec3f) = trowbridge_reitz_lambda(w, l.alpha_x, l.alpha_y)
+@inline microfacet_sample_wm(l::MicrofacetLobe, wo::Vec3f, u::Point2f) =
+    trowbridge_reitz_sample_wm(wo, u, l.alpha_x, l.alpha_y)
+@inline microfacet_d(l::MicrofacetLobe{<:Any, <:FresnelModel, CyclesBeckmann}, h::Vec3f) =
+    beckmann_d(h, l.alpha_x, l.alpha_y)
+@inline microfacet_lambda(l::MicrofacetLobe{<:Any, <:FresnelModel, CyclesBeckmann}, w::Vec3f) =
+    beckmann_lambda(w, l.alpha_x, l.alpha_y)
+@inline microfacet_sample_wm(l::MicrofacetLobe{<:Any, <:FresnelModel, CyclesBeckmann}, wo::Vec3f, u::Point2f) =
+    beckmann_sample_wm(wo, u, l.alpha_x, l.alpha_y)
 
 @inline function lobe_f(l::MicrofacetLobe{Mode}, wo::Vec3f, wi::Vec3f, lambda::Wavelengths,
                         s::Scattering = AnyScattering()) where {Mode}
@@ -616,7 +633,7 @@ reflection lobe its reflection; a thin glass the reflection it mirrors through t
         wi = Vec3f(wi[1], wi[2], -wi[3])
     end
     transmission = wi[3] < 0f0
-    (transmission && Mode !== :glass) && return zero
+    (transmission ? Mode !== :glass && Mode !== :refraction : Mode === :refraction) && return zero
     H = transmission ? -(l.ior * wi + wo) : wo + wi
     len_h = norm(H)
     len_h > 0f0 || return zero
@@ -628,9 +645,9 @@ reflection lobe its reflection; a thin glass the reflection it mirrors through t
     average(R) + average(T) > 0f0 || return zero
     pr, pt = microfacet_choice(l, R, T, s)
     lobe_pdf = pr + pt > 0f0 ? (transmission ? pt : pr) / (pr + pt) : 0f0
-    D = trowbridge_reitz_d(H, l.alpha_x, l.alpha_y)
-    lambda_o = trowbridge_reitz_lambda(wo, l.alpha_x, l.alpha_y)
-    lambda_i = trowbridge_reitz_lambda(wi, l.alpha_x, l.alpha_y)
+    D = microfacet_d(l, H)
+    lambda_o = microfacet_lambda(l, wo)
+    lambda_i = microfacet_lambda(l, wi)
     common = D / wo[3] * (transmission ? (l.ior / len_h)^2 * abs(cos_hi * dot(H, wi)) : 0.25f0)
     pdf = common * lobe_pdf / (1f0 + lambda_o)
     f = (transmission ? T * refraction_scale(l) : R) * (common / (1f0 + lambda_o + lambda_i) * l.energy / abs(wi[3]))
@@ -642,7 +659,7 @@ end
                              s::Scattering = AnyScattering()) where {Mode}
     wo[3] > 0f0 || return NO_LOBE_SAMPLE
     is_singular = singular(l)
-    H = is_singular ? Vec3f(0, 0, 1) : trowbridge_reitz_sample_wm(wo, u, l.alpha_x, l.alpha_y)
+    H = is_singular ? Vec3f(0, 0, 1) : microfacet_sample_wm(l, wo, u)
     cos_hi = dot(H, wo)
     R, T = fresnel_rt(l.fresnel, cos_hi, l.ior, lambda)
     average(R) + average(T) > 0f0 || return NO_LOBE_SAMPLE

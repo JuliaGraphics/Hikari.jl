@@ -164,6 +164,20 @@ const CYCLES_STANDALONE_SUBSURFACE_CASES = [
              "subsurface_weight" => 1, "subsurface_radius" => [0, 0, 0], "diffuse_roughness" => 1))),
 ]
 
+const CYCLES_REFRACTION_CASES = [
+    "refraction_node" => (H -> H.Refraction(), bsdf("ShaderNodeBsdfRefraction")),
+    "refraction_beckmann_rough" => (H -> H.Refraction(roughness = 0.5),
+        bsdf("ShaderNodeBsdfRefraction"; Roughness = 0.5)),
+    "refraction_ggx_rough" => (H -> H.Refraction(roughness = 0.5, distribution = :ggx),
+        bsdf("ShaderNodeBsdfRefraction"; properties = (distribution = "GGX",), Roughness = 0.5)),
+    "refraction_node_tint" => (H -> H.Refraction(color = (0.7, 0.9, 1), roughness = 0.25, ior = 1.33),
+        bsdf("ShaderNodeBsdfRefraction"; Color = [0.7, 0.9, 1], Roughness = 0.25, IOR = 1.33)),
+    "mix_refraction_glossy" => (H -> H.Mix(H.Refraction(roughness = 0.3, distribution = :ggx),
+        H.Glossy(color = (0.8, 0.8, 0.8), roughness = 0.2); factor = 0.35),
+        mix_spec(bsdf("ShaderNodeBsdfRefraction"; properties = (distribution = "GGX",), Roughness = 0.3),
+                 last(glossy_case((0.8, 0.8, 0.8), 0.2)), 0.35)),
+]
+
 principled_case((name, inputs)) =
     name => (H -> H.Principled(; inputs...), Dict("type" => "principled", "inputs" => Dict(pairs(inputs))))
 
@@ -174,14 +188,15 @@ const CYCLES_STANDARD_CASES = [
     map(principled_case, CYCLES_THIN_WALL_CASES)
 ]
 const CYCLES_CASES = [CYCLES_STANDARD_CASES; CYCLES_FILM_NODE_CASES; CYCLES_TOON_NODE_CASES; CYCLES_SUBSURFACE_MIX_CASES;
-                      CYCLES_STANDALONE_SUBSURFACE_CASES]
+                      CYCLES_STANDALONE_SUBSURFACE_CASES; CYCLES_REFRACTION_CASES]
 # Keep existing reference scenes unchanged: filling their last batch would add
 # interreflections from new spheres and change the old comparison values.
 cycles_batches() = [collect(Iterators.partition(CYCLES_STANDARD_CASES, 8));
                     collect(Iterators.partition(CYCLES_FILM_NODE_CASES, 8));
                     collect(Iterators.partition(CYCLES_TOON_NODE_CASES, 8));
                     collect(Iterators.partition(CYCLES_SUBSURFACE_MIX_CASES, 8));
-                    collect(Iterators.partition(CYCLES_STANDALONE_SUBSURFACE_CASES, 8))]
+                    collect(Iterators.partition(CYCLES_STANDALONE_SUBSURFACE_CASES, 8));
+                    collect(Iterators.partition(CYCLES_REFRACTION_CASES, 8))]
 
 const CYCLES_CENTERS = [Point3f(x, y, 0.5f0) for y in (1.4f0, 0f0) for x in (-2.25f0, -0.75f0, 0.75f0, 2.25f0)]
 const CYCLES_SCENE = (radius = 0.5f0, res = 512, world = 0.1f0, max_depth = 8,

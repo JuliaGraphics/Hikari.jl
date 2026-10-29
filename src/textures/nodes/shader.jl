@@ -31,6 +31,8 @@ const GLASS_FILM = UInt8(10)
 const TOON_DIFFUSE = UInt8(11)
 const TOON_GLOSSY = UInt8(12)
 const SUBSURFACE = UInt8(13)
+const REFRACTION_BECKMANN = UInt8(14)
+const REFRACTION_GGX = UInt8(15)
 end
 
 const CLOSURE_WEIGHT_CUTOFF = 1f-5

@@ -100,6 +100,11 @@ const CYCLES_REFERENCE = Dict(
     "subsurface_node_zero_channel" => ((0.34665405, 0.34221945, 0.35082311), 0.028),
     "mix_subsurface_diffuse" => ((0.22544353, 0.23685347, 0.2621893), 0.015),
     "sss_zero_radius_diffuse" => ((0.20486622, 0.20482743, 0.20487508), 0.015),
+    "refraction_node" => ((0.12225219, 0.12226039, 0.12226633), 0.015),
+    "refraction_beckmann_rough" => ((0.14029882, 0.14033358, 0.14035522), 0.015),
+    "refraction_ggx_rough" => ((0.11959254, 0.1198234, 0.11996028), 0.015),
+    "refraction_node_tint" => ((0.05949425, 0.09894281, 0.1225911), 0.045),
+    "mix_refraction_glossy" => ((0.15345955, 0.15348487, 0.1534998), 0.015),
 )
 
 function render_cycles_batch(cases; samples)
