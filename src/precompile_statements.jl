@@ -22,6 +22,10 @@ function _precompile_statements()
     descriptions = (Diffuse(color = (0.5, 0.5, 0.5)), Principled(), Glass(), Metallic(),
                     Toon(), Toon(smooth = 0.2))
     signatures = Any[Tuple{typeof(parse_pbrt_string), String}]
+    # These host initializers are independent of the scene's material types.
+    state_kwargs = NamedTuple{(:max_depth, :rr_depth, :lanes, :scene_radius, :samples_per_pixel,
+                                :sampler_seed, :accumulation_eltype, :sensor, :has_media),
+                               Tuple{Int32, Int32, Int, Float32, Int, UInt32, DataType, PixelSensor, Bool}}
     for device in _precompile_device_types()
         films = Base.uniontypes(Core.Compiler.return_type(Film, Tuple{device, typeof(film)}))
         flags = NamedTuple{(:has_media, :has_lights, :emitters_reachable, :crossings), Tuple{Bool, Bool, Bool, Bool}}
@@ -38,6 +42,11 @@ function _precompile_statements()
         for scene in scenes
             isconcretetype(scene) && scene <: Scene || continue
             push!(signatures, Tuple{typeof(sync!), scene})
+            push!(signatures, Tuple{typeof(Core.kwcall), state_kwargs, Type{VolPathState},
+                                    device, Int, Int, Raycore.MultiTypeSet{device}})
+            triangles = Core.Compiler.return_type(Adapt.adapt, Tuple{device, Vector{Raycore.Triangle{TriangleMeta}}})
+            isconcretetype(triangles) && triangles <: AbstractArray &&
+                push!(signatures, Tuple{typeof(Raycore.build_blas), triangles})
             push!(signatures, Tuple{typeof(Core.kwcall), NamedTuple{(:opaque,), Tuple{Bool}},
                                     typeof(push!), fieldtype(scene, :accel), typeof(traced_mesh), Mat4f})
             for material in descriptions
