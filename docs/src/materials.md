@@ -52,6 +52,11 @@ Hikari.Principled(base_color = (0.9, 0.6, 0.2), metallic = 1, roughness = 0.2)  
 Hikari.Principled(transmission_weight = 1, roughness = 0)                             # glass
 ```
 
+The `distribution` setting is `:multi_ggx` by default, as in Blender. Use `:ggx` for
+single scattering in the metal, solid transmission and specular layers. The coat and
+thin-wall glass retain their energy compensation in both modes. This setting is
+constant for a shader type; colour and roughness edits reuse its compiled kernel.
+
 ### Diffuse
 
 Lambertian reflection, or with `roughness` (0 to 1) the energy-preserving Oren-Nayar lobe.

@@ -15,11 +15,13 @@
                transmission_weight = 0, transmission_dispersion_scale = 0, transmission_dispersion_abbe_number = 20,
                coat_weight = 0, coat_roughness = 0.03, coat_ior = 1.5, coat_tint = (1, 1, 1), coat_normal = nothing,
                sheen_weight = 0, sheen_roughness = 0.5, sheen_tint = (1, 1, 1), emission_color = (1, 1, 1),
-               emission_strength = 0, thin_film_thickness = 0, thin_film_ior = 1.33, thin_wall = false)
+               emission_strength = 0, thin_film_thickness = 0, thin_film_ior = 1.33, thin_wall = false,
+               distribution = :multi_ggx)
 
 Blender's Principled BSDF with every input it has, laid out as Cycles does: transparency, sheen and
-coat over the metal, transmission and the specular layer over the diffuse base. Any input but
-`thin_wall` takes a number, a colour, an image or a node graph.
+coat over the metal, transmission and the specular layer over the diffuse base. Each input except
+`thin_wall` and `distribution` takes a number, a colour, an image or a node graph.
+`distribution` is the constant `:multi_ggx` (Blender's default) or `:ggx` for single scattering.
 
 `normal = nothing` is the surface's shading normal and `coat_normal = nothing` is `normal`; the
 default `tangent` is Blender's, radial around the Z axis (here the world's, Blender's is the
@@ -60,6 +62,7 @@ thickness. Emission is found by the paths that hit it; for a light, use [`Emissi
     thin_film_thickness = 0
     thin_film_ior = 1.33
     thin_wall = false
+    distribution = :multi_ggx
 end
 
 """
@@ -260,6 +263,12 @@ tangent_input(t) = node_input(t)
 closure(kind::UInt8, inputs...; distribution::UInt8 = 0x00) =
     BSDFNode(NodeOp.CLOSURE, (kind, distribution, 0x00), Any[inputs...])
 
+function distribution_mode(m::Principled)
+    m.distribution === :multi_ggx && return 0x00
+    m.distribution === :ggx && return 0x01
+    throw(ArgumentError("a Principled's `distribution` must be :multi_ggx or :ggx, got $(repr(m.distribution))"))
+end
+
 function distribution_mode(m::Union{Glass, Glossy, Metallic})
     m.distribution === :multi_ggx && return 0x00
     m.distribution === :ggx && return 0x01
@@ -341,7 +350,7 @@ function shader_node(p::Principled)
                  node_input(p.sheen_weight), node_input(p.sheen_roughness), node_input(p.sheen_tint),
                  node_input(p.emission_color), node_input(p.emission_strength), node_input(p.thin_film_thickness),
                  node_input(p.thin_film_ior), Float32(p.thin_wall)]
-    return BSDFNode(NodeOp.PRINCIPLED, (0x00, 0x00, 0x00), inputs)
+    return BSDFNode(NodeOp.PRINCIPLED, (0x00, distribution_mode(p), 0x00), inputs)
 end
 
 # ── What Hikari renders a material with ─────────────────────────────────────

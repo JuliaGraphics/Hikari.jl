@@ -85,7 +85,8 @@ end
 function principled_node(c::NodeCore)
     thin_wall = c.inputs[34]
     thin_wall isa Real || error("a Principled BSDF's thin wall is a constant, not a node graph: it decides which lobes the material has")
-    return PrincipledBSDF{Float32(thin_wall) > 0.5f0, !_zero(c.inputs[9]), !_zero(c.inputs[31])}
+    node = PrincipledBSDF{Float32(thin_wall) > 0.5f0, !_zero(c.inputs[9]), !_zero(c.inputs[31])}
+    return c.mode[2] == 0x00 ? node : SingleScatterBSDF{node, CyclesGGX}
 end
 
 _zero(x) = _constant(x, 0)

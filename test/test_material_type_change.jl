@@ -39,7 +39,7 @@ tc_mean(img) = mean(p -> Float64(p.r + p.g + p.b), img)
     noisy = Hikari.Principled(base_color = noise(xyz()).color, roughness = 0.4)
 
     @testset "renders as the same material pushed" begin
-        for target in (glass, noisy)
+        for target in (glass, noisy, Hikari.Principled(distribution = :ggx, base_color = (0.05, 0.05, 0.05), metallic = 1, roughness = 0.7))
             scene, handle = tc_scene(red)
             original = tc_render(scene)
             Hikari.update_material!(scene, handle.interface, target)
@@ -81,6 +81,22 @@ tc_mean(img) = mean(p -> Float64(p.r + p.g + p.b), img)
         @test moved.type_idx != before.type_idx
         # A value change of the new type stays where it is.
         Hikari.update_material!(scene, handle, Hikari.Principled(base_color = noise(xyz(); scale = 3).color, roughness = 0.4))
+        @test tc_interface(scene, handle).material == moved
+    end
+
+    @testset "a Principled distribution switches slots, values reuse them" begin
+        multi = Hikari.Principled(roughness = 0.4)
+        single = Hikari.with_field(multi, :distribution, :ggx)
+        scene, handle = tc_scene(multi)
+        before = tc_interface(scene, handle).material
+        Hikari.update_material!(scene, handle, single)
+        moved = tc_interface(scene, handle).material
+        @test moved.type_idx != before.type_idx
+        Hikari.update_material!(scene, handle, Hikari.with_field(single, :roughness, 0.7))
+        @test tc_interface(scene, handle).material == moved
+        Hikari.update_material!(scene, handle, multi)
+        @test tc_interface(scene, handle).material == before
+        Hikari.update_material!(scene, handle, single)
         @test tc_interface(scene, handle).material == moved
     end
 

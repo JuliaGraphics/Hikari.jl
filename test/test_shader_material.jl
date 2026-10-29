@@ -74,6 +74,12 @@ features(::Hikari.ShaderProgram{F}) where {F} = F & ~(UInt32(3) << Hikari.STACK_
                    Hikari.Glossy(roughness = noise(xyz()).fac); factor = xyz().x),
         Hikari.Add(Hikari.Transparent(color = checker(xyz()).color), Hikari.Emission(color = (1, 0.5, 0.2), strength = xyz().z)),
         Hikari.Diffuse(color = (0.2, 0.4, 0.6)),
+        Hikari.Principled(distribution = :ggx, base_color = noise(xyz()).color,
+                          roughness = wave(xyz()).fac, metallic = 0.5, coat_weight = 0.4, transmission_weight = 0.3),
+        Hikari.Principled(distribution = :ggx, thin_wall = true, transmission_weight = 1,
+                          roughness = noise(xyz()).fac, emission_strength = 0.2),
+        Hikari.Principled(distribution = :ggx, subsurface_weight = 1, subsurface_scale = 0.1,
+                          base_color = noise(xyz()).color),
         Hikari.Refraction(color = noise(xyz()).color, roughness = wave(xyz()).fac,
                            ior = 1.3 + xyz().x, normal = bump(noise(xyz()).fac)),
         Hikari.Refraction(distribution = :ggx, roughness = noise(xyz()).fac),
@@ -190,6 +196,54 @@ end
         tilted = normal_map((1, 0.5, 0.55); space = :world)
         n = only(lobes(Hikari.Glass(normal = tilted))).n
         @test 2f0 * n[3]^2 - 1f0 >= 0.0099f0
+    end
+
+    @testset "thin glass roughens two refractions and samples transmission" begin
+        # Cycles 5.2.1: alpha * sqrt(3.4 * (eta - 1) * (eta - 0.5)^2 / eta^3).
+        # Missing the square root narrowed a rough sheet and lost 4% in the scene comparison.
+        for eta in (1.0, 1.1, 1.5, 2.5), roughness in (0.0, 0.3, 0.6, 1.0)
+            through = last(lobes(Hikari.Principled(thin_wall = true, transmission_weight = 1, ior = eta, roughness = roughness)))
+            expected = clamp(roughness^2 * sqrt(3.4 * (eta - 1) * (eta - 0.5)^2 / eta^3), 0, 1)
+            @test through.lobe.alpha_x ≈ expected atol = 1e-7
+            @test through.lobe.alpha_x == through.lobe.alpha_y
+        end
+        # Total internal reflection keeps the front reflection, even with a dark slab.
+        for color in ((1, 1, 1), (0.1, 0.2, 0.3)), distribution in (:multi_ggx, :ggx)
+            tir = only(lobes(Hikari.Principled(; thin_wall = true, transmission_weight = 1,
+                                               ior = 0.75, roughness = 0, base_color = color, distribution);
+                             wo = Vec3f(0.8, 0, 0.6)))
+            @test tir.lobe isa MicrofacetLobe{:reflection}
+            @test tir.weight == Vec3f(1)
+            @test tir.lobe.energy == 1f0
+        end
+        lambda = Hikari.sample_wavelengths_visible(0.4f0)
+        for alpha in (0f0, 0.3f0)
+            l = Hikari.MicrofacetLobe{:thin}(Hikari.NoFresnel(Hikari.SpectralRadiance(1f0)); alpha_x = alpha)
+            sample = Hikari.lobe_sample(l, Vec3f(0, 0, 1), Point2f(0.1, 0.2), 0.5f0, lambda)
+            @test sample[1][3] < 0f0
+            @test Hikari.is_transmissive(sample[4])
+            @test sample[5] == 1f0
+        end
+    end
+
+    @testset "Principled's distribution leaves its coat and thin wall energy compensation" begin
+        for inputs in ((metallic = 1, roughness = 0.8), (transmission_weight = 1, roughness = 0.8),
+                       (roughness = 0.8, base_color = (0, 0, 0)))
+            single = lobes(Hikari.Principled(; inputs..., distribution = :ggx))
+            multiple = lobes(Hikari.Principled(; inputs...))
+            @test all(w -> w.lobe.energy == 1f0, single)
+            @test any(w -> w.lobe.energy > 1f0, multiple)
+        end
+        coat = first(lobes(Hikari.Principled(distribution = :ggx, coat_weight = 1, coat_roughness = 0.7)))
+        @test coat.lobe.energy > 1f0
+        thin = (transmission_weight = 1, thin_wall = true, roughness = 0.6)
+        @test lobes(Hikari.Principled(; thin..., distribution = :ggx)) == lobes(Hikari.Principled(; thin...))
+        emissive = Hikari.Principled(distribution = :ggx, emission_color = (1, 0.5, 0.25), emission_strength = 2)
+        @test last(shade(emissive)) ≈ Vec3f(2, 1, 0.5)
+        @test Hikari.emits(Hikari.surface_material(emissive))
+        @test Hikari.bsdf_nodes(Hikari.ShaderGraph(Hikari.shader_node(Hikari.Principled()))) ==
+              Tuple{Hikari.PrincipledBSDF{false, false, false}}
+        @test_throws ArgumentError Hikari.shader_node(Hikari.Principled(distribution = :beckmann))
     end
 
     @testset "standalone microfacet distributions use the selected scattering model" begin

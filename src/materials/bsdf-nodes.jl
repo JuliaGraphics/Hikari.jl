@@ -212,9 +212,10 @@ instruction_count(::Type{<:Union{GlassBSDF, GlassFilmBSDF}}) = 1
     return ((kept(first(setup_fresnel(lut, weighted, dot(n, sc.wo), multiscatter))),), Vec3f(0), Vec3f(0))
 end
 
-"""A Glass, Glossy or Metallic node using single-scattering GGX or Beckmann, fixed in its type."""
+"""A shader node using a single-scattering microfacet distribution, fixed in its type."""
 struct SingleScatterBSDF{B <: ShaderBSDF, C <: MicrofacetConvention} <: ShaderBSDF end
 instruction_count(::Type{SingleScatterBSDF{B, C}}) where {B, C} = instruction_count(B)
+emits(::Type{SingleScatterBSDF{B, C}}) where {B, C} = emits(B)
 @inline node_lobes(::Type{SingleScatterBSDF{GlossyBSDF, C}}, s, prog, i::Int32, sc::ShaderContext, lut) where {C} =
     reflection_node(Val(false), s, prog, i, sc, lut, Val(false), C(), Val(false))
 @inline node_lobes(::Type{SingleScatterBSDF{MetallicBSDF, C}}, s, prog, i::Int32, sc::ShaderContext, lut) where {C} =
@@ -325,10 +326,15 @@ end
 @inline node_lobes(::Type{PrincipledBSDF{T, S, E}}, s, prog, i::Int32, sc::ShaderContext, lut) where {T, S, E} =
     principled_lobes(Val(T), Val(S), principled_inputs(s, prog, i, sc), sc, lut)
 
+@inline node_lobes(::Type{SingleScatterBSDF{PrincipledBSDF{T, S, E}, CyclesGGX}},
+                   s, prog, i::Int32, sc::ShaderContext, lut) where {T, S, E} =
+    principled_lobes(Val(T), Val(S), principled_inputs(s, prog, i, sc), sc, lut, Val(false))
+
 """A lobe no layer produced at this hit: the type a slot holds, with no weight and no share of the samples."""
 @inline absent(lobe::BSDFLobe, n::Vec3f) = Weighted(lobe, Vec3f(0), 0f0, n, Vec3f(0))
 
-@inline function principled_lobes(::Val{Thin}, ::Val{SS}, p::PrincipledInputs, sc::ShaderContext, lut) where {Thin, SS}
+@inline function principled_lobes(::Val{Thin}, ::Val{SS}, p::PrincipledInputs, sc::ShaderContext, lut,
+                                   multiscatter::Val = Val(true)) where {Thin, SS}
     wo = sc.wo
     w = Vec3f(p.weight)
     alpha = clamp(p.alpha, 0f0, 1f0)
@@ -385,7 +391,7 @@ end
     metal_lobe = MicrofacetLobe{:reflection}(F82Tint(base_clamped, min.(specular_tint, 1f0), film_thickness, film_ior);
                                              alpha_x = ax, alpha_y = ay)
     l_metal = if metallic > CLOSURE_WEIGHT_CUTOFF
-        metal = first(setup_fresnel(lut, Weighted(metal_lobe, metallic * w, vn; t), dot(vn, wo)))
+        metal = first(setup_fresnel(lut, Weighted(metal_lobe, metallic * w, vn; t), dot(vn, wo), multiscatter))
         w = w * (1f0 - metallic)
         metal
     else
@@ -394,7 +400,7 @@ end
 
     # Transmission
     transmission_lobes, w = principled_transmission(Val(Thin), transmission, w, vn, roughness, ior, specular_tint,
-                                                    base_clamped, film_thickness, film_ior, p, sc, lut)
+                                                    base_clamped, film_thickness, film_ior, p, sc, lut, multiscatter)
 
     # Specular
     eta = _specular_eta(ior, p.specular_level)
@@ -402,7 +408,7 @@ end
     specular_lobe = MicrofacetLobe{:reflection}(SchlickFresnel(min.(f0 * specular_tint, 1f0), Vec3f(1), Vec3f(1),
                                                                film_thickness, film_ior); alpha_x = ax, alpha_y = ay, ior = eta)
     l_specular = if eta != 1f0 || film_thickness > THIN_FILM_THICKNESS_CUTOFF
-        specular, refl = setup_fresnel(lut, Weighted(specular_lobe, w, vn; t), dot(vn, wo))
+        specular, refl = setup_fresnel(lut, Weighted(specular_lobe, w, vn; t), dot(vn, wo), multiscatter)
         w = _layering(specular.weight .* refl, w)
         specular
     else
@@ -423,20 +429,22 @@ end
 """The Principled BSDF's glass: one glass lobe, or for a thin wall a thin glass's reflection and transmission."""
 @inline function principled_transmission(::Val{false}, transmission::Float32, w::Vec3f, vn::Vec3f, roughness::Float32,
                                          ior::Float32, specular_tint::Vec3f, base_clamped::Vec3f, film_thickness::Float32,
-                                         film_ior::Float32, p::PrincipledInputs, sc::ShaderContext, lut)
+                                         film_ior::Float32, p::PrincipledInputs, sc::ShaderContext, lut,
+                                         multiscatter::Val = Val(true))
     abbe = max(p.abbe, 0f0)
     lobe = MicrofacetLobe{:glass}(SchlickFresnel(min.(_f0_from_ior(ior) * specular_tint, 1f0), Vec3f(1), sqrt.(base_clamped),
                                                  film_thickness, film_ior);
                                   alpha_x = roughness^2, ior = _backfacing(sc) ? 1f0 / ior : ior,
                                   inv_abbe = abbe > 0f0 ? clamp(p.dispersion, 0f0, 1f0) / abbe : 0f0)
     transmission > CLOSURE_WEIGHT_CUTOFF || return ((absent(lobe, vn),), w)
-    glass = first(setup_fresnel(lut, Weighted(lobe, transmission * w, vn), dot(vn, sc.wo)))
+    glass = first(setup_fresnel(lut, Weighted(lobe, transmission * w, vn), dot(vn, sc.wo), multiscatter))
     return ((glass,), w * (1f0 - transmission))
 end
 
 @inline function principled_transmission(::Val{true}, transmission::Float32, w::Vec3f, vn::Vec3f, roughness::Float32,
                                          ior::Float32, specular_tint::Vec3f, base_clamped::Vec3f, film_thickness::Float32,
-                                         film_ior::Float32, p::PrincipledInputs, sc::ShaderContext, lut)
+                                         film_ior::Float32, p::PrincipledInputs, sc::ShaderContext, lut,
+                                         multiscatter::Val = Val(true))
     reflection, through = thin_glass(lut, transmission * w, vn, roughness^2, ior, specular_tint, base_clamped, sc.wo,
                                      transmission > CLOSURE_WEIGHT_CUTOFF)
     return ((reflection, through), transmission > CLOSURE_WEIGHT_CUTOFF ? w * (1f0 - transmission) : w)
@@ -451,15 +459,15 @@ its path in the slab, as a reflection mirrored to the far side and roughened for
                             wo::Vec3f, present::Bool)
     cos_i = dot(n, wo)
     sin2_t = (1f0 - cos_i^2) / ior^2
-    transmission_alpha = clamp(alpha * 3.4f0 * (ior - 1f0) * (ior - 0.5f0)^2 / ior^3, 0f0, 1f0)
+    transmission_alpha = clamp(alpha * sqrt(max(3.4f0 * (ior - 1f0) * (ior - 0.5f0)^2 / ior^3, 0f0)), 0f0, 1f0)
     reflection_lobe = MicrofacetLobe{:reflection}(NoFresnel(reflection_tint); alpha_x = alpha)
     through_lobe = MicrofacetLobe{:thin}(NoFresnel(Vec3f(1)); alpha_x = transmission_alpha)
-    (present && sin2_t < 1f0) || return (absent(reflection_lobe, n), absent(through_lobe, n))
-    cos_t = sqrt(1f0 - sin2_t)
+    present || return (absent(reflection_lobe, n), absent(through_lobe, n))
+    cos_t = sqrt(max(1f0 - sin2_t, 0f0))
     f0 = min.(_f0_from_ior(ior) .* reflection_tint, 1f0)
     r1 = f0 .+ (1f0 .- f0) .* _schlick_shape(cos_i, ior)
     t1 = 1f0 .- r1
-    c = _pow3(max.(color, 0f0), 1f0 / max(cos_t, 1f-6))
+    c = cos_t > 0f0 ? _pow3(max.(color, 0f0), 1f0 / cos_t) : Vec3f(0)
     rc = r1 .* c
     T = c .* t1 .* t1 ./ max.(1f0 .- rc .* rc, 1f-6)
     R = r1 .+ T .* r1 .* c

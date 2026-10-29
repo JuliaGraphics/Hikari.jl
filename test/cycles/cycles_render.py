@@ -70,8 +70,10 @@ def set_socket_value(nt, sock, value):
         sock.default_value = value
 
 
-def configure_principled(nt, node, inputs):
+def configure_principled(nt, node, inputs, properties=None):
     node.subsurface_method = "RANDOM_WALK"
+    for key, value in (properties or {}).items():
+        setattr(node, key, value)
     for key, value in inputs.items():
         # By iteration: a socket the subsurface method leaves unavailable (Subsurface IOR under
         # Random Walk) is not found by name.
@@ -90,10 +92,10 @@ def configure_principled(nt, node, inputs):
         nt.links.new(comb.outputs[0], node.inputs["Tangent"])
     return node
 
-def principled(inputs):
+def principled(inputs, properties=None):
     mat = bpy.data.materials.new("principled")
     mat.use_nodes = True
-    configure_principled(mat.node_tree, mat.node_tree.nodes["Principled BSDF"], inputs)
+    configure_principled(mat.node_tree, mat.node_tree.nodes["Principled BSDF"], inputs, properties)
     return mat
 
 def diffuse(color):
@@ -119,7 +121,7 @@ def emission(strength):
 def shader(nt, m):
     """The output socket of a node tree for a shader spec: a BSDF node, or a mix or sum of two."""
     if m["type"] == "principled":
-        node = configure_principled(nt, nt.nodes.new("ShaderNodeBsdfPrincipled"), m["inputs"])
+        node = configure_principled(nt, nt.nodes.new("ShaderNodeBsdfPrincipled"), m["inputs"], m.get("properties"))
         return node.outputs[0]
     if m["type"] == "bsdf":
         node = nt.nodes.new(m["node"])
@@ -152,7 +154,7 @@ def node_material(m):
 
 def material(m):
     if m["type"] == "principled":
-        return principled(m["inputs"])
+        return principled(m["inputs"], m.get("properties"))
     if m["type"] == "diffuse":
         return diffuse(m["color"])
     if m["type"] == "emission":

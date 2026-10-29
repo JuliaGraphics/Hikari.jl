@@ -226,8 +226,26 @@ const CYCLES_DISTRIBUTION_CASES = [
               var"Edge Tint" = [0.8, 0.8, 0.8], Roughness = 0.5, var"Thin Film Thickness" = 400)),
 ]
 
-principled_case((name, inputs)) =
-    name => (H -> H.Principled(; inputs...), Dict("type" => "principled", "inputs" => Dict(pairs(inputs))))
+function principled_case((name, inputs); distribution = :multi_ggx)
+    spec = Dict("type" => "principled", "inputs" => Dict(pairs(inputs)))
+    distribution === :multi_ggx || (spec["properties"] = Dict("distribution" => uppercase(string(distribution))))
+    return name => (H -> H.Principled(; inputs..., distribution), spec)
+end
+
+const CYCLES_PRINCIPLED_GGX_CASES = map(case -> principled_case(case; distribution = :ggx), [
+    "principled_ggx_diffuse" => (base_color = (0.6, 0.6, 0.6), roughness = 1.0),
+    "principled_ggx_metal" => (base_color = (0.6, 0.6, 0.6), metallic = 1.0, roughness = 0.7),
+    "principled_ggx_glass" => (base_color = (1.0, 1.0, 1.0), transmission_weight = 1.0, roughness = 0.5),
+    "principled_ggx_layers" => (base_color = (0.4, 0.4, 0.4), roughness = 0.8,
+        coat_weight = 1.0, coat_roughness = 0.6, sheen_weight = 0.3),
+    "principled_ggx_thin_wall" => (base_color = (1.0, 1.0, 1.0), transmission_weight = 1.0,
+        roughness = 0.6, thin_wall = true),
+    "principled_ggx_emission" => (base_color = (0.5, 0.5, 0.5), roughness = 0.7, emission_strength = 0.3),
+    "principled_ggx_subsurface" => (base_color = (0.8, 0.8, 0.8), roughness = 0.4,
+        subsurface_weight = 1.0, subsurface_radius = (1.0, 1.0, 1.0), subsurface_scale = 0.1),
+    "principled_ggx_film_metal" => (base_color = (0.6, 0.6, 0.6), metallic = 1.0,
+        roughness = 0.4, thin_film_thickness = 400.0),
+])
 
 """Every case: its name, its material in Hikari (a function of the Hikari module) and the same in Blender."""
 const CYCLES_STANDARD_CASES = [
@@ -236,7 +254,7 @@ const CYCLES_STANDARD_CASES = [
     map(principled_case, CYCLES_THIN_WALL_CASES)
 ]
 const CYCLES_CASES = [CYCLES_STANDARD_CASES; CYCLES_FILM_NODE_CASES; CYCLES_TOON_NODE_CASES; CYCLES_SUBSURFACE_MIX_CASES;
-                      CYCLES_STANDALONE_SUBSURFACE_CASES; CYCLES_REFRACTION_CASES; CYCLES_ANISOTROPY_CASES; CYCLES_DISTRIBUTION_CASES]
+                      CYCLES_STANDALONE_SUBSURFACE_CASES; CYCLES_REFRACTION_CASES; CYCLES_ANISOTROPY_CASES; CYCLES_DISTRIBUTION_CASES; CYCLES_PRINCIPLED_GGX_CASES]
 # Keep existing reference scenes unchanged: filling their last batch would add
 # interreflections from new spheres and change the old comparison values.
 cycles_batches() = [collect(Iterators.partition(CYCLES_STANDARD_CASES, 8));
@@ -246,7 +264,8 @@ cycles_batches() = [collect(Iterators.partition(CYCLES_STANDARD_CASES, 8));
                     collect(Iterators.partition(CYCLES_STANDALONE_SUBSURFACE_CASES, 8));
                     collect(Iterators.partition(CYCLES_REFRACTION_CASES, 8));
                     collect(Iterators.partition(CYCLES_ANISOTROPY_CASES, 8));
-                    collect(Iterators.partition(CYCLES_DISTRIBUTION_CASES, 8))]
+                    collect(Iterators.partition(CYCLES_DISTRIBUTION_CASES, 8));
+                    collect(Iterators.partition(CYCLES_PRINCIPLED_GGX_CASES, 8))]
 
 const CYCLES_CENTERS = [Point3f(x, y, 0.5f0) for y in (1.4f0, 0f0) for x in (-2.25f0, -0.75f0, 0.75f0, 2.25f0)]
 const CYCLES_SCENE = (radius = 0.5f0, res = 512, world = 0.1f0, max_depth = 8,

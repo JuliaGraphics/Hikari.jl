@@ -690,10 +690,10 @@ end
     if is_singular
         coeff = refract ? T * refraction_scale(l) : R
         lobe_pdf = refract ? 1f0 - pdf_reflect : pdf_reflect
-        flags = refract ? BXDF_SPECULAR_TRANSMISSION : BXDF_SPECULAR_REFLECTION
+        flags = (refract || Mode === :thin) ? BXDF_SPECULAR_TRANSMISSION : BXDF_SPECULAR_REFLECTION
         return (out, coeff * (l.energy / max(abs(wi[3]), 1f-6)), lobe_pdf, flags, eta)
     end
-    return (out, SpectralRadiance(0f0), 0f0, refract ? BXDF_GLOSSY_TRANSMISSION : BXDF_GLOSSY_REFLECTION, eta)
+    return (out, SpectralRadiance(0f0), 0f0, (refract || Mode === :thin) ? BXDF_GLOSSY_TRANSMISSION : BXDF_GLOSSY_REFLECTION, eta)
 end
 
 # The set-up of a microfacet lobe in RGB, as Cycles' `bsdf_microfacet_setup_fresnel_*` do it.

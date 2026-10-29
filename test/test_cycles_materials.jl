@@ -117,6 +117,15 @@ const CYCLES_REFERENCE = Dict(
     "metallic_beckmann_anisotropic" => ((0.17549248, 0.17556473, 0.17569356), 0.015),
     "glass_beckmann_film" => ((0.13129043, 0.13589388, 0.13863789), 0.03),
     "metallic_ggx_film" => ((0.10928626, 0.14351861, 0.13278424), 0.035),
+    "principled_ggx_diffuse" => ((0.21951596, 0.21953132, 0.21953170), 0.015),
+    "principled_ggx_metal" => ((0.22274090, 0.22281086, 0.22279365), 0.015),
+    "principled_ggx_glass" => ((0.15995931, 0.16005724, 0.16008982), 0.015),
+    "principled_ggx_layers" => ((0.15302282, 0.15357069, 0.15434407), 0.015),
+    "principled_ggx_thin_wall" => ((0.15530299, 0.15530478, 0.15530537), 0.015),
+    "principled_ggx_emission" => ((0.44318060, 0.44318746, 0.44319098), 0.015),
+    "principled_ggx_subsurface" => ((0.26079181, 0.26118074, 0.26121715), 0.015),
+    # Thin-film interference evaluated spectrally differs by 2% red from Cycles RGB.
+    "principled_ggx_film_metal" => ((0.12635433, 0.16221073, 0.14470078), 0.03),
 )
 
 function render_cycles_batch(cases; samples)
