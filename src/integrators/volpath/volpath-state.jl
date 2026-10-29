@@ -117,7 +117,7 @@ mutable struct VolPathState{Backend}
     # from the scene's adapted `StaticMultiTypeSet` of materials, and again when
     # its types change: a segment per slot, and which slots emit.
     material_queues::Any                 # MaterialQueues | nothing
-    material_queues_signature::Any       # type tuple and inputs width, used as freshness check
+    material_queues_signature::Any       # types and shader input layout, used as freshness check
     # What the shaders' values kernels hand their closure kernels per hit (`ShaderInputs`).
     shader_inputs::Any                   # ShaderInputs | nothing
 
@@ -265,14 +265,14 @@ function VolPathState(
 end
 
 """
-    ensure_material_queues!(state, materials_static, capacity, inputs_width)
+    ensure_material_queues!(state, materials_static, capacity, layout)
 
 Build the material queues for the scene's adapted `StaticMultiTypeSet` of materials, and the
-shader inputs `inputs_width` floats a hit wide (`shader_inputs_width`), again when its types or
-that width changed; a no-op otherwise. Called on every rebuild of the render state.
+shader input layout (`shader_input_layout`), again when its types or input layout changed; a
+no-op otherwise. Called on every rebuild of the render state.
 """
-function ensure_material_queues!(state::VolPathState, materials_static, capacity::Integer, inputs_width::Integer)
-    sig = (typeof(materials_static).parameters[1], inputs_width)   # Data tuple of StaticMultiTypeSet
+function ensure_material_queues!(state::VolPathState, materials_static, capacity::Integer, layout)
+    sig = (; types = typeof(materials_static).parameters[1], layout...)
     if state.material_queues === nothing || state.material_queues_signature != sig
         # The previous scene's queues go back before the new ones are taken, so
         # switching scenes does not accumulate a set per scene. No wait: the
@@ -280,7 +280,7 @@ function ensure_material_queues!(state::VolPathState, materials_static, capacity
         # that decides whether the device is done with them.
         state.material_queues === nothing || free!(state.per_material_memory)
         state.material_queues = MaterialQueues(materials_static, capacity, state.per_material_memory)
-        state.shader_inputs = ShaderInputs(state.surface_hits.capacity, inputs_width, state.per_material_memory)
+        state.shader_inputs = ShaderInputs(state.surface_hits.capacity, layout, state.per_material_memory)
         state.material_queues_signature = sig
     end
     return state.material_queues

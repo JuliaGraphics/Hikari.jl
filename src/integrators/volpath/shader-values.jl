@@ -1,12 +1,13 @@
-# A shader's values and closures in two kernels.
+# Computed shader values and BSDF evaluation in separate kernels.
 #
 # A shader's kernel compiled its program (the node families it uses) and its BSDF nodes, their
 # lighting and sampling together: a node edit that changed the families compiled all of it again,
 # ~27k instructions of which the program is ~3k, 13 s a node edit on an RTX 4000 Ada. The values
 # kernel (`vp_shader_values_kernel!`) runs the program and stores what the BSDF nodes read of it
 # (`gather_inputs!`); the closure kernel of the nodes (`vp_shade_kernel!` over a `ClosureQueue`)
-# reads that back (`GatheredStack`) and does the rest. A node edit compiles the values kernel of
-# the new families alone.
+# reads that back (`GatheredStack`) and does the rest. BSDF programs are looked up per material,
+# so shaders without computed inputs skip the values pass. A node edit compiles the values
+# kernel of the new families alone.
 
 """
 Store the values the BSDF instructions from `prog[i]` on read off the stack `s`, for the hit `hit`,
@@ -77,7 +78,10 @@ emits(::GatheredShader{M}) where {M} = emits(M)
                                            samples_per_pixel::Int32, lambda::Wavelengths,
                                            regularize::Bool) where {M <: Tuple}
     sc = shader_context(work, camera, samples_per_pixel)
-    prog = closure_programs(textures)[mat.inputs.program[mat.hit]]
+    key = work.material_idx
+    offset = @inbounds mat.inputs.program[key.type_idx]
+    program = @inbounds mat.inputs.program[offset + key.vec_idx]
+    prog = closure_programs(textures)[program]
     s = GatheredStack(mat.inputs.values, mat.inputs.capacity, mat.hit)
     produced = node_lobes(M, s, prog, Int32(1), sc, LobeSetup(lookup_tables(textures), regularize))
     return lobe_bsdf(M, produced, table, lambda)
@@ -87,7 +91,7 @@ end
     vp_shader_values_kernel!(q, surface_hits, cur, arrivals, accel, media_interfaces, materials, inputs, camera, samples_per_pixel)
 
 Run the program of each hit of `q`'s shader type at the hit, and store what its BSDF nodes read of
-it and its closure program in `inputs`, for the closure kernel.
+it in `inputs`, for the closure kernel.
 """
 @kernel inbounds = true function vp_shader_values_kernel!(
     q, surface_hits, cur, arrivals, accel, media_interfaces, materials, inputs, camera_ref,
@@ -119,6 +123,5 @@ end
     prog = shader_programs(materials, mat.program)[mat.program.idx]
     s, i = run_values(prog, materials, sc)
     gather_inputs!(inputs, ref.idx, s, prog, i)
-    inputs.program[ref.idx] = mat.closures
     return nothing
 end

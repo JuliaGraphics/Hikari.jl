@@ -761,7 +761,7 @@ function rebuild_render_state!(vp::VolPath, scene::AbstractScene, film::Film,
 
     # Build (or refresh) the material queues from the adapted materials set:
     # every surface hit goes through them.
-    ensure_material_queues!(state, materials, n_paths, shader_inputs_width(scene.materials))
+    ensure_material_queues!(state, materials, n_paths, shader_input_layout(scene.materials))
 
     # Adapt filter sampler data to GPU — cache on struct to avoid re-uploading
     if vp.filter_sampler_gpu === nothing

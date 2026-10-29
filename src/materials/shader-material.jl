@@ -92,17 +92,25 @@ function Raycore.update_item(dhv::Raycore.MultiTypeSet, old::ShaderMaterial{P, A
                                    updated_closures!(dhv, old.closures, closures), Int32(inputs))
 end
 
-"""The most floats the BSDF nodes of any shader stored in `materials` read of computed values."""
-function shader_inputs_width(materials::Raycore.MultiTypeSet)
+"""The computed-input width, values passes and per-material BSDF programs of a material set."""
+function shader_input_layout(materials::Raycore.MultiTypeSet)
     width = 0
-    for (T, items) in materials.data_vectors
+    programs = zeros(Int32, length(materials.data_order))
+    values_required = fill(false, length(materials.data_order))
+    for (slot, T) in enumerate(materials.data_order)
         T <: ShaderMaterial{<:ShaderProgram} || continue
-        for m in items
+        programs[slot] = Int32(length(programs))
+        for m in materials.data_vectors[T]
+            push!(programs, m.closures)
             width = max(width, Int(m.inputs))
+            values_required[slot] |= m.inputs > 0
         end
     end
-    return width
+    return (; width, programs, values_required)
 end
+
+"""The most floats any stored shader's BSDF nodes read of computed values."""
+shader_inputs_width(materials::Raycore.MultiTypeSet) = shader_input_layout(materials).width
 
 """The slot of the set `dhv` that holds the closure programs, which every shader's are of one type."""
 closure_slot(dhv::Raycore.MultiTypeSet) = findfirst(AT -> eltype(AT) === NodeInstr{NodeFeature.CLOSURES}, dhv.texture_order)

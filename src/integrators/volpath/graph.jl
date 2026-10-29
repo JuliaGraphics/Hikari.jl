@@ -224,10 +224,10 @@ and a pass is the unit Mantle emits barriers between. A hand-placed
 `concurrent_indirect_group` says the same thing; here it follows from the
 dispatches sharing a pass, and the backend fuses their prepares into one.
 
-A shader is shaded in two kernels (`splits`): its values kernel runs its program
-and gathers what its BSDF nodes read (`vp_shader_values_kernel!`), before every
-shading dispatch, and the closure kernel of its nodes shades from that
-(`ClosureQueue`), which no node edit changes.
+A shader's computed values run separately (`splits`): its values kernel runs its program
+and gathers what its BSDF nodes read (`vp_shader_values_kernel!`), then the closure kernel
+shades from that (`ClosureQueue`). Shaders with no computed inputs skip the values pass.
+The closure kernel's signature stays independent of every graph's node families.
 """
 function shade_pass!(g, state::VolPathState, @nospecialize(refs), cur::WorkQueue, nxt::WorkQueue;
                      group = DEFAULT_WORKGROUPSIZE)
@@ -236,6 +236,7 @@ function shade_pass!(g, state::VolPathState, @nospecialize(refs), cur::WorkQueue
     types = slot_types(refs.materials)
     for (slot, T) in enumerate(types)
         splits(T) || continue
+        state.material_queues_signature.values_required[slot] || continue
         Mantle.dispatch!(g, vp_shader_values_kernel!,
                          (SlotQueue{T}(queues, slot), state.surface_hits, cur, state.arrivals,
                           refs.accel, refs.media_interfaces, values_set(refs.materials, T), inputs,

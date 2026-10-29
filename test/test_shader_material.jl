@@ -57,6 +57,33 @@ end
 
 features(::Hikari.ShaderProgram{F}) where {F} = F & ~(UInt32(3) << Hikari.STACK_SHIFT)
 
+@testset "shader program lookup belongs to materials, not hits" begin
+    store = Raycore.MultiTypeSet(CPU())
+    push!(store, 7f0) # A non-shader slot must not shift the shader keys.
+    a = push!(store, shader_material(Hikari.Diffuse(color = (0.2, 0.4, 0.6))))
+    b = push!(store, shader_material(Hikari.Diffuse(color = (0.6, 0.4, 0.2))))
+    noisy = push!(store, shader_material(Hikari.Diffuse(color = noise(xyz()).color)))
+    glass = push!(store, shader_material(Hikari.Glass()))
+    before = Hikari.shader_input_layout(store)
+    @test before.width == 3
+    @test before.values_required == [false, false, true, false]
+    @test before.programs[a.type_idx] == 4
+    for key in (a, b, noisy, glass)
+        @test before.programs[before.programs[key.type_idx] + key.vec_idx] == store[key].closures
+    end
+    # This changes the values pass while keeping the node families, material type
+    # and maximum input width unchanged. Plans still need to be rebuilt.
+    T = typeof(store[a])
+    updated = Raycore.store!(store, a, shader_material(Hikari.Diffuse(roughness = xyz().x)))
+    after = Hikari.shader_input_layout(store)
+    @test updated == a && typeof(store[a]) === T
+    @test after.width == before.width
+    @test after.values_required[a.type_idx]
+    @test after != before
+    Raycore.store!(store, a, shader_material(Hikari.Diffuse(color = (0.2, 0.4, 0.6))))
+    @test Hikari.shader_input_layout(store) == before
+end
+
 # A shader is shaded in two kernels: the values kernel runs the program and gathers what the BSDF
 # nodes read of it (`gather_inputs!`), the closure kernel runs the nodes from that and the closure
 # program (`closure_program`), so a node edit compiles the small values kernel alone (13 s to 3-4 s

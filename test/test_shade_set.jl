@@ -132,6 +132,44 @@ end
     close(vp)
 end
 
+@testset "constant graphs skip values without changing the BSDF kernel" begin
+    backend = Mantle.defaultbackend()
+    dev = Hikari.mantle_device(backend)
+    scene = Hikari.Scene(; backend)
+    sphere(x) = normal_mesh(Tesselation(Sphere(Point3f(x, 0, 0.5), 0.4f0), 16))
+    graph(m) = Hikari.ShaderMaterial(Hikari.shader_node(m))
+    h = push!(scene, sphere(0), graph(Hikari.Diffuse(color = (0.7, 0.3, 0.2))))
+    push!(scene, sphere(1), graph(Hikari.Diffuse(color = noise(xyz()).color)))
+    push!(scene, Hikari.PointLight(Point3f(0, -2, 3), Hikari.RGBSpectrum(30f0)))
+    Hikari.sync!(scene)
+    film = Hikari.Film(backend, Hikari.Film(Point2f(16, 16)))
+    camera = Hikari.PerspectiveCamera(Point3f(0, -3, 1), Point3f(0, 0, 0.5), film; fov = 40f0)
+    vp = Hikari.VolPath(samples = 1, max_depth = 3)
+    stage(name) = unique([(d.kernel, Mantle.devicetype(dev, d.args)) for pl in Hikari.allplans(vp.state.plans)
+                          for pp in pl.passes if pp.pass.name == name for d in pp.pass.dispatches])
+    try
+        vp(scene, film, camera)
+        shade, key = stage("shade"), ss_key(scene, h)
+        width = Hikari.shader_input_layout(scene.materials).width
+        @test length(shade) == 1
+        @test length(stage("shader-values")) == 1
+        Hikari.update_material!(scene, h, graph(Hikari.Diffuse(roughness = xyz().x)))
+        vp(scene, film, camera)
+        @test stage("shade") == shade
+        @test length(stage("shader-values")) == 2
+        @test ss_key(scene, h) == key
+        @test Hikari.shader_input_layout(scene.materials).width == width
+        Hikari.update_material!(scene, h, graph(Hikari.Diffuse(color = (0.7, 0.3, 0.2))))
+        vp(scene, film, camera)
+        @test stage("shade") == shade
+        @test length(stage("shader-values")) == 1
+        @test ss_key(scene, h) == key
+    finally
+        close(vp)
+        Hikari.free!(film)
+    end
+end
+
 # What the missing lookup tables did to an image: a Principled of no specular layer is its diffuse
 # base, which rendered black. It renders as the Diffuse of its colour.
 @testset "a Principled of no specular renders as its Diffuse" begin

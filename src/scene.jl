@@ -273,13 +273,12 @@ Run the slot update `f` and keep the recorded plans unless it moved a buffer.
 An update writes into the slot buffers the plans were packed with, so they stay
 right; only one that had to store a new texture or move one (a reshape past
 capacity) bumps a set's `layout`, and only that drops them. So does a shader whose
-BSDF nodes read more computed values than the plans' hits have room for
-(`shader_inputs_width`).
+BSDF nodes' computed-input requirements or program lookup change (`shader_input_layout`).
 """
 function updating_in_place!(f, scene::Scene)
-    before = (scene.materials.layout, scene.media.layout, shader_inputs_width(scene.materials))
+    before = (scene.materials.layout, scene.media.layout, shader_input_layout(scene.materials))
     f()
-    (scene.materials.layout, scene.media.layout, shader_inputs_width(scene.materials)) == before ||
+    (scene.materials.layout, scene.media.layout, shader_input_layout(scene.materials)) == before ||
         notify_scene_changed(scene)
     return nothing
 end

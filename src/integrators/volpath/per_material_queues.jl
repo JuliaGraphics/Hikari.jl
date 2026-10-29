@@ -170,12 +170,15 @@ queued_material(::SlotQueue{T}) where {T} = T
 # ─────────────────────────────────────────────────────────────────────────────
 
 """
-    ShaderInputs(capacity, width, mem)
+    ShaderInputs(capacity, layout, mem)
 
 What the values kernel of a shader (`vp_shader_values_kernel!`) hands its closure kernel for each
 surface hit, by the hit's index in `surface_hits`: the `width` floats its BSDF nodes read of the
 computed values (`gather_inputs!`), float `g` of hit `h` at `(g - 1) * capacity + h`, so the threads
-of a kernel read one float of consecutive hits together; and its closure program (`program`).
+of a kernel read one float of consecutive hits together. `program` maps each material key to its
+BSDF program: a header offset per material type, followed by its instances' program indices.
+This lookup is independent of a hit's values pass, so a shader reading no computed inputs needs
+no values dispatch.
 """
 struct ShaderInputs{V <: AbstractVector{Float32}, I <: AbstractVector{Int32}}
     values::V
@@ -183,9 +186,12 @@ struct ShaderInputs{V <: AbstractVector{Float32}, I <: AbstractVector{Int32}}
     capacity::Int32
 end
 
-ShaderInputs(capacity::Integer, width::Integer, mem::DeviceMemory) =
-    ShaderInputs(alloc!(mem, Float32, max(width, 1) * Int(capacity)), alloc!(mem, Int32, Int(capacity), Int32(0)),
-                 Int32(capacity))
+function ShaderInputs(capacity::Integer, layout, mem::DeviceMemory)
+    values = alloc!(mem, Float32, max(layout.width * Int(capacity), 1))
+    programs = alloc!(mem, Int32, max(length(layout.programs), 1), Int32(0))
+    isempty(layout.programs) || copyto!(programs, layout.programs)
+    return ShaderInputs(values, programs, Int32(capacity))
+end
 
 Adapt.adapt_structure(to, s::ShaderInputs) =
     ShaderInputs(Adapt.adapt(to, s.values), Adapt.adapt(to, s.program), s.capacity)
@@ -194,7 +200,7 @@ Adapt.adapt_structure(to, s::ShaderInputs) =
     ShaderClosures{M}
 
 The hits of the shaders of BSDF nodes `M`, whatever their programs, as the closure kernel of `M`
-shades them: from their gathered inputs and their closure programs.
+shades them: from their material programs and any gathered inputs.
 """
 struct ShaderClosures{M} end
 
@@ -202,7 +208,7 @@ struct ShaderClosures{M} end
     ClosureQueue{M}(queues, slot, inputs)
 
 The hits of slot `slot` of `queues`, of a shader of BSDF nodes `M`, for the closure kernel of `M`,
-with the inputs their values kernel gathered. Of the material type it names the nodes only, so the
+with any computed inputs their values kernel gathered. Of the material type it names the nodes only, so the
 shaders of one set of nodes share the kernel whatever their programs compute.
 """
 struct ClosureQueue{M, V <: AbstractVector{Int32}, S <: ShaderInputs}
