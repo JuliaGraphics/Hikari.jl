@@ -31,6 +31,13 @@ end
     for regularize in (false, true), rough in (0.1, 0.3)
         @test furnace_mean(glass(rough); regularize) ≈ 1 atol = 0.003
     end
+    # A standalone Glass keeps transmitted light in its multiple-scattering
+    # compensation. Treating it as a reflective coat lost 11% at roughness 0.6.
+    for regularize in (false, true)
+        @test furnace_mean(Hikari.Glass(roughness = 0.3); regularize) ≈ 1 atol = 0.003
+        @test furnace_mean(Hikari.Glass(roughness = 0.6); regularize) ≈ 1 atol = 0.008
+    end
+    @test furnace_mean(Hikari.Glass(roughness = 0.3, thin_film_thickness = 400); regularize = false) ≈ 1 atol = 0.003
     walk = Hikari.Principled(base_color = (1, 1, 1), roughness = 0.4, subsurface_weight = 1, subsurface_radius = (1, 1, 1),
                              subsurface_scale = 0.1, ior = 1.45)
     @test furnace_mean(walk; regularize = false) ≈ 1 atol = 0.003

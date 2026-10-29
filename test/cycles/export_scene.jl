@@ -19,8 +19,8 @@ function write_obj(path, m)
     end
 end
 
-function export_cycles_scenes(dir; samples)
-    for (b, cases) in enumerate(cycles_batches())
+function export_cycles_scenes(dir; samples, batches = cycles_batches())
+    for (b, cases) in enumerate(batches)
         out = mkpath(joinpath(dir, "b$b"))
         objects = Any[]
         for ((name, (_, blender)), c) in zip(cases, CYCLES_CENTERS)

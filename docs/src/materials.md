@@ -67,6 +67,13 @@ Hikari.Diffuse(color = (0.9, 0.9, 0.9), roughness = 0.5) # rough, like chalk
 `Metallic` is Blender's artist-friendly metal: `base_color` at normal incidence, `edge_tint` at
 grazing angles.
 
+`Metallic` and `Glass` also take `thin_film_thickness` in nanometres and
+`thin_film_ior`, as their Blender nodes do. A zero thickness uses the original
+shader layout. Hikari evaluates interference at the path's wavelengths; Cycles
+integrates it separately for each RGB channel. Strongly coloured film-coated
+metals can consequently differ substantially (about 15% in red in the coloured
+metal regression scene), even when the interface equations agree.
+
 ```julia
 Hikari.Glossy(color = (0.95, 0.95, 0.95), roughness = 0)                    # mirror
 Hikari.Metallic(base_color = (0.9, 0.64, 0.54), roughness = 0.2)            # copper

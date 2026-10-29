@@ -419,7 +419,9 @@ the scaling Cycles applies towards `f0`.
 @inline function film_reflectance(::Type{<:F82Tint}, ior::Float32, thickness::Float32, film_ior::Float32, cos_i::Float32,
                                   f0::Float32, tint::Float32, lambda::Float32)
     n, k = _conductor_nk(f0, _f82_b_channel(f0, tint))
-    return _thin_film_reflectance(cos_i, thickness, film_ior, n, k, lambda)
+    s = 6f0 / 7f0
+    f82 = (f0 + (1f0 - f0) * s^5) * tint
+    return _thin_film_reflectance(cos_i, thickness, film_ior, n, k, lambda, f82)
 end
 
 @inline function film_reflectance(::Type{<:SchlickFresnel}, ior::Float32, thickness::Float32, film_ior::Float32,
@@ -676,7 +678,9 @@ end
     glass ? f.transmission_tint :
     f.reflection_tint .* (f.f0 .+ (1f0 .- f.f0) .*
                           clamp((_dielectric_fss(l.ior) - _f0_from_ior(l.ior)) / (1f0 - _f0_from_ior(l.ior)), 0f0, 1f0))
-@inline single_scatter_fresnel(::DielectricFresnel{Vec3f}, l::MicrofacetLobe, glass::Bool) = Vec3f(_dielectric_fss(l.ior))
+@inline single_scatter_fresnel(f::DielectricFresnel{Vec3f}, l::MicrofacetLobe, glass::Bool) =
+    # A coat loses its transmitted light; glass keeps it in the lobe.
+    glass ? f.transmission_tint : Vec3f(_dielectric_fss(l.ior))
 @inline single_scatter_fresnel(f::NoFresnel{Vec3f}, l::MicrofacetLobe, glass::Bool) = f.color
 
 """

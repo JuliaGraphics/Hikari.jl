@@ -78,6 +78,17 @@ const CYCLES_REFERENCE = Dict(
     "thin_wall_glass" =>    ((0.12624, 0.12547, 0.12541), 0.015),
     "thin_wall_glass_color" => ((0.09768, 0.02611, 0.0206), 0.075),
     "thin_wall_sss" =>      ((0.27258, 0.19578, 0.16402), 0.025),
+    "glass_node_film" =>    ((0.12353037, 0.13130046, 0.12998867), 0.02),
+    "glass_node_film_rough" => ((0.16458701, 0.16421948, 0.16423578), 0.035),
+    "metallic_node_film" => ((0.19717271, 0.20066447, 0.24872870), 0.045),
+    # Strongly coloured thin-film metals differ more than plain RGB metals:
+    # fitting the complex IOR and evaluating interference after RGB-to-spectrum
+    # conversion does not commute with Cycles' per-RGB-channel calculation.
+    # A direct 1nm integration of this substrate at normal incidence gives
+    # RGB red 0.76773 versus spectral red 0.65932 (-14.1%); the rendered sphere
+    # differs by 15.3%. This case records that spectral limitation explicitly.
+    # The F82 interface itself has independent, tight tests in test_shader_material.
+    "metallic_node_film_tint" => ((0.31183529, 0.13597366, 0.04308292), 0.17),
 )
 
 function render_cycles_batch(cases; samples)

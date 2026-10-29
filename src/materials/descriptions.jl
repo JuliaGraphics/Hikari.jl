@@ -63,7 +63,8 @@ thickness. Emission is found by the paths that hit it; for a light, use [`Emissi
 end
 
 """
-    Glass(; color = (1, 1, 1), roughness = 0, ior = 1.5, normal = nothing)
+    Glass(; color = (1, 1, 1), roughness = 0, ior = 1.5, normal = nothing,
+          thin_film_thickness = 0, thin_film_ior = 1.33)
 
 Blender's Glass BSDF: GGX reflection and refraction with the dielectric Fresnel, both tinted by
 `color`, with the multiscatter energy compensation of Cycles' default distribution. `roughness` is
@@ -74,6 +75,8 @@ Blender's, the square root of the GGX alpha.
     roughness = 0
     ior = 1.5
     normal = nothing
+    thin_film_thickness = 0
+    thin_film_ior = 1.33
 end
 
 """
@@ -94,7 +97,8 @@ end
 
 """
     Metallic(; base_color = (0.617, 0.577, 0.540), edge_tint = (0.695, 0.726, 0.770), roughness = 0.5,
-             anisotropy = 0, rotation = 0, normal = nothing, tangent = nothing)
+             anisotropy = 0, rotation = 0, normal = nothing, tangent = nothing,
+             thin_film_thickness = 0, thin_film_ior = 1.33)
 
 Blender's Metallic BSDF with the F82 tint Fresnel: `base_color` at normal incidence, `edge_tint`
 towards grazing angles. For a metal of measured complex IOR, as pbrt renders one, use
@@ -108,6 +112,8 @@ towards grazing angles. For a metal of measured complex IOR, as pbrt renders one
     rotation = 0
     normal = nothing
     tangent = nothing
+    thin_film_thickness = 0
+    thin_film_ior = 1.33
 end
 
 """
@@ -208,14 +214,20 @@ function shader_node(m::Diffuse)
         throw(ArgumentError("a Diffuse in a shader graph takes its bump as its `normal` (a `bump` node), not a displacement"))
     return closure(ClosureKind.DIFFUSE, node_input(m.color), node_input(m.roughness), normal_input(m.normal))
 end
-shader_node(m::Glass) =
-    closure(ClosureKind.GLASS, node_input(m.color), node_input(m.roughness), node_input(m.ior), normal_input(m.normal))
+function shader_node(m::Glass)
+    inputs = (node_input(m.color), node_input(m.roughness), node_input(m.ior), normal_input(m.normal))
+    _constant(m.thin_film_thickness, 0) && return closure(ClosureKind.GLASS, inputs...)
+    return closure(ClosureKind.GLASS_FILM, inputs..., node_input(m.thin_film_thickness), node_input(m.thin_film_ior))
+end
 shader_node(m::Glossy) =
     closure(ClosureKind.GLOSSY, node_input(m.color), node_input(m.roughness), node_input(m.anisotropy),
             node_input(m.rotation), normal_input(m.normal), tangent_input(m.tangent))
-shader_node(m::Metallic) =
-    closure(ClosureKind.METALLIC, node_input(m.base_color), node_input(m.edge_tint), node_input(m.roughness),
-            node_input(m.anisotropy), node_input(m.rotation), normal_input(m.normal), tangent_input(m.tangent))
+function shader_node(m::Metallic)
+    inputs = (node_input(m.base_color), node_input(m.edge_tint), node_input(m.roughness),
+              node_input(m.anisotropy), node_input(m.rotation), normal_input(m.normal), tangent_input(m.tangent))
+    _constant(m.thin_film_thickness, 0) && return closure(ClosureKind.METALLIC, inputs...)
+    return closure(ClosureKind.METALLIC_FILM, inputs..., node_input(m.thin_film_thickness), node_input(m.thin_film_ior))
+end
 shader_node(m::Translucent) = closure(ClosureKind.TRANSLUCENT, node_input(m.color), normal_input(m.normal))
 shader_node(m::Sheen) = closure(ClosureKind.SHEEN, node_input(m.color), node_input(m.roughness), normal_input(m.normal))
 shader_node(m::Transparent) = closure(ClosureKind.TRANSPARENT, node_input(m.color))

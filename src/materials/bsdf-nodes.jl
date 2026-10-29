@@ -150,23 +150,32 @@ end
 struct GlossyBSDF <: ShaderBSDF end
 """Blender's Metallic BSDF: GGX reflection with the F82 tint of a conductor."""
 struct MetallicBSDF <: ShaderBSDF end
+struct MetallicFilmBSDF <: ShaderBSDF end
 instruction_count(::Type{<:Union{GlossyBSDF, MetallicBSDF}}) = 1
+instruction_count(::Type{MetallicFilmBSDF}) = cld(10, NODE_ARGS)
 @inline node_lobes(::Type{GlossyBSDF}, s, prog, i::Int32, sc::ShaderContext, lut) = reflection_node(Val(false), s, prog, i, sc, lut)
 @inline node_lobes(::Type{MetallicBSDF}, s, prog, i::Int32, sc::ShaderContext, lut) = reflection_node(Val(true), s, prog, i, sc, lut)
+@inline node_lobes(::Type{MetallicFilmBSDF}, s, prog, i::Int32, sc::ShaderContext, lut) =
+    reflection_node(Val(true), s, prog, i, sc, lut, Val(true))
 
-@inline function reflection_node(::Val{Metal}, s, prog, i::Int32, sc::ShaderContext, lut) where {Metal}
+@inline function reflection_node(::Val{Metal}, s, prog, i::Int32, sc::ShaderContext, lut,
+                                 ::Val{Film} = Val(false)) where {Metal, Film}
+    chunks = Film ? instruction_count(MetallicFilmBSDF) : 1
     base = 2 + Metal
-    w = node_f(s, prog, i, 1, 1, sc)
-    roughness = clamp(node_f(s, prog, i, base + 1, 1, sc), 0f0, 1f0)
-    anisotropy = clamp(node_f(s, prog, i, base + 2, 1, sc), -1f0, 1f0)
-    n = _valid_normal(_closure_normal(node_v(s, prog, i, base + 4, 1, sc), sc), sc)
-    ax, ay, t = _anisotropic_alphas(roughness, anisotropy, node_v(s, prog, i, base + 5, 1, sc), n,
-                                    node_f(s, prog, i, base + 3, 1, sc), sc)
+    w = node_f(s, prog, i, 1, chunks, sc)
+    roughness = clamp(node_f(s, prog, i, base + 1, chunks, sc), 0f0, 1f0)
+    anisotropy = clamp(node_f(s, prog, i, base + 2, chunks, sc), -1f0, 1f0)
+    n = _valid_normal(_closure_normal(node_v(s, prog, i, base + 4, chunks, sc), sc), sc)
+    ax, ay, t = _anisotropic_alphas(roughness, anisotropy, node_v(s, prog, i, base + 5, chunks, sc), n,
+                                    node_f(s, prog, i, base + 3, chunks, sc), sc)
     weighted = if Metal
-        fresnel = F82Tint(_saturate3(node_v(s, prog, i, 2, 1, sc)), _saturate3(node_v(s, prog, i, 3, 1, sc)), 0f0, 0f0)
+        thickness = Film ? node_f(s, prog, i, 9, chunks, sc) : 0f0
+        film_ior = Film ? max(node_f(s, prog, i, 10, chunks, sc), 1f-5) : 0f0
+        fresnel = F82Tint(_saturate3(node_v(s, prog, i, 2, chunks, sc)),
+                          _saturate3(node_v(s, prog, i, 3, chunks, sc)), thickness, film_ior)
         Weighted(MicrofacetLobe{:reflection}(fresnel; alpha_x = ax, alpha_y = ay), Vec3f(w), n; t)
     else
-        color = max.(node_v(s, prog, i, 2, 1, sc), 0f0)
+        color = max.(node_v(s, prog, i, 2, chunks, sc), 0f0)
         Weighted(MicrofacetLobe{:reflection}(NoFresnel(color); alpha_x = ax, alpha_y = ay), w * color, n; t)
     end
     return ((kept(first(setup_fresnel(lut, weighted, dot(n, sc.wo)))),), Vec3f(0), Vec3f(0))
@@ -174,13 +183,26 @@ end
 
 """Blender's Glass BSDF: GGX reflection and refraction with the real dielectric Fresnel, tinted by `color`."""
 struct GlassBSDF <: ShaderBSDF end
-instruction_count(::Type{GlassBSDF}) = 1
-@inline function node_lobes(::Type{GlassBSDF}, s, prog, i::Int32, sc::ShaderContext, lut)
+struct GlassFilmBSDF <: ShaderBSDF end
+instruction_count(::Type{<:Union{GlassBSDF, GlassFilmBSDF}}) = 1
+@inline node_lobes(::Type{GlassBSDF}, s, prog, i::Int32, sc::ShaderContext, lut) =
+    glass_node(Val(false), s, prog, i, sc, lut)
+@inline node_lobes(::Type{GlassFilmBSDF}, s, prog, i::Int32, sc::ShaderContext, lut) =
+    glass_node(Val(true), s, prog, i, sc, lut)
+@inline function glass_node(::Val{Film}, s, prog, i::Int32, sc::ShaderContext, lut) where {Film}
     color = max.(node_v(s, prog, i, 2, 1, sc), 0f0)
     alpha = clamp(node_f(s, prog, i, 3, 1, sc), 0f0, 1f0)^2
     ior = max(node_f(s, prog, i, 4, 1, sc), 1f-5)
     n = _closure_normal(node_v(s, prog, i, 5, 1, sc), sc)
-    lobe = MicrofacetLobe{:glass}(DielectricFresnel(color, color); alpha_x = alpha, ior = _backfacing(sc) ? 1f0 / ior : ior)
+    back = _backfacing(sc)
+    fresnel = if Film
+        film_ior = max(node_f(s, prog, i, 7, 1, sc), 1f-5)
+        SchlickFresnel(Vec3f(_f0_from_ior(ior)), color, color, node_f(s, prog, i, 6, 1, sc),
+                       back ? film_ior / ior : film_ior)
+    else
+        DielectricFresnel(color, color)
+    end
+    lobe = MicrofacetLobe{:glass}(fresnel; alpha_x = alpha, ior = back ? 1f0 / ior : ior)
     weighted = Weighted(lobe, Vec3f(node_f(s, prog, i, 1, 1, sc)), n)
     return ((kept(first(setup_fresnel(lut, weighted, dot(n, sc.wo)))),), Vec3f(0), Vec3f(0))
 end

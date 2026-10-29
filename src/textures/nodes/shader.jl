@@ -26,6 +26,8 @@ const GLASS       = UInt8(5)
 const SHEEN       = UInt8(6)
 const TRANSPARENT = UInt8(7)
 const EMISSION    = UInt8(8)
+const METALLIC_FILM = UInt8(9)
+const GLASS_FILM = UInt8(10)
 end
 
 const CLOSURE_WEIGHT_CUTOFF = 1f-5
@@ -152,7 +154,11 @@ this function a fifth of every Principled shading kernel, in `Float64` code that
 compile at all.
 """
 @noinline function _thin_film_reflectance(cos_i::Float32, thickness::Float32, eta2::Float32, eta3::Float32,
-                                        k3::Float32, lambda::Float32)
+                                        k3::Float32, lambda::Float32, f82::Float32 = -1f0)
+    if thickness < 1f0
+        t = clamp(thickness, 0f0, 1f0)
+        eta2 = 1f0 + (eta2 - 1f0) * t^2 * (3f0 - 2f0 * t)
+    end
     sin2_i = max(1f0 - cos_i^2, 0f0)
     sin2_2 = sin2_i / eta2^2
     sin2_2 >= 1f0 && return 1f0
@@ -167,6 +173,19 @@ compile at all.
                                      (eta2 * cos_i - cos_2) / (eta2 * cos_i + cos_2)
         r23 = polarization == 0x00 ? complex_div(eta2 * cos_2 - n3 * cos_3, eta2 * cos_2 + n3 * cos_3) :
                                      complex_div(n3 * cos_2 - eta2 * cos_3, n3 * cos_2 + eta2 * cos_3)
+        if f82 >= 0f0
+            # Cycles keeps the artist's F82 reflectance at the film/substrate interface;
+            # the fitted complex IOR supplies its phase, rather than its magnitude.
+            n = eta3 / eta2
+            k2 = (k3 / eta2)^2
+            f0 = ((n - 1f0)^2 + k2) / ((n + 1f0)^2 + k2)
+            s = 6f0 / 7f0
+            b = (f0 + (1f0 - f0) * s^5 - f82) * (7f0 / s^6)
+            m = 1f0 - cos_2
+            R = clamp(f0 + (1f0 - f0) * m^5 - b * cos_2 * m^6, 0f0, 1f0)
+            magnitude = abs(r23)
+            r23 = magnitude > 0f0 ? r23 * (sqrt(R) / magnitude) : Complex{Float32}(sqrt(R), 0f0)
+        end
         rr = complex_div(r12 + r23 * shift, 1f0 + r12 * r23 * shift)
         r += abs2(rr)
     end

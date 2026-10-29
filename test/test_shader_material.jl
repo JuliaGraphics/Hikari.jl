@@ -74,6 +74,10 @@ features(::Hikari.ShaderProgram{F}) where {F} = F & ~(UInt32(3) << Hikari.STACK_
                    Hikari.Glossy(roughness = noise(xyz()).fac); factor = xyz().x),
         Hikari.Add(Hikari.Transparent(color = checker(xyz()).color), Hikari.Emission(color = (1, 0.5, 0.2), strength = xyz().z)),
         Hikari.Diffuse(color = (0.2, 0.4, 0.6)),
+        Hikari.Metallic(base_color = noise(xyz()).color, edge_tint = (0.9, 0.8, 0.7), roughness = 0.3,
+                        thin_film_thickness = wave(xyz()).fac * 500, thin_film_ior = 1.33),
+        Hikari.Mix(Hikari.Glass(color = (0.8, 0.9, 1.0), thin_film_thickness = noise(xyz()).fac * 400),
+                   Hikari.Diffuse(color = (0.4, 0.6, 0.2)); factor = 0.6),
     ]
     for shader in split_shaders
         store = Raycore.MultiTypeSet(CPU())
@@ -99,6 +103,43 @@ features(::Hikari.ShaderProgram{F}) where {F} = F & ~(UInt32(3) << Hikari.STACK_
 end
 
 @testset "Shader materials" begin
+    @testset "Glass and Metallic take Blender's thin-film inputs" begin
+        glass = Hikari.Glass(ior = 1.5, thin_film_thickness = 450, thin_film_ior = 1.33)
+        front = only(lobes(glass)).lobe
+        back = only(lobes(glass; wo = Vec3f(0, 0, -1))).lobe
+        @test front.fresnel isa SchlickFresnel
+        @test front.fresnel.film_thickness == 450f0
+        @test front.fresnel.film_ior ≈ 1.33f0
+        @test back.ior ≈ 1f0 / 1.5f0
+        @test back.fresnel.film_ior ≈ 1.33f0 / 1.5f0
+        metal = only(lobes(Hikari.Metallic(thin_film_thickness = 350, thin_film_ior = 1.4))).lobe
+        @test metal.fresnel isa F82Tint
+        @test metal.fresnel.film_thickness == 350f0
+        @test metal.fresnel.film_ior ≈ 1.4f0
+        @test Hikari.bsdf_nodes(Hikari.ShaderGraph(Hikari.shader_node(Hikari.Glass()))) == Tuple{Hikari.GlassBSDF}
+        @test Hikari.bsdf_nodes(Hikari.ShaderGraph(Hikari.shader_node(Hikari.Metallic()))) == Tuple{Hikari.MetallicBSDF}
+    end
+
+    @testset "thin-film interfaces keep the substrate's Fresnel response" begin
+        # With no IOR change at the top interface, the film leaves the F82
+        # substrate response unchanged. Using physical conductor amplitudes
+        # instead loses the artist's edge tint, even with the correct phase.
+        for f0 in (0.2f0, 0.6f0, 0.9f0), tint in (0.5f0, 0.9f0), mu in (0.1f0, 0.4f0, 0.9f0)
+            m = 1f0 - mu
+            expected = clamp(f0 + (1f0 - f0) * m^5 - Hikari._f82_b_channel(f0, tint) * mu * m^6, 0f0, 1f0)
+            actual = Hikari.film_reflectance(F82Tint, 1f0, 400f0, 1f0, mu, f0, tint, 550f0)
+            @test actual ≈ expected atol = 2f-5
+        end
+        # A film matching the substrate is just the original dielectric,
+        # including total internal reflection when viewed from inside.
+        for mu in (0.1f0, 0.5f0, 0.9f0), ior in (1.5f0, 1f0 / 1.5f0)
+            film_ior = ior > 1f0 ? 1.5f0 : 1f0
+            actual = Hikari.film_reflectance(SchlickFresnel, ior, 550f0, film_ior, mu,
+                                             Hikari._f0_from_ior(ior), 1f0, 550f0)
+            @test actual ≈ Hikari.fresnel_dielectric(mu, ior) atol = 1f-5
+        end
+    end
+
     @testset "a diffuse BSDF is one diffuse lobe" begin
         w = only(lobes(Hikari.Diffuse(color = (0.2, 0.4, 0.6))))
         @test w.lobe isa DiffuseLobe

@@ -104,16 +104,33 @@ const CYCLES_THIN_WALL_CASES = [
                         subsurface_radius = (1.0, 0.2, 0.1), subsurface_scale = 0.1, thin_wall = true),
 ]
 
+const CYCLES_FILM_NODE_CASES = [
+    "glass_node_film" => (H -> H.Glass(roughness = 0.2, thin_film_thickness = 400, thin_film_ior = 1.33),
+        bsdf("ShaderNodeBsdfGlass"; Roughness = 0.2, var"Thin Film Thickness" = 400, var"Thin Film IOR" = 1.33)),
+    "glass_node_film_rough" => (H -> H.Glass(roughness = 0.5, thin_film_thickness = 550, thin_film_ior = 1.5),
+        bsdf("ShaderNodeBsdfGlass"; Roughness = 0.5, var"Thin Film Thickness" = 550, var"Thin Film IOR" = 1.5)),
+    "metallic_node_film" => (H -> H.Metallic(roughness = 0.3, thin_film_thickness = 350, thin_film_ior = 1.33),
+        bsdf("ShaderNodeBsdfMetallic"; Roughness = 0.3, var"Thin Film Thickness" = 350, var"Thin Film IOR" = 1.33)),
+    "metallic_node_film_tint" => (H -> H.Metallic(base_color = (0.9, 0.5, 0.2), edge_tint = (0.95, 0.8, 0.7),
+                                                roughness = 0.5, thin_film_thickness = 500, thin_film_ior = 1.5),
+        bsdf("ShaderNodeBsdfMetallic"; var"Base Color" = [0.9, 0.5, 0.2], var"Edge Tint" = [0.95, 0.8, 0.7],
+              Roughness = 0.5, var"Thin Film Thickness" = 500, var"Thin Film IOR" = 1.5)),
+]
+
 principled_case((name, inputs)) =
     name => (H -> H.Principled(; inputs...), Dict("type" => "principled", "inputs" => Dict(pairs(inputs))))
 
 """Every case: its name, its material in Hikari (a function of the Hikari module) and the same in Blender."""
-const CYCLES_CASES = [
+const CYCLES_STANDARD_CASES = [
     map(principled_case, CYCLES_PRINCIPLED_CASES);
     CYCLES_NODE_CASES;
     map(principled_case, CYCLES_THIN_WALL_CASES)
 ]
-cycles_batches() = collect(Iterators.partition(CYCLES_CASES, 8))
+const CYCLES_CASES = [CYCLES_STANDARD_CASES; CYCLES_FILM_NODE_CASES]
+# Keep existing reference scenes unchanged: filling their last batch would add
+# interreflections from new spheres and change the old comparison values.
+cycles_batches() = [collect(Iterators.partition(CYCLES_STANDARD_CASES, 8));
+                    collect(Iterators.partition(CYCLES_FILM_NODE_CASES, 8))]
 
 const CYCLES_CENTERS = [Point3f(x, y, 0.5f0) for y in (1.4f0, 0f0) for x in (-2.25f0, -0.75f0, 0.75f0, 2.25f0)]
 const CYCLES_SCENE = (radius = 0.5f0, res = 512, world = 0.1f0, max_depth = 8,
