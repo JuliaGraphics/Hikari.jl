@@ -166,155 +166,14 @@ end
 end
 
 # ============================================================================
-# Clean Material Types - each is a data container with only necessary parameters
+# Hikari-specific _to_texture extensions (base overloads are in HikariBase)
 # ============================================================================
 
-"""
-    MatteMaterial(Kd::Texture, σ::Texture)
+import HikariBase: _to_texture
 
-Matte (diffuse) material with Lambertian or Oren-Nayar BRDF.
-
-* `Kd`: Spectral diffuse reflection (color texture or TextureRef)
-* `σ`: Scalar roughness for Oren-Nayar model (0 = Lambertian)
-"""
-struct MatteMaterial{KdTex, σTex} <: Material
-    Kd::KdTex   # Texture, Raycore.TextureRef, or raw RGBSpectrum
-    σ::σTex     # Texture, Raycore.TextureRef, or raw Float32
-end
-
-
-"""
-    MirrorMaterial(Kr::Texture)
-
-Perfect mirror (specular reflection) material.
-
-* `Kr`: Spectral reflectance (color texture or TextureRef)
-"""
-struct MirrorMaterial{KrTex} <: Material
-    Kr::KrTex   # Texture, Raycore.TextureRef, or raw RGBSpectrum
-end
-
-"""
-    GlassMaterial(Kr, Kt, u_roughness, v_roughness, index, remap_roughness)
-
-Glass/dielectric material with reflection and transmission.
-
-* `Kr`: Spectral reflectance (Texture or TextureRef)
-* `Kt`: Spectral transmittance (Texture or TextureRef)
-* `u_roughness`: Roughness in u direction (0 = perfect specular)
-* `v_roughness`: Roughness in v direction (0 = perfect specular)
-* `index`: Index of refraction
-* `remap_roughness`: Whether to remap roughness to alpha
-"""
-struct GlassMaterial{KrTex, KtTex, URoughTex, VRoughTex, IndexTex} <: Material
-    Kr::KrTex           # Texture, Raycore.TextureRef, or raw RGBSpectrum
-    Kt::KtTex           # Texture, Raycore.TextureRef, or raw RGBSpectrum
-    u_roughness::URoughTex  # Texture, Raycore.TextureRef, or raw Float32
-    v_roughness::VRoughTex  # Texture, Raycore.TextureRef, or raw Float32
-    index::IndexTex     # Texture, Raycore.TextureRef, or raw Float32
-    remap_roughness::Bool
-end
-
-# ============================================================================
-# PlasticMaterial - Now an alias for CoatedDiffuseMaterial
-# ============================================================================
-# The old PlasticMaterial struct has been removed.
-# PlasticMaterial(; Kd=..., roughness=...) now returns a CoatedDiffuseMaterial,
-# matching pbrt-v4's behavior where plastic is implemented as coated diffuse.
-
-# ============================================================================
-# User-friendly keyword constructors with auto texture wrapping
-# ============================================================================
-
-# Helper to wrap values in Texture if not already a Texture
-_to_texture(t::Texture) = t
-_to_texture(v::RGBSpectrum) = ConstTexture(v)
-_to_texture(v::Float32) = ConstTexture(v)
-_to_texture(v::Real) = _to_texture(Float32(v))
-# For color tuples/vectors (use Tuple{Real,Real,Real} to handle mixed Int/Float)
-_to_texture(v::Tuple{Real,Real,Real}) = _to_texture(RGBSpectrum(Float32(v[1]), Float32(v[2]), Float32(v[3])))
 # Support Colors.jl RGB types (RGB, RGBA, etc.)
 _to_texture(c::Colorant) = _to_texture(RGBSpectrum(Float32(red(c)), Float32(green(c)), Float32(blue(c))))
 _to_texture(c::AbstractMatrix{<: RGB}) = Texture(map(c-> RGBSpectrum(Float32(red(c)), Float32(green(c)), Float32(blue(c))), c))
-
-"""
-    MatteMaterial(; Kd=RGBSpectrum(0.5), σ=0.0)
-
-Create a matte (diffuse) material with optional Oren-Nayar roughness.
-
-# Arguments
-- `Kd`: Diffuse color - can be RGBSpectrum, (r,g,b) tuple, or Texture
-- `σ`: Roughness angle in degrees (0 = Lambertian, >0 = Oren-Nayar)
-
-# Examples
-```julia
-MatteMaterial(Kd=RGBSpectrum(0.8, 0.2, 0.2))  # Red matte
-MatteMaterial(Kd=(0.8, 0.2, 0.2), σ=20)       # Red with roughness
-MatteMaterial(Kd=my_texture)                   # Textured
-```
-"""
-function MatteMaterial(; Kd=RGBSpectrum(0.5f0), σ=0f0)
-    MatteMaterial(_to_texture(Kd), _to_texture(σ))
-end
-
-"""
-    MirrorMaterial(; Kr=RGBSpectrum(0.9))
-
-Create a perfect mirror (specular reflection) material.
-
-# Arguments
-- `Kr`: Reflectance color - can be RGBSpectrum, (r,g,b) tuple, or Texture
-
-# Examples
-```julia
-MirrorMaterial()                               # Default silver mirror
-MirrorMaterial(Kr=RGBSpectrum(0.95, 0.93, 0.88))  # Gold-tinted
-MirrorMaterial(Kr=(0.9, 0.9, 0.9))            # Using tuple
-```
-"""
-function MirrorMaterial(; Kr=RGBSpectrum(0.9f0))
-    MirrorMaterial(_to_texture(Kr))
-end
-
-"""
-    GlassMaterial(; Kr=RGBSpectrum(1), Kt=RGBSpectrum(1), roughness=0, index=1.5, remap_roughness=true)
-
-Create a glass/dielectric material with reflection and transmission.
-
-# Arguments
-- `Kr`: Reflectance color
-- `Kt`: Transmittance color
-- `roughness`: Surface roughness (0 = perfect specular, can be single value or (u,v) tuple)
-- `index`: Index of refraction (1.5 for glass, 1.33 for water, 2.4 for diamond)
-- `remap_roughness`: Whether to remap roughness to microfacet alpha
-
-# Examples
-```julia
-GlassMaterial()                                # Clear glass
-GlassMaterial(Kt=(1, 0.9, 0.8), index=1.5)    # Amber tinted
-GlassMaterial(roughness=0.1)                   # Frosted glass
-GlassMaterial(roughness=(0.1, 0.05))          # Anisotropic roughness
-```
-"""
-function GlassMaterial(;
-    Kr=RGBSpectrum(1f0),
-    Kt=RGBSpectrum(1f0),
-    roughness=0f0,
-    index=1.5f0,
-    remap_roughness=true
-)
-    # Handle roughness - can be single value or (u, v) tuple
-    if roughness isa Tuple
-        u_rough, v_rough = roughness
-    else
-        u_rough = v_rough = roughness
-    end
-    GlassMaterial(
-        _to_texture(Kr), _to_texture(Kt),
-        _to_texture(u_rough), _to_texture(v_rough),
-        _to_texture(index), remap_roughness
-    )
-end
 
 """
     PlasticMaterial(; Kd=RGBSpectrum(0.5), Ks=RGBSpectrum(0.5), roughness=0.1, remap_roughness=true, eta=1.5)
@@ -354,35 +213,6 @@ function PlasticMaterial(;
     )
 end
 
-# ============================================================================
-# Conductor Material - Conductor with Fresnel reflectance and microfacet roughness
-# ============================================================================
-
-"""
-    ConductorMaterial{EtaTex, KTex, RoughTex, ReflTex}
-
-A metal/conductor material with wavelength-dependent complex index of refraction.
-
-Metals reflect light based on Fresnel equations for conductors, characterized by:
-- η (eta): Real part of complex IOR (PiecewiseLinearSpectrum for presets, or RGB texture)
-- k: Imaginary part (extinction coefficient)
-- roughness: Surface roughness for microfacet model
-
-# Fields
-* `eta`: Real part of complex index of refraction (PiecewiseLinearSpectrum or texture)
-* `k`: Extinction coefficient (PiecewiseLinearSpectrum or texture)
-* `roughness`: Surface roughness
-* `reflectance`: Color multiplier for Fresnel reflectance (for tinting)
-* `remap_roughness`: Whether to remap roughness to alpha
-"""
-struct ConductorMaterial{EtaTex, KTex, RoughTex, ReflTex} <: Material
-    eta::EtaTex             # PiecewiseLinearSpectrum, Texture, Raycore.TextureRef, or raw RGBSpectrum
-    k::KTex                 # PiecewiseLinearSpectrum, Texture, Raycore.TextureRef, or raw RGBSpectrum
-    roughness::RoughTex     # Texture, Raycore.TextureRef, or raw Float32
-    reflectance::ReflTex    # Texture, Raycore.TextureRef, or raw RGBSpectrum
-    remap_roughness::Bool
-end
-
 # Identity passthrough for PiecewiseLinearSpectrum (not a texture, stored directly)
 _to_texture(s::PiecewiseLinearSpectrum) = s
 
@@ -392,60 +222,12 @@ const METAL_GOLD = (eta=(0.14, 0.38, 1.44), k=(3.98, 2.75, 1.95))
 const METAL_SILVER = (eta=(0.16, 0.14, 0.13), k=(4.03, 3.59, 2.62))
 const METAL_ALUMINUM = (eta=(1.35, 0.97, 0.60), k=(7.47, 6.40, 5.30))
 
-"""
-    ConductorMaterial(; eta=(0.2, 0.2, 0.2), k=(3.9, 3.9, 3.9), roughness=0.1, remap_roughness=true)
-
-Create a metal/conductor material with Fresnel reflectance.
-
-# Arguments
-- `eta`: Real part of complex IOR - PiecewiseLinearSpectrum, (r,g,b) tuple, RGBSpectrum, or Texture
-- `k`: Extinction coefficient - PiecewiseLinearSpectrum, (r,g,b) tuple, RGBSpectrum, or Texture
-- `roughness`: Surface roughness (0 = mirror-like, higher = more diffuse)
-- `reflectance`: Color multiplier for tinting the metal (default white = no tint)
-- `remap_roughness`: Whether to remap roughness to microfacet alpha
-
-# Presets
-Use the provided metal constants for realistic materials:
-- `METAL_COPPER`, `METAL_GOLD`, `METAL_SILVER`, `METAL_ALUMINUM`
-
-# Examples
-```julia
-ConductorMaterial()                                        # Generic metal
-ConductorMaterial(; METAL_COPPER..., roughness=0.05)      # Polished copper
-ConductorMaterial(eta=(0.2, 0.8, 0.2), k=(3, 3, 3))       # Custom green-tinted metal
-```
-"""
-function ConductorMaterial(;
-    eta=(0.2f0, 0.2f0, 0.2f0),
-    k=(3.9f0, 3.9f0, 3.9f0),
-    roughness=0.1f0,
-    reflectance=(1f0, 1f0, 1f0),
-    remap_roughness=true
-)
-    ConductorMaterial(_to_texture(eta), _to_texture(k), _to_texture(roughness), _to_texture(reflectance), remap_roughness)
-end
-
 # ============================================================================
-# Clean Type Aliases - shorter names without "Material" suffix
+# Type Aliases (Hikari-specific)
 # ============================================================================
-
-"""Type alias: `Diffuse` is the same as `MatteMaterial`"""
-const Diffuse = MatteMaterial
-
-"""Type alias: `Mirror` is the same as `MirrorMaterial`"""
-const Mirror = MirrorMaterial
-
-"""Type alias: `Dielectric` is the same as `GlassMaterial`"""
-const Dielectric = GlassMaterial
 
 """Type alias: `Plastic` is the same as `PlasticMaterial`"""
 const Plastic = PlasticMaterial
-
-"""Type alias: `Conductor` is the same as `ConductorMaterial`"""
-const Conductor = ConductorMaterial
-
-"""Type alias: `Metal` is the same as `ConductorMaterial` (legacy alias)"""
-const Metal = ConductorMaterial
 
 """Type alias: `MetalMaterial` is the same as `ConductorMaterial` (legacy alias)"""
 const MetalMaterial = ConductorMaterial

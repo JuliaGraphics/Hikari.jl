@@ -17,6 +17,18 @@ using Adapt
 using KernelAbstractions: @kernel, @index, @Const
 import KernelAbstractions as KA
 using GPUArraysCore: @allowscalar
+# Import and re-expose all HikariBase types as Hikari.XXX
+import HikariBase: HikariBase,
+    Spectrum, RGBSpectrum,
+    Texture, ConstTexture, TextureType,
+    Material, Medium,
+    MatteMaterial, MirrorMaterial, GlassMaterial, ConductorMaterial,
+    CoatedDiffuseMaterial, CoatedConductorMaterial,
+    ThinDielectricMaterial, DiffuseTransmissionMaterial,
+    CoatedDiffuseTransmissionMaterial,
+    Emissive, MediumInterface,
+    Diffuse, Mirror, Dielectric, Conductor, Metal, ThinDielectric,
+    _to_texture, to_Y, rgb, is_black, luminance
 
 # Re-export Raycore types and functions that Trace uses
 import Raycore: AbstractRay, Ray, RayDifferentials, apply, check_direction, scale_differentials
@@ -36,12 +48,9 @@ import Raycore: to_gpu
 import Raycore: sum_unrolled, reduce_unrolled, for_unrolled, map_unrolled, getindex_unrolled
 import Raycore: SetKey, MultiTypeSet, StaticMultiTypeSet, with_index, is_invalid, n_slots
 
-abstract type Spectrum end
 abstract type Light end
-abstract type Material end
 abstract type BxDF end
 abstract type Integrator end
-abstract type Medium end
 
 # Default no-op close for integrators without cached state
 Base.close(::Integrator) = nothing

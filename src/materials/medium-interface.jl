@@ -1,6 +1,6 @@
-# SetKey and MediumInterface types
-# Extracted to allow inclusion before spectral-eval.jl
-# which needs MediumInterface for BSDF forwarding
+# MediumInterface runtime support
+# MediumInterface struct and constructors are now in HikariBase.
+# This file provides runtime functions for medium index dispatch.
 
 # ============================================================================
 # Medium Index Type (internal - used at runtime for GPU dispatch)
@@ -8,55 +8,6 @@
 
 @propagate_inbounds is_vacuum(idx::SetKey) = Raycore.is_invalid(idx)
 @propagate_inbounds has_medium(idx::SetKey) = Raycore.is_valid(idx)
-
-# ============================================================================
-# User-facing MediumInterface (stores actual Medium objects)
-# ============================================================================
-
-"""
-    MediumInterface{M<:Material, I, O}
-
-Material wrapper that combines a surface BSDF with medium boundaries.
-Surfaces define boundaries between media.
-
-Emission is handled separately by DiffuseAreaLight (registered per-triangle
-in scene.lights, not on the material).
-
-# Fields
-- `material`: The underlying BSDF material (e.g., MatteMaterial, GlassMaterial)
-- `inside`: Medium for inside the surface, or `nothing` for vacuum
-- `outside`: Medium for outside the surface, or `nothing` for vacuum
-
-# Usage
-```julia
-# Glass with fog inside
-MediumInterface(GlassMaterial(...); inside=fog)
-
-# Simple material with no medium transition
-MediumInterface(MatteMaterial(Kd, σ))
-```
-"""
-struct MediumInterface{M<:Material, I, O, E} <: Material
-    material::M
-    inside::I      # Medium or Nothing
-    outside::O     # Medium or Nothing
-    emission::E    # NamedTuple (Le, scale, two_sided) or Nothing
-end
-
-# Convenience constructors
-function MediumInterface(material::M; inside=nothing, outside=nothing, emission=nothing) where {M<:Material}
-    MediumInterface{M, typeof(inside), typeof(outside), typeof(emission)}(material, inside, outside, emission)
-end
-
-function MediumInterface(material::M, medium) where {M<:Material}
-    # Same medium on both sides (e.g., object embedded in fog)
-    MediumInterface{M, typeof(medium), typeof(medium), Nothing}(material, medium, medium, nothing)
-end
-
-"""Check if this interface represents a medium transition"""
-@propagate_inbounds function is_medium_transition(mi::MediumInterface)
-    mi.inside !== mi.outside
-end
 
 # ============================================================================
 # Internal MediumInterfaceIdx (stores SetKey for GPU dispatch)
