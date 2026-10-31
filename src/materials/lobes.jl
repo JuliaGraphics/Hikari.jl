@@ -239,11 +239,14 @@ Weighted(lobe::BSDFLobe, weight::Vec3f, n::Vec3f; t::Vec3f = Vec3f(0), sample_we
     Weighted(lift(w.lobe, table, lambda), _uplift(table, _saturate3(w.weight * scale), lambda),
              w.sample_weight, w.n, w.t)
 
+"A bounded lobe collection implementing mixture, sample selection and subsurface access."
+abstract type AbstractLobeStorage end
+
 """
 The BSDF a material makes at a hit: its weighted lobes, of which one is sampled in proportion
 to its share of `total`, and what the hit emits.
 """
-struct LobeBSDF{L <: Tuple}
+struct LobeBSDF{L <: Union{Tuple, AbstractLobeStorage}}
     lobes::L
     total::Float32
     lambda::Wavelengths
@@ -838,10 +841,15 @@ the layers under it give up.
 """
 @inline function setup_fresnel(s::LobeSetup, w::Weighted{<:MicrofacetLobe{Mode}, Vec3f}, mu::Float32,
                                ::Val{Multi} = Val(true)) where {Mode, Multi}
+    return setup_fresnel(s, w, mu, Multi)
+end
+
+@inline function setup_fresnel(s::LobeSetup, w::Weighted{<:MicrofacetLobe{Mode}, Vec3f}, mu::Float32,
+                               multiscatter::Bool) where {Mode}
     w = s.regularize ? regularized(w) : w
     refl, trans = estimate_albedo(s.lut, w.lobe, mu)
     w = Weighted(w.lobe, w.weight, w.sample_weight * _avg(refl .+ trans), w.n, w.t)
-    return Multi ? preserve_energy(s.lut, w, mu, single_scatter_fresnel(w.lobe.fresnel, w.lobe, Mode === :glass)) : w, refl
+    return multiscatter ? preserve_energy(s.lut, w, mu, single_scatter_fresnel(w.lobe.fresnel, w.lobe, Mode === :glass)) : w, refl
 end
 @inline sheen(s::LobeSetup, weight::Vec3f, n::Vec3f, roughness::Float32, wo::Vec3f) = sheen(s.lut, weight, n, roughness, wo)
 

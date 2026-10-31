@@ -198,6 +198,15 @@ end
     sampling = b.total > 0.0f0 ? w.weight * w.coverage / b.total : 0.0f0
     return map(v -> Weighted(v.lobe, v.weight * factor, v.sample_weight * sampling, v.n, v.t), b.lobes)
 end
+@inline lift_composed_terms(::Tuple{}, scale, table, lambda) = ()
+@inline function lift_composed_terms(terms::Tuple, scale, table, lambda)
+    return (
+        lift_composed_term(first(terms), scale, table, lambda)...,
+        lift_composed_terms(Base.tail(terms), scale, table, lambda)...,
+    )
+end
+@inline lift_composed_term(w::PbrtTerm, scale, table, lambda) = lift_shader_term(w, scale, table, lambda)
+@inline lift_composed_term(w::Weighted, scale, table, lambda) = (stored_shader_term(w, scale, table, lambda),)
 @inline function lobe_bsdf(::Type{Tuple{B}}, (terms, transparency, emission), table, lambda::Wavelengths) where {B <: PbrtBSDF}
     # A single unit-weight node is exactly the original BSDF, including its
     # sampling probabilities and layered/proportional PDF semantics.
@@ -208,9 +217,9 @@ end
     selects_component(M) && return component_bsdf(M, terms, transparency, emission, table, lambda)
     alpha = 1.0f0 - _avg(transparency)
     scale = alpha > 1.0f-6 ? inv(alpha) : 0.0f0
-    lobes = lift_shader_terms(terms, scale, table, lambda)
+    lobes = lift_composed_terms(terms, scale, table, lambda)
     total = reduce(+, map(w -> w.sample_weight, lobes); init = 0.0f0)
-    return LobeBSDF(lobes, total, lambda, SpectralRadiance(0.0f0), disperses(lobes))
+    return LobeBSDF(lobes, total, lambda, shader_emission(M, emission, table, lambda), disperses(lobes))
 end
 
 node_has_transparency(::PbrtNodeData{T}, c::NodeCore) where {T} =
@@ -247,8 +256,8 @@ struct ComponentBSDF{C}
     emission::SpectralRadiance
 end
 @inline function prepare_component(w::Weighted, scale, table, lambda)
-    v = lift(w, scale, table, lambda)
-    b = LobeBSDF((v,), v.sample_weight, lambda, SpectralRadiance(0.0f0), disperses((v,)))
+    v = stored_shader_term(w, scale, table, lambda)
+    b = LobeBSDF(SurfaceLobeSpan((v,), Int32(1)), v.sample_weight, lambda, SpectralRadiance(0.0f0), disperses((v,)))
     return BSDFComponent(b, 1.0f0, v.sample_weight, nothing)
 end
 @inline component_has_samples(b::LobeBSDF) = b.total > 0.0f0

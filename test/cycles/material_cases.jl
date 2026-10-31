@@ -56,9 +56,25 @@ const CYCLES_PRINCIPLED_CASES = [
 ]
 
 """A Blender BSDF node `node` with its `inputs` by socket name, as `cycles_render.py` builds it."""
-bsdf(node; properties = (;), inputs...) =
-    Dict("type" => "bsdf", "node" => node, "inputs" => Dict(String(k) => v for (k, v) in inputs),
-          "properties" => Dict(String(k) => v for (k, v) in pairs(properties)))
+function bsdf(node; properties = (;), inputs...)
+    props = Dict(String(k) => v for (k, v) in pairs(properties))
+    if node == "ShaderNodeBsdfGlass" && get(props, "distribution", "MULTI_GGX") != "BECKMANN"
+        # Public Glass is Principled transmission. Compare it to the same Blender
+        # material, including Principled's distinct reflection/transmission tinting.
+        names = Dict("Color" => "base_color", "Roughness" => "roughness", "IOR" => "ior",
+                     "Thin Film Thickness" => "thin_film_thickness", "Thin Film IOR" => "thin_film_ior")
+        values = Dict{String, Any}(names[String(k)] => v for (k, v) in inputs)
+        merge!(values, Dict("transmission_weight" => 1.0))
+        get!(values, "roughness", 0.0)
+        get!(values, "base_color", [1.0, 1.0, 1.0])
+        return Dict("type" => "principled", "inputs" => values, "properties" => props,
+                    "canonical_glass" => true)
+    end
+    # Blender has no Principled Beckmann option. Its neutral-colour Glass nodes
+    # remain independent checks of the added Beckmann transmission convention.
+    return Dict("type" => "bsdf", "node" => node,
+                "inputs" => Dict(String(k) => v for (k, v) in inputs), "properties" => props)
+end
 mix_spec(a, b, factor) = Dict("type" => "mix", "a" => a, "b" => b, "factor" => factor)
 add_spec(a, b) = Dict("type" => "add", "a" => a, "b" => b)
 

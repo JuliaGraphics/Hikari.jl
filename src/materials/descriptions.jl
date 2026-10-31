@@ -21,7 +21,8 @@
 Blender's Principled BSDF with every input it has, laid out as Cycles does: transparency, sheen and
 coat over the metal, transmission and the specular layer over the diffuse base. Each input except
 `thin_wall` and `distribution` takes a number, a colour, an image or a node graph.
-`distribution` is the constant `:multi_ggx` (Blender's default) or `:ggx` for single scattering.
+`distribution` is the constant `:multi_ggx` (Blender's default), `:ggx` or `:beckmann` for single scattering.
+Beckmann extends Blender's Principled node so all Glass configurations use this same path.
 
 `normal = nothing` is the surface's shading normal and `coat_normal = nothing` is `normal`; the
 default `tangent` is Blender's, radial around the Z axis (here the world's, Blender's is the
@@ -66,22 +67,22 @@ thickness. Emission is found by the paths that hit it; for a light, use [`Emissi
 end
 
 """
-    Glass(; color = (1, 1, 1), roughness = 0, ior = 1.5, normal = nothing,
+    Glass(; base_color = (1, 1, 1), roughness = 0, ior = 1.5, normal = nothing,
           thin_film_thickness = 0, thin_film_ior = 1.33, distribution = :multi_ggx)
 
-Blender's Glass BSDF: GGX reflection and refraction with the dielectric Fresnel, both tinted by
-`color`, with the multiscatter energy compensation of Cycles' default distribution. `roughness` is
-Blender's, the square root of the microfacet alpha. `distribution` is the constant
-`:multi_ggx` (Blender's default), `:ggx` or `:beckmann`; the latter two use single scattering.
+Convenience constructor for `Principled(transmission_weight = 1, ...)`. The returned material
+is a `Principled`, with the same fields, graph and shading path as an explicitly configured
+Principled glass. `color` remains an input alias for `base_color`; subsequent edits use
+`base_color`. This adopts Principled's reflection/transmission tinting, rather than a separate
+Blender Glass BSDF. `distribution` accepts `:multi_ggx`, `:ggx` and `:beckmann`.
 """
-@description struct Glass <: Material
-    color = (1, 1, 1)
-    roughness = 0
-    ior = 1.5
-    normal = nothing
-    thin_film_thickness = 0
-    thin_film_ior = 1.33
-    distribution = :multi_ggx
+function Glass(; color = (1, 1, 1), base_color = color, roughness = 0, ior = 1.5,
+                 normal = nothing, thin_film_thickness = 0, thin_film_ior = 1.33,
+                 distribution = :multi_ggx, thin_wall = false,
+                 transmission_dispersion_scale = 0, transmission_dispersion_abbe_number = 20)
+    return Principled(; base_color, roughness, ior, normal, transmission_weight = 1,
+                      thin_film_thickness, thin_film_ior, distribution, thin_wall,
+                      transmission_dispersion_scale, transmission_dispersion_abbe_number)
 end
 
 """
@@ -233,7 +234,7 @@ Whether a material can be a node of a shader graph: the Cycles and pbrt BSDFs,
 `Emission`, and mixes and sums of them.
 """
 nests(::Material) = false
-nests(::Union{Principled, Glass, Refraction, Glossy, Metallic, Translucent, Sheen, Toon, SubsurfaceScattering, Transparent, Emission}) = true
+nests(::Union{Principled, Refraction, Glossy, Metallic, Translucent, Sheen, Toon, SubsurfaceScattering, Transparent, Emission}) = true
 nests(::Diffuse) = true
 nests(::NullMaterial) = true
 nests(m::Union{Mix, Add}) = nests(m.a) && nests(m.b)
@@ -274,10 +275,11 @@ closure(kind::UInt8, inputs...; distribution::UInt8 = 0x00) =
 function distribution_mode(m::Principled)
     m.distribution === :multi_ggx && return 0x00
     m.distribution === :ggx && return 0x01
-    throw(ArgumentError("a Principled's `distribution` must be :multi_ggx or :ggx, got $(repr(m.distribution))"))
+    m.distribution === :beckmann && return 0x02
+    throw(ArgumentError("a Principled's `distribution` must be :multi_ggx, :ggx or :beckmann, got $(repr(m.distribution))"))
 end
 
-function distribution_mode(m::Union{Glass, Glossy, Metallic})
+function distribution_mode(m::Union{Glossy, Metallic})
     m.distribution === :multi_ggx && return 0x00
     m.distribution === :ggx && return 0x01
     m.distribution === :beckmann && return 0x02
@@ -300,12 +302,6 @@ function shader_node(m::Diffuse)
     return closure(ClosureKind.DIFFUSE, color, node_input(m.roughness), normal, coverage)
 end
 shader_node(::NullMaterial) = shader_node(Transparent(color = (1, 1, 1)))
-function shader_node(m::Glass)
-    distribution = distribution_mode(m)
-    inputs = (node_input(m.color), node_input(m.roughness), node_input(m.ior), normal_input(m.normal))
-    _constant(m.thin_film_thickness, 0) && return closure(ClosureKind.GLASS, inputs...; distribution)
-    return closure(ClosureKind.GLASS_FILM, inputs..., node_input(m.thin_film_thickness), node_input(m.thin_film_ior); distribution)
-end
 function shader_node(m::Refraction)
     m.distribution in (:beckmann, :ggx) ||
         throw(ArgumentError("a Refraction's `distribution` must be :beckmann or :ggx, got $(repr(m.distribution))"))
@@ -396,7 +392,7 @@ their mixes and sums. Cycles and pbrt models use the same graph. Standalone
 `Emission` describes an area light. `push!` and `update_material!` call this.
 """
 surface_material(m::Material) = m
-surface_material(m::Union{Principled, Glass, Refraction, Glossy, Metallic, Translucent, Sheen, Toon, SubsurfaceScattering, Transparent, Add}) =
+surface_material(m::Union{Principled, Refraction, Glossy, Metallic, Translucent, Sheen, Toon, SubsurfaceScattering, Transparent, Add}) =
     ShaderMaterial(shader_node(m))
 surface_material(m::Diffuse) = ShaderMaterial(shader_node(m))
 surface_material(m::Mix) = ShaderMaterial(shader_node(m))

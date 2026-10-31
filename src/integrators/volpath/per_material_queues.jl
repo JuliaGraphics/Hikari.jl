@@ -199,7 +199,7 @@ Adapt.adapt_structure(to, s::ShaderInputs) =
 """
     ShaderClosures{M}
 
-The hits of the shaders of BSDF nodes `M`, whatever their programs, as the closure kernel of `M`
+The hits of the shaders of BSDF kernel class `M`, whatever their programs, as the kernel of `M`
 shades them: from their material programs and any gathered inputs.
 """
 struct ShaderClosures{M} end
@@ -207,9 +207,9 @@ struct ShaderClosures{M} end
 """
     ClosureQueue{M}(queues, slot, inputs)
 
-The hits of slot `slot` of `queues`, of a shader of BSDF nodes `M`, for the closure kernel of `M`,
-with any computed inputs their values kernel gathered. Of the material type it names the nodes only, so the
-shaders of one set of nodes share the kernel whatever their programs compute.
+The hits of slot `slot` of `queues`, shaded by BSDF kernel class `M`, with any computed inputs
+their values kernel gathered. `M` is a node tuple or a bounded runtime storage class. It excludes
+the shader's value program and, for runtime storage, its exact node combination and ordering.
 """
 struct ClosureQueue{M, V <: AbstractVector{Int32}, S <: ShaderInputs}
     items::V

@@ -49,13 +49,13 @@ Blender's Principled BSDF with all its inputs: `base_color`, `metallic`, `roughn
 ```julia
 Hikari.Principled(base_color = (0.8, 0.1, 0.1), roughness = 0.3, coat_weight = 1)     # car paint
 Hikari.Principled(base_color = (0.9, 0.6, 0.2), metallic = 1, roughness = 0.2)        # gold
-Hikari.Principled(transmission_weight = 1, roughness = 0)                             # glass
+Hikari.Glass()                                                                      # Principled glass preset
 ```
 
 The `distribution` setting is `:multi_ggx` by default, as in Blender. Use `:ggx` for
 single scattering in the metal, solid transmission and specular layers. The coat and
-thin-wall glass retain their energy compensation in both modes. This setting is
-constant for a shader type; colour and roughness edits reuse its compiled kernel.
+thin-wall glass retain their energy compensation in both modes. This setting is constant in a material description. GGX single and multiple
+scattering share a shading class; colour and roughness edits update data.
 
 ### Diffuse
 
@@ -86,12 +86,12 @@ Hikari.Metallic(fresnel_type = :physical_conductor, ior = (0.2, 0.2, 0.2),
 
 `Glossy`, `Metallic` and `Glass` use `distribution = :multi_ggx` by default, as Blender does.
 Set `distribution = :ggx` or `:beckmann` for single scattering, which loses energy on rough
-surfaces. Distribution choices are fixed in the shader's type; changing one selects a different
-shading kernel, while edits to roughness and colour reuse that kernel.
+surfaces. Distribution choices are fixed in the description. GGX single and multiple
+scattering share a shading class; Beckmann adds a capability to that class.
+Edits to roughness and colour reuse its compiled shading kernel.
 
 `Metallic` and `Glass` also take `thin_film_thickness` in nanometres and
-`thin_film_ior`, as their Blender nodes do. A zero thickness uses the original
-shader layout. Hikari evaluates interference at the path's wavelengths; Cycles
+`thin_film_ior`, as their Blender nodes do. Film parameters use the same shared scattering record. Hikari evaluates interference at the path's wavelengths; Cycles
 integrates it separately for each RGB channel. Strongly coloured film-coated
 metals can consequently differ substantially (about 15% in red in the coloured
 metal regression scene), even when the interface equations agree.
@@ -104,7 +104,16 @@ Hikari.Glossy(distribution = :beckmann, roughness = 0.4, anisotropy = 0.5)
 
 ### Glass
 
-Reflection and refraction with the dielectric Fresnel, tinted by `color`.
+`Glass(...)` returns a `Principled` with `transmission_weight = 1`, white `base_color`,
+`roughness = 0` and `ior = 1.5`. It has exactly the same description, graph and shader path
+as that Principled configuration. Use `base_color` for colour and nested updates; the old
+`color` constructor keyword remains an input alias. Reflection and transmission follow
+Principled's tinting, including the square root of the base colour for solid transmission.
+There is no separate Glass BSDF implementation.
+
+The preset accepts thin film, thin walls and dispersion. In addition to Blender's Principled
+`:multi_ggx` and `:ggx` distributions, Hikari supports `:beckmann` through the same Principled
+path. Coat and thin-wall transmission retain their existing GGX behavior.
 
 ```julia
 Hikari.Glass(ior = 1.5)                    # clear glass
@@ -208,9 +217,30 @@ fields, so nested updates such as `plot.material.roughness = 0.2` work directly.
 
 `Hikari.update_material!(scene, handle, material)` with a material of the same kind (other values,
 images or node parameters) writes it where the old one is: the next frame renders it without
-compiling anything. Another kind of material, or a shader with other node types or other BSDFs,
-is a new material type: its shading kernel is compiled once, and the kernels of every other
-material stay as they are.
+compiling anything. Changing node families or BSDFs can require a new values program or BSDF
+kernel. Other materials retain their compiled kernels.
+
+Cycles nodes, including individual materials, use one shared local BSDF storage and
+program evaluator. `Glass(...)` returns a Principled transmission preset and uses
+that same implementation. Kernel classes depend on scattering capabilities,
+emission and a bounded storage capacity: one slot for a single lobe, otherwise
+a power of two starting at four slots, rather than
+exact BSDF node order. Larger graphs select a larger capacity instead of switching
+to another implementation. Setup and spectral conversion happen once per hit;
+there is no additional global BSDF buffer.
+
+Reordering or combining nodes within an existing class reuses its BSDF pipeline.
+Other renderer passes can still compile when value-node families change. The
+pbrt importer uses the same material graph infrastructure, with its own component
+and layered scattering estimators; those schemas still specialize their kernels.
+
+The shared Cycles path currently inlines scattering evaluation to avoid a
+reproduced GPU fault at the outlined function boundary. A measured layered
+Principled case on RTX has approximately 4% frame overhead against the typed
+reference. Final paired simple-model measurements are about 1–2%, Glass about
+1%, and Metallic about 6% (6–9% across two runs). These are measured fixtures,
+not bounds for arbitrary scenes. Further optimization and the function-boundary investigation are
+tracked in Mantle's `docs/material-compilation-reuse-plan.md`.
 
 ### Materials Showcase
 
