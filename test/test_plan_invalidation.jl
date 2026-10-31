@@ -18,7 +18,7 @@ using GeometryBasics: normal_mesh, Tesselation, Sphere
 function _inv_scene(backend)
     scene = Hikari.Scene(; backend=backend)
     sphere = normal_mesh(Tesselation(Sphere(GeometryBasics.Point3f(0, 0, 0), 0.5f0), 8))
-    push!(scene, sphere, Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.7f0, 0.4f0, 0.4f0)))
+    push!(scene, sphere, Hikari.Diffuse(color = Hikari.RGBSpectrum(0.7f0, 0.4f0, 0.4f0)))
     push!(scene, Hikari.PointLight(GeometryBasics.Point3f(0, -2, 3),
                                    Hikari.RGBSpectrum(30f0)))
     Hikari.sync!(scene)
@@ -54,7 +54,7 @@ _fbmean(film) = mean(Float32(c.r) for c in Array(film.framebuffer))
 
     # A scene edit drops the plans AT THE VERB — before any render asks.
     sphere = normal_mesh(Tesselation(Sphere(GeometryBasics.Point3f(0, 0, 2), 0.3f0), 8))
-    push!(scene, sphere, Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.3f0, 0.7f0, 0.3f0)))
+    push!(scene, sphere, Hikari.Diffuse(color = Hikari.RGBSpectrum(0.3f0, 0.7f0, 0.3f0)))
     @test vp.state.plans === nothing
 
     # And the next render builds new ones that see the edit. "See" is the
@@ -88,7 +88,7 @@ end
     backend = Mantle.defaultbackend()
     scene = Hikari.Scene(; backend=backend)
     sphere = normal_mesh(Tesselation(Sphere(GeometryBasics.Point3f(0, 0, 0), 0.5f0), 8))
-    handle = push!(scene, sphere, Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.7f0, 0.4f0, 0.4f0)))
+    handle = push!(scene, sphere, Hikari.Diffuse(color = Hikari.RGBSpectrum(0.7f0, 0.4f0, 0.4f0)))
     push!(scene, Hikari.PointLight(GeometryBasics.Point3f(0, -2, 3), Hikari.RGBSpectrum(30f0)))
     Hikari.sync!(scene)
     res = 16
@@ -103,7 +103,7 @@ end
 
     # A new value in the same slot is a write into the buffers the plans were
     # packed with: the same plans answer…
-    Hikari.update_material!(scene, handle, Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0f0)))
+    Hikari.update_material!(scene, handle, Hikari.Diffuse(color = Hikari.RGBSpectrum(0f0)))
     @test vp.state.plans === plans
     Hikari.render!(vp, scene, film, cam)
     @test vp.state.plans === plans

@@ -190,58 +190,6 @@ end
 const DEFAULT_WORKGROUPSIZE = 256
 
 # ============================================================================
-# MultiTypeWorkQueue — one WorkQueue per concrete item type
-# ============================================================================
-#
-# Mirrors pbrt-v4's per-material-type queue pattern (MaterialEvalQueue<T> in
-# wavefront/workitems.h). One `WorkQueue{ItemFor[T]}` per concrete type T in
-# the scene. The trace kernel routes each work item into the queue for its
-# concrete type via `with_index` dispatch; the shading stage drains all of them
-# — one dispatch per type, all in one graph pass, since they are independent.
-#
-# Each per-type kernel is fully monomorphised by Julia (no `with_index`
-# switch inside the kernel), so the resulting SPIR-V is small and the warps
-# never diverge on material-type branches.
-
-"""
-    MultiTypeWorkQueue{Qs <: Tuple}
-
-Heterogeneous tuple of `WorkQueue`s, one per concrete item type. Iteration
-order matches the type-tuple order, and the number of queues is known at
-compile time, so a stage that dispatches over all of them unrolls with full
-type stability per arm.
-
-# Fields
-- `queues::Qs`: NTuple of WorkQueue, one per concrete item type
-"""
-struct MultiTypeWorkQueue{Qs <: Tuple}
-    queues::Qs
-end
-
-"""
-    MultiTypeWorkQueue(item_types::Tuple, capacity, backend; soa=false)
-
-Build a MultiTypeWorkQueue with one `WorkQueue{T}(backend, capacity)` per `T`
-in `item_types`.
-
-```julia
-mtwq = MultiTypeWorkQueue((HitWorkA, HitWorkB, HitWorkC), 1024, backend)
-```
-"""
-function MultiTypeWorkQueue(item_types::Tuple, capacity::Integer, mem::DeviceMemory; soa::Bool=false)
-    qs = map(T -> WorkQueue{T}(mem, capacity; soa=soa), item_types)
-    return MultiTypeWorkQueue(qs)
-end
-
-Base.empty!(mtwq::MultiTypeWorkQueue) = (foreach(empty!, mtwq.queues); mtwq)
-
-# Adapt walks into the tuple so each per-queue Adapt.adapt_structure runs
-# and the kernel sees device-side arrays.
-function Adapt.adapt_structure(backend, mtwq::MultiTypeWorkQueue)
-    MultiTypeWorkQueue(map(q -> Adapt.adapt(backend, q), mtwq.queues))
-end
-
-# ============================================================================
 # Batched counter reset — one dispatch for all queues
 # ============================================================================
 #
@@ -251,9 +199,13 @@ end
 # round (measured on Crown: 27 single-thread fills per round). One kernel
 # writing every counter replaces all of them.
 
+# Every element of each counter array: a queue's one, and the material queues' one per slot.
 @inline _zero_counters!(::Tuple{}) = nothing
 @inline function _zero_counters!(counters::Tuple)
-    @inbounds counters[1][1] = Int32(0)
+    c = counters[1]
+    for j in Int32(1):Int32(length(c))
+        @inbounds c[j] = Int32(0)
+    end
     _zero_counters!(Base.tail(counters))
     return nothing
 end
@@ -265,12 +217,10 @@ end
     end
 end
 
-# Flatten WorkQueues / MultiTypeWorkQueues into a tuple of size-counter arrays.
+# Flatten queues into a tuple of size-counter arrays.
 _collect_size_counters(acc::Tuple) = acc
 _collect_size_counters(acc::Tuple, q::WorkQueue, rest...) =
     _collect_size_counters((acc..., q.size), rest...)
-_collect_size_counters(acc::Tuple, m::MultiTypeWorkQueue, rest...) =
-    _collect_size_counters((acc..., map(q -> q.size, m.queues)...), rest...)
 
 # ============================================================================
 # Convenience Aliases

@@ -9,7 +9,7 @@ using LinearAlgebra: I
 using Statistics: mean
 
 # HW vs SW rendering parity: a simple scene rendered with the hardware
-# ray-tracing path (VK_KHR_ray_tracing_pipeline via Lava's RT pipeline) and
+# acceleration structure (a ray query on Vulkan, the intersector on Metal) and
 # with the software BVH path (Raycore BVH + compute shaders) must produce
 # the same pixels within a small tolerance.  Both paths should hit the
 # same material eval, the same light sampling, the same integrator loop —
@@ -29,14 +29,14 @@ function _build_scene(; backend, hw_accel::Bool)
     # Floor
     floor = normal_mesh(Rect3f(GeometryBasics.Vec3f(-3, -3, -0.05),
                                  GeometryBasics.Vec3f(6, 6, 0.05)))
-    push!(scene, floor, Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.6f0, 0.6f0, 0.6f0)))
+    push!(scene, floor, Hikari.Diffuse(color = Hikari.RGBSpectrum(0.6f0, 0.6f0, 0.6f0)))
     # Three colored spheres
     sphere = normal_mesh(Tesselation(Sphere(GeometryBasics.Point3f(0, 0, 0), 0.35f0), 16))
     for (x, color) in [(-0.8f0, (1f0, 0.2f0, 0.2f0)),
                         ( 0.0f0, (0.2f0, 1f0, 0.2f0)),
                         ( 0.8f0, (0.2f0, 0.2f0, 1f0))]
         tf = Raycore.Mat4f([1 0 0 x; 0 1 0 0f0; 0 0 1 0.35f0; 0 0 0 1])
-        push!(scene, sphere, Hikari.Diffuse(Kd=color); transform=tf)
+        push!(scene, sphere, Hikari.Diffuse(color = color); transform=tf)
     end
     push!(scene, Hikari.PointLight(GeometryBasics.Point3f(0, -2, 3),
                                     Hikari.RGBSpectrum(30f0)))
@@ -92,10 +92,10 @@ end
 @testset "HW RT vs SW BVH rendering parity" begin
 
 backend = Mantle.defaultbackend()
-ctx = Mantle.vk_context()
+dev = Hikari.mantle_device(backend)
 
-if ctx.rt_pipeline_properties === nothing
-    @info "HW RT unavailable on this device — skipping HW vs SW parity test"
+if !Mantle.supports_hwtlas(dev)
+    @info "no hardware acceleration structure on this device, so no parity to check"
     @test_skip false
 else
     # Small resolution + decent samples keeps the render fast while giving
@@ -112,7 +112,7 @@ else
                      backend=backend, hw=false, samples=samples, depth=depth)
     @test size(img_sw) == (res, res)
 
-    # HW path — fresh scene with its own VulkanTLAS so nothing is reused between
+    # HW path — fresh scene with its own TLAS so nothing is reused between
     # the two renders (test_tlas_instance_override.jl documents that a HW
     # render after another render in the same session can DEVICE_LOST; a
     # fresh scene gives HW RT a clean state).
@@ -123,7 +123,7 @@ else
     @test size(img_hw) == (res, res)
 
     # Neither path should have tripped DEVICE_LOST.
-    @test !Mantle.device_lost(ctx)
+    @test !Mantle.retired(dev)
 
     # Both renders must produce non-degenerate output (not all black, not
     # all saturated).  This catches gross regressions: a pipeline that
@@ -156,7 +156,7 @@ else
     # The sphere-only divergence (34%) is the cleanest signal for future
     # investigation: same scene without any potential shadow-ray confound,
     # same material (pure white diffuse), same point-light position.  Flat
-    # geometry is fine — that rules out HW RT pipeline setup and material
+    # geometry is fine — that rules out hardware structure setup and material
     # evaluation as root causes.
     pix = _pixel_diff(img_sw, img_hw)
     msw = _channel_means(img_sw)

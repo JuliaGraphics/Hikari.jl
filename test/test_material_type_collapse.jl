@@ -13,7 +13,7 @@ using Colors: RGB
 # to cost a whole extra shader each. Crown had 12 concrete types where it uses
 # 5 material CLASSES; the other 7 were constant-vs-texture combinatorics and
 # wrapper types, and the two MixMaterial types were the most expensive of them
-# because a mix chit inlines the whole shading system.
+# because a mix's shading kernel inlines the whole shading system.
 #
 # These tests pin the three mechanisms that keep it collapsed:
 #
@@ -33,16 +33,21 @@ fresh_scene() = Hikari.Scene(; hw_accel = false)   # CPU backend by default
 img_tex(v) = Hikari.Texture(fill(Hikari.RGBSpectrum(v, v, v), 4, 4))
 float_tex(v) = Hikari.Texture(fill(Float32(v), 4, 4))
 
+# The store's textures as the host holds them. `get_static` has the kernel-side views (on the CPU
+# backend POCL's device arrays), which only a kernel can index.
+host_static(store) =
+    Raycore.StaticMultiTypeSet((), Tuple(T[a for a in store.texture_gpu_arrays if typeof(a) === T] for T in store.texture_order))
+
 @testset "Material type collapse" begin
 
     @testset "constant vs texture is one device type" begin
         scene = fresh_scene()
         # Four spellings of the same material class: raw tuple, RGBSpectrum,
         # a 0-d ConstTexture, and a real 4x4 image map.
-        push!(scene, Hikari.Diffuse(Kd = (0.5, 0.4, 0.3)))
-        push!(scene, Hikari.Diffuse(Kd = Hikari.RGBSpectrum(0.1f0, 0.2f0, 0.3f0)))
-        push!(scene, Hikari.Diffuse(Kd = Hikari.ConstTexture(Hikari.RGBSpectrum(0.7f0))))
-        push!(scene, Hikari.Diffuse(Kd = img_tex(0.9f0), σ = float_tex(0.2f0)))
+        push!(scene, Hikari.Diffuse(color = (0.5, 0.4, 0.3)))
+        push!(scene, Hikari.Diffuse(color = Hikari.RGBSpectrum(0.1f0, 0.2f0, 0.3f0)))
+        push!(scene, Hikari.Diffuse(color = Hikari.ConstTexture(Hikari.RGBSpectrum(0.7f0))))
+        push!(scene, Hikari.Diffuse(color = img_tex(0.9f0), roughness = float_tex(0.2f0)))
         ts = device_types(scene)
         @test length(ts) == 1
         @test ts[1] <: Hikari.Diffuse
@@ -70,7 +75,7 @@ float_tex(v) = Hikari.Texture(fill(Float32(v), 4, 4))
         scene = fresh_scene()
         plain = Hikari.Gold(roughness = 0.05f0)
         bumped = Hikari.set_displacement(plain, Hikari.TexHandle(0.25f0))
-        @test Hikari.is_none(Hikari.displacement(plain))
+        @test isnothing(Hikari.displacement(plain))
         @test !Hikari.is_none(Hikari.displacement(bumped))
         push!(scene, plain)
         push!(scene, bumped)
@@ -90,15 +95,11 @@ float_tex(v) = Hikari.Texture(fill(Float32(v), 4, 4))
         scene = fresh_scene()
         # Two mixes over different sub-material PAIRS, and different amount
         # spellings. Before, each pair was its own MixMaterial{M1,M2} — and a
-        # mix chit dispatches over every material type in the scene, so each
+        # mix's shading kernel dispatches over every material type in the scene, so each
         # extra one is a full copy of the shading system.
-        push!(scene, Hikari.MixMaterial(
-            materials = (Hikari.Diffuse(Kd = (0.2, 0.2, 0.2)), Hikari.Gold()),
-            amount = 0.25f0))
-        push!(scene, Hikari.MixMaterial(
-            materials = (Hikari.CoatedDiffuse(reflectance = (0.4, 0.4, 0.4)),
-                         Hikari.Silver()),
-            amount = float_tex(0.5f0)))
+        push!(scene, Hikari.Mix(Hikari.Diffuse(color = (0.2, 0.2, 0.2)), Hikari.Gold(); factor = 0.25f0))
+        push!(scene, Hikari.Mix(Hikari.CoatedDiffuse(reflectance = (0.4, 0.4, 0.4)), Hikari.Silver();
+                                factor = float_tex(0.5f0)))
         ts = device_types(scene)
         mixes = filter(t -> t <: Hikari.MixMaterial, ts)
         @test length(mixes) == 1
@@ -111,9 +112,9 @@ float_tex(v) = Hikari.Texture(fill(Float32(v), 4, 4))
 
     @testset "a mix references its sub-materials, and they resolve" begin
         scene = fresh_scene()
-        d = Hikari.Diffuse(Kd = (0.2, 0.3, 0.4))
+        d = Hikari.Diffuse(color = (0.2, 0.3, 0.4))
         g = Hikari.Gold()
-        push!(scene, Hikari.MixMaterial(materials = (d, g), amount = 0f0))
+        push!(scene, Hikari.Mix(d, g; factor = 0f0))
         stored = only(filter(m -> m isa Hikari.MixMaterial,
                              [v[1] for v in scene.materials.static.data if length(v) >= 1]))
         @test Raycore.is_valid(stored.material1_idx)
@@ -169,7 +170,7 @@ end
         # Distinct array types land in distinct slots.
         @test h_img_f.slot != h_img_s.slot
 
-        static = Raycore.get_static(mats)
+        static = host_static(mats)
         tfc = Hikari.TextureFilterContext(Point2f(0.25f0, 0.25f0))
         @test Hikari.eval_handle(static, h_img_f, tfc) ≈ 0.5f0
         @test Hikari.eval_handle_spectrum(static, h_img_s, tfc).c[1] ≈ 0.75f0
@@ -188,7 +189,7 @@ end
         scene = fresh_scene()
         cb = Hikari.CheckerboardTexture(4f0, 4f0, 0f0, 0f0, 1f0, 0f0)
         h = Hikari.device_param(scene.materials, cb)
-        static = Raycore.get_static(scene.materials)
+        static = host_static(scene.materials)
         for uv in (Point2f(0.05f0, 0.05f0), Point2f(0.3f0, 0.1f0), Point2f(0.7f0, 0.6f0))
             tfc = Hikari.TextureFilterContext(uv)
             @test Hikari.eval_handle(static, h, tfc) ≈ Float32(Hikari.eval_tex(static, cb, tfc))

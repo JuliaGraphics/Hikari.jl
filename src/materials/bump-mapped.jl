@@ -10,8 +10,8 @@
 # NOT a `BumpMapped{M, T}` WRAPPER material: such a wrapper doubles the
 # concrete material type count of any scene that bump-maps some of its
 # surfaces — `Conductor{…}` and `BumpMapped{Conductor{…}, TextureRef{…}}` are
-# different types, so the per-material closest-hit path compiled a separate
-# shader for each. pbrt-v4 does not wrap: `displacement` is a plain field on
+# different types, so the per-material shading compiled a separate kernel
+# for each. pbrt-v4 does not wrap: `displacement` is a plain field on
 # every `Material`, and `Material::GetBxDF` is oblivious to it. Hikari now does
 # the same — `displacement(mat)` is a `TexHandle` field, NONE when absent, and
 # the perturbation is one predictable branch per hit.
@@ -57,15 +57,8 @@ builder constructs the material first, then attaches the height field). Returns
 likewise has no displacement on `MixMaterial` (materials.h: the mix resolves to
 a sub-material before `GetDisplacement` is consulted).
 """
-@generated function set_displacement(mat::M, h) where {M <: Material}
-    fs = fieldnames(M)
-    :displacement in fs || return :(mat)
-    args = [f === :displacement ? :h : :(getfield(mat, $(QuoteNode(f)))) for f in fs]
-    # Through the UnionAll: rebuilding through the CONCRETE type would convert
-    # `h` to the existing field's type, and for an unstored texture that
-    # conversion is exactly what cannot exist yet.
-    return :($(Base.typename(M).wrapper)($(args...)))
-end
+set_displacement(mat::M, h) where {M <: Material} =
+    :displacement in fieldnames(M) ? with_field(mat, :displacement, h) : mat
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Height-field gradient → perturbed shading frame

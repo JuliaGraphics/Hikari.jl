@@ -17,7 +17,7 @@
 
 using Test
 using Hikari
-using Lava, Mantle
+using Mantle
 using Raycore
 using Adapt
 using GeometryBasics
@@ -40,9 +40,9 @@ end
 function _make_sphere_scene(; backend=_BACKEND, hw_accel::Bool=false)
     scene = Hikari.Scene(; backend=backend, hw_accel=hw_accel)
     floor = normal_mesh(Rect3f(Vec3f(-3, -3, -0.05), Vec3f(6, 6, 0.05)))
-    push!(scene, floor, Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.6f0, 0.6f0, 0.6f0)))
+    push!(scene, floor, Hikari.Diffuse(color = Hikari.RGBSpectrum(0.6f0, 0.6f0, 0.6f0)))
     sphere = normal_mesh(Tesselation(Sphere(Point3f(0, 0, 0.35), 0.35f0), 16))
-    handle = push!(scene, sphere, Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.9f0, 0.1f0, 0.1f0)))
+    handle = push!(scene, sphere, Hikari.Diffuse(color = Hikari.RGBSpectrum(0.9f0, 0.1f0, 0.1f0)))
     push!(scene, Hikari.PointLight(Point3f(0, -2, 3), Hikari.RGBSpectrum(30f0)))
     Hikari.sync!(scene)
     return scene, handle
@@ -59,6 +59,18 @@ function _render(scene; backend=_BACKEND, hw::Bool=false, res::Int=32,
     img = Array(gpu_film.framebuffer)
     close(vp)
     return img
+end
+
+# What the device's pool holds once collected garbage is returned to it: the bytes
+# of its blocks and its live regions. Asked of the pool, as Mantle's own leak tests
+# do, so it reads the same on every backend.
+function pool_state(dev)
+    p = Mantle.pool(dev)
+    GC.gc(true); GC.gc(true)
+    Mantle.waitidle(dev)
+    Mantle.reclaim!(p, dev; wait = true)
+    blocks = collect(Iterators.flatten(values(p.blocks)))
+    return (bytes = Mantle.reserved(p), regions = sum(b -> length(b.live), blocks; init = 0))
 end
 
 function _make_grid_volume_scene(; backend=_BACKEND, σ_s::Float32=0.3f0)
@@ -85,7 +97,7 @@ end
 
     # Swap red sphere for blue sphere via update_material!.
     Hikari.update_material!(scene, handle.interface,
-                             Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.1f0, 0.1f0, 0.9f0)))
+                             Hikari.Diffuse(color = Hikari.RGBSpectrum(0.1f0, 0.1f0, 0.9f0)))
     img_blue = _render(scene; samples=16)
     means_blue = _channel_means(img_blue)
 
@@ -120,7 +132,7 @@ end
     # texture-with-default), so this primarily exercises the slot-update
     # path; we still expect zero growth in `materials.texture_gpu_arrays`.
     for σ in (0.2f0, 0.4f0, 0.6f0, 0.8f0)
-        new_mat = Hikari.Diffuse(Kd=Hikari.RGBSpectrum(σ, σ, σ))
+        new_mat = Hikari.Diffuse(color = Hikari.RGBSpectrum(σ, σ, σ))
         Hikari.update_material!(scene, handle.interface, new_mat)
     end
 
@@ -132,9 +144,9 @@ end
 
 @testset "J3: RGBGridMedium animation loop is bounded" begin
     scene, handle = _make_grid_volume_scene(; σ_s=0.3f0)
+    dev = Hikari.mantle_device(_BACKEND)
 
-    bytes_before    = Mantle.gpu_live_bytes()
-    bufs_before     = Mantle.live_buffer_count()
+    before          = pool_state(dev)
     media_before    = length(scene.media)
     texarrs_before  = length(scene.media.texture_gpu_arrays)
 
@@ -150,15 +162,15 @@ end
                                  Hikari.MediumInterface(Hikari.NullMaterial();
                                                          inside=new_med))
     end
-    GC.gc(true)
+    after = pool_state(dev)
 
-    @info "J3: post-animation state" media=length(scene.media) texarrs=length(scene.media.texture_gpu_arrays) bytes=Mantle.gpu_live_bytes() bufs=Mantle.live_buffer_count()
+    @info "J3: post-animation state" media=length(scene.media) texarrs=length(scene.media.texture_gpu_arrays) before after
 
     @test length(scene.media)                       == media_before
     @test length(scene.media.texture_gpu_arrays)    == texarrs_before
     # GPU memory may shift slightly due to deferred-free timing; bound the
     # delta tightly so a real leak is visible.
-    @test Mantle.gpu_live_bytes() - bytes_before <= 32 * 1024 * 1024  # +32 MiB ceiling
+    @test after.bytes - before.bytes <= 32 * 1024 * 1024  # +32 MiB ceiling
 end
 
 # ── J4. HW RT picks up material updates the same as SW ─────────────────────
@@ -168,7 +180,7 @@ end
     scene_hw, h_hw = _make_sphere_scene(; hw_accel=true)
 
     # Update both to green.
-    new_mat = Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.1f0, 0.9f0, 0.1f0))
+    new_mat = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.1f0, 0.9f0, 0.1f0))
     Hikari.update_material!(scene_sw, h_sw.interface, new_mat)
     Hikari.update_material!(scene_hw, h_hw.interface, new_mat)
 
@@ -195,10 +207,9 @@ end
 
 @testset "J5: render + update_material! loop is stable" begin
     scene, handle = _make_sphere_scene(; hw_accel=false)
-    ctx = Mantle.vk_context()
+    dev = Hikari.mantle_device(_BACKEND)
 
-    bytes_before = Mantle.gpu_live_bytes()
-    bufs_before  = Mantle.live_buffer_count()
+    before = pool_state(dev)
 
     for k in 1:20
         # Cycle the material colour each iteration.
@@ -206,23 +217,17 @@ end
         g = Float32(0.1 + 0.4 * (k % 3 == 1))
         b = Float32(0.1 + 0.4 * (k % 3 == 2))
         Hikari.update_material!(scene, handle.interface,
-                                 Hikari.Diffuse(Kd=Hikari.RGBSpectrum(r, g, b)))
+                                 Hikari.Diffuse(color = Hikari.RGBSpectrum(r, g, b)))
         img = _render(scene; samples=4, res=16)
-        @test !Mantle.device_lost(ctx)
+        @test !Mantle.retired(dev)
         m = _channel_means(img)
         @test (m.r + m.g + m.b) > 0.001f0   # non-degenerate output
     end
-    GC.gc(true)
+    after = pool_state(dev)
+    @info "J5: after 20 render + update cycles" before after
 
-    # Lavapipe's shader/buffer accounting runs heavier than RADV's — same
-    # "did the loop stop growing" invariant we care about, just plateauing
-    # at a bigger number. Empirically: ≤64 MiB on RADV; ~130 MiB on lavapipe
-    # at 20 iterations and still bounded. Use a per-driver ceiling so the
-    # tighter contract on RADV doesn't quietly slip.
-    is_llvmpipe = occursin("llvmpipe", lowercase(ctx.device_name))
-    bytes_budget = is_llvmpipe ? 256 * 1024 * 1024 : 64 * 1024 * 1024
-    @test Mantle.gpu_live_bytes() - bytes_before <= bytes_budget
-    @test Mantle.live_buffer_count() - bufs_before <= 16              # +16 bufs
+    @test after.bytes - before.bytes <= 64 * 1024 * 1024    # +64 MiB
+    @test after.regions - before.regions <= 16             # +16 regions
 end
 
 # ── J6. Adapted-snapshot freshness contract ────────────────────────────────
@@ -239,18 +244,18 @@ end
     # values, not the layout — the test cares that update_material! flows
     # through to the static snapshot's contents.
     function _read_material_kd(static_mts)
-        # `static_mts.data` is a Tuple of LavaArrays (one per type slot);
+        # `static_mts.data` is a Tuple of device arrays (one per type slot);
         # the first non-empty slot holds the floor's diffuse, the second
         # holds the sphere's diffuse.  We index by slot then element.
         mats_arr = first(static_mts.data)
         @assert length(mats_arr) >= 2
-        return @allowscalar mats_arr[2].Kd  # sphere is the second push!
+        return @allowscalar mats_arr[2].color  # sphere is the second push!
     end
     kd_before = _read_material_kd(adapted_before.materials)
 
     # Update to green.
     Hikari.update_material!(scene, handle.interface,
-                             Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.1f0, 0.9f0, 0.1f0)))
+                             Hikari.Diffuse(color = Hikari.RGBSpectrum(0.1f0, 0.9f0, 0.1f0)))
     Hikari.sync!(scene)
     adapted_after = Adapt.adapt(_BACKEND, scene)
     kd_after = _read_material_kd(adapted_after.materials)

@@ -7,8 +7,6 @@
 # - TrowbridgeReitz distribution (GGX) functions
 # - Local-space trigonometric helpers (cos_theta, sin_theta, etc.)
 # - Coordinate system / frame transforms
-# - Refraction helpers (refract_pbrt, refract_microfacet)
-# - LayeredBxDF interface sampling (dielectric, diffuse)
 # - pbrt-v4 compatible RNG / hash functions (MurmurHash, PCG32)
 # - Phase function sampling (Henyey-Greenstein)
 # - MIS power heuristic
@@ -76,6 +74,10 @@ end
     SpectralBSDFSample(SpectralRadiance(), Vec3f(0, 0, 1), 0f0, UInt8(0), 1f0, false, false)
 
 
+"""A roughness as `(u, v)`: a pair as given, one value for both."""
+roughness_pair(r::Tuple) = r
+roughness_pair(r) = (r, r)
+
 # ============================================================================
 # IOR Evaluation Helpers
 # ============================================================================
@@ -90,6 +92,23 @@ end
 @inline function eval_ior_spectral(table, textures, tex, tfc, lambda)
     rgb = eval_tex(textures, tex, tfc)
     return uplift_rgb_unbounded(table, rgb, lambda)
+end
+
+"""
+A conductor's complex IOR `(eta, k)` at `lambda`: its own, or where it was given a `reflectance`
+instead, pbrt-v4's of that reflectance `r` at each wavelength: `eta = 1`, `k = 2√r / √(1 - r)`,
+whose reflectance at normal incidence is `r`.
+"""
+@propagate_inbounds function conductor_ior(table, textures, eta, k, reflectance::TexHandle, tfc, lambda)
+    is_none(reflectance) || return reflectance_ior(table, eval_handle_spectrum(textures, reflectance, tfc), lambda)
+    return (eval_ior_spectral(table, textures, eta, tfc, lambda), eval_ior_spectral(table, textures, k, tfc, lambda))
+end
+@propagate_inbounds conductor_ior(table, textures, eta, k, reflectance, tfc, lambda) =
+    reflectance_ior(table, eval_tex(textures, reflectance, tfc), lambda)
+
+@propagate_inbounds function reflectance_ior(table, rgb::RGBSpectrum, lambda)
+    r = clamp(uplift_rgb(table, clamp(rgb), lambda), 0f0, 0.9999f0)
+    return (SpectralRadiance(1f0), 2f0 * sqrt(r) / sqrt(clamp_zero(SpectralRadiance(1f0) - r)))
 end
 
 # ============================================================================
@@ -244,13 +263,6 @@ Get cos²(θ) of a direction in local coordinates.
 @inline cos2_theta(w::Vec3f)::Float32 = w[3] * w[3]
 
 """
-    abs_cos_theta(w) -> Float32
-
-Get |cos(θ)| of a direction in local coordinates (matches pbrt-v4's AbsCosTheta).
-"""
-@inline abs_cos_theta(w::Vec3f)::Float32 = abs(w[3])
-
-"""
     sin2_theta(w) -> Float32
 
 Get sin²(θ) of a direction in local coordinates.
@@ -352,87 +364,12 @@ In local space, the normal is (0, 0, 1).
 end
 
 """
-    face_forward(v, n) -> Vec3f
-
-Flip v to be in the same hemisphere as n (matches pbrt-v4's FaceForward).
-"""
-@inline face_forward(v::Vec3f, n::Vec3f)::Vec3f = dot(v, n) < 0f0 ? -v : v
-
-"""
-    same_hemisphere(w1, w2) -> Bool
-
-Check if two directions are in the same hemisphere (both have same sign of z).
-"""
-@inline same_hemisphere(w1::Vec3f, w2::Vec3f)::Bool = w1[3] * w2[3] > 0f0
-
-"""
     reflect(wo, n) -> wi
 
 Compute reflected direction: wi = -wo + 2*dot(wo,n)*n
 """
 @inline function reflect(wo::Vec3f, n::Vec3f)::Vec3f
     return -wo + 2f0 * dot(wo, n) * n
-end
-
-# ============================================================================
-# Refraction Helpers
-# ============================================================================
-
-"""
-    refract_pbrt(wo, eta) -> (valid, wi, etap)
-
-Compute refracted direction using pbrt-v4 convention.
-eta = n_transmitted / n_incident
-Returns (valid, wi, effective_eta).
-"""
-@inline function refract_pbrt(wo::Vec3f, eta::Float32)
-    cos_θi = wo[3]
-    # Flip eta if entering from below (wo.z < 0)
-    etap = cos_θi > 0f0 ? eta : (1f0 / eta)
-
-    sin2_θi = max(0f0, 1f0 - cos_θi^2)
-    sin2_θt = sin2_θi / (etap^2)
-
-    # Total internal reflection check
-    if sin2_θt >= 1f0
-        return (false, Vec3f(0), 1f0)
-    end
-
-    cos_θt = sqrt(1f0 - sin2_θt)
-    # Flip cos_θt sign to match wo hemisphere convention
-    cos_θt_signed = cos_θi > 0f0 ? -cos_θt : cos_θt
-
-    wi = Vec3f(-wo[1] / etap, -wo[2] / etap, cos_θt_signed)
-    wi = normalize(wi)
-
-    return (true, wi, etap)
-end
-
-"""
-    refract_microfacet(wo, wm, eta) -> (valid, wi, etap)
-
-Compute refracted direction through a microfacet with normal wm.
-"""
-@inline function refract_microfacet(wo::Vec3f, wm::Vec3f, eta::Float32)
-    cos_θi = dot(wo, wm)
-    etap = cos_θi > 0f0 ? eta : (1f0 / eta)
-
-    sin2_θi = max(0f0, 1f0 - cos_θi^2)
-    sin2_θt = sin2_θi / (etap^2)
-
-    if sin2_θt >= 1f0
-        return (false, Vec3f(0), 1f0)
-    end
-
-    cos_θt = sqrt(1f0 - sin2_θt)
-    # Sign convention: transmitted ray goes to opposite side of microfacet
-    cos_θt_signed = cos_θi > 0f0 ? -cos_θt : cos_θt
-
-    # Refracted direction formula: wi = -wo/etap + (cos_θi/etap + cos_θt) * wm
-    wi = -wo / etap + (cos_θi / etap + cos_θt_signed) * wm
-    wi = normalize(wi)
-
-    return (true, wi, etap)
 end
 
 # ============================================================================
@@ -516,33 +453,6 @@ Compute G1(w) Smith masking function (matches pbrt-v4's G1).
     1f0 / (1f0 + trowbridge_reitz_lambda(w, alpha_x, alpha_y))
 
 """
-    trowbridge_reitz_g(wo, wi, alpha_x, alpha_y) -> Float32
-
-Compute G(wo, wi) Smith masking-shadowing function (matches pbrt-v4's G).
-"""
-@inline trowbridge_reitz_g(wo::Vec3f, wi::Vec3f, alpha_x::Float32, alpha_y::Float32)::Float32 =
-    1f0 / (1f0 + trowbridge_reitz_lambda(wo, alpha_x, alpha_y) + trowbridge_reitz_lambda(wi, alpha_x, alpha_y))
-
-"""
-    trowbridge_reitz_d_pdf(w, wm, alpha_x, alpha_y) -> Float32
-
-Evaluate the visible normal distribution D(w, wm) for PDF computation.
-Matches pbrt-v4's D(w, wm) = G1(w) / AbsCosTheta(w) * D(wm) * AbsDot(w, wm).
-"""
-@propagate_inbounds function trowbridge_reitz_d_pdf(w::Vec3f, wm::Vec3f, alpha_x::Float32, alpha_y::Float32)::Float32
-    return trowbridge_reitz_g1(w, alpha_x, alpha_y) / abs_cos_theta(w) *
-           trowbridge_reitz_d(wm, alpha_x, alpha_y) * abs(dot(w, wm))
-end
-
-"""
-    trowbridge_reitz_pdf(w, wm, alpha_x, alpha_y) -> Float32
-
-Compute PDF for visible normal sampling (matches pbrt-v4's PDF).
-"""
-@inline trowbridge_reitz_pdf(w::Vec3f, wm::Vec3f, alpha_x::Float32, alpha_y::Float32)::Float32 =
-    trowbridge_reitz_d_pdf(w, wm, alpha_x, alpha_y)
-
-"""
     trowbridge_reitz_sample_wm(w, u, alpha_x, alpha_y) -> Vec3f
 
 Sample visible normal from TrowbridgeReitz distribution (matches pbrt-v4's Sample_wm).
@@ -573,37 +483,6 @@ Sample visible normal from TrowbridgeReitz distribution (matches pbrt-v4's Sampl
     nh = p_x * t1 + p_y * t2 + pz * wh
 
     return normalize(Vec3f(alpha_x * nh[1], alpha_y * nh[2], max(1f-6, nh[3])))
-end
-
-"""
-    sample_ggx_vndf(wo, alpha_x, alpha_y, u) -> Vec3f
-
-Sample visible normal from GGX distribution.
-"""
-@propagate_inbounds function sample_ggx_vndf(wo::Vec3f, alpha_x::Float32, alpha_y::Float32, u::Point2f)::Vec3f
-    # Transform to hemisphere configuration
-    wh = normalize(Vec3f(alpha_x * wo[1], alpha_y * wo[2], wo[3]))
-
-    if wh[3] < 0f0
-        wh = -wh
-    end
-
-    # Sample projected area
-    t1 = wh[3] < 0.9999f0 ? normalize(cross(Vec3f(0, 0, 1), wh)) : Vec3f(1, 0, 0)
-    t2 = cross(wh, t1)
-
-    r = sqrt(u[1])
-    phi = 2f0 * Float32(π) * u[2]
-    p1 = r * cos(phi)
-    p2 = r * sin(phi)
-    s = 0.5f0 * (1f0 + wh[3])
-    p2 = (1f0 - s) * sqrt(max(0f0, 1f0 - p1 * p1)) + s * p2
-
-    # Compute normal
-    n = p1 * t1 + p2 * t2 + sqrt(max(0f0, 1f0 - p1 * p1 - p2 * p2)) * wh
-
-    # Transform back
-    return normalize(Vec3f(alpha_x * n[1], alpha_y * n[2], max(1f-6, n[3])))
 end
 
 # ============================================================================
@@ -882,17 +761,6 @@ Returns -log(1-u)/a, matching pbrt-v4's SampleExponential.
 end
 
 """
-    Tr(thickness, w) -> Float32
-
-Transmittance through a layer of given thickness along direction w.
-Used in LayeredBxDF random walk.
-"""
-@propagate_inbounds function layer_transmittance(thickness::Float32, w::Vec3f)::Float32
-    abs(thickness) <= eps(Float32) && return 1f0
-    exp(-abs(thickness / w[3]))
-end
-
-"""
     sample_hg_phase_spectral(g, wo, u) -> (wi, phase_pdf)
 
 Sample direction from Henyey-Greenstein phase function.
@@ -951,527 +819,6 @@ Balance heuristic for MIS with power=2.
     return f_sq / (f_sq + g_sq)
 end
 
-# ============================================================================
-# LayeredBxDF Helper Types and Interface Sampling
-# ============================================================================
-
-# BxDFReflTransFlags constants are defined at the top of this file (lines 31-42)
-
-"""
-    LayeredBSDFSample - Internal sample result for LayeredBxDF interfaces
-
-Contains the sampled direction, BSDF value, pdf, and flags indicating
-whether the sample is reflection/transmission and specular/glossy.
-"""
-struct LayeredBSDFSample
-    f::SpectralRadiance      # BSDF value (spectral)
-    wi::Vec3f                # Sampled direction
-    pdf::Float32             # Probability density
-    is_reflection::Bool      # True if reflection, false if transmission
-    is_specular::Bool        # True if delta distribution
-    eta::Float32             # Relative IOR (for transmission)
-    valid::Bool              # Whether sample is valid
-end
-
-LayeredBSDFSample() = LayeredBSDFSample(SpectralRadiance(), Vec3f(0), 0f0, false, false, 1f0, false)
-
-"""
-    sample_dielectric_transmission_spectral(eta, wo, uc) -> (wi, T, valid)
-
-Sample transmission through a dielectric interface.
-Returns transmitted direction, transmittance, and validity flag.
-
-Uses pbrt-v4 convention: eta = n_t / n_i (transmitted IOR / incident IOR).
-The wo direction is in local shading space where z is the surface normal.
-"""
-@propagate_inbounds function sample_dielectric_transmission_spectral(
-    eta::Float32, wo::Vec3f, uc::Float32
-)
-    cos_θo = abs(wo[3])
-    F = fresnel_dielectric(cos_θo, eta)
-
-    # Use uc to decide reflection vs transmission
-    if uc < F
-        # Reflection - not transmission
-        return (Vec3f(0), 0f0, false)
-    end
-
-    # Compute transmitted direction using pbrt-v4 Snell's law formula
-    # For pbrt-v4 convention: sin²θt = sin²θi / eta²
-    sin2_θi = max(0f0, 1f0 - cos_θo^2)
-    sin2_θt = sin2_θi / (eta^2)
-
-    # Check for total internal reflection
-    if sin2_θt >= 1f0
-        return (Vec3f(0), 0f0, false)
-    end
-
-    cos_θt = sqrt(1f0 - sin2_θt)
-
-    # pbrt-v4 refracted direction: -wo/eta + (cos_i/eta - cos_t) * n
-    # In local coords, n = (0, 0, sign(wo.z))
-    entering = wo[3] > 0f0
-    n_sign = entering ? 1f0 : -1f0
-
-    wi = Vec3f(
-        -wo[1] / eta,
-        -wo[2] / eta,
-        (cos_θo / eta - cos_θt) * n_sign
-    )
-    wi = normalize(wi)
-
-    T = 1f0 - F
-    return (wi, T, true)
-end
-
-"""
-    sample_dielectric_interface(wo, uc, u, alpha_x, alpha_y, eta, refl_trans_flags) -> LayeredBSDFSample
-
-Sample the dielectric coating interface (top layer in CoatedDiffuse).
-Handles both smooth (specular) and rough (microfacet) dielectric surfaces.
-
-This matches pbrt-v4's DielectricBxDF::Sample_f exactly.
-"""
-@propagate_inbounds function sample_dielectric_interface(
-    wo::Vec3f, uc::Float32, u::Point2f,
-    alpha_x::Float32, alpha_y::Float32, eta::Float32,
-    refl_trans_flags::UInt8,
-    radiance_mode::Bool = true  # pbrt-v4 TransportMode: true=Radiance, false=Importance
-)
-    is_smooth = trowbridge_reitz_effectively_smooth(alpha_x, alpha_y)
-
-    if is_smooth || eta == 1f0
-        # Sample perfect specular dielectric BSDF
-        cos_θo = wo[3]
-        R = fresnel_dielectric(cos_θo, eta)
-        T = 1f0 - R
-
-        # Compute probabilities for sampling reflection vs transmission
-        pr = (refl_trans_flags & BXDF_REFLECTION) != 0 ? R : 0f0
-        pt = (refl_trans_flags & BXDF_TRANSMISSION) != 0 ? T : 0f0
-
-        if pr == 0f0 && pt == 0f0
-            return LayeredBSDFSample()
-        end
-
-        if uc < pr / (pr + pt)
-            # Sample perfect specular reflection
-            wi = Vec3f(-wo[1], -wo[2], wo[3])
-            f_val = R / abs(wi[3])
-            pdf = pr / (pr + pt)
-            return LayeredBSDFSample(SpectralRadiance(f_val), wi, pdf, true, true, 1f0, true)
-        else
-            # Sample perfect specular transmission
-            # Compute refracted direction
-            valid, wi, etap = refract_pbrt(wo, eta)
-            if !valid
-                return LayeredBSDFSample()
-            end
-
-            f_val = T / abs(wi[3])
-            # pbrt-v4: if (mode == TransportMode::Radiance) ft /= Sqr(etap);
-            if radiance_mode
-                f_val /= etap * etap
-            end
-            pdf = pt / (pr + pt)
-            return LayeredBSDFSample(SpectralRadiance(f_val), wi, pdf, false, true, etap, true)
-        end
-    else
-        # Sample rough dielectric BSDF using microfacet distribution
-        wm = trowbridge_reitz_sample_wm(wo, u, alpha_x, alpha_y)
-        cos_θo_m = dot(wo, wm)
-
-        R = fresnel_dielectric(cos_θo_m, eta)
-        T = 1f0 - R
-
-        pr = (refl_trans_flags & BXDF_REFLECTION) != 0 ? R : 0f0
-        pt = (refl_trans_flags & BXDF_TRANSMISSION) != 0 ? T : 0f0
-
-        if pr == 0f0 && pt == 0f0
-            return LayeredBSDFSample()
-        end
-
-        if uc < pr / (pr + pt)
-            # Sample reflection at rough dielectric interface
-            wi = reflect(wo, wm)
-            if !same_hemisphere(wo, wi)
-                return LayeredBSDFSample()
-            end
-
-            # Compute PDF of rough dielectric reflection
-            pdf_m = trowbridge_reitz_pdf(wo, wm, alpha_x, alpha_y)
-            pdf = pdf_m / (4f0 * abs(cos_θo_m)) * pr / (pr + pt)
-
-            D = trowbridge_reitz_d(wm, alpha_x, alpha_y)
-            G = trowbridge_reitz_g(wo, wi, alpha_x, alpha_y)
-            f_val = D * G * R / (4f0 * wo[3] * wi[3])
-
-            return LayeredBSDFSample(SpectralRadiance(f_val), wi, pdf, true, false, 1f0, true)
-        else
-            # Sample transmission at rough dielectric interface
-            valid, wi, etap = refract_microfacet(wo, wm, eta)
-            if !valid || same_hemisphere(wo, wi) || wi[3] == 0f0
-                return LayeredBSDFSample()
-            end
-
-            # Compute PDF of rough dielectric transmission
-            denom = (dot(wi, wm) + dot(wo, wm) / etap)^2
-            dwm_dwi = abs(dot(wi, wm)) / denom
-            pdf_m = trowbridge_reitz_pdf(wo, wm, alpha_x, alpha_y)
-            pdf = pdf_m * dwm_dwi * pt / (pr + pt)
-
-            D = trowbridge_reitz_d(wm, alpha_x, alpha_y)
-            G = trowbridge_reitz_g(wo, wi, alpha_x, alpha_y)
-            f_val = T * D * G * abs(dot(wi, wm) * dot(wo, wm) / (wi[3] * wo[3] * denom))
-            # pbrt-v4: if (mode == TransportMode::Radiance) f /= Sqr(etap);
-            if radiance_mode
-                f_val /= etap * etap
-            end
-
-            return LayeredBSDFSample(SpectralRadiance(f_val), wi, pdf, false, false, etap, true)
-        end
-    end
-end
-
-"""
-    eval_dielectric_interface(wo, wi, alpha_x, alpha_y, eta) -> (f, pdf)
-
-Evaluate the dielectric interface BSDF for given directions.
-Returns (f_value, pdf) for the given wo/wi pair.
-"""
-@propagate_inbounds function eval_dielectric_interface(
-    wo::Vec3f, wi::Vec3f, alpha_x::Float32, alpha_y::Float32, eta::Float32,
-    radiance_mode::Bool = true
-)
-    is_smooth = trowbridge_reitz_effectively_smooth(alpha_x, alpha_y)
-
-    if is_smooth || eta == 1f0
-        # Specular dielectric: f = 0 for non-delta directions
-        return (SpectralRadiance(), 0f0)
-    end
-
-    # Rough dielectric evaluation
-    if same_hemisphere(wo, wi)
-        # Reflection
-        wh = normalize(wo + wi)
-        if wh[3] < 0f0
-            wh = -wh
-        end
-
-        cos_θo_h = dot(wo, wh)
-        R = fresnel_dielectric(cos_θo_h, eta)
-
-        D = trowbridge_reitz_d(wh, alpha_x, alpha_y)
-        G = trowbridge_reitz_g(wo, wi, alpha_x, alpha_y)
-
-        f_val = D * G * R / (4f0 * wo[3] * wi[3])
-        # PDF includes reflection mixing weight R/(R+T) = R (since R+T=1, BXDF_ALL assumed)
-        # Matches pbrt-v4 DielectricBxDF::PDF: mfDistrib.PDF(wo,wm)/(4*AbsDot(wo,wm)) * pr/(pr+pt)
-        pdf = trowbridge_reitz_pdf(wo, wh, alpha_x, alpha_y) / (4f0 * abs(cos_θo_h)) * R
-
-        return (SpectralRadiance(f_val), pdf)
-    else
-        # Transmission
-        etap = wo[3] > 0f0 ? eta : (1f0 / eta)
-
-        # Compute half vector for transmission
-        wh = normalize(wo + wi * etap)
-        if wh[3] < 0f0
-            wh = -wh
-        end
-
-        cos_θo_h = dot(wo, wh)
-        cos_θi_h = dot(wi, wh)
-
-        # Check for same side condition
-        if cos_θo_h * cos_θi_h > 0f0
-            return (SpectralRadiance(), 0f0)
-        end
-
-        R = fresnel_dielectric(cos_θo_h, eta)
-        T = 1f0 - R
-
-        denom = (cos_θi_h + cos_θo_h / etap)^2
-        D = trowbridge_reitz_d(wh, alpha_x, alpha_y)
-        G = trowbridge_reitz_g(wo, wi, alpha_x, alpha_y)
-
-        f_val = T * D * G * abs(cos_θi_h * cos_θo_h / (wo[3] * wi[3] * denom))
-        # pbrt-v4: if (mode == TransportMode::Radiance) f /= Sqr(etap);
-        if radiance_mode
-            f_val /= etap * etap
-        end
-
-        # PDF includes transmission mixing weight T/(R+T) = T (since R+T=1, BXDF_ALL assumed)
-        # Matches pbrt-v4 DielectricBxDF::PDF: mfDistrib.PDF(wo,wm)*dwm_dwi * pt/(pr+pt)
-        dwm_dwi = abs(cos_θi_h) / denom
-        pdf = trowbridge_reitz_pdf(wo, wh, alpha_x, alpha_y) * dwm_dwi * T
-
-        return (SpectralRadiance(f_val), pdf)
-    end
-end
-
-"""
-    pdf_dielectric_interface(wo, wi, alpha_x, alpha_y, eta, refl_trans_flags) -> Float32
-
-Compute PDF of dielectric interface sampling.
-"""
-@propagate_inbounds function pdf_dielectric_interface(
-    wo::Vec3f, wi::Vec3f, alpha_x::Float32, alpha_y::Float32, eta::Float32,
-    refl_trans_flags::UInt8 = BXDF_ALL
-)
-    is_smooth = trowbridge_reitz_effectively_smooth(alpha_x, alpha_y)
-
-    if is_smooth || eta == 1f0
-        return 0f0  # Specular has delta PDF
-    end
-
-    if same_hemisphere(wo, wi)
-        # Reflection
-        if (refl_trans_flags & BXDF_REFLECTION) == 0
-            return 0f0
-        end
-
-        wh = normalize(wo + wi)
-        if wh[3] < 0f0
-            wh = -wh
-        end
-
-        cos_θo_h = abs(dot(wo, wh))
-        R = fresnel_dielectric(cos_θo_h, eta)
-        T = 1f0 - R
-
-        pr = (refl_trans_flags & BXDF_REFLECTION) != 0 ? R : 0f0
-        pt = (refl_trans_flags & BXDF_TRANSMISSION) != 0 ? T : 0f0
-
-        pdf = trowbridge_reitz_pdf(wo, wh, alpha_x, alpha_y) / (4f0 * cos_θo_h)
-        return pdf * pr / (pr + pt)
-    else
-        # Transmission
-        if (refl_trans_flags & BXDF_TRANSMISSION) == 0
-            return 0f0
-        end
-
-        etap = wo[3] > 0f0 ? eta : (1f0 / eta)
-        wh = normalize(wo + wi * etap)
-        if wh[3] < 0f0
-            wh = -wh
-        end
-
-        cos_θo_h = dot(wo, wh)
-        cos_θi_h = dot(wi, wh)
-
-        if cos_θo_h * cos_θi_h > 0f0
-            return 0f0
-        end
-
-        R = fresnel_dielectric(abs(cos_θo_h), eta)
-        T = 1f0 - R
-
-        pr = (refl_trans_flags & BXDF_REFLECTION) != 0 ? R : 0f0
-        pt = (refl_trans_flags & BXDF_TRANSMISSION) != 0 ? T : 0f0
-
-        denom = (cos_θi_h + cos_θo_h / etap)^2
-        dwm_dwi = abs(cos_θi_h) / denom
-        pdf = trowbridge_reitz_pdf(wo, wh, alpha_x, alpha_y) * dwm_dwi
-
-        return pdf * pt / (pr + pt)
-    end
-end
-
-"""
-    sample_diffuse_interface(wo, u, reflectance) -> LayeredBSDFSample
-
-Sample the diffuse base layer (bottom in CoatedDiffuse).
-This is a simple cosine-weighted hemisphere sampler.
-"""
-@propagate_inbounds function sample_diffuse_interface(
-    wo::Vec3f, u::Point2f, reflectance::SpectralRadiance,
-    refl_trans_flags::UInt8
-)
-    # Diffuse only reflects, never transmits
-    if (refl_trans_flags & BXDF_REFLECTION) == 0
-        return LayeredBSDFSample()
-    end
-
-    # Cosine-weighted hemisphere sampling
-    wi = cosine_sample_hemisphere(u)
-
-    # Ensure wi is in same hemisphere as wo
-    if wo[3] < 0f0
-        wi = Vec3f(wi[1], wi[2], -wi[3])
-    end
-
-    cos_θi = abs(wi[3])
-    if cos_θi < 1f-6
-        return LayeredBSDFSample()
-    end
-
-    # Lambertian: f = R/π, pdf = cos_θ/π
-    f = reflectance * (1f0 / Float32(π))
-    pdf = cos_θi / Float32(π)
-
-    return LayeredBSDFSample(f, wi, pdf, true, false, 1f0, true)
-end
-
-"""
-    eval_diffuse_interface(wo, wi, reflectance) -> (f, pdf)
-
-Evaluate diffuse BSDF for given directions.
-"""
-@propagate_inbounds function eval_diffuse_interface(
-    wo::Vec3f, wi::Vec3f, reflectance::SpectralRadiance
-)
-    if !same_hemisphere(wo, wi)
-        return (SpectralRadiance(), 0f0)
-    end
-    f = reflectance * (1f0 / Float32(π))
-    pdf = abs(wi[3]) / Float32(π)
-    return (f, pdf)
-end
-
-"""
-    pdf_diffuse_interface(wo, wi) -> Float32
-
-Compute PDF of diffuse sampling.
-"""
-@inline function pdf_diffuse_interface(wo::Vec3f, wi::Vec3f)::Float32
-    if !same_hemisphere(wo, wi)
-        return 0f0
-    end
-    return abs(wi[3]) / Float32(π)
-end
-
-# ============================================================================
-# Conductor Interface (for LayeredBxDF bottom — pbrt-v4 ConductorBxDF)
-# ============================================================================
-
-"""
-Sample conductor interface (reflection only). Matches pbrt-v4 ConductorBxDF::Sample_f.
-Returns LayeredBSDFSample. Used as bottom interface in LayeredBxDF for CoatedConductor.
-"""
-@propagate_inbounds function sample_conductor_interface(
-    wo::Vec3f, u::Point2f,
-    alpha_x::Float32, alpha_y::Float32,
-    eta::SpectralRadiance, k::SpectralRadiance,
-    refl_trans_flags::UInt8
-)
-    # Conductor only reflects
-    if (refl_trans_flags & BXDF_REFLECTION) == 0
-        return LayeredBSDFSample()
-    end
-
-    is_smooth = trowbridge_reitz_effectively_smooth(alpha_x, alpha_y)
-
-    if is_smooth
-        # Specular reflection: wi = (-wo.x, -wo.y, wo.z)
-        wi = Vec3f(-wo[1], -wo[2], wo[3])
-        F = fr_complex_spectral(abs(wi[3]), eta, k)
-        f_val = F / abs(wi[3])
-        return LayeredBSDFSample(f_val, wi, 1f0, true, true, 1f0, true)
-    else
-        # Rough microfacet reflection
-        wm = trowbridge_reitz_sample_wm(wo, u, alpha_x, alpha_y)
-        wi = -wo + 2f0 * dot(wo, wm) * wm
-        if !same_hemisphere(wo, wi) || wi[3] == 0f0
-            return LayeredBSDFSample()
-        end
-
-        cos_θo = abs(wo[3])
-        cos_θi = abs(wi[3])
-        if cos_θo == 0f0 || cos_θi == 0f0
-            return LayeredBSDFSample()
-        end
-
-        F = fr_complex_spectral(abs(dot(wo, wm)), eta, k)
-        D = trowbridge_reitz_d(wm, alpha_x, alpha_y)
-        G = trowbridge_reitz_g(wo, wi, alpha_x, alpha_y)
-        f_val = D * F * G / (4f0 * cos_θi * cos_θo)
-
-        pdf_m = trowbridge_reitz_pdf(wo, wm, alpha_x, alpha_y)
-        pdf = pdf_m / (4f0 * abs(dot(wo, wm)))
-
-        return LayeredBSDFSample(f_val, wi, pdf, true, false, 1f0, true)
-    end
-end
-
-"""
-Evaluate conductor interface BSDF. Matches pbrt-v4 ConductorBxDF::f + PDF.
-Returns (f::SpectralRadiance, pdf::Float32).
-"""
-@propagate_inbounds function eval_conductor_interface(
-    wo::Vec3f, wi::Vec3f,
-    alpha_x::Float32, alpha_y::Float32,
-    eta::SpectralRadiance, k::SpectralRadiance
-)
-    is_smooth = trowbridge_reitz_effectively_smooth(alpha_x, alpha_y)
-
-    if is_smooth
-        return (SpectralRadiance(), 0f0)  # Delta function — zero for non-delta eval
-    end
-
-    if !same_hemisphere(wo, wi)
-        return (SpectralRadiance(), 0f0)
-    end
-
-    cos_θo = abs(wo[3])
-    cos_θi = abs(wi[3])
-    if cos_θo == 0f0 || cos_θi == 0f0
-        return (SpectralRadiance(), 0f0)
-    end
-
-    wh = normalize(wo + wi)
-    if wh[3] < 0f0
-        wh = -wh
-    end
-
-    F = fr_complex_spectral(abs(dot(wo, wh)), eta, k)
-    D = trowbridge_reitz_d(wh, alpha_x, alpha_y)
-    G = trowbridge_reitz_g(wo, wi, alpha_x, alpha_y)
-    f_val = D * F * G / (4f0 * cos_θo * cos_θi)
-
-    pdf = trowbridge_reitz_pdf(wo, wh, alpha_x, alpha_y) / (4f0 * abs(dot(wo, wh)))
-
-    return (f_val, pdf)
-end
-
-"""PDF for conductor interface. Matches pbrt-v4 ConductorBxDF::PDF."""
-@propagate_inbounds function pdf_conductor_interface(
-    wo::Vec3f, wi::Vec3f,
-    alpha_x::Float32, alpha_y::Float32
-)::Float32
-    if !same_hemisphere(wo, wi)
-        return 0f0
-    end
-    if trowbridge_reitz_effectively_smooth(alpha_x, alpha_y)
-        return 0f0
-    end
-    wh = normalize(wo + wi)
-    if wh[3] < 0f0
-        wh = -wh
-    end
-    return trowbridge_reitz_pdf(wo, wh, alpha_x, alpha_y) / (4f0 * abs(dot(wo, wh)))
-end
-
-# ============================================================================
-# MediumInterface Forwarding
-# ============================================================================
-
-# MediumInterface is defined in integrators/volpath/media.jl
-# These forwarding functions delegate BSDF operations to the wrapped material
-
-"""
-    get_bxdf for MediumInterface - forwards to the wrapped material.
-
-Forwarding here rather than forwarding `sample_bsdf_spectral` /
-`evaluate_bsdf_spectral` separately is what lets each leaf material keep one
-BSDF implementation (on its evaluated form) instead of also retaining a raw
-version for wrappers to land on.
-"""
-@propagate_inbounds get_bxdf(
-    mi::MediumInterface, table::RGBToSpectrumTable, textures,
-    tfc::TextureFilterContext, lambda::Wavelengths, regularize::Bool,
-) = get_bxdf(mi.material, table, textures, tfc, lambda, regularize)
-
 """
     is_emissive for MediumInterface - forwards to wrapped material.
 """
@@ -1480,13 +827,18 @@ version for wrappers to land on.
 end
 
 # ============================================================================
-# Surface Alpha Evaluation (for shadow ray pass-through)
+# Surface transparency (what passes a hit unscattered)
 # ============================================================================
-# Following pbrt-v4: alpha is evaluated at intersection time to determine
-# if a surface should be treated as transparent. Used by trace_shadow_transmittance
-# to allow light through alpha-masked geometry (e.g. GLTF BLEND mode foliage).
 
-# All other material types are fully opaque (Diffuse override is in diffuse.jl)
-@propagate_inbounds get_surface_alpha(::Material, ::Any, ::TextureFilterContext) = 1f0
-@propagate_inbounds get_surface_alpha(mat::Material, textures, uv::Point2f) =
-    get_surface_alpha(mat, textures, TextureFilterContext(uv))
+"""
+    surface_transparency(material, textures, tfc) -> Vec3f
+
+What of the light a surface lets straight through at a hit, per RGB channel: `1 - alpha` of an
+alpha-masked texture (pbrt-v4's alpha, glTF's BLEND foliage), and for a shader the colour of its
+Transparent BSDF and Principled alpha, which tints what passes as Cycles' transparent closure does.
+Evaluated where a ray meets the surface, before it is shaded: a path passes with the chance of its
+mean and is tinted by it over that chance, a shadow ray is tinted by it.
+"""
+@propagate_inbounds surface_transparency(::Material, ::Any, ::TextureFilterContext) = Vec3f(0)
+# A material a view of the set does not hold (`shade_set`): one that cannot be cut out.
+@propagate_inbounds surface_transparency(::Nothing, ::Any, ::TextureFilterContext) = Vec3f(0)

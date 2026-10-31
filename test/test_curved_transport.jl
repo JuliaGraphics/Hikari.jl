@@ -15,7 +15,7 @@ end
     Hikari.sync!(scene)
     function frame()
         film=Hikari.Film(Point2f(16,16))
-        cam=Hikari.PerspectiveCamera(Point3f(0,-4,0),Point3f(0),film;fov=40f0)
+        cam=Hikari.PerspectiveCamera(Point3f(0,-4,0),Point3f(0),film;up=Vec3f(0,0,1),fov=40f0)
         film=Hikari.Film(backend,film);Hikari.clear!(film)
         film,cam
     end
@@ -58,7 +58,7 @@ end
         chord=Hikari.prepare_medium_work(physical,media)
         @test chord.ray.d ≈ rotate_transport(ray.d,0.125f0)
         @test chord.ray.t_max==0.25f0
-        work=Hikari.VPMediumSampleWorkItem(chord)
+        work=Hikari.VPMediumSampleWorkItem(chord,Raycore.HitRecord())
         result=Hikari.sample_with_iterator_helper(media.data[1][1],table,chord.ray,Inf32,wl,
             unit,unit,unit,unit,UInt64(2),nothing,zeros(Float32,4),work,media,key,Int32(8),Hikari.EmptyMajorantGrid())
         # Even many null events stay on this ONE chord. An empty iterator must
@@ -107,7 +107,7 @@ Hikari.create_majorant_iterator(m::CurvedGridFixture,table::Hikari.RGBToSpectrum
     @test Hikari.get_template_grid_from_tuple((Hikari.HomogeneousMedium(),)) == Hikari.EmptyMajorantGrid()
     physical=Hikari.VPRayWorkItem(ray,wl,Int32(1);medium_idx=key)
     chord=Hikari.prepare_medium_work(physical,media)
-    work=Hikari.VPMediumSampleWorkItem(chord)
+    work=Hikari.VPMediumSampleWorkItem(chord,Raycore.HitRecord())
     result=Hikari.sample_with_iterator_helper(medium,table,chord.ray,Inf32,wl,
         unit,unit,unit,unit,UInt64(2),nothing,zeros(Float32,4),work,media,key,Int32(8),grid)
     @test result.ray_o ≈ Point3f(0.25f0*chord.ray.d)

@@ -25,7 +25,7 @@ using GeometryBasics: normal_mesh, Tesselation, Sphere, Point3f, Point2f
 function onerun_scene(backend)
     scene = Hikari.Scene(; backend = backend)
     sphere = normal_mesh(Tesselation(Sphere(Point3f(0, 0, 0), 0.5f0), 8))
-    push!(scene, sphere, Hikari.Diffuse(Kd = Hikari.RGBSpectrum(0.7f0, 0.4f0, 0.4f0)))
+    push!(scene, sphere, Hikari.Diffuse(color = Hikari.RGBSpectrum(0.7f0, 0.4f0, 0.4f0)))
     push!(scene, Hikari.PointLight(Point3f(0, -2, 3), Hikari.RGBSpectrum(30f0)))
     Hikari.sync!(scene)
     return scene
@@ -114,14 +114,12 @@ end
     plans = vp.state.plans
     Mantle.waitfor!(plans.sample)
 
-    bq = Mantle.batchqueue(Hikari.mantle_device(backend))
-    # `deviceof(bq)`, not `bq.ctx`: a `SubmitChannel` is core's and holds no
-    # context — the driver bundle under it does.
-    before = Mantle.deviceof(bq).diag.flush_counter[]
+    dev = Hikari.mantle_device(backend)
+    before = Mantle.submissions(dev)
     Hikari.render!(vp, scene, film, cam; finalize_framebuffer = false)
     # One sample, one submission: the sample plan's recording, handed over the
     # moment `run!` is called.
-    @test Mantle.deviceof(bq).diag.flush_counter[] - before == 1
+    @test Mantle.submissions(dev) - before == 1
 
     # And the sample adds no per-sample HOST work at all: `render!` of a still
     # scene allocates zero bytes. Three things can each cost some, and each is

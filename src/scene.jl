@@ -219,14 +219,7 @@ Push `medium`'s material and both media and return the keys they got: what
 the batched `push_interfaces!` both build interfaces with this.
 """
 function interface_key(scene::Scene, medium::MediumInterface)
-    mat_idx = push!(scene.materials, resolve_material(scene, medium.material))
-    # Record the materials-set SetKey of the inner material from this push so
-    # `push!(scene, mesh, ::Material)` can read it back without doing a GPU
-    # scalar readback on `scene.media_interfaces`. The materials are converted
-    # by `maybe_convert_field` inside the MultiTypeSet push (texture wrappers
-    # collapse to bare scalars), so this is the only place that knows the
-    # canonical type_idx for SBT routing.
-    _LAST_MAT_SETKEY[] = mat_idx
+    mat_idx = push!(scene.materials, resolve_material(scene, surface_material(medium.material)))
     return MediumInterfaceIdx(mat_idx, push!(scene, medium.inside), push!(scene, medium.outside), medium.shadows)
 end
 
@@ -241,17 +234,20 @@ function Base.push!(scene::Scene, medium::MediumInterface)
     return UInt32(idx)
 end
 
-# Side-channel for `push!(scene, mesh, ::Material)` to read the materials-set
-# SetKey produced by the last `push!(scene, ::MediumInterface)` — needed to
-# compute the HWTLAS instance's `sbt_offset` in the per-material chit path.
-const _LAST_MAT_SETKEY = Ref(SetKey(UInt32(0), UInt32(0)))
-
 """
     update_material!(scene, idx::UInt32, new_medium::Medium)
     update_material!(scene, idx::UInt32, new_material::Material)
 
-Mutate an existing entry in `scene.media` / `scene.materials` in place.
-Does **not** synchronize with the GPU.
+Store `new_material` (or `new_medium`, or a whole `MediumInterface`) in place of what the medium
+interface `idx` holds. Does **not** synchronize with the GPU. The geometry using the interface
+keeps the opacity it was pushed with: a material that lets shadow rays through where the old one
+did not ([`opaque`](@ref)) needs the mesh's handle
+(`update_material!(scene, handle::SceneHandle, material)`) or a new push.
+
+A material of the stored one's type is written into its slot, so the scene keeps its recorded
+plans. Another kind of material, or a shader of other node families, is another type: it takes a
+slot of its own and the interface is pointed at it (`store_interface!`); every face and instance
+drawn with the interface follows. The slot it leaves is vacated for the next material of its type.
 
 Invariants:
 - CPU-side bookkeeping and MultiTypeSet slot contents are updated.
@@ -262,8 +258,13 @@ Invariants:
   the caller is responsible for pairing the release with a `sync!` call:
   this function does not force one.
 """
-update_material!(scene::Scene, idx::UInt32, new) =
-    update_material!(scene, (@allowscalar scene.media_interfaces[idx]), new)
+function update_material!(scene::Scene, idx::UInt32, new)
+    updating_in_place!(scene) do
+        mi = @allowscalar scene.media_interfaces[idx]
+        moved = store_interface!(scene, mi, new)
+        moved === mi || @allowscalar scene.media_interfaces[idx] = moved
+    end
+end
 
 """
     updating_in_place!(f, scene)
@@ -280,45 +281,63 @@ function updating_in_place!(f, scene::Scene)
     return nothing
 end
 
-update_material!(scene::Scene, mi::MediumInterfaceIdx, new_medium::Medium) =
-    updating_in_place!(() -> Raycore.update!(scene.media, mi.inside, new_medium), scene)
+"""
+    store_interface!(scene, mi::MediumInterfaceIdx, new) -> MediumInterfaceIdx
 
-update_material!(scene::Scene, mi::MediumInterfaceIdx, new_material::Material) =
-    updating_in_place!(() -> Raycore.update!(scene.materials, mi.material, new_material), scene)
+Store `new` in place of what the interface `mi` points at and return the interface that points
+at where it is now: a material replaces `mi`'s surface material, a medium its inside medium, a
+`MediumInterface` all three and the shadow setting. Writes no interface; `update_material!` does.
+
+`MediumInterface` is itself a `Material`, so it needs its own method: as a material it would be
+stuffed whole into the surface slot. A side it leaves out (`inside = nothing`, a `NullMaterial`)
+vacates the slot that side had.
+"""
+store_interface!(scene::Scene, mi::MediumInterfaceIdx, medium::Medium) =
+    MediumInterfaceIdx(mi.material, store_medium!(scene, mi.inside, medium), mi.outside, mi.shadows)
+
+store_interface!(scene::Scene, mi::MediumInterfaceIdx, material::Material) =
+    MediumInterfaceIdx(store_surface!(scene, mi.material, material), mi.inside, mi.outside, mi.shadows)
+
+store_interface!(scene::Scene, mi::MediumInterfaceIdx, new::MediumInterface) =
+    MediumInterfaceIdx(store_surface!(scene, mi.material, new.material), store_medium!(scene, mi.inside, new.inside),
+                       store_medium!(scene, mi.outside, new.outside), new.shadows)
+
+"""`medium` stored in place of the medium under `key` (`Raycore.store!`); `nothing` vacates it."""
+store_medium!(scene::Scene, key::SetKey, medium::Medium) = Raycore.store!(scene.media, key, medium)
+store_medium!(scene::Scene, key::SetKey, ::Nothing) = (delete!(scene.media, key); SetKey())
 
 """
-    update_surface!(scene, key, material)
+    store_surface!(scene, key, material) -> SetKey
 
-Overwrite the surface material stored under `key` in `scene.materials`.
+Store what `material` is rendered with (`surface_material`) in place of the surface material under
+`key` in `scene.materials`, and return the key it is stored under now (`Raycore.store!`): `key`
+when it is of the stored material's type.
 
-A mix arrives in its host form (`MixMaterialSpec`, holding its two materials) but is
-stored by key (`MixMaterial`): each sub-material is updated at the key the mix was
-pushed with, then the mix itself, whose amount texture is copied into the slot it
-already has. A foam mask changed every frame is a copy, not a new texture.
+A mix that picks between its materials is stored by key (`MixMaterial`): each of them is stored
+in place of the one the mix had, then the mix itself, whose factor texture is copied into the
+slot it already has. A foam mask changed every frame is a copy, not a new texture.
 """
-update_surface!(scene::Scene, key::SetKey, material::Material) = Raycore.update!(scene.materials, key, material)
+store_surface!(scene::Scene, key::SetKey, material::Material) =
+    store_surface!(scene, key, stored_surface(scene, key), surface_material(material))
 
-# `MediumInterface` is itself a `<:Material`, so plots that use it (e.g. a
-# volume-bounding cube with `MediumInterface(NullMaterial(); inside=medium)`)
-# hit this overload instead of the generic `::Material` one.  Falling through
-# to the generic path is wrong: it would try to stuff a whole `MediumInterface`
-# into the inner-material slot of `scene.materials`, which is a type mismatch,
-# and with a `NullMaterial` inside the inner slot is `SetKey()` (unpushed)
-# which trips a `BoundsError`.  Instead, refresh the three component
-# slots independently — each guarded by `Raycore.is_valid` so invalid /
-# unpushed slots (NullMaterial, `inside=nothing`, `outside=nothing`) are
-# silent no-ops.
-function update_material!(scene::Scene, mi::MediumInterfaceIdx, new_mi::MediumInterface)
-    updating_in_place!(scene) do
-        Raycore.is_valid(mi.material) && update_surface!(scene, mi.material, new_mi.material)
-        if new_mi.inside !== nothing && Raycore.is_valid(mi.inside)
-            Raycore.update!(scene.media, mi.inside, new_mi.inside)
-        end
-        if new_mi.outside !== nothing && Raycore.is_valid(mi.outside)
-            Raycore.update!(scene.media, mi.outside, new_mi.outside)
-        end
-    end
+stored_surface(scene::Scene, key::SetKey) = Raycore.is_valid(key) ? scene.materials[key] : nothing
+
+store_surface!(scene::Scene, key::SetKey, ::Any, material::Material) =
+    Raycore.store!(scene.materials, key, resolve_material(scene, material))
+
+"""
+    vacate_surface!(scene, key)
+
+Vacate the surface material under `key` and the materials it references (a `MixMaterial`'s).
+"""
+function vacate_surface!(scene::Scene, key::SetKey)
+    Raycore.is_valid(key) || return nothing
+    old = scene.materials[key]
+    delete!(scene.materials, key)
+    vacate_parts!(scene, old)
+    return nothing
 end
+vacate_parts!(::Scene, ::Any) = nothing
 
 struct SceneHandle
     scene::Scene

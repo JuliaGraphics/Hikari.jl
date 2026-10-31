@@ -4,16 +4,14 @@
     c = rgb(value)
     return RGB{Float32}(clamp(c[1], 0.0f0, 1.0f0), clamp(c[2], 0.0f0, 1.0f0), clamp(c[3], 0.0f0, 1.0f0))
 end
-@inline function guide_material(mat::Material, materials, tfc, ::Val{D}) where {D}
-    # White is the conventional fallback for specular/unknown BSDFs, not grey
-    # pretending to be diffuse reflectance.
-    if hasfield(typeof(mat), :Kd)
-        return guide_rgb(eval_handle_spectrum(materials, mat.Kd, tfc))
-    elseif hasfield(typeof(mat), :reflectance)
-        return guide_rgb(eval_handle_spectrum(materials, mat.reflectance, tfc))
-    end
-    return RGB{Float32}(1, 1, 1)
-end
+# White is the conventional fallback for specular/unknown BSDFs, not grey
+# pretending to be diffuse reflectance.
+@inline guide_material(mat::Material, materials, tfc, ::Val{D}) where {D} = RGB{Float32}(1, 1, 1)
+@inline guide_material(mat::Diffuse, materials, tfc, ::Val{D}) where {D} =
+    guide_rgb(eval_handle_spectrum(materials, mat.color, tfc))
+@inline guide_material(mat::Union{Conductor, CoatedDiffuse, DiffuseTransmission, CoatedDiffuseTransmission},
+                       materials, tfc, ::Val{D}) where {D} =
+    guide_rgb(eval_handle_spectrum(materials, mat.reflectance, tfc))
 @inline function guide_material(mat::MixMaterial, materials, tfc, ::Val{D}) where {D}
     D == 0 && return RGB{Float32}(1, 1, 1)
     amount = clamp(eval_handle(materials, mat.amount, tfc), 0.0f0, 1.0f0)
@@ -34,14 +32,10 @@ end
         hit || return (RGB{Float32}(0, 0, 0), Vec3f(0), first_depth)
         step == 1 && (first_depth = t)
         mi = interfaces[resolve_mi_idx(instance, prim)]
-        uv = vp_compute_uv_barycentric(prim, bary)
-        tfc = TextureFilterContext(
-            uv, 0.0f0, 0.0f0, 0.0f0, 0.0f0,
-            prim.metadata.primitive_index, SVector{3, Float32}(bary)
-        )
+        tfc = alpha_filter_context(prim, bary, ray.o, ray.d, t)
         # Deterministic centre-ray guides: skip null volume boundaries and
         # alpha-cutout surfaces below 50% coverage. No random guide flicker.
-        alpha = get_surface_alpha_dispatch(materials, mi.material, tfc)
+        alpha = surface_alpha_dispatch(materials, mi.material, tfc)
         if Raycore.is_valid(mi.material) && alpha >= 0.5f0
             geom = vp_compute_surface_geometry(prim, bary, ray.o, ray.d, t)
             dndu, dndv = vp_compute_normal_derivatives(prim)

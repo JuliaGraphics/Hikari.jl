@@ -45,49 +45,51 @@ ShaderGraph(shader::ShaderNode) = ShaderGraph(closure_cores(shader))
 
 _constant(x, value) = x isa Real && Float32(x) == Float32(value)
 
-"""Whether a shader emits light: an emission closure, or a Principled BSDF whose emission strength is not zero."""
-has_emission(g::ShaderGraph) =
-    any(c -> (c.op == NodeOp.CLOSURE && c.mode[1] == ClosureKind.EMISSION) ||
-             (c.op == NodeOp.PRINCIPLED && !_constant(c.inputs[31], 0)), g.closures)
-
 """Whether a shader lets light through unrefracted: a transparent closure, or a Principled BSDF whose alpha is not one."""
 has_transparency(g::ShaderGraph) =
     any(c -> (c.op == NodeOp.CLOSURE && c.mode[1] == ClosureKind.TRANSPARENT) ||
              (c.op == NodeOp.PRINCIPLED && !_constant(c.inputs[6], 1)), g.closures)
 
-"""Whether a shader scatters below its surface: a Principled BSDF with subsurface weight and no thin wall."""
-has_subsurface(g::ShaderGraph) =
-    any(c -> c.op == NodeOp.PRINCIPLED && !_constant(c.inputs[9], 0) && !_constant(c.inputs[34], 1), g.closures)
+"""The types of a shader's BSDF nodes, in program order, as its material's type holds them."""
+bsdf_nodes(g::ShaderGraph) = Tuple{map(bsdf_node, g.closures)...}
+
+bsdf_node(c::NodeCore) = c.op == NodeOp.CLOSURE ? closure_node(c.mode[1]) : principled_node(c)
+function closure_node(kind::UInt8)
+    kind == ClosureKind.DIFFUSE && return DiffuseBSDF
+    kind == ClosureKind.TRANSLUCENT && return TranslucentBSDF
+    kind == ClosureKind.GLOSSY && return GlossyBSDF
+    kind == ClosureKind.METALLIC && return MetallicBSDF
+    kind == ClosureKind.GLASS && return GlassBSDF
+    kind == ClosureKind.SHEEN && return SheenBSDF
+    kind == ClosureKind.TRANSPARENT && return TransparentBSDF
+    kind == ClosureKind.EMISSION && return EmissionBSDF
+    error("no BSDF node of closure kind $kind")
+end
+function principled_node(c::NodeCore)
+    thin_wall = c.inputs[34]
+    thin_wall isa Real || error("a Principled BSDF's thin wall is a constant, not a node graph: it decides which lobes the material has")
+    return PrincipledBSDF{Float32(thin_wall) > 0.5f0, !_zero(c.inputs[9]), !_zero(c.inputs[31])}
+end
 
 _zero(x) = _constant(x, 0)
 _one(x) = _constant(x, 1)
 
-"""The most closures one closure node of a shader can produce at a hit."""
-function _closures_of(c::NodeCore)
-    c.op == NodeOp.CLOSURE && return c.mode[1] in (ClosureKind.TRANSPARENT, ClosureKind.EMISSION) ? 0 : 1
-    i = c.inputs
-    thin_wall = !_zero(i[34])
-    sheen = _zero(i[27]) ? 0 : 1
-    coat = _zero(i[22]) ? 0 : 1
-    metal = _zero(i[3]) ? 0 : 1
-    _one(i[3]) && return sheen + coat + metal
-    transmission = _zero(i[19]) ? 0 : thin_wall ? 2 : 1
-    subsurface = _zero(i[9]) ? 0 : thin_wall ? 2 : 1
-    return sheen + coat + metal + transmission + 1 + subsurface + 1
-end
-
-"""How many closures a shader can produce at a hit: what its closure list holds room for."""
-closure_capacity(g::ShaderGraph) = clamp(sum(_closures_of, g.closures; init = 0), 1, MAX_CLOSURES)
-
-function _store_shader(dhv, g::ShaderGraph)
-    store_lookup_tables!(dhv)
-    program = compile_shader(g.closures, data -> (ref = Raycore.store_texture(dhv, data); (texref_slot(ref), ref.idx)))
-    return program, Raycore.store_texture(dhv, program)
-end
-
-function device_param(dhv, g::ShaderGraph)
-    _, ref = _store_shader(dhv, g)
-    return TexHandle(TexKind.NODES, 0f0, _TH_ZERO, Int32(texref_slot(ref)), Int32(ref.idx))
+"""
+The transparency of `g` alone, for alpha tests: its transparent closures, and each Principled
+BSDF whose alpha is not one as the transparent closure its alpha makes of it. Its program reads
+only what the transparency depends on, where the whole shader's runs every closure.
+"""
+function transparency_graph(g::ShaderGraph)
+    cores = NodeCore[]
+    for c in g.closures
+        if c.op == NodeOp.CLOSURE && c.mode[1] == ClosureKind.TRANSPARENT
+            push!(cores, c)
+        elseif c.op == NodeOp.PRINCIPLED && !_constant(c.inputs[6], 1)
+            push!(cores, NodeCore(NodeOp.CLOSURE, (ClosureKind.TRANSPARENT, 0x00, 0x00),
+                                  Any[c.inputs[1], 1 - c.inputs[6]], Int[], nothing))
+        end
+    end
+    return ShaderGraph(cores)
 end
 
 """
@@ -98,14 +100,23 @@ struct ShaderProgram{F}
     idx::Int32
 end
 
-function shader_program(dhv, g::ShaderGraph)
-    program, ref = _store_shader(dhv, g)
-    return _shader_program(program, Int32(ref.idx))
+ShaderProgram(::CompiledProgram{F}, idx::Integer) where {F} = ShaderProgram{F}(Int32(idx))
+
+"""The program of `g` stored in `dhv`, its data placed with `placed`; no program for no graph."""
+function shader_program(dhv, g::ShaderGraph, placed::Places)
+    store_lookup_tables!(dhv)
+    c = compile_shader(g.closures)
+    return ShaderProgram(c, last(stored_program!(dhv, c, placed)))
 end
-_shader_program(::AbstractVector{NodeInstr{F}}, idx::Int32) where {F} = ShaderProgram{F}(idx)
+shader_program(dhv, ::Nothing, placed::Places) = nothing
+
+"""The slot of the set `dhv` that holds the programs of `p`'s node families."""
+program_slot(dhv::Raycore.MultiTypeSet, ::ShaderProgram{F}) where {F} =
+    findfirst(AT -> eltype(AT) === NodeInstr{F}, dhv.texture_order)
 
 """The programs stored with the features of `p`, found by their element type."""
-@generated function shader_programs(textures::Raycore.StaticMultiTypeSet{D, Tex}, ::ShaderProgram{F}) where {D, Tex, F}
+@generated function shader_programs(textures::Union{Raycore.StaticMultiTypeSet{D, Tex}, Raycore.SetView{<:Any, <:Any, D, Tex}},
+                                     ::ShaderProgram{F}) where {D, Tex, F}
     slot = findfirst(T -> eltype(eltype(T)) === NodeInstr{F}, Tex.parameters)
     return :(@inbounds textures.textures[$slot])
 end

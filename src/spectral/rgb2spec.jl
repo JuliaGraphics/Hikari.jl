@@ -76,6 +76,26 @@ struct RGBToSpectrumTable{V1 <: AbstractVector{Float32}, V5 <: AbstractArray{Flo
 end
 
 """
+    find_interval(nodes, n, z) -> Int32
+
+The largest `i` in `1:n-1` with `nodes[i] < z`, or 1 when there is none, for increasing `nodes`:
+pbrt-v4's `FindInterval`, a binary search. The z axis of the coefficient table was scanned
+instead, all 63 nodes read for every colour lifted to a spectrum.
+"""
+@propagate_inbounds function find_interval(nodes::AbstractVector{Float32}, n::Int32, z::Float32)
+    lo, hi = Int32(1), n - Int32(1)
+    while lo < hi
+        mid = (lo + hi + Int32(1)) >> Int32(1)
+        if nodes[mid] < z
+            lo = mid
+        else
+            hi = mid - Int32(1)
+        end
+    end
+    return lo
+end
+
+"""
     rgb_to_spectrum(table, rgb) -> RGBSigmoidPolynomial
 
 Convert an RGB color to a sigmoid polynomial spectrum representation.
@@ -116,14 +136,7 @@ RGB values should be in [0, 1] range.
     x = x_comp * Float32(res - Int32(1)) / z
     y = y_comp * Float32(res - Int32(1)) / z
 
-    # Find z index using linear search in scale table
-    zi = Int32(1)
-    @inbounds for i in Int32(1):(res - Int32(1))
-        if table.scale[i] < z
-            zi = i
-        end
-    end
-    zi = min(zi, res - Int32(1))
+    zi = find_interval(table.scale, res, z)
 
     # Compute integer indices and fractional offsets
     xi = min(u_int32(x) + Int32(1), res - Int32(1))
@@ -170,107 +183,6 @@ end
 # Convenience method
 rgb_to_spectrum(table::RGBToSpectrumTable, rgb::NTuple{3, Float32}) =
     rgb_to_spectrum(table, rgb[1], rgb[2], rgb[3])
-
-# ============================================================================
-# GPU-compatible inline version (for kernels)
-# ============================================================================
-
-"""
-    rgb_to_spectrum_coeffs(scale, coeffs, res, r, g, b) -> (c0, c1, c2)
-
-GPU-compatible version that takes raw arrays and returns coefficient tuple.
-"""
-@propagate_inbounds function rgb_to_spectrum_coeffs(
-    scale::AbstractVector{Float32},
-    coeffs::AbstractArray{Float32, 5},
-    res::Int32,
-    r::Float32, g::Float32, b::Float32
-)::NTuple{3, Float32}
-    # Clamp
-    r = clamp(r, 0.0f0, 1.0f0)
-    g = clamp(g, 0.0f0, 1.0f0)
-    b = clamp(b, 0.0f0, 1.0f0)
-
-    # Gray case
-    if r == g && g == b
-        if r > 0.0f0 && r < 1.0f0
-            c2 = (r - 0.5f0) / sqrt(r * (1.0f0 - r))
-        elseif r <= 0.0f0
-            c2 = -1.0f10
-        else
-            c2 = 1.0f10
-        end
-        return (0.0f0, 0.0f0, c2)
-    end
-
-    # Find max component
-    maxc = r > g ? (r > b ? Int32(1) : Int32(3)) : (g > b ? Int32(2) : Int32(3))
-    z = maxc == 1 ? r : (maxc == 2 ? g : b)
-
-    # Remap
-    next_c = maxc == 3 ? Int32(1) : maxc + Int32(1)
-    next2_c = next_c == 3 ? Int32(1) : next_c + Int32(1)
-    rgb_next = next_c == 1 ? r : (next_c == 2 ? g : b)
-    rgb_next2 = next2_c == 1 ? r : (next2_c == 2 ? g : b)
-
-    x = rgb_next * Float32(res - 1) / z
-    y = rgb_next2 * Float32(res - 1) / z
-
-    # Find z index
-    zi = Int32(1)
-    @inbounds for i in Int32(1):Int32(res-1)
-        if scale[i] < z
-            zi = i
-        end
-    end
-    zi = min(zi, Int32(res - 1))
-
-    # Integer indices
-    xi = min(u_int32(x) + Int32(1), Int32(res - 1))
-    yi = min(u_int32(y) + Int32(1), Int32(res - 1))
-
-    dx = x - Float32(xi - 1)
-    dy = y - Float32(yi - 1)
-    @inbounds dz = (z - scale[zi]) / (scale[zi + 1] - scale[zi])
-
-    # Trilinear interpolation
-    c0 = 0.0f0
-    c1 = 0.0f0
-    c2 = 0.0f0
-
-    @inbounds for i in Int32(1):Int32(3)
-        val = (1.0f0 - dz) * (
-            (1.0f0 - dy) * ((1.0f0 - dx) * coeffs[maxc, zi, yi, xi, i] +
-                                     dx * coeffs[maxc, zi, yi, xi+1, i]) +
-                     dy * ((1.0f0 - dx) * coeffs[maxc, zi, yi+1, xi, i] +
-                                     dx * coeffs[maxc, zi, yi+1, xi+1, i])
-        ) + dz * (
-            (1.0f0 - dy) * ((1.0f0 - dx) * coeffs[maxc, zi+1, yi, xi, i] +
-                                     dx * coeffs[maxc, zi+1, yi, xi+1, i]) +
-                     dy * ((1.0f0 - dx) * coeffs[maxc, zi+1, yi+1, xi, i] +
-                                     dx * coeffs[maxc, zi+1, yi+1, xi+1, i])
-        )
-
-        if i == Int32(1)
-            c0 = val
-        elseif i == Int32(2)
-            c1 = val
-        else
-            c2 = val
-        end
-    end
-
-    return (c0, c1, c2)
-end
-
-"""Evaluate sigmoid polynomial at wavelength (GPU-compatible)"""
-@propagate_inbounds function eval_sigmoid_polynomial(c0::Float32, c1::Float32, c2::Float32, lambda::Float32)::Float32
-    x = c0 * lambda * lambda + c1 * lambda + c2
-    if isinf(x)
-        return x > 0 ? 1.0f0 : 0.0f0
-    end
-    return 0.5f0 + x / (2.0f0 * sqrt(1.0f0 + x * x))
-end
 
 # ============================================================================
 # Spectrum Types using RGBSigmoidPolynomial

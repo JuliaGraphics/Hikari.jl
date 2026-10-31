@@ -29,13 +29,13 @@ using GeometryBasics: normal_mesh, Tesselation, Sphere, Point3f, Vec3f, Point2f
 using LinearAlgebra: I
 
 const _BACKEND_M = Mantle.defaultbackend()
-const _CTX_M = Mantle.vk_context()
+const TEST_DEVICE = Hikari.mantle_device(Mantle.defaultbackend())
 
 @testset "VolPath per-iter lifecycle — no cascade fault" begin
     # Tiny scene: minimum HW RT setup to exercise the fault trigger.
     scene = Hikari.Scene(; backend=_BACKEND_M, hw_accel=true)
     sphere = normal_mesh(Tesselation(Sphere(Point3f(0, 0, 0.35), 0.35f0), 6))
-    push!(scene, sphere, Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.6f0, 0.6f0, 0.6f0)))
+    push!(scene, sphere, Hikari.Diffuse(color = Hikari.RGBSpectrum(0.6f0, 0.6f0, 0.6f0)))
     push!(scene, Hikari.PointLight(Point3f(0, -2, 3), Hikari.RGBSpectrum(30f0)))
     Hikari.sync!(scene)
     camera = Hikari.PerspectiveCamera(Point3f(0, -3, 1.5), Point3f(0, 0, 0.35),
@@ -54,7 +54,7 @@ const _CTX_M = Mantle.vk_context()
         # Hard assertion: device must NOT have gone lost on any iter.
         # If close(vp)'s GC.gc(false) mitigation is removed (or breaks),
         # this trips reliably starting iter 5-6.
-        @test !Mantle.device_lost(_CTX_M)
+        @test !Mantle.retired(TEST_DEVICE)
         # Pixels must be sane (non-degenerate output).
         @test any(p -> (p.r + p.g + p.b) > 1f-4, img)
     end

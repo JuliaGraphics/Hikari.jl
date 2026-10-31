@@ -11,9 +11,9 @@ function make_scene()
     push!(scene, to_mesh(Sphere(Point3f(-0.6f0, 0.4f0, 0f0), 0.4f0)),
           Hikari.Gold(roughness=0.03f0))
     push!(scene, to_mesh(Sphere(Point3f(0.5f0, 0.3f0, 0.2f0), 0.3f0)),
-          Hikari.Dielectric(index=1.5f0))
+          Hikari.Glass(ior = 1.5f0))
     push!(scene, to_mesh(Rect3f(Vec3f(-3, 0, -3), Vec3f(6, 0.01, 6))),
-          Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.85f0)))
+          Hikari.Diffuse(color = Hikari.RGBSpectrum(0.85f0)))
     push!(scene, Hikari.PointLight(Point3f(2f0, 3f0, -2f0), Hikari.RGBSpectrum(40f0)))
     push!(scene, Hikari.AmbientLight(Hikari.RGBSpectrum(0.5f0)))
     Hikari.sync!(scene)

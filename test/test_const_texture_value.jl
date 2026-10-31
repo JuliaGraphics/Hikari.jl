@@ -67,10 +67,10 @@ using Hikari: Texture, ConstTexture, TexHandle, TexKind, RGBSpectrum, constant_v
     @testset "material parameter survives the conversion" begin
         for _ in 1:20
             val = RGBSpectrum(0.2f0, 0.55f0, 0.75f0, 1.0f0)
-            mat = Diffuse(Kd=ConstTexture(val), σ=0.0f0)
+            mat = Diffuse(color = ConstTexture(val))
             dev = Hikari.to_device_material(nothing, mat)
-            @test dev.Kd.kind == TexKind.CONST_SPECTRUM
-            @test dev.Kd.rgb == val
+            @test dev.color.kind == TexKind.CONST_SPECTRUM
+            @test dev.color.rgb == val
         end
     end
 end

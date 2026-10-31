@@ -1,22 +1,22 @@
 using Test
-using Hikari, Lava, Mantle
+using Hikari, Mantle
 import KernelAbstractions as KA
 using KernelAbstractions: @kernel, @index
 
-# Hikari's memory and Mantle's have to come from the SAME Vulkan device. Mantle
-# devices own a `Pool`, so a second `Device(Lava)` would be a second allocator
-# over one `VkDevice` — every buffer still valid, every placement decision made
+# Hikari's memory and Mantle's have to come from the SAME device. Mantle devices
+# own a `Pool`, so a second `Device` for one driver device would be a second
+# allocator over it: every buffer still valid, every placement decision made
 # against half the picture.
 #
-# `Mantle.Device(Lava)` caches one per `VkContext`, and this pins that Hikari
-# goes through that cache rather than around it.
-@testset "mantle_device reuses Lava's device" begin
+# `Mantle.Device(backend)` holds one per backend, and this pins that Hikari goes
+# through it rather than around it.
+@testset "mantle_device is Mantle's device for the backend" begin
     backend = Mantle.defaultbackend()
     d = Hikari.mantle_device(backend)
 
     @test d === Hikari.mantle_device(backend)          # cached, not rebuilt
-    @test d === Mantle.vk_context()                      # the device Hikari renders on
-    @test d.default_bq === Mantle.batchqueue(Mantle.Device())  # and its queue, not a new one
+    @test d === Mantle.Device(backend)                 # the device Hikari renders on
+    @test Mantle.batchqueue(d) === Mantle.batchqueue(Mantle.Device())  # and its queue, not a new one
 end
 
 @testset "a graph can read Hikari's own buffers" begin

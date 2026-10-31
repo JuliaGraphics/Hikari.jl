@@ -34,7 +34,7 @@ struct SunLight{S<:Spectrum} <: Light
 end
 
 # Sun lights are delta lights (emit along a single direction)
-is_δ_light(::SunLight) = true
+is_δ_light(::Type{<:SunLight}) = true
 # Sun lights are infinite (at infinity)
 is_infinite_light(::SunLight) = true
 is_infinite_light(::Type{<:SunLight}) = true

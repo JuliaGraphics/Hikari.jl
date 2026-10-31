@@ -230,11 +230,10 @@ function build_hikari_scene(pbrt::PBRTScene;
         inside_medium = get(media_cache, srec.medium_inner, nothing)
         outside_medium = get(media_cache, srec.medium_outer, nothing)
 
-        # Area light → wrap material in MediumInterface with Emissive
+        # Area light → wrap material in MediumInterface with its emission
         if srec.area_light !== nothing
-            emissive = Emissive(srec.area_light)
             push!(scene, mesh, MediumInterface(mat;
-                emission=emissive, inside=inside_medium, outside=outside_medium))
+                emission=Emission(srec.area_light), inside=inside_medium, outside=outside_medium))
         elseif inside_medium !== nothing || outside_medium !== nothing
             # Shape has participating media — wrap in MediumInterface
             push!(scene, mesh, MediumInterface(mat;
@@ -330,31 +329,30 @@ function blackbody_to_rgb(T::Float32)
 end
 
 """
-    Emissive(area_light::PBRTEntity)
+    Emission(area_light::PBRTEntity)
 
-Build the emissive material for a pbrt `AreaLightSource "diffuse"` record.
+The emission of a pbrt `AreaLightSource "diffuse"` record.
 
 Applies pbrt-v4's photometric normalization from `lights.cpp`
 `DiffuseAreaLight::Create`, which scales so radiance is equivalent to 1 nit:
 
     scale /= SpectrumToPhotometric(L)
 
-Note this divides by the value for the ACTUAL emitter spectrum, not a fixed D65
-constant. For an `RGBIlluminantSpectrum` the two coincide — pbrt and Hikari both
-special-case it back to the colour space's illuminant — but that is a property of
-that spectrum type, not a licence to hardcode D65.
+`Emission` normalizes by D65's, so its strength is pbrt's scale times D65's over
+the ACTUAL emitter spectrum's. For an `RGBIlluminantSpectrum` the two coincide —
+pbrt and Hikari both special-case it back to the colour space's illuminant — but
+that is a property of that spectrum type, not a licence to hardcode D65.
 
 Both importers (Hikari's `pbrt_build_scene` and RayMakie's `pbrt_to_makie`) go
 through here so they cannot drift apart.
 """
-function Emissive(area_light::PBRTEntity)
+function Emission(area_light::PBRTEntity)
     Le = pbrt_get_emissive_le(area_light, (1.0, 1.0, 1.0))
     scale = Float32(pbrt_get_float(area_light, "scale", 1.0))
     two_sided = pbrt_get_bool(area_light, "twosided", false)
     Le_spectrum = rgb_illuminant_spectrum(get_srgb_table(),
         RGB{Float32}(Float32(Le[1]), Float32(Le[2]), Float32(Le[3])))
-    scale /= spectrum_to_photometric(Le_spectrum)
-    return Emissive(TexHandle(Le), scale, two_sided)
+    return Emission(; color = Le, strength = scale * (D65_PHOTOMETRIC / spectrum_to_photometric(Le_spectrum)), two_sided)
 end
 
 # Like pbrt_get_rgb but also handles "blackbody" type params (single temperature value).
@@ -600,8 +598,8 @@ function build_pbrt_textures(pbrt::PBRTScene, scene)
     # This is the step that lets material structs be non-parametric: a material
     # field holds a handle carrying a runtime `(slot, idx)`, so whether a
     # parameter is a constant, an image map or a procedural no longer changes
-    # the material's TYPE — and therefore no longer multiplies closest-hit
-    # shaders.
+    # the material's TYPE, and therefore no longer multiplies shading
+    # kernels.
     # Without a scene there is nowhere to put them yet; the materials keep the
     # raw textures and `to_device_material` stores them at push time. That is
     # correct but stores one copy per material, so the scene-ful path — every
@@ -644,7 +642,7 @@ function attach_bump(mat::Material, entity::PBRTEntity, textures::AbstractDict{S
         tex_name isa AbstractString || continue
         h = get(textures, String(tex_name), nothing)
         h === nothing && continue
-        return set_displacement(mat, matparam(h))
+        return set_displacement(mat, h)
     end
     return mat
 end
@@ -680,6 +678,57 @@ function pbrt_get_float_texture(entity::PBRTEntity, name::String,
     return TexHandle(Float32(pbrt_get_float(entity, name, Float64(default_val))))
 end
 
+"""
+The `(u, v)` roughness pbrt reads for a material: `prefix`'s `uroughness` and `vroughness`, each
+its `roughness` where not given, any of them a texture.
+"""
+function pbrt_get_roughness(entity::PBRTEntity, textures::AbstractDict{String}, prefix::String = "")
+    rough = pbrt_get_float_texture(entity, prefix * "roughness", textures, 0.0)
+    axis(name) = haskey(entity.params, prefix * name) ? pbrt_get_float_texture(entity, prefix * name, textures, 0.0) : rough
+    return (axis("uroughness"), axis("vroughness"))
+end
+
+"""
+An index of refraction as pbrt reads one: a float, the name of one of its spectra (`"glass-BK7"`,
+`"metal-Au-eta"`, `NAMED_IOR_SPECTRA`), or a spectrum given inline as (λ, value) pairs; `nothing`
+where the material does not give it.
+"""
+function pbrt_get_ior(entity::PBRTEntity, name::String)
+    haskey(entity.params, name) || return nothing
+    p = entity.params[name]
+    isempty(p.values) && return nothing
+    v = p.values[1]
+    if v isa AbstractString
+        haskey(NAMED_IOR_SPECTRA, v) ||
+            throw(ArgumentError("pbrt: $(entity.type)'s \"$name\" names \"$v\", which is not an index of refraction pbrt knows"))
+        return NAMED_IOR_SPECTRA[v]
+    end
+    p.type == :spectrum || return Float32(v)
+    n = length(p.values) ÷ 2
+    return from_interleaved(PiecewiseLinearSpectrum{n}, ntuple(i -> Float32(p.values[i]), 2n))
+end
+
+"""
+A conductor's complex index of refraction, pbrt's way: `eta` and `k` (each copper's where not
+given, as `metal-Cu-eta`/`metal-Cu-k`), each a named or inline spectrum or an RGB; or `nothing` where
+the material gives a `reflectance` instead.
+"""
+function pbrt_get_conductor_ior(entity::PBRTEntity, eta_name::String, k_name::String)
+    given = haskey(entity.params, eta_name) || haskey(entity.params, k_name)
+    if haskey(entity.params, "reflectance")
+        given && throw(ArgumentError("pbrt: $(entity.type) takes either \"$eta_name\" and \"$k_name\" or \"reflectance\", not both"))
+        return nothing
+    end
+    ior(name, default) = haskey(entity.params, name) && entity.params[name].type == :rgb ?
+                         pbrt_get_rgb(entity, name, (1.0, 1.0, 1.0)) : something(pbrt_get_ior(entity, name), default)
+    return (ior(eta_name, CU_ETA_SPECTRUM), ior(k_name, CU_K_SPECTRUM))
+end
+
+"""The medium between a layered material's interfaces, as pbrt reads it: `(thickness, albedo, g, max_depth, n_samples)`."""
+pbrt_get_layers(entity::PBRTEntity, textures::AbstractDict{String}) =
+    (pbrt_get_float_texture(entity, "thickness", textures, 0.01), pbrt_get_texture(entity, "albedo", textures, (0.0, 0.0, 0.0)),
+     pbrt_get_float_texture(entity, "g", textures, 0.0), pbrt_get_int(entity, "maxdepth", 10), pbrt_get_int(entity, "nsamples", 1))
+
 function build_pbrt_material(entity::PBRTEntity, pbrt::PBRTScene,
                              textures::AbstractDict{String}=Dict{String,TexHandle}(),
                              mat_cache::Dict{String, Material}=Dict{String,Material}())
@@ -687,125 +736,45 @@ function build_pbrt_material(entity::PBRTEntity, pbrt::PBRTScene,
 
     if type == "diffuse"
         refl = pbrt_get_texture(entity, "reflectance", textures, (0.5, 0.5, 0.5))
-        return Diffuse(Kd=refl)
+        return Diffuse(color = refl)
 
     elseif type == "conductor"
-        rough = pbrt_get_float_texture(entity, "roughness", textures, 0.0)
-        # pbrt's `uroughness`/`vroughness` default to `roughness`; that fold is
-        # only meaningful when `roughness` itself is a constant.
-        combined_rough = if is_const_float(rough)
-            rv = Float64(const_float(rough))
-            urough = Float32(pbrt_get_float(entity, "uroughness", rv))
-            vrough = Float32(pbrt_get_float(entity, "vroughness", rv))
-            TexHandle(max(urough, vrough))
-        else
-            rough
-        end
+        roughness = pbrt_get_roughness(entity, textures)
         remap = pbrt_get_bool(entity, "remaproughness", true)
-        # Check for named spectra (gold, silver, copper, etc.)
-        eta_str = pbrt_get_string(entity, "eta", "")
-        k_str = pbrt_get_string(entity, "k", "")
-        has_eta = !isempty(eta_str) || haskey(entity.params, "eta")
-        has_k = !isempty(k_str) || haskey(entity.params, "k")
-        has_refl = haskey(entity.params, "reflectance")
-        if contains(eta_str, "Au") || contains(eta_str, "gold")
-            return Gold(roughness=combined_rough, remap_roughness=remap)
-        elseif contains(eta_str, "Ag") || contains(eta_str, "silver")
-            return Silver(roughness=combined_rough, remap_roughness=remap)
-        elseif contains(eta_str, "Cu") && !contains(eta_str, "CuZn")
-            return Copper(roughness=combined_rough, remap_roughness=remap)
-        elseif contains(eta_str, "Al")
-            return Aluminum(roughness=combined_rough, remap_roughness=remap)
-        end
-        if has_refl
-            refl = pbrt_get_rgb(entity, "reflectance", (1.0, 1.0, 1.0))
-            return Conductor(reflectance=refl, roughness=combined_rough,
-                             remap_roughness=remap)
-        end
-        if !has_eta && !has_k
-            return Copper(roughness=combined_rough, remap_roughness=remap)
-        end
-        eta_rgb = pbrt_get_rgb(entity, "eta", (0.2, 0.2, 0.2))
-        k_rgb = pbrt_get_rgb(entity, "k", (3.9, 3.9, 3.9))
-        return Conductor(eta=eta_rgb, k=k_rgb, roughness=combined_rough,
-                         remap_roughness=remap)
+        ior = pbrt_get_conductor_ior(entity, "eta", "k")
+        ior === nothing && return Conductor(; reflectance=pbrt_get_texture(entity, "reflectance", textures, (1.0, 1.0, 1.0)),
+                                            roughness, remap_roughness=remap)
+        return Conductor(; ior = ior[1], extinction = ior[2], roughness, remap_roughness = remap)
 
     elseif type == "dielectric"
-        eta = Float32(pbrt_get_float(entity, "eta", 1.5))
-        rough_base = pbrt_get_float_texture(entity, "roughness", textures, 0.0)
-        rough_scalar = const_float(rough_base, 0f0)
-        urough = pbrt_get_float_texture(entity, "uroughness", textures, Float64(rough_scalar))
-        vrough = pbrt_get_float_texture(entity, "vroughness", textures, Float64(rough_scalar))
+        eta = something(pbrt_get_ior(entity, "eta"), 1.5f0)
         remap = pbrt_get_bool(entity, "remaproughness", true)
-        return Dielectric(index=eta, roughness=(urough, vrough), remap_roughness=remap)
+        return Dielectric(ior = eta, roughness = pbrt_get_roughness(entity, textures), remap_roughness = remap)
 
     elseif type == "thindielectric"
-        eta = Float32(pbrt_get_float(entity, "eta", 1.5))
-        return ThinDielectric(eta=eta)
+        return ThinDielectric(ior = something(pbrt_get_ior(entity, "eta"), 1.5f0))
 
     elseif type == "coateddiffuse"
         refl = pbrt_get_texture(entity, "reflectance", textures, (0.5, 0.5, 0.5))
-        # `roughness` may be a scalar OR a texture (Crown's `border_bott_inlay`
-        # uses a mask texture). Silent coercion to a constant produced uniform
-        # mirror-smooth coating where pbrt rendered a masked rough/smooth mix.
-        rough = pbrt_get_float_texture(entity, "roughness", textures, 0.0)
-        eta = Float32(pbrt_get_float(entity, "eta", 1.5))
+        # Any roughness may be a texture (Crown's `border_bott_inlay` uses a mask).
+        eta = something(pbrt_get_ior(entity, "eta"), 1.5f0)
         remap = pbrt_get_bool(entity, "remaproughness", true)
-        return CoatedDiffuse(reflectance=refl, roughness=rough, eta=eta,
+        thickness, albedo, g, max_depth, n_samples = pbrt_get_layers(entity, textures)
+        return CoatedDiffuse(reflectance=refl, roughness=pbrt_get_roughness(entity, textures), ior=eta,
+                             thickness=thickness, albedo=albedo, g=g, max_depth=max_depth, n_samples=n_samples,
                              remap_roughness=remap)
 
     elseif type == "coatedconductor"
-        irough = Float32(pbrt_get_float(entity, "interface.roughness", 0.0))
-        crough = Float32(pbrt_get_float(entity, "conductor.roughness", 0.0))
-        ieta = Float32(pbrt_get_float(entity, "interface.eta", 1.5))
-        ceta_str = pbrt_get_string(entity, "conductor.eta", "")
-        has_ceta = !isempty(ceta_str) || haskey(entity.params, "conductor.eta")
-        has_ck = haskey(entity.params, "conductor.k")
-        has_refl = haskey(entity.params, "reflectance")
-        # Named spectra → pass PiecewiseLinearSpectrum directly as conductor eta/k
-        # These get evaluated spectrally at render time via eval_ior_spectral
-        if contains(ceta_str, "Au") || contains(ceta_str, "gold")
-            return CoatedConductor(
-                conductor_eta=AU_ETA_SPECTRUM, conductor_k=AU_K_SPECTRUM,
-                conductor_roughness=crough,
-                interface_roughness=irough, interface_eta=ieta)
-        elseif contains(ceta_str, "Ag") || contains(ceta_str, "silver")
-            return CoatedConductor(
-                conductor_eta=AG_ETA_SPECTRUM, conductor_k=AG_K_SPECTRUM,
-                conductor_roughness=crough,
-                interface_roughness=irough, interface_eta=ieta)
-        elseif contains(ceta_str, "Cu") && !contains(ceta_str, "CuZn")
-            return CoatedConductor(
-                conductor_eta=CU_ETA_SPECTRUM, conductor_k=CU_K_SPECTRUM,
-                conductor_roughness=crough,
-                interface_roughness=irough, interface_eta=ieta)
-        elseif contains(ceta_str, "Al")
-            return CoatedConductor(
-                conductor_eta=AL_ETA_SPECTRUM, conductor_k=AL_K_SPECTRUM,
-                conductor_roughness=crough,
-                interface_roughness=irough, interface_eta=ieta)
-        end
-        if has_refl
-            refl = pbrt_get_rgb(entity, "reflectance", (1.0, 1.0, 1.0))
-            return CoatedConductor(reflectance=refl,
-                                   conductor_roughness=crough,
-                                   interface_roughness=irough,
-                                   interface_eta=ieta)
-        end
-        if !has_ceta && !has_ck
-            # pbrt-v4 default: Copper (metal-Cu-eta, metal-Cu-k)
-            return CoatedConductor(
-                conductor_eta=CU_ETA_SPECTRUM, conductor_k=CU_K_SPECTRUM,
-                conductor_roughness=crough,
-                interface_roughness=irough, interface_eta=ieta)
-        end
-        # Has explicit conductor.eta/k as RGB values
-        ceta_rgb = pbrt_get_rgb(entity, "conductor.eta", (0.2, 0.2, 0.2))
-        ck_rgb = pbrt_get_rgb(entity, "conductor.k", (3.9, 3.9, 3.9))
-        return CoatedConductor(conductor_eta=ceta_rgb, conductor_k=ck_rgb,
-                               conductor_roughness=crough,
-                               interface_roughness=irough,
-                               interface_eta=ieta)
+        thickness, albedo, g, max_depth, n_samples = pbrt_get_layers(entity, textures)
+        layers = (; interface_roughness = pbrt_get_roughness(entity, textures, "interface."),
+                    conductor_roughness = pbrt_get_roughness(entity, textures, "conductor."),
+                    interface_ior = something(pbrt_get_ior(entity, "interface.eta"), 1.5f0),
+                    thickness, albedo, g, max_depth, n_samples,
+                    remap_roughness = pbrt_get_bool(entity, "remaproughness", true))
+        ior = pbrt_get_conductor_ior(entity, "conductor.eta", "conductor.k")
+        ior === nothing && return CoatedConductor(; reflectance=pbrt_get_texture(entity, "reflectance", textures, (1.0, 1.0, 1.0)),
+                                                  layers...)
+        return CoatedConductor(; conductor_ior = ior[1], conductor_extinction = ior[2], layers...)
 
     elseif type == "diffusetransmission"
         refl = pbrt_get_rgb(entity, "reflectance", (0.25, 0.25, 0.25))
@@ -814,8 +783,8 @@ function build_pbrt_material(entity::PBRTEntity, pbrt::PBRTScene,
         return DiffuseTransmission(reflectance=refl, transmittance=trans, scale=sc)
 
     elseif type == "mirror"
-        refl = pbrt_get_rgb(entity, "reflectance", (0.9, 0.9, 0.9))
-        return Mirror(Kr=refl)
+        # pbrt-v3's mirror: a singular reflection of `reflectance`, no Fresnel.
+        return Glossy(color = pbrt_get_rgb(entity, "reflectance", (0.9, 0.9, 0.9)), roughness = 0)
 
     elseif type == "interface"
         # pbrt `Material "interface"` = nullptr surface: rays pass through, only
@@ -836,11 +805,11 @@ function build_pbrt_material(entity::PBRTEntity, pbrt::PBRTScene,
         mat2 = get(mat_cache, mat_names[2], nothing)
         mat1 === nothing && error("mix: unknown material '$(mat_names[1])'")
         mat2 === nothing && error("mix: unknown material '$(mat_names[2])'")
-        return MixMaterial(materials=(mat1, mat2), amount=amount)
+        return Mix(mat1, mat2; factor = amount)
 
     else
         @warn "pbrt: unsupported material type '$type', using default Diffuse"
-        return Diffuse(Kd=(0.5, 0.5, 0.5))
+        return Diffuse(color = (0.5, 0.5, 0.5))
     end
 end
 
@@ -854,117 +823,258 @@ function resolve_pbrt_material(srec::PBRTShapeRecord, mat_cache::Dict{String, Ma
             pbrt.named_materials[name]
         else
             @warn "pbrt: unknown named material '$name', using default"
-            return Diffuse(Kd=(0.5, 0.5, 0.5))
+            return Diffuse(color = (0.5, 0.5, 0.5))
         end
     elseif srec.material_inline !== nothing
         srec.material_inline
     else
-        return Diffuse(Kd=(0.5, 0.5, 0.5))
+        return Diffuse(color = (0.5, 0.5, 0.5))
     end
 
     mat = build_pbrt_material(entity, pbrt, textures, mat_cache)
     if mat !== nothing
         return attach_bump(mat, entity, textures)
     end
-    return Diffuse(Kd=(0.5, 0.5, 0.5))
+    return Diffuse(color = (0.5, 0.5, 0.5))
 end
 
 # ============================================================================
 # Loop subdivision (pbrt "loopsubdiv" shape)
 # ============================================================================
+#
+# pbrt-v4's `LoopSubdivide` (util/loopsubdiv.cpp): the faces with their neighbour across each
+# edge, refined `levels` times, the vertices then pushed to the limit surface and given its
+# normal, the cross product of the limit tangents. The one-ring order is pbrt's: it decides the
+# tangents of a boundary vertex.
+
+"""
+A triangle mesh with each face's neighbour across each of its edges, as pbrt's `SDFace`:
+`v[k, face]` its vertices, `f[k, face]` the face across the edge from `v[k]` to the next vertex
+(0 on a boundary), `start` a face of each vertex.
+"""
+struct LoopTopology
+    p::Vector{Point3f}
+    v::Matrix{Int}
+    f::Matrix{Int}
+    start::Vector{Int}
+    boundary::BitVector
+    regular::BitVector
+end
+
+loop_next(k::Int) = k % 3 + 1
+loop_prev(k::Int) = (k + 1) % 3 + 1
+
+function loop_vnum(t::LoopTopology, face::Int, vert::Int)
+    for k in 1:3
+        t.v[k, face] == vert && return k
+    end
+    error("loopsubdiv: vertex $vert is not on face $face")
+end
+loop_next_face(t::LoopTopology, face::Int, vert::Int) = t.f[loop_vnum(t, face, vert), face]
+loop_prev_face(t::LoopTopology, face::Int, vert::Int) = t.f[loop_prev(loop_vnum(t, face, vert)), face]
+loop_next_vert(t::LoopTopology, face::Int, vert::Int) = t.v[loop_next(loop_vnum(t, face, vert)), face]
+loop_prev_vert(t::LoopTopology, face::Int, vert::Int) = t.v[loop_prev(loop_vnum(t, face, vert)), face]
+
+function loop_other_vert(t::LoopTopology, face::Int, a::Int, b::Int)
+    for k in 1:3
+        (t.v[k, face] != a && t.v[k, face] != b) && return t.v[k, face]
+    end
+    error("loopsubdiv: face $face has no vertex besides $a and $b")
+end
+
+function loop_valence(t::LoopTopology, vert::Int)
+    face = t.start[vert]
+    nf = 1
+    if !t.boundary[vert]
+        while (face = loop_next_face(t, face, vert)) != t.start[vert]
+            nf += 1
+        end
+        return nf
+    end
+    while (face = loop_next_face(t, face, vert)) != 0
+        nf += 1
+    end
+    face = t.start[vert]
+    while (face = loop_prev_face(t, face, vert)) != 0
+        nf += 1
+    end
+    return nf + 1
+end
+
+"""The vertices around `vert`, in pbrt's order: a boundary vertex's from one boundary neighbour to the other."""
+function loop_one_ring(t::LoopTopology, vert::Int)
+    ring = Point3f[]
+    face = t.start[vert]
+    if !t.boundary[vert]
+        while true
+            push!(ring, t.p[loop_next_vert(t, face, vert)])
+            face = loop_next_face(t, face, vert)
+            face == t.start[vert] && return ring
+        end
+    end
+    while (next = loop_next_face(t, face, vert)) != 0
+        face = next
+    end
+    push!(ring, t.p[loop_next_vert(t, face, vert)])
+    while face != 0
+        push!(ring, t.p[loop_prev_vert(t, face, vert)])
+        face = loop_prev_face(t, face, vert)
+    end
+    return ring
+end
 
 loop_beta(valence::Int) = valence == 3 ? 3f0 / 16f0 : 3f0 / (8f0 * valence)
+loop_gamma(valence::Int) = 1f0 / (valence + 3f0 / (8f0 * loop_beta(valence)))
 
-function _loopsubdiv_adjacency(n::Int, faces::Vector{NTuple{3,Int}})
-    neighbors = [Set{Int}() for _ in 1:n]
-    for (v1, v2, v3) in faces
-        push!(neighbors[v1], v2, v3)
-        push!(neighbors[v2], v1, v3)
-        push!(neighbors[v3], v1, v2)
+function loop_weight_one_ring(t::LoopTopology, vert::Int, beta::Float32)
+    ring = loop_one_ring(t, vert)
+    p = (1f0 - length(ring) * beta) * t.p[vert]
+    for q in ring
+        p += beta * q
     end
-    return neighbors
+    return Point3f(p)
 end
 
-function _loopsubdiv_boundary(n::Int, faces::Vector{NTuple{3,Int}})
-    edge_count = Dict{Tuple{Int,Int}, Int}()
-    for (v1, v2, v3) in faces
-        for (a, b) in ((v1,v2), (v2,v3), (v3,v1))
-            edge = minmax(a, b)
-            edge_count[edge] = get(edge_count, edge, 0) + 1
-        end
-    end
-    boundary = falses(n)
-    for ((a, b), count) in edge_count
-        count == 1 && (boundary[a] = true; boundary[b] = true)
-    end
-    return boundary
+function loop_weight_boundary(t::LoopTopology, vert::Int, beta::Float32)
+    ring = loop_one_ring(t, vert)
+    return Point3f((1f0 - 2f0 * beta) * t.p[vert] + beta * ring[1] + beta * ring[end])
 end
 
-function _loopsubdiv_once(vertices::Vector{Point3f}, faces::Vector{NTuple{3,Int}})
-    neighbors = _loopsubdiv_adjacency(length(vertices), faces)
-    boundary = _loopsubdiv_boundary(length(vertices), faces)
-
-    new_vertices = Vector{Point3f}(undef, length(vertices))
-    for (i, v) in enumerate(vertices)
-        neighs = collect(neighbors[i])
-        valence = length(neighs)
-        if boundary[i]
-            boundary_neighs = filter(n -> boundary[n], neighs)
-            if length(boundary_neighs) >= 2
-                bn = boundary_neighs[1:2]
-                new_vertices[i] = 0.75f0 * v + 0.125f0 * (vertices[bn[1]] + vertices[bn[2]])
-            else
-                new_vertices[i] = v
-            end
+function LoopTopology(p::Vector{Point3f}, faces::Vector{NTuple{3,Int}})
+    nf = length(faces)
+    v = Matrix{Int}(undef, 3, nf)
+    f = zeros(Int, 3, nf)
+    start = zeros(Int, length(p))
+    for (i, face) in enumerate(faces), j in 1:3
+        v[j, i] = face[j]
+        start[face[j]] = i
+    end
+    # The first face of an edge waits for the second, and the two are each other's neighbour.
+    open_edges = Dict{Tuple{Int,Int}, Tuple{Int,Int}}()
+    for i in 1:nf, k in 1:3
+        edge = minmax(v[k, i], v[loop_next(k), i])
+        if haskey(open_edges, edge)
+            other, other_k = pop!(open_edges, edge)
+            f[other_k, other] = i
+            f[k, i] = other
         else
-            b = loop_beta(valence)
-            ring_sum = sum(vertices[n] for n in neighs)
-            new_vertices[i] = (1f0 - valence * b) * v + b * ring_sum
+            open_edges[edge] = (i, k)
         end
     end
-
-    edge_faces = Dict{Tuple{Int,Int}, Vector{Int}}()
-    for (fi, (v1, v2, v3)) in enumerate(faces)
-        for (a, b) in ((v1,v2), (v2,v3), (v3,v1))
-            edge = minmax(a, b)
-            push!(get!(edge_faces, edge, Int[]), fi)
+    t = LoopTopology(p, v, f, start, falses(length(p)), falses(length(p)))
+    for vert in eachindex(p)
+        face = start[vert]
+        while true
+            face = loop_next_face(t, face, vert)
+            (face == 0 || face == start[vert]) && break
         end
+        t.boundary[vert] = face == 0
     end
-
-    edge_vertex_map = Dict{Tuple{Int,Int}, Int}()
-    out_vertices = copy(new_vertices)
-    for (edge, adj_faces) in edge_faces
-        a, b = edge
-        new_p = if length(adj_faces) == 1
-            0.5f0 * (vertices[a] + vertices[b])
-        else
-            f1, f2 = adj_faces[1], adj_faces[2]
-            opp1 = only(filter(v -> v != a && v != b, (faces[f1][1], faces[f1][2], faces[f1][3])))
-            opp2 = only(filter(v -> v != a && v != b, (faces[f2][1], faces[f2][2], faces[f2][3])))
-            0.375f0 * (vertices[a] + vertices[b]) + 0.125f0 * (vertices[opp1] + vertices[opp2])
-        end
-        push!(out_vertices, new_p)
-        edge_vertex_map[edge] = length(out_vertices)
+    for vert in eachindex(p)
+        valence = loop_valence(t, vert)
+        t.regular[vert] = t.boundary[vert] ? valence == 4 : valence == 6
     end
-
-    new_faces = NTuple{3,Int}[]
-    sizehint!(new_faces, 4 * length(faces))
-    for (v1, v2, v3) in faces
-        e12 = edge_vertex_map[minmax(v1, v2)]
-        e23 = edge_vertex_map[minmax(v2, v3)]
-        e31 = edge_vertex_map[minmax(v3, v1)]
-        push!(new_faces, (v1, e12, e31), (v2, e23, e12), (v3, e31, e23), (e12, e23, e31))
-    end
-
-    return out_vertices, new_faces
+    return t
 end
 
-function loop_subdivide(vertices::Vector{Point3f}, faces::Vector{NTuple{3,Int}}, levels::Int)
-    v, f = vertices, faces
+"""One level of refinement: every face split in four, the children of face `i` at `4(i - 1) + 1:4`, its corners first."""
+function loop_refine(t::LoopTopology)
+    nv, nf = length(t.p), size(t.v, 2)
+    child(face, k) = 4 * (face - 1) + k
+    # Even vertices keep their index, the odd ones of the edges follow.
+    p = Vector{Point3f}(undef, nv)
+    for vert in 1:nv
+        p[vert] = if t.boundary[vert]
+            loop_weight_boundary(t, vert, 1f0 / 8f0)
+        else
+            loop_weight_one_ring(t, vert, t.regular[vert] ? 1f0 / 16f0 : loop_beta(loop_valence(t, vert)))
+        end
+    end
+    boundary, regular = copy(t.boundary), copy(t.regular)
+    start = [child(t.start[vert], loop_vnum(t, t.start[vert], vert)) for vert in 1:nv]
+    edge_verts = Dict{Tuple{Int,Int}, Int}()
+    for face in 1:nf, k in 1:3
+        a, b = minmax(t.v[k, face], t.v[loop_next(k), face])
+        haskey(edge_verts, (a, b)) && continue
+        across = t.f[k, face]
+        push!(p, if across == 0
+            Point3f(0.5f0 * t.p[a] + 0.5f0 * t.p[b])
+        else
+            Point3f(3f0 / 8f0 * t.p[a] + 3f0 / 8f0 * t.p[b] + 1f0 / 8f0 * t.p[loop_other_vert(t, face, a, b)] +
+                    1f0 / 8f0 * t.p[loop_other_vert(t, across, a, b)])
+        end)
+        push!(boundary, across == 0)
+        push!(regular, true)
+        push!(start, child(face, 4))
+        edge_verts[(a, b)] = length(p)
+    end
+    v = Matrix{Int}(undef, 3, 4nf)
+    f = zeros(Int, 3, 4nf)
+    for face in 1:nf, j in 1:3
+        f[j, child(face, 4)] = child(face, loop_next(j))
+        f[loop_next(j), child(face, j)] = child(face, 4)
+        across = t.f[j, face]
+        f[j, child(face, j)] = across == 0 ? 0 : child(across, loop_vnum(t, across, t.v[j, face]))
+        across = t.f[loop_prev(j), face]
+        f[loop_prev(j), child(face, j)] = across == 0 ? 0 : child(across, loop_vnum(t, across, t.v[j, face]))
+    end
+    for face in 1:nf, j in 1:3
+        v[j, child(face, j)] = t.v[j, face]
+        vert = edge_verts[minmax(t.v[j, face], t.v[loop_next(j), face])]
+        v[loop_next(j), child(face, j)] = vert
+        v[j, child(face, loop_next(j))] = vert
+        v[j, child(face, 4)] = vert
+    end
+    return LoopTopology(p, v, f, start, boundary, regular)
+end
+
+"""The normal of the limit surface at `vert`: the cross product of its limit tangents."""
+function loop_limit_normal(t::LoopTopology, vert::Int)
+    ring = loop_one_ring(t, vert)
+    valence = length(ring)
+    p = t.p[vert]
+    if !t.boundary[vert]
+        S, T = Vec3f(0), Vec3f(0)
+        for j in 0:valence - 1
+            S += cos(2f0 * Float32(π) * j / valence) * Vec3f(ring[j + 1])
+            T += sin(2f0 * Float32(π) * j / valence) * Vec3f(ring[j + 1])
+        end
+        return cross(S, T)
+    end
+    S = Vec3f(ring[valence] - ring[1])
+    T = if valence == 2
+        Vec3f(ring[1] + ring[2] - 2f0 * p)
+    elseif valence == 3
+        Vec3f(ring[2] - p)
+    elseif valence == 4   # regular
+        Vec3f(-1f0 * ring[1] + 2f0 * ring[2] + 2f0 * ring[3] + -1f0 * ring[4] + -2f0 * p)
+    else
+        theta = Float32(π) / Float32(valence - 1)
+        acc = Vec3f(sin(theta) * (ring[1] + ring[valence]))
+        for k in 1:valence - 2
+            acc += Vec3f((2f0 * cos(theta) - 2f0) * sin(k * theta) * ring[k + 1])
+        end
+        -acc
+    end
+    return cross(S, T)
+end
+
+"""
+    loop_subdivide(points, faces, levels) -> (points, faces, normals)
+
+pbrt-v4's Loop subdivision of a triangle mesh: refined `levels` times, the vertices on the limit
+surface, each with the limit surface's normal (unnormalized, as pbrt's).
+"""
+function loop_subdivide(points::Vector{Point3f}, faces::Vector{NTuple{3,Int}}, levels::Int)
+    t = LoopTopology(points, faces)
     for _ in 1:levels
-        v, f = _loopsubdiv_once(v, f)
+        t = loop_refine(t)
     end
-    return v, f
+    limit = [t.boundary[vert] ? loop_weight_boundary(t, vert, 1f0 / 5f0) :
+             loop_weight_one_ring(t, vert, loop_gamma(loop_valence(t, vert))) for vert in eachindex(t.p)]
+    t = LoopTopology(limit, t.v, t.f, t.start, t.boundary, t.regular)
+    normals = [loop_limit_normal(t, vert) for vert in eachindex(t.p)]
+    return t.p, [(t.v[1, i], t.v[2, i], t.v[3, i]) for i in axes(t.v, 2)], normals
 end
 
 # ============================================================================
@@ -1001,7 +1111,9 @@ function build_pbrt_shape(srec::PBRTShapeRecord, pbrt::PBRTScene)
         mesh = apply_pbrt_transform(mesh, srec.transform)
 
     elseif type == "trianglemesh"
-        mesh = build_trianglemesh(entity, srec.transform)
+        mesh = build_trianglemesh(entity)
+        mesh === nothing && return nothing
+        mesh = apply_pbrt_transform(mesh, srec.transform)
 
     elseif type == "plymesh"
         filename = pbrt_get_string(entity, "filename", "")
@@ -1013,15 +1125,16 @@ function build_pbrt_shape(srec::PBRTShapeRecord, pbrt::PBRTScene)
 
     elseif type == "loopsubdiv"
         levels = pbrt_get_int(entity, "levels", 3)
-        base_mesh = build_trianglemesh(entity, srec.transform)
+        # Subdivided in object space and then placed, as pbrt places the mesh it makes.
+        base_mesh = build_trianglemesh(entity)
         if base_mesh === nothing
             return nothing
         end
         pts = collect(Point3f, GeometryBasics.coordinates(base_mesh))
         fs = [NTuple{3,Int}((f[1], f[2], f[3])) for f in GeometryBasics.faces(base_mesh)]
-        sub_pts, sub_fs = loop_subdivide(pts, fs, levels)
+        sub_pts, sub_fs, normals = loop_subdivide(pts, fs, levels)
         fi = [TriangleFace{Int}(f[1], f[2], f[3]) for f in sub_fs]
-        mesh = GeometryBasics.normal_mesh(GeometryBasics.Mesh(sub_pts, fi))
+        mesh = apply_pbrt_transform(GeometryBasics.Mesh(sub_pts, fi; normal = normalize.(normals)), srec.transform)
 
     else
         @warn "pbrt: unsupported shape type '$type'"
@@ -1037,29 +1150,25 @@ function build_pbrt_shape(srec::PBRTShapeRecord, pbrt::PBRTScene)
     return mesh
 end
 
+"""pbrt's `ReverseOrientation`: the winding turned over and the normals negated; the uvs kept."""
 function reverse_mesh_orientation(mesh)
     positions = collect(GeometryBasics.coordinates(mesh))
     faces = collect(GeometryBasics.faces(mesh))
     flipped = [TriangleFace{Int}(f[1], f[3], f[2]) for f in faces]
-    return GeometryBasics.Mesh(positions, flipped)
+    props = propertynames(mesh)
+    attributes = (; (:normal in props ? (normal = [-Vec3f(n) for n in mesh.normal],) : ())...,
+                    (:uv in props ? (uv = collect(mesh.uv),) : ())...)
+    return GeometryBasics.Mesh(positions, flipped; attributes...)
 end
 
-function build_trianglemesh(entity::PBRTEntity, transform::Mat4f)
+"""A `trianglemesh` entity's mesh in object space, its normals and uvs with it."""
+function build_trianglemesh(entity::PBRTEntity)
     P = pbrt_get_floats(entity, "P")
     indices = pbrt_get_ints(entity, "indices")
     (isempty(P) || isempty(indices)) && return nothing
 
     n_verts = length(P) ÷ 3
     points = [Point3f(P[3i-2], P[3i-1], P[3i]) for i in 1:n_verts]
-
-    # Apply transform
-    if transform != IDENTITY4
-        for i in eachindex(points)
-            p = points[i]
-            p4 = transform * Vec4f(p[1], p[2], p[3], 1f0)
-            points[i] = Point3f(p4[1] / p4[4], p4[2] / p4[4], p4[3] / p4[4])
-        end
-    end
 
     n_tris = length(indices) ÷ 3
     # pbrt uses 0-based indices
@@ -1083,52 +1192,29 @@ function build_trianglemesh(entity::PBRTEntity, transform::Mat4f)
     return GeometryBasics.Mesh(points, faces; kwargs...)
 end
 
+"""
+    apply_pbrt_transform(mesh, transform) -> mesh
+
+The object-space `mesh` placed by `transform` as pbrt places a shape: positions by the transform,
+normals by the inverse transpose of its linear part, so they stay normal to a surface it scales
+unevenly. A transform that mirrors turns the winding over, and with it the normal Hikari takes
+from the winding; pbrt turns that normal back (`transformSwapsHandedness`), and so does the
+winding here.
+"""
 function apply_pbrt_transform(mesh, transform::Mat4f)
     transform == IDENTITY4 && return mesh
-
-    positions = GeometryBasics.coordinates(mesh)
-    faces = GeometryBasics.faces(mesh)
-    new_positions = map(positions) do p
+    positions = map(GeometryBasics.coordinates(mesh)) do p
         p4 = transform * Vec4f(p[1], p[2], p[3], 1f0)
         Point3f(p4[1] / p4[4], p4[2] / p4[4], p4[3] / p4[4])
     end
-    # Preserve per-vertex normals and UVs through the rebuild. Normals
-    # transform by the upper-3x3 (assuming no non-uniform scale on a unit
-    # surface — pbrt's Transform stack is rotation+translation+uniform-scale
-    # for our test scenes), then renormalize.
+    linear = SMatrix{3, 3, Float32}(transform[1:3, 1:3])
+    faces = collect(GeometryBasics.faces(mesh))
+    det(linear) < 0f0 && (faces = [TriangleFace{Int}(f[1], f[3], f[2]) for f in faces])
     props = propertynames(mesh)
-    has_n = :normal in props
-    has_uv = :uv in props
-    if !(has_n || has_uv)
-        return GeometryBasics.Mesh(collect(new_positions), collect(faces))
-    end
-    R = SMatrix{3,3,Float32}(
-        transform[1,1], transform[2,1], transform[3,1],
-        transform[1,2], transform[2,2], transform[3,2],
-        transform[1,3], transform[2,3], transform[3,3])
-    new_normals = if has_n
-        ns = mesh.normal
-        nout = Vector{Vec3f}(undef, length(ns))
-        for i in eachindex(ns)
-            n = R * Vec3f(ns[i][1], ns[i][2], ns[i][3])
-            l = sqrt(dot(n, n))
-            nout[i] = l > 0f0 ? n / l : n
-        end
-        nout
-    else
-        nothing
-    end
-    new_uvs = has_uv ? collect(mesh.uv) : nothing
-    if has_n && has_uv
-        return GeometryBasics.Mesh(collect(new_positions), collect(faces);
-                                   normal=new_normals, uv=new_uvs)
-    elseif has_n
-        return GeometryBasics.Mesh(collect(new_positions), collect(faces);
-                                   normal=new_normals)
-    else
-        return GeometryBasics.Mesh(collect(new_positions), collect(faces);
-                                   uv=new_uvs)
-    end
+    normal_matrix = transpose(inv(linear))
+    attributes = (; (:normal in props ? (normal = [Vec3f(normalize(normal_matrix * Vec3f(n))) for n in mesh.normal],) : ())...,
+                    (:uv in props ? (uv = collect(mesh.uv),) : ())...)
+    return GeometryBasics.Mesh(collect(positions), faces; attributes...)
 end
 
 # UV sphere tessellation

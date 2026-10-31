@@ -98,3 +98,16 @@ using GeometryBasics
         end
     end
 end
+
+# An `up` along the view direction leaves the camera no frame: the image rendered black, silently.
+@testset "a camera looking along its up vector is refused" begin
+    film = Hikari.Film(Point2f(8, 8))
+    @test_throws ArgumentError Hikari.PerspectiveCamera(Point3f(0, -3, 0), Point3f(0, 0, 0), film; up = Vec3f(0, 1, 0))
+    @test Hikari.PerspectiveCamera(Point3f(0, -3, 0), Point3f(0, 0, 0), film; up = Vec3f(0, 0, 1)) isa Hikari.PerspectiveCamera
+end
+
+# The default `fov` was an `Int`, which the camera's own constructor does not take.
+@testset "a camera with the default field of view" begin
+    film = Hikari.Film(Point2f(8, 8))
+    @test Hikari.PerspectiveCamera(Point3f(0, -3, 1), Point3f(0, 0, 0), film) isa Hikari.PerspectiveCamera
+end

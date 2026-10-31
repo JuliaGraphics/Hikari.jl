@@ -32,8 +32,6 @@ struct DiffuseAreaLight{LeTex} <: Light
     two_sided::Bool
 end
 
-is_δ_light(::DiffuseAreaLight) = false
-
 # ============================================================================
 # Emission Evaluation (pbrt-v4 DiffuseAreaLight::L)
 # ============================================================================
