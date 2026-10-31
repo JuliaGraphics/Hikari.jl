@@ -1,7 +1,7 @@
 # Type-based light classification via dispatch (no flags field needed)
 
 # Delta lights emit from a single point or direction (cannot be hit by random rays)
-is_δ_light(::Light) = false
+is_δ_light(::Type{<:Light}) = false
 
 # Infinite lights are at infinity (environment maps, sun, sky)
 is_infinite_light(::Light) = false

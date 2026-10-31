@@ -1,12 +1,10 @@
 ## Materials
 
-Hikari implements the full set of physically-based materials from pbrt-v4. All material parameters accept either constant `RGBSpectrum`/`Float32` values or image textures.
-
 ```@setup materials
 using GeometryBasics, Hikari, ImageShow
 to_mesh(prim) = normal_mesh(prim isa Sphere ? Tesselation(prim, 64) : prim)
 sphere(r, x, z) = to_mesh(Sphere(Point3f(x, r, z), r))
-floor_mat = Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.82f0))
+floor_mat = Hikari.Diffuse(color = (0.82, 0.82, 0.82))
 
 function render_scene(materials; res=768, spp=32)
     r = 0.38f0; sx = 1.0f0; sz = 1.1f0
@@ -32,116 +30,109 @@ function render_scene(materials; res=768, spp=32)
 end
 ```
 
+Materials are Blender's BSDFs, with Blender's inputs and defaults, plus the pbrt-v4 models Hikari
+needs to match pbrt's renders. Any input takes a number, a colour, an image (`Hikari.Texture`) or a
+node graph from [`Hikari.TextureNodes`](@ref), and the BSDFs nest into one another as a Blender
+shader graph does.
+
+| Blender's BSDFs | pbrt-v4's models |
+|-----------------|------------------|
+| `Principled`, `Diffuse`, `Glossy`, `Metallic`, `Glass`, `Translucent`, `Sheen`, `Transparent`, `Emission` | `Conductor` (and `Gold()`, `Silver()`, `Copper()`, `Aluminum()`, `Brass()`), `CoatedDiffuse` (`Plastic()`), `CoatedConductor`, `CoatedDiffuseTransmission`, `DiffuseTransmission` |
+| `Mix(a, b; factor)`, `Add(a, b)` combine them | a `Mix` holding one of them picks one material per hit, as pbrt's `MixMaterial` |
+
+### Principled
+
+Blender's Principled BSDF with all its inputs: `base_color`, `metallic`, `roughness`, `ior`,
+`alpha`, the `subsurface_*`, `specular_*`, `transmission_*`, `coat_*` and `sheen_*` groups,
+`emission_color`/`emission_strength`, the thin film and `thin_wall`.
+
+```julia
+Hikari.Principled(base_color = (0.8, 0.1, 0.1), roughness = 0.3, coat_weight = 1)     # car paint
+Hikari.Principled(base_color = (0.9, 0.6, 0.2), metallic = 1, roughness = 0.2)        # gold
+Hikari.Principled(transmission_weight = 1, roughness = 0)                             # glass
+```
+
 ### Diffuse
 
-Lambertian diffuse reflection. Set `σ > 0` to switch to the Oren-Nayar model for rough surfaces like chalk or concrete.
+Lambertian reflection, or with `roughness` (0 to 1) the energy-preserving Oren-Nayar lobe.
 
 ```julia
-Hikari.Diffuse(Kd=RGBSpectrum(0.8f0))                          # white Lambertian
-Hikari.Diffuse(Kd=RGBSpectrum(0.8f0, 0.2f0, 0.1f0))           # red
-Hikari.Diffuse(Kd=RGBSpectrum(0.9f0), σ=45f0)                  # rough diffuse (Oren-Nayar)
+Hikari.Diffuse(color = (0.8, 0.2, 0.1))                 # red
+Hikari.Diffuse(color = (0.9, 0.9, 0.9), roughness = 0.5) # rough, like chalk
 ```
 
-| Parameter | Description |
-|-----------|-------------|
-| `Kd` | Diffuse reflectance color |
-| `σ` | Roughness in degrees: 0 = Lambertian, higher = Oren-Nayar |
+### Glossy and Metallic
 
-### Mirror
-
-Perfect specular reflection. `Kr` tints the reflected color — use white for a silver mirror, or a gold hue for colored mirrors.
+`Glossy` is a GGX reflection tinted by `color` at every angle, a mirror at `roughness = 0`.
+`Metallic` is Blender's artist-friendly metal: `base_color` at normal incidence, `edge_tint` at
+grazing angles.
 
 ```julia
-Hikari.Mirror(Kr=RGBSpectrum(0.95f0))                           # silver mirror
-Hikari.Mirror(Kr=RGBSpectrum(0.9f0, 0.75f0, 0.3f0))           # gold-tinted mirror
+Hikari.Glossy(color = (0.95, 0.95, 0.95), roughness = 0)                    # mirror
+Hikari.Metallic(base_color = (0.9, 0.64, 0.54), roughness = 0.2)            # copper
 ```
 
-### Conductor (Metals)
+### Glass
 
-Physically-based metals using the complex index of refraction (η, k). The `roughness` parameter controls the GGX microfacet spread.
+Reflection and refraction with the dielectric Fresnel, tinted by `color`.
 
 ```julia
-Hikari.Conductor(
-    eta=RGBSpectrum(0.156f0, 0.424f0, 1.383f0),  # real part of IOR
-    k=RGBSpectrum(3.602f0, 2.472f0, 1.916f0),     # extinction coefficient
-    roughness=0.05f0,
-)
+Hikari.Glass(ior = 1.5)                    # clear glass
+Hikari.Glass(ior = 1.33)                   # water
+Hikari.Glass(ior = 2.42)                   # diamond
+Hikari.Glass(roughness = 0.3, ior = 1.5)   # frosted glass
 ```
 
-**Built-in presets** with measured spectral data:
+### Transparent
+
+Light passes straight through, tinted by `color`, along a path and in the shadows the surface
+casts. A Principled `alpha` below 1 lets light through the same way, untinted.
 
 ```julia
-Hikari.Gold(roughness=0.0f0)
-Hikari.Silver(roughness=0.0f0)
-Hikari.Copper(roughness=0.1f0)
+Hikari.Mix(Hikari.Diffuse(color = (0.2, 0.6, 0.2)), Hikari.Transparent(color = (1, 1, 1)); factor = 0.5)  # half see-through
+Hikari.Transparent(color = (0.9, 0.3, 0.3))                                                          # red filter
 ```
 
-| Parameter | Description |
-|-----------|-------------|
-| `eta` | Real part of complex IOR (RGB) |
-| `k` | Imaginary part / extinction coefficient (RGB) |
-| `roughness` | GGX roughness (0 = mirror-like, 1 = fully rough) |
-| `reflectance` | Optional color tint (default white) |
-| `remap_roughness` | Remap perceptual roughness to GGX α (default true) |
+### Emission
 
-### Dielectric (Glass / Water / Diamond)
-
-Smooth or rough transparent material. Fresnel equations determine the reflection/transmission split at each interface.
+A surface that emits `strength` times `color`. A mesh of it is an area light. As a
+`MediumInterface`'s `emission` it makes any material glow, and inside a `Mix` or `Add` it is
+Blender's Emission shader.
 
 ```julia
-Hikari.Dielectric(index=1.5f0)                     # clear glass
-Hikari.Dielectric(index=1.33f0)                    # water
-Hikari.Dielectric(index=2.42f0)                    # diamond
-Hikari.Dielectric(roughness=0.15f0, index=1.5f0)  # frosted glass
+Hikari.Emission(color = (1, 0.9, 0.8), strength = 10, two_sided = true)
 ```
 
-Common IOR values: air 1.0 · water 1.33 · glass 1.5 · crystal 1.8 · diamond 2.42
-
-| Parameter | Description |
-|-----------|-------------|
-| `index` | Index of refraction |
-| `roughness` | GGX roughness (anisotropic: pass tuple `(u, v)`) |
-| `Kr` | Reflection tint (default white) |
-| `Kt` | Transmission tint (default white) |
-
-### ThinDielectric
-
-Thin-film glass (window pane, microscope slide). Unlike `Dielectric`, refracted rays are not bent — they pass straight through, accounting for multiple internal reflections analytically.
+### Mixing BSDFs and node graphs
 
 ```julia
-Hikari.ThinDielectric(eta=1.5f0)
+using Hikari.TextureNodes
+rust = noise(xyz(); scale = 4).fac
+Hikari.Mix(Hikari.Metallic(roughness = 0.2), Hikari.Diffuse(color = (0.4, 0.15, 0.05)); factor = rust)
+Hikari.Principled(base_color = image_texture(img), normal = bump(noise(xyz()).fac; distance = 0.01))
 ```
 
-### Plastic (Coated Diffuse)
+### pbrt-v4's models
 
-A dielectric coating (Fresnel, glossy) layered over a diffuse base. This matches the typical appearance of painted plastic, ceramics, and lacquered wood.
+`Conductor` is a metal of complex index of refraction `ior` + i`extinction` (or a `reflectance`
+instead), the coated models are pbrt's layered BSDFs, and `DiffuseTransmission` is Lambert
+reflection and transmission. They render as pbrt renders them.
 
 ```julia
-Hikari.Plastic(color=(0.8f0, 0.1f0, 0.1f0), roughness=0.02f0)  # shiny red
-Hikari.Plastic(color=(0.2f0, 0.4f0, 0.8f0), roughness=0.3f0)   # matte blue
+Hikari.Conductor(ior = (0.156, 0.424, 1.383), extinction = (3.602, 2.472, 1.916), roughness = 0.05)
+Hikari.Gold(roughness = 0.05)
+Hikari.Plastic(color = (0.8, 0.1, 0.1), roughness = 0.02)
+Hikari.CoatedDiffuse(reflectance = (0.6, 0.1, 0.1), roughness = 0.05, ior = 1.5, thickness = 0.01)
+Hikari.DiffuseTransmission(reflectance = (0.2, 0.4, 0.1), transmittance = (0.1, 0.3, 0.05))
 ```
 
-For full control use `CoatedDiffuse` directly:
+### Changing a material
 
-```julia
-Hikari.CoatedDiffuse(
-    reflectance=RGBSpectrum(0.6f0, 0.1f0, 0.1f0),
-    roughness=0.05f0,
-    eta=1.5f0,
-    thickness=0.01f0,
-)
-```
-
-### DiffuseTransmission
-
-A flat, diffuse material that scatters light into both the reflected and transmitted hemispheres. Useful for thin cloth, paper, or leaf surfaces.
-
-```julia
-Hikari.DiffuseTransmission(
-    reflectance=RGBSpectrum(0.2f0, 0.4f0, 0.1f0),
-    transmittance=RGBSpectrum(0.1f0, 0.3f0, 0.05f0),
-)
-```
+`Hikari.update_material!(scene, handle, material)` with a material of the same kind (other values,
+images or node parameters) writes it where the old one is: the next frame renders it without
+compiling anything. Another kind of material, or a shader with other node types or other BSDFs,
+is a new material type: its shading kernel is compiled once, and the kernels of every other
+material stay as they are.
 
 ### Materials Showcase
 
@@ -149,22 +140,20 @@ Nine spheres demonstrating the available materials:
 
 ```@example materials
 mats = [
-    Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.8f0, 0.4f0, 0.3f0)),           # terracotta
-    Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.85f0), σ=60f0),                 # chalk
-    Hikari.Dielectric(index=1.5f0),                                          # glass
-    Hikari.Mirror(Kr=Hikari.RGBSpectrum(0.95f0, 0.93f0, 0.88f0)),          # silver mirror
-    Hikari.Gold(roughness=0.02f0),                                           # gold
-    Hikari.Copper(roughness=0.08f0),                                         # copper
-    Hikari.Dielectric(roughness=0.12f0, index=1.5f0),                       # frosted glass
-    Hikari.Plastic(color=(0.8f0, 0.1f0, 0.1f0), roughness=0.02f0),         # shiny plastic
-    Hikari.DiffuseTransmission(                                               # paper
-        reflectance=Hikari.RGBSpectrum(0.4f0),
-        transmittance=Hikari.RGBSpectrum(0.4f0)),
+    Hikari.Diffuse(color = (0.8, 0.4, 0.3)),                                   # terracotta
+    Hikari.Diffuse(color = (0.85, 0.85, 0.85), roughness = 0.7),               # chalk
+    Hikari.Glass(ior = 1.5),                                                   # glass
+    Hikari.Glossy(color = (0.95, 0.93, 0.88), roughness = 0),                  # mirror
+    Hikari.Gold(roughness = 0.02),                                             # gold
+    Hikari.Principled(base_color = (0.8, 0.1, 0.1), roughness = 0.4, coat_weight = 1, coat_roughness = 0.02),  # car paint
+    Hikari.Glass(roughness = 0.3, ior = 1.5),                                  # frosted glass
+    Hikari.Plastic(color = (0.1, 0.3, 0.8), roughness = 0.02),                 # plastic
+    Hikari.DiffuseTransmission(reflectance = (0.4, 0.4, 0.4), transmittance = (0.4, 0.4, 0.4)),  # paper
 ]
 
 render_scene(mats; spp=64)
 ```
 
-Row 1 (back): Lambertian · Oren-Nayar · Dielectric
-Row 2 (middle): Mirror · Gold · Copper
+Row 1 (back): Lambertian · Oren-Nayar · Glass
+Row 2 (middle): Mirror · Gold · Car paint
 Row 3 (front): Frosted glass · Plastic · DiffuseTransmission

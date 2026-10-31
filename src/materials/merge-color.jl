@@ -1,87 +1,36 @@
 # ── Putting a colour on a material ──────────────────────────────────────────
 #
-# Replace whatever a material uses as its colour with `color_tex`, leaving
-# everything else about it alone. This is how a plot's `color` reaches a
-# user-supplied `material`, and how `FEMMaterial` puts a field on one.
-#
-# It lives here and not in a frontend because it is a statement about Hikari's
-# materials: which of a `Conductor`'s five fields is the colour is this
-# package's business, and a second copy of that knowledge anywhere else goes
-# stale the moment a material gains a field.
+# Replace whatever a material uses as its colour with `color_tex`, leaving everything else about it
+# alone. This is how a plot's `color` reaches a user-supplied `material`, and how `FEMMaterial`
+# puts a field on one. Which field is the colour is this package's business, so it is said here,
+# once per material (`color_field`).
 
-# Every one of these passes the material's fields positionally, so a field ADDED
-# to a Hikari material silently turns the call into a `MethodError` — and one
-# raised here surfaces as "failed to resolve trace_renderobject" from the compute
-# graph, several layers from the cause. `displacement` was added to all six and
-# none of them were updated, so every plot carrying a colour texture failed.
-function merge_color_with_material(color_tex, material::Diffuse)
-    Diffuse(color_tex, material.σ, material.displacement)
-end
+"""The field of a material that is its colour; `nothing` for a material that has none."""
+color_field(::Material) = nothing
+color_field(::Union{Diffuse, Glass, Glossy, Translucent, Sheen, Transparent, Emission}) = :color
+color_field(::Union{Principled, Metallic, OpenPBR}) = :base_color
+# glTF's base colour texture multiplies its factor, so a colour put there is the colour.
+color_field(::GLTF) = :base_color_texture
+# A conductor's colour is its reflectance, as pbrt-v4 gives a conductor one instead of its IOR.
+color_field(::Union{Conductor, CoatedDiffuse, DiffuseTransmission, CoatedDiffuseTransmission}) = :reflectance
+color_field(::CoatedConductor) = :conductor_reflectance
 
-function merge_color_with_material(color_tex, material::Mirror)
-    Mirror(color_tex, material.displacement)
-end
-
-function merge_color_with_material(color_tex, material::Dielectric)
-    Dielectric(
-        material.Kr, color_tex,
-        material.u_roughness, material.v_roughness,
-        material.index, material.remap_roughness, material.displacement
-    )
-end
-
-function merge_color_with_material(color_tex, material::Conductor)
-    Conductor(material.eta, material.k, material.roughness, color_tex,
-                     material.remap_roughness, material.displacement)
-end
-
-function merge_color_with_material(color_tex, material::CoatedDiffuse)
-    CoatedDiffuse(
-        color_tex, material.u_roughness, material.v_roughness, material.thickness,
-        material.eta, material.albedo, material.g, material.max_depth, material.n_samples,
-        material.remap_roughness, material.displacement
-    )
-end
-
-function merge_color_with_material(color_tex, material::ThinDielectric)
-    material
-end
-
-function merge_color_with_material(color_tex, material::DiffuseTransmission)
-    DiffuseTransmission(
-        color_tex, material.transmittance, material.scale, material.displacement
-    )
-end
-
-function merge_color_with_material(color_tex, material::CoatedDiffuseTransmission)
-    CoatedDiffuseTransmission(
-        color_tex, material.transmittance, material.u_roughness, material.v_roughness, material.thickness,
-        material.eta, material.albedo, material.g, material.max_depth, material.n_samples,
-        material.remap_roughness, material.displacement
-    )
-end
-
-function merge_color_with_material(color_tex, material::CoatedConductor)
-    material
+function merge_color_with_material(color_tex, material::Material)
+    name = color_field(material)
+    if name === nothing
+        @warn "a $(nameof(typeof(material))) has no colour; the plot's colour is ignored"
+        return material
+    end
+    return with_field(material, name, color_tex)
 end
 
 # No surface, so nothing for a plot colour to tint.
 merge_color_with_material(color_tex, material::NullMaterial) = material
 
-# A mix is tinted where it is made: both of what it mixes.
-merge_color_with_material(color_tex, material::MixMaterialSpec) =
-    MixMaterialSpec(merge_color_with_material(color_tex, material.material1),
-                    merge_color_with_material(color_tex, material.material2), material.amount)
+# A mix or sum is tinted where it is made: both of what it combines.
+merge_color_with_material(color_tex, m::Union{Mix, Add}) =
+    with_field(with_field(m, :a, merge_color_with_material(color_tex, m.a)), :b, merge_color_with_material(color_tex, m.b))
 
-function merge_color_with_material(color_tex, material::MediumInterface)
-    merged_inner = merge_color_with_material(color_tex, material.material)
-    MediumInterface(merged_inner; inside=material.inside, outside=material.outside, emission=material.emission,
-                    shadows=material.shadows)
-end
-
-# Fallback for unknown material types
-function merge_color_with_material(color_tex, material::Material)
-    @warn "Unknown material type $(typeof(material)), ignoring color"
-    material
-end
-
+merge_color_with_material(color_tex, m::MediumInterface) =
+    MediumInterface(merge_color_with_material(color_tex, m.material); inside = m.inside, outside = m.outside,
+                    emission = m.emission, shadows = m.shadows)

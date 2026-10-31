@@ -1,46 +1,30 @@
 # Per-material-type queue infrastructure (pbrt-v4 wavefront pattern).
 #
-# Today's `vp_trace_and_shade_kernel!` shades each surface hit inline by
-# going through `with_index(materials, idx, ...)` which expands to a switch
-# over every concrete material type in the scene's `StaticMultiTypeSet`.
-# That makes the kernel large (every material's BSDF code is inlined into
-# the switch arms) and divergent (threads with different materials in the
-# same warp follow different arms).
+# The trace kernel leaves each surface hit as a `VPSurfaceHit` (a hit record and
+# where the ray's path state is), and one shading kernel per concrete material
+# type expands and shades it. pbrt-v4 splits its shading queue the same way —
+# `MaterialEvalQueue<ConcreteMaterial>` in wavefront/workitems.h, one kernel per
+# type via `ForEachType` (surfscatter.cpp:41) — so each kernel compiles exactly
+# one material's code and the threads of a warp share it. That is the coherence
+# NVIDIA's shader execution reordering gives a ray-tracing pipeline, on every
+# backend.
 #
-# pbrt-v4 sidesteps both by splitting the shading queue by concrete material
-# type — `MaterialEvalQueue<ConcreteMaterial>` in wavefront/workitems.h —
-# and running one shading kernel per type via `ForEachType` (per-type kernel
-# launches in surfscatter.cpp:41). Each kernel is templated on a single
-# concrete material, so the BSDF code is fully monomorphised; warps process
-# threads that all run the same code path.
+#   * `MaterialQueues` — the hits' indices into the shared `surface_hits` store,
+#     a segment and a counter per slot of the scene's `StaticMultiTypeSet`. The
+#     hit itself is stored ONCE; a segment per material sized for every path
+#     holds indices only (with full items that was `n_types × n_paths × 304 B`,
+#     4.76 GiB on Crown's 12-material 1.4 Mpx render). Its type names no
+#     material, so neither do the kernels that fill it.
 #
-# The pieces below are the Julia analogue:
+#   * `SlotQueue{T}` — the segment of the slot holding material type `T`, what
+#     that type's shading kernel drains, and `TypedHitRef{T}` the index it reads
+#     there, which carries `T` so Julia's dispatch picks the specialisation.
 #
-#   * `TypedHitRef{T}` — a 4-byte index into the shared `hit_surface_queue`
-#     that attaches the concrete material type `T` at the type level. Its
-#     only purpose is to let Julia's normal multiple dispatch pick a kernel
-#     specialisation per `T`; the hit payload itself is stored ONCE in
-#     `hit_surface_queue`. (The previous design stored a full 304-byte
-#     `VPHitSurfaceWorkItem` copy per typed queue; with every queue sized
-#     for the full pixel count — hits PARTITION across the queues, so the
-#     worst case for any single queue is all of them — that was
-#     `n_types × n_pixels × 304 B` = 4.76 GiB on Crown's 12-material
-#     1.4 Mpx render. Indices bring that to 67 MiB.)
+#   * `enqueue_surface_hit!` — stores the hit and routes its index into the
+#     segment of its material's slot.
 #
-#   * `MultiTypeMaterialQueue` — a `MultiTypeWorkQueue` of `TypedHitRef{T}`
-#     for each `T` in the scene's `StaticMultiTypeSet`. Built once at
-#     integrator state init from the materials set's static type tuple.
-#
-#   * `push_typed_hit!(mtmq, materials, hit_surface_queue, hit)` — pushes
-#     the hit into `hit_surface_queue` once, then uses `with_index` on the
-#     materials set ONE time (per hit, at push site) to route the index into
-#     the matching typed queue. The kernel that drains a typed queue never
-#     touches `with_index`; it only sees one concrete `TypedHitRef{T}` type.
-#
-#   * `material_of_type(materials, T, vec_idx)` — a `@generated` lookup that
-#     returns the concrete material instance for a known type `T` and the
-#     `vec_idx` carried on the hit. Zero overhead — compiles down to one
-#     array load on the data tuple at the slot where the type lives.
+#   * `material_of_type(materials, T, vec_idx)` — the concrete material of a
+#     known type, a compile-time slot lookup and one array load.
 
 using Adapt
 import KernelAbstractions as KA
@@ -54,11 +38,11 @@ import Raycore
 """
     TypedHitRef{T}
 
-4-byte index into the shared `hit_surface_queue`, tagged with the concrete
+4-byte index into the shared `surface_hits` store, tagged with the concrete
 material type `T` at the type level. Per-material shading kernels dispatch
 on `TypedHitRef{T}` — each `T` produces a separately compiled kernel via
-Julia's normal multiple dispatch — and load the actual
-`VPHitSurfaceWorkItem` from `hit_surface_queue.items[ref.idx]`.
+Julia's normal multiple dispatch — and load the `VPSurfaceHit` from
+`surface_hits.items[ref.idx]`.
 """
 struct TypedHitRef{T}
     idx::Int32
@@ -82,7 +66,7 @@ Used by per-material shading kernels: the kernel knows its material type
 switch.
 """
 @inline @generated function material_of_type(
-    materials::Raycore.StaticMultiTypeSet{Data},
+    materials::Union{Raycore.StaticMultiTypeSet{Data}, Raycore.SetView{<:Any, <:Any, Data}},
     ::Type{T},
     vec_idx::UInt32,
 ) where {Data, T}
@@ -103,164 +87,285 @@ switch.
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MultiTypeMaterialQueue — MultiTypeWorkQueue of TypedHitRef{T} per material slot
+# MaterialQueues — a segment and a counter per material slot
 # ─────────────────────────────────────────────────────────────────────────────
 
 """
-    MultiTypeMaterialQueue
+    MaterialQueues
 
-Alias for `MultiTypeWorkQueue` whose queues hold `TypedHitRef{T}` items, one
-queue per concrete material type in the scene. Built from a materials
-`StaticMultiTypeSet` via `build_per_material_queues`.
+The surface hits waiting for their material's shading kernel: per slot `s` of the scene's
+materials set, `sizes[s]` indices into the shared `surface_hits` store at
+`items[(s - 1) * capacity + 1 : s * capacity]`, and `emits[s]`, whether the slot's type can emit
+(`emits`), which decides whether a hit at the depth limit is shaded at all.
+
+The kernels that fill it (the trace, the medium sampling) take it as it is, whatever the
+materials. It was a tuple of queues typed per material type, so a new type changed the trace
+kernel's type and compiled it again, the biggest kernel there is, with every node edit.
 """
-const MultiTypeMaterialQueue{Qs} = MultiTypeWorkQueue{Qs}
+struct MaterialQueues{V <: AbstractVector{Int32}, F <: AbstractVector{Bool}}
+    items::V
+    sizes::V
+    emits::F
+    capacity::Int32
+end
+
+Adapt.adapt_structure(to, q::MaterialQueues) =
+    MaterialQueues(Adapt.adapt(to, q.items), Adapt.adapt(to, q.sizes), Adapt.adapt(to, q.emits), q.capacity)
 
 """
-    build_per_material_queues(materials::StaticMultiTypeSet, capacity::Integer, backend)
+    MaterialQueues(materials::StaticMultiTypeSet, capacity, mem)
 
-Build one `WorkQueue{TypedHitRef{T}}` per concrete material type `T` in the
-scene's `materials` set. Queue iteration order matches the materials set's
-data-tuple order, which is also what `material_idx.type_idx` indexes into,
-so a hit with `type_idx == i` belongs in queue `i`.
+A segment of `capacity` hits for every slot of `materials`, in memory `mem` owns.
 """
-function build_per_material_queues(
-    materials::Raycore.StaticMultiTypeSet{Data},
-    capacity::Integer,
-    mem,
-) where {Data}
-    item_types = map(vec_type -> TypedHitRef{eltype(vec_type)}, Data.parameters)
-    return MultiTypeWorkQueue(tuple(item_types...), capacity, mem)
+function MaterialQueues(materials::Raycore.StaticMultiTypeSet{Data}, capacity::Integer,
+                        mem::DeviceMemory) where {Data}
+    types = map(eltype, Tuple(Data.parameters))
+    n = length(types)
+    items = alloc!(mem, Int32, max(n, 1) * Int(capacity))
+    sizes = alloc!(mem, Int32, max(n, 1), Int32(0))
+    emitting = alloc!(mem, Bool, max(n, 1), false)
+    n > 0 && copyto!(emitting, collect(Bool, map(emits, types)))
+    return MaterialQueues(items, sizes, emitting, Int32(capacity))
+end
+
+_collect_size_counters(acc::Tuple, q::MaterialQueues, rest...) =
+    _collect_size_counters((acc..., q.sizes), rest...)
+
+"""The material types of `materials`' slots, in slot order."""
+slot_types(@nospecialize(materials::Raycore.StaticMultiTypeSet)) =
+    map(eltype, Tuple(typeof(materials).parameters[1].parameters))
+
+"""
+    SlotQueue{T}(queues, slot)
+
+The hits of slot `slot` of `queues`, whose material type is `T`: what that type's shading
+kernel drains. The count is `sizes[slot]`, which the dispatch is sized by too
+(`DeviceRange(sizes; at = slot)`).
+"""
+struct SlotQueue{T, V <: AbstractVector{Int32}}
+    items::V
+    sizes::V
+    slot::Int32
+    offset::Int32
+end
+
+SlotQueue{T}(q::MaterialQueues{V}, slot::Integer) where {T, V} =
+    SlotQueue{T, V}(q.items, q.sizes, Int32(slot), Int32((slot - 1) * q.capacity))
+
+function Adapt.adapt_structure(to, q::SlotQueue{T}) where {T}
+    items, sizes = Adapt.adapt(to, q.items), Adapt.adapt(to, q.sizes)
+    return SlotQueue{T, typeof(items)}(items, sizes, q.slot, q.offset)
+end
+
+"""How many hits the queue holds; read on the device."""
+@propagate_inbounds queuelength(q::SlotQueue) = q.sizes[q.slot]
+
+@propagate_inbounds Base.getindex(q::SlotQueue{T}, j::Integer) where {T} = TypedHitRef{T}(q.items[q.offset + j])
+
+"""The material type whose hits the queue `q` holds."""
+queued_material(::SlotQueue{T}) where {T} = T
+
+# ─────────────────────────────────────────────────────────────────────────────
+# A shader's values and closures in two kernels
+# ─────────────────────────────────────────────────────────────────────────────
+
+"""
+    ShaderInputs(capacity, width, mem)
+
+What the values kernel of a shader (`vp_shader_values_kernel!`) hands its closure kernel for each
+surface hit, by the hit's index in `surface_hits`: the `width` floats its BSDF nodes read of the
+computed values (`gather_inputs!`), float `g` of hit `h` at `(g - 1) * capacity + h`, so the threads
+of a kernel read one float of consecutive hits together; and its closure program (`program`).
+"""
+struct ShaderInputs{V <: AbstractVector{Float32}, I <: AbstractVector{Int32}}
+    values::V
+    program::I
+    capacity::Int32
+end
+
+ShaderInputs(capacity::Integer, width::Integer, mem::DeviceMemory) =
+    ShaderInputs(alloc!(mem, Float32, max(width, 1) * Int(capacity)), alloc!(mem, Int32, Int(capacity), Int32(0)),
+                 Int32(capacity))
+
+Adapt.adapt_structure(to, s::ShaderInputs) =
+    ShaderInputs(Adapt.adapt(to, s.values), Adapt.adapt(to, s.program), s.capacity)
+
+"""
+    ShaderClosures{M}
+
+The hits of the shaders of BSDF nodes `M`, whatever their programs, as the closure kernel of `M`
+shades them: from their gathered inputs and their closure programs.
+"""
+struct ShaderClosures{M} end
+
+"""
+    ClosureQueue{M}(queues, slot, inputs)
+
+The hits of slot `slot` of `queues`, of a shader of BSDF nodes `M`, for the closure kernel of `M`,
+with the inputs their values kernel gathered. Of the material type it names the nodes only, so the
+shaders of one set of nodes share the kernel whatever their programs compute.
+"""
+struct ClosureQueue{M, V <: AbstractVector{Int32}, S <: ShaderInputs}
+    items::V
+    sizes::V
+    slot::Int32
+    offset::Int32
+    inputs::S
+end
+
+ClosureQueue{M}(q::MaterialQueues{V}, slot::Integer, inputs::S) where {M, V, S <: ShaderInputs} =
+    ClosureQueue{M, V, S}(q.items, q.sizes, Int32(slot), Int32((slot - 1) * q.capacity), inputs)
+
+function Adapt.adapt_structure(to, q::ClosureQueue{M}) where {M}
+    items, sizes, inputs = Adapt.adapt(to, q.items), Adapt.adapt(to, q.sizes), Adapt.adapt(to, q.inputs)
+    return ClosureQueue{M, typeof(items), typeof(inputs)}(items, sizes, q.slot, q.offset, inputs)
+end
+
+@propagate_inbounds queuelength(q::ClosureQueue) = q.sizes[q.slot]
+
+"""
+    GatheredRef{M}
+
+A hit for the closure kernel of BSDF nodes `M`: its index in `surface_hits` and where its values
+kernel left its inputs.
+"""
+struct GatheredRef{M, S <: ShaderInputs}
+    idx::Int32
+    inputs::S
+end
+
+@propagate_inbounds Base.getindex(q::ClosureQueue{M, V, S}, j::Integer) where {M, V, S} =
+    GatheredRef{M, S}(q.items[q.offset + j], q.inputs)
+
+"""The material type a hit reference is shaded as: its queue's, or the closures of its nodes."""
+shaded_type(::TypedHitRef{T}) where {T} = T
+shaded_type(::GatheredRef{M}) where {M} = ShaderClosures{M}
+
+"""Whether the hits of material type `T` are shaded in two kernels, its values and its nodes' closures."""
+splits(::Type) = false
+splits(::Type{<:ShaderMaterial{<:ShaderProgram}}) = true
+
+"""The BSDF nodes of a shader's device type."""
+bsdf_nodes(::Type{<:ShaderMaterial{P, A, M}}) where {P, A, M} = M
+
+"""
+    values_set(materials, T) -> SetView
+
+What the values kernel of shader type `T` reads of the scene's `materials`: its own slot, the
+programs of its node families and the arrays its programs read (images, mesh attributes).
+"""
+function values_set(@nospecialize(materials::StaticMultiTypeSet), @nospecialize(T::Type))
+    D, X = typeof(materials).parameters
+    data = (findfirst(V -> eltype(V) === T, D.parameters),)
+    families = program_families(T)
+    textures = Tuple(i for (i, A) in enumerate(X.parameters) if read_by_values(eltype(eltype(A)), families))
+    return Raycore.setview(materials, data, textures)
+end
+
+read_by_values(::Type, families) = true
+read_by_values(::Type{NodeInstr{F}}, families) where {F} = F in families
+
+"""
+    closure_set(materials) -> SetView
+
+What a closure kernel reads of the scene's `materials`: the types a shadow ray may be let through
+(`may_cut`) and the textures their transparency reads, the arrays (lookup tables, images) and the
+closure programs. No shader's program is in it, so no node edit changes it.
+"""
+function closure_set(@nospecialize(materials::StaticMultiTypeSet))
+    D, X = typeof(materials).parameters
+    types = map(eltype, D.parameters)
+    data = Tuple(i for (i, M) in enumerate(types) if may_cut(M))
+    families = (NodeFeature.CLOSURES, Iterators.flatten(alpha_families(types[i]) for i in data)...)
+    textures = Tuple(i for (i, A) in enumerate(X.parameters) if read_by(eltype(eltype(A)), families))
+    return Raycore.setview(materials, data, textures)
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
-# push_typed_hit! — `with_index` once at push site, queue dispatch is then
-# data-driven (just an indexed tuple access on the queue side).
+# shade_set — what the shading kernel of one material type reads of the set
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Internal: pushes the hit's index into the correct typed queue. `with_index`
-# picks the concrete material type `T`; this helper pushes `TypedHitRef{T}`
-# into the matching queue slot.
-@inline function _push_to_typed_queue!(
-    ::M, materials, mtmq::MultiTypeMaterialQueue, idx::Int32,
-) where {M}
-    # Find the queue slot for material type M at compile time, push the index.
-    _push_typed_hit_slot!(mtmq, M, idx)
-    return nothing
+"""
+    shade_set(materials::StaticMultiTypeSet, T) -> SetView
+
+What the shading kernel of material type `T` reads of the scene's `materials`, as a view under the
+set's own slot numbers: the slot of `T`, the slots of every type a shadow ray may be let through
+(`may_cut`), and the texture slots their shading reads: every image and texture program
+(`NodeInstr` with `NodeFeature.TEXTURE`), and of the shaders' programs only `T`'s own and the
+transparency programs of the types that may be cut out.
+
+The kernel's type names those slots only. A material of another type added to the scene, or a
+shader of other node families, adds slots the view does not hold, so the kernel compiled for it
+stays what it was: with the whole set, every shading kernel compiled again for each new material
+type, and each of them grew by the programs of all the others (a texture read compiled every
+interpreter in the scene), so a node added to one material cost minutes.
+
+A mix (`MixMaterial`) picks one of any of the materials per hit, and its kernel takes the set.
+"""
+function shade_set(@nospecialize(materials::StaticMultiTypeSet), @nospecialize(T::Type))
+    T <: MixMaterial && return materials
+    D, X = typeof(materials).parameters
+    types = map(eltype, D.parameters)
+    data = Tuple(i for (i, M) in enumerate(types) if M === T || may_cut(M))
+    families = (program_families(T)..., Iterators.flatten(alpha_families(types[i]) for i in data)...)
+    textures = Tuple(i for (i, A) in enumerate(X.parameters) if read_by(eltype(eltype(A)), families))
+    return Raycore.setview(materials, data, textures)
 end
 
-# Compile-time slot lookup + push: identical to material_of_type but for queues.
-@inline @generated function _push_typed_hit_slot!(
-    mtmq::MultiTypeMaterialQueue{Qs},
-    ::Type{M},
-    idx::Int32,
-) where {Qs, M}
-    # `Qs` is a Tuple{WorkQueue{TypedHitRef{T1}, ...}, WorkQueue{TypedHitRef{T2}, ...}, ...}.
-    # The WorkQueue's first type parameter IS the item type (T in `WorkQueue{T, V, S}`).
-    slot = 0
-    for (i, q_type) in enumerate(Qs.parameters)
-        item_type = q_type.parameters[1]              # WorkQueue{T, V, S} → T
-        if item_type <: TypedHitRef && item_type.parameters[1] === M
-            slot = i
-            break
-        end
-    end
-    if slot == 0
-        return :(error($("_push_typed_hit_slot!: no queue for material type $M")))
-    end
-    return quote
-        @inbounds push!(mtmq.queues[$slot], TypedHitRef{M}(idx))
-        nothing
-    end
+"""Whether a shading kernel reading the shader programs of `families` reads texture slots of element type `E`."""
+read_by(::Type, families) = true
+read_by(::Type{NodeInstr{F}}, families) where {F} = F & NodeFeature.TEXTURE != zero(UInt32) || F in families
+
+"""
+    cut_set(materials::StaticMultiTypeSet) -> SetView
+
+What the kernels that trace through cut-out surfaces read of the scene's `materials`: the slots
+of the types a ray may pass (`may_cut`) and the texture slots their transparency reads, none at
+all when no type may. A material of another type, or a shader of other node families, leaves it
+as it was, and so the trace kernel compiled for it.
+"""
+function cut_set(@nospecialize(materials::StaticMultiTypeSet))
+    D, X = typeof(materials).parameters
+    types = map(eltype, D.parameters)
+    data = Tuple(i for (i, M) in enumerate(types) if may_cut(M))
+    isempty(data) && return Raycore.setview(materials, (), ())
+    families = Tuple(Iterators.flatten(alpha_families(types[i]) for i in data))
+    textures = Tuple(i for (i, A) in enumerate(X.parameters) if read_by(eltype(eltype(A)), families))
+    return Raycore.setview(materials, data, textures)
 end
 
-"""
-    push_typed_hit!(mtmq, materials, hit_surface_queue, hit::VPHitSurfaceWorkItem)
+# ─────────────────────────────────────────────────────────────────────────────
+# enqueue_surface_hit! — the hit's index into its material slot's segment
+# ─────────────────────────────────────────────────────────────────────────────
 
-Store `hit` once in the shared `hit_surface_queue` and route its index into
-the matching per-material typed queue. Uses `with_index` on `materials`
-*once* to pick the concrete material type, then a compile-time tuple lookup
-to push into the right queue slot.
 """
-@propagate_inbounds function push_typed_hit!(
-    mtmq::MultiTypeMaterialQueue, materials,
-    hit_surface_queue::WorkQueue{VPHitSurfaceWorkItem},
-    hit::VPHitSurfaceWorkItem,
+    wants_shading(depth, max_depth, arealight_id, queues, mat_idx) -> Bool
+
+Whether a surface hit goes to its material's shading kernel: every hit below the
+depth limit, and at the limit one that can add light there, on an area light or
+with a material that emits (`vp_shade_resolved_hit!` shades nothing else there).
+"""
+@propagate_inbounds wants_shading(depth::Int32, max_depth::Int32, arealight_id::UInt32, queues::MaterialQueues,
+                                  mat_idx::SetKey) =
+    depth < max_depth || arealight_id > UInt32(0) || queues.emits[mat_idx.type_idx]
+
+"""
+    enqueue_surface_hit!(queues, surface_hits, mat_idx, hit::VPSurfaceHit)
+
+Store `hit` once in `surface_hits` and route its index into the segment of the
+slot of `mat_idx`, the material of the mesh it hit. A `MixMaterial` hit goes to
+the mix's slot, whose kernel picks the component per hit.
+"""
+@propagate_inbounds function enqueue_surface_hit!(
+    queues::MaterialQueues, surface_hits::WorkQueue{VPSurfaceHit}, mat_idx::SetKey, hit::VPSurfaceHit,
 )
-    idx = push!(hit_surface_queue, hit)
+    idx = push!(surface_hits, hit)
     # Dropped on overflow (same contract as WorkQueue.push! itself) — never
     # publish an index whose payload slot wasn't written.
-    idx <= hit_surface_queue.capacity || return nothing
-    Raycore.with_index(_push_to_typed_queue!, materials, hit.material_idx, materials, mtmq, Int32(idx))
-    return nothing
-end
-
-"""
-    enqueue_after_intersection!(per_material_queue, hit_area_light_queue,
-                                materials, hit_surface_queue,
-                                hit::VPHitSurfaceWorkItem,
-                                arealight_id::UInt32,
-                                triangle_area::Float32, t_hit::Float32)
-
-Mirrors pbrt-v4's `EnqueueWorkAfterIntersection`
-(wavefront/intersect.h:48-149). For surface intersections (no medium) we
-need two parallel pushes:
-
-* If the hit triangle is part of an area light
-  (`arealight_id > 0`), push a `VPHitAreaLightWorkItem` so the
-  dedicated emitter kernel can run MIS for the indirect-ray hit.
-* Always push the hit into `hit_surface_queue` and its index into the
-  per-material typed queue — the material kernel will sample direct
-  lighting + continuation rays.
-
-`arealight_id`, `triangle_area`, `t_hit` are passed as separate
-arguments rather than stored on `VPHitSurfaceWorkItem` because they're
-emission-MIS-only — pbrt-v4's `MaterialEvalWorkItem` doesn't carry them
-either.
-"""
-@propagate_inbounds function enqueue_after_intersection!(
-    per_material_queue::MultiTypeMaterialQueue,
-    hit_area_light_queue::WorkQueue{VPHitAreaLightWorkItem},
-    materials,
-    hit_surface_queue::WorkQueue{VPHitSurfaceWorkItem},
-    hit::VPHitSurfaceWorkItem,
-    arealight_id::UInt32,
-    triangle_area::Float32,
-    t_hit::Float32,
-)
-    push_arealight_hit!(hit_area_light_queue, arealight_id,
-        hit.pi, hit.n, hit.uv, -hit.ray.d, hit, hit.beta, hit.r_u, hit.r_l,
-        triangle_area, t_hit)
-    push_typed_hit!(per_material_queue, materials, hit_surface_queue, hit)
-    return nothing
-end
-
-"""
-    push_arealight_hit!(hit_area_light_queue, arealight_id, pi, n, uv, wo,
-                        path, beta, r_u, r_l, triangle_area, t_hit)
-
-Queue the emission of a hit on an area light (`arealight_id > 0`) for
-`vp_handle_emitters_kernel!`. `path` is the work item the ray belongs to; its
-wavelengths, depth, previous interaction and pixel are what the MIS needs.
-Also called for emissive null-material surfaces, which queue their emission and
-let the ray pass.
-"""
-@propagate_inbounds function push_arealight_hit!(
-    hit_area_light_queue::WorkQueue{VPHitAreaLightWorkItem},
-    arealight_id::UInt32, pi::Point3f, n::Vec3f, uv::Point2f, wo::Vec3f,
-    path, beta::SpectralRadiance, r_u::SpectralRadiance, r_l::SpectralRadiance,
-    triangle_area::Float32, t_hit::Float32,
-)
-    arealight_id > UInt32(0) || return nothing
-    push!(hit_area_light_queue, VPHitAreaLightWorkItem(
-        arealight_id,
-        pi, n, uv, wo,
-        path.lambda, path.depth,
-        beta, r_u, r_l,
-        path.prev_intr_p, path.prev_intr_n,
-        path.specular_bounce,
-        path.pixel_index,
-        triangle_area, t_hit,
-    ))
+    idx <= surface_hits.capacity || return nothing
+    slot = Int32(mat_idx.type_idx)
+    i = @atomic :monotonic queues.sizes[slot] += Int32(1)
+    i <= queues.capacity && (queues.items[(slot - Int32(1)) * queues.capacity + i] = Int32(idx))
     return nothing
 end
 

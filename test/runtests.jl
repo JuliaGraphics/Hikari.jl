@@ -4,8 +4,8 @@ using GeometryBasics
 using LinearAlgebra
 using StaticArrays
 using Raycore
-# Both: Lava for the device-side ray-tracing intrinsics `rt-pipeline.jl` calls,
-# Mantle for everything with a device behind it — the backend, arrays, the graph.
+# Mantle for everything with a device behind it: the backend, arrays, the graph.
+# Lava for the files that compile Hikari's kernels to SPIR-V themselves.
 using Lava, Mantle
 
 # The Vulkan backend module, for the test files that name backend internals.
@@ -76,6 +76,8 @@ const TEST_FILES = [
     "test_caching_gc_correctness.jl",
     "test_texture_wrap.jl",
     "test_blackbody_emitter_scale.jl",
+    "test_shadow_ray_ends_at_light.jl",
+    "test_depth_limit_keeps_bsdf_mis.jl",
     "test_sun_colour.jl",
     "test_sun_disc.jl",
     "test_sky_below_horizon.jl",
@@ -84,22 +86,34 @@ const TEST_FILES = [
     "test_checkerboard_texture.jl",
     "test_node_textures.jl",
     "test_shader_material.jl",
+    "test_material_descriptions.jl",
     "test_const_texture_value.jl",
     "test_workqueue.jl",
+    "test_rgb2spec_interval.jl",
     "test_hw_sw_parity.jl",
     "test_update_material_null.jl",
     "test_null_material_only_scene.jl",
     "test_multitypeset_updates.jl",
     "test_material_type_collapse.jl",
+    "test_material_type_change.jl",
+    "test_shade_set.jl",
+    "test_white_furnace.jl",
+    "test_cycles_materials.jl",
     "test_bxdf_dispatch.jl",
     "test_mantle_device.jl",
     "test_precompile_statements.jl",
     "test_pbrt_camera_lookat_distance.jl",
+    "test_pbrt_shape_import.jl",
+    "test_ambient_light_pbrt.jl",
+    "test_pbrt_material_import.jl",
+    "test_conductor_reflectance.jl",
+    "test_camera_medium_probe.jl",
+    "test_crossing_rounds.jl",
+    "test_dispersion.jl",
     "test_sphere_uv.jl",
     "test_volpath_graph.jl",
     "test_volpath_per_iter_lifecycle.jl",
     "test_trace_pass_modelled.jl",
-    "test_shadow_trace_outlining.jl",
     "test_plan_invalidation.jl",
     "test_sample_is_one_run.jl",
     "test_volpath_state_show.jl",
@@ -112,8 +126,8 @@ const TEST_FILES = [
 # `run_pbrt_suite(; backend, samples, hw_accel)` (defined in
 # test/pbrt/test_pbrt_all_materials.jl).
 #
-# SW BVH always runs. HW RT runs additionally when the bound Vulkan device
-# reports `rt_pipeline_properties`. Both are opt-out via env vars so CI can
+# SW BVH always runs. HW RT runs additionally when the device builds hardware
+# acceleration structures (`Mantle.supports_hwtlas`). Both are opt-out via env vars so CI can
 # disable paths that are known to be broken on a given runner without
 # editing this file.
 include(joinpath(@__DIR__, "pbrt", "test_pbrt_all_materials.jl"))

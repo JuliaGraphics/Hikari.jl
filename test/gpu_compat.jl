@@ -12,9 +12,13 @@ using KernelAbstractions
 # GPU Compatibility Analyzer
 # ============================================================================
 
-struct GPUAnalyzer{T} <: AbstractAnalyzer
+struct GPUAnalyzer{T, MT <: CC.MethodTableView} <: AbstractAnalyzer
     state::AnalyzerState
     analysis_token::AnalysisToken
+    # The device's: its overlay holds the shader bodies of device intrinsics, array indexing
+    # included, where the host has error stubs. On the host's, inference ends at a kernel's
+    # first array read and finds nothing after it.
+    method_table::MT
     frame_filter::T
     check_dispatch::Bool
     check_throw::Bool
@@ -25,10 +29,11 @@ end
 
 JETInterface.AnalyzerState(analyzer::GPUAnalyzer) = analyzer.state
 JETInterface.AbstractAnalyzer(analyzer::GPUAnalyzer, state::AnalyzerState) =
-    GPUAnalyzer(state, analyzer.analysis_token, analyzer.frame_filter,
+    GPUAnalyzer(state, analyzer.analysis_token, analyzer.method_table, analyzer.frame_filter,
                 analyzer.check_dispatch, analyzer.check_throw, analyzer.check_alloc,
                 analyzer.ignore_intrinsic_throws, BitVector())
 JETInterface.AnalysisToken(analyzer::GPUAnalyzer) = analyzer.analysis_token
+CC.method_table(analyzer::GPUAnalyzer) = analyzer.method_table
 
 @jetreport struct GPURuntimeDispatchReport <: InferenceErrorReport end
 JETInterface.print_report_message(io::IO, ::GPURuntimeDispatchReport) =
@@ -51,75 +56,75 @@ JETInterface.print_report_message(io::IO, ::GPUOptFailureReport) =
 # GPU intrinsic modules - throws from these are dead code on GPU
 const GPU_INTRINSIC_MODULES = Set([Base.Math])
 
+# The checks read the optimized IR, before it becomes the cached CodeInfo, and report at its
+# statements through JET's `OptimizedIRState`. They reported at `(OptimizationState, pc)`, which
+# JET no longer takes: the first dispatch found threw a `MethodError` instead of being reported.
 function CC.finish!(analyzer::GPUAnalyzer, frame::CC.InferenceState, validation_world::UInt, time_before::UInt64)
     caller = frame.result
     src = caller.src
+    if analyzer.frame_filter(frame.linfo)
+        if isnothing(src)
+            add_new_report!(analyzer, caller, GPUOptFailureReport(caller.linfo))
+        elseif src isa CC.OptimizationState
+            state = JET.OptimizedIRState(src, JET.optimized_ir(src))
+            analyzer.check_dispatch && gpu_report_runtime_dispatch!(analyzer, caller, state)
+            analyzer.check_throw && gpu_report_throw_statements!(analyzer, caller, state)
+            analyzer.check_alloc && gpu_report_allocations!(analyzer, caller, state)
+        end
+    end
     if src isa CC.OptimizationState
         caller.src = CC.ir_to_codeinf!(src)
         frame.edges = collect(Any, caller.src.edges)
     end
 
-    if analyzer.frame_filter(frame.linfo)
-        if isa(src, Core.Const)
-        elseif isnothing(src)
-            add_new_report!(analyzer, caller, GPUOptFailureReport(caller.linfo))
-        elseif isa(src, CC.OptimizationState)
-            analyzer.check_dispatch && gpu_report_runtime_dispatch!(analyzer, caller, src)
-            analyzer.check_throw && gpu_report_throw_statements!(analyzer, caller, src)
-            analyzer.check_alloc && gpu_report_allocations!(analyzer, caller, src)
-        end
-    end
-
     return @invoke CC.finish!(analyzer::AbstractAnalyzer, frame::CC.InferenceState, validation_world::UInt, time_before::UInt64)
 end
 
-function gpu_report_runtime_dispatch!(analyzer::GPUAnalyzer, caller::CC.InferenceResult, opt::CC.OptimizationState)
-    (; sptypes, slottypes) = opt
-    for (pc, x) in enumerate(opt.src.code)
+function gpu_report_runtime_dispatch!(analyzer::GPUAnalyzer, caller::CC.InferenceResult, state::JET.OptimizedIRState)
+    for (pc, inst) in enumerate(state.ir.stmts)
+        x = inst[:stmt]
         if Base.Meta.isexpr(x, :call)
-            ft = CC.widenconst(CC.argextype(first(x.args), opt.src, sptypes, slottypes))
+            ft = CC.widenconst(CC.argextype(first(x.args), state.ir))
             ft <: Core.Builtin && continue
-            add_new_report!(analyzer, caller, GPURuntimeDispatchReport((opt, pc)))
+            add_new_report!(analyzer, caller, GPURuntimeDispatchReport((state, pc)))
         end
     end
 end
 
-function gpu_report_throw_statements!(analyzer::GPUAnalyzer, caller::CC.InferenceResult, opt::CC.OptimizationState)
-    (; sptypes, slottypes) = opt
+function gpu_report_throw_statements!(analyzer::GPUAnalyzer, caller::CC.InferenceResult, state::JET.OptimizedIRState)
     mi = caller.linfo
     def = mi.def
     caller_module = def isa Method ? def.module : def
 
-    for (pc, x) in enumerate(opt.src.code)
+    for (pc, inst) in enumerate(state.ir.stmts)
+        x = inst[:stmt]
         is_throw = Base.Meta.isexpr(x, :throw)
         if !is_throw && (Base.Meta.isexpr(x, :invoke) || Base.Meta.isexpr(x, :call))
             args = x.args
             if length(args) >= 1
                 ft = Base.Meta.isexpr(x, :invoke) && length(args) >= 2 ?
-                    CC.argextype(args[2], opt.src, sptypes, slottypes) :
-                    CC.argextype(first(args), opt.src, sptypes, slottypes)
-                if ft !== nothing
-                    f = CC.singleton_type(ft)
-                    if f in (Base.throw, Core.throw, Base.error, Base.ArgumentError,
-                             Base.BoundsError, Base.DomainError)
-                        is_throw = true
-                    end
+                    CC.argextype(args[2], state.ir) :
+                    CC.argextype(first(args), state.ir)
+                f = CC.singleton_type(ft)
+                if f in (Base.throw, Core.throw, Base.error, Base.ArgumentError,
+                         Base.BoundsError, Base.DomainError)
+                    is_throw = true
                 end
             end
         end
         if is_throw
             analyzer.ignore_intrinsic_throws && caller_module in GPU_INTRINSIC_MODULES && continue
-            add_new_report!(analyzer, caller, GPUThrowStatementReport((opt, pc)))
+            add_new_report!(analyzer, caller, GPUThrowStatementReport((state, pc)))
         end
     end
 end
 
-function gpu_report_allocations!(analyzer::GPUAnalyzer, caller::CC.InferenceResult, opt::CC.OptimizationState)
-    (; sptypes, slottypes) = opt
-    for (pc, x) in enumerate(opt.src.code)
+function gpu_report_allocations!(analyzer::GPUAnalyzer, caller::CC.InferenceResult, state::JET.OptimizedIRState)
+    for (pc, inst) in enumerate(state.ir.stmts)
+        x = inst[:stmt]
         alloc_type = nothing
         if Base.Meta.isexpr(x, :new) && length(x.args) >= 1
-            T = CC.widenconst(CC.argextype(x.args[1], opt.src, sptypes, slottypes))
+            T = CC.widenconst(CC.argextype(x.args[1], state.ir))
             if T isa DataType && Base.ismutabletype(T)
                 alloc_type = "mutable struct $(T.name.name)"
             end
@@ -138,7 +143,7 @@ function gpu_report_allocations!(analyzer::GPUAnalyzer, caller::CC.InferenceResu
                 end
             end
         end
-        alloc_type !== nothing && add_new_report!(analyzer, caller, GPUAllocationReport((opt, pc), alloc_type))
+        alloc_type !== nothing && add_new_report!(analyzer, caller, GPUAllocationReport((state, pc), alloc_type))
     end
 end
 
@@ -146,6 +151,7 @@ const _gpu_analysis_token = AnalysisToken()
 
 function GPUAnalyzer(world::UInt = Base.get_world_counter();
     analysis_token::AnalysisToken = _gpu_analysis_token,
+    method_table::CC.MethodTableView = CC.InternalMethodTable(world),
     frame_filter = (_::Core.MethodInstance) -> true,
     check_dispatch::Bool = true,
     check_throw::Bool = true,
@@ -153,7 +159,8 @@ function GPUAnalyzer(world::UInt = Base.get_world_counter();
     ignore_intrinsic_throws::Bool = true,
     jetconfigs...)
     state = AnalyzerState(world; jetconfigs...)
-    GPUAnalyzer(state, analysis_token, frame_filter, check_dispatch, check_throw, check_alloc, ignore_intrinsic_throws, BitVector())
+    GPUAnalyzer(state, analysis_token, method_table, frame_filter, check_dispatch, check_throw, check_alloc,
+                ignore_intrinsic_throws, BitVector())
 end
 
 function report_gpu_compat(args...; jetconfigs...)
@@ -166,12 +173,17 @@ gpu_module_filter(m::Module) = (mi::Core.MethodInstance) -> begin
     (def isa Method ? def.module : def) === m
 end
 
+"""The interpreter `f(types...)` is compiled through on `device`."""
+device_interpreter(device, f, types) = Mantle.kernelinterpreter(device, f, Tuple{types...})
+
 """
-Test that a function has no runtime dispatch (GPU compatible).
+Test that a function has no runtime dispatch (GPU compatible), inferred as `device` compiles it.
 Returns true if no dispatch issues found.
 """
-function test_no_dispatch(f, types; frame_filter=gpu_module_filter(Hikari))
-    result = report_gpu_compat(f, types; frame_filter, check_throw=false, check_alloc=false)
+function test_no_dispatch(f, types; device = Hikari.mantle_device(Mantle.defaultbackend()),
+                          frame_filter = gpu_module_filter(Hikari))
+    method_table = CC.method_table(device_interpreter(device, f, types))
+    result = report_gpu_compat(f, types; method_table, frame_filter, check_throw=false, check_alloc=false)
     reports = JET.get_reports(result)
     dispatch_count = count(r -> r isa GPURuntimeDispatchReport, reports)
     dispatch_count == 0
@@ -185,21 +197,22 @@ using Adapt
 
 function gen_gpu_test_scene()
     # Materials
-    white_matte = Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.73f0))
-    glass = Hikari.Dielectric(index=1.5f0)
-    emissive = Hikari.Emissive(Le=Hikari.RGBSpectrum(10f0))
+    white_matte = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.73f0))
+    glass = Hikari.Glass(ior = 1.5f0)
+    emissive = Hikari.Emission(color = Hikari.RGBSpectrum(10f0))
 
     # Media
     fog = Hikari.HomogeneousMedium(
         σ_a=Hikari.RGBSpectrum(0.01f0),
         σ_s=Hikari.RGBSpectrum(0.1f0),
-        Le=Hikari.RGBSpectrum(0f0),
+        Le = Hikari.RGBSpectrum(0f0),
         g=0.3f0
     )
     glass_with_fog = Hikari.MediumInterface(glass; inside=fog, outside=nothing)
 
-    # Build scene using push! API
-    scene = Hikari.Scene()
+    # Build scene using push! API, on the device the kernels run on
+    backend = Mantle.defaultbackend()
+    scene = Hikari.Scene(; backend)
     push!(scene, normal_mesh(Rect3f(Vec3f(-1, 0, -1), Vec3f(2, 0.01f0, 2))), white_matte)
     push!(scene, normal_mesh(Tesselation(Sphere(Point3f(0, 0.5f0, 0), 0.3f0), 16)), glass_with_fog)
     push!(scene, normal_mesh(Tesselation(Sphere(Point3f(0, 1.5f0, 0), 0.1f0), 16)), emissive)
@@ -210,7 +223,6 @@ function gen_gpu_test_scene()
     Hikari.sync!(scene)
 
     # Adapt scene to get StaticMultiTypeSet for type analysis
-    backend = KernelAbstractions.CPU()
     adapted = Adapt.adapt(backend, scene)
 
     # Get rgb2spec_table directly
@@ -232,6 +244,8 @@ end
 # Tests
 # ============================================================================
 
+dispatching_probe(x::Vector{Any}) = sin(x[1]) + 1f0
+
 @testset "GPU Compatibility: VolPath Kernel Functions" begin
     td = gen_gpu_test_scene()
 
@@ -244,6 +258,11 @@ end
     # the per-material `is_emissive(::Mat)` / `is_pure_emissive(::Mat)`
     # methods are already exercised by the higher-level dispatch tests
     # below (BSDF Sampling and Microfacet/Fresnel).
+
+    # The check can fail: a call on an element of a `Vector{Any}` is a runtime dispatch.
+    @testset "a dispatch is reported" begin
+        @test !test_no_dispatch(dispatching_probe, (Vector{Any},); frame_filter = gpu_module_filter(@__MODULE__))
+    end
 
     @testset "Phase Functions" begin
         @test test_no_dispatch(Hikari.hg_p, (Float32, Float32))
@@ -262,23 +281,30 @@ end
     end
 
     @testset "BSDF Sampling" begin
-        # Materials are stored in the StaticMultiTypeSet; access by type slot
-        matte_mat = first(td.materials.data[1])
-        glass_mat = first(td.materials.data[2])
-        emissive_mat = first(td.materials.data[3])
-
-        # sample_bsdf_spectral signature: mat, table, textures, wo, n, dpdus, tfc, lambda, sample_u, rng
-        @test test_no_dispatch(Hikari.sample_bsdf_spectral,
-            (typeof(matte_mat), typeof(td.rgb2spec_table), typeof(td.materials), Vec3f, Vec3f, Vec3f, tfc_type, typeof(td.lambda), Point2f, Float32))
-        @test test_no_dispatch(Hikari.sample_bsdf_spectral,
-            (typeof(glass_mat), typeof(td.rgb2spec_table), typeof(td.materials), Vec3f, Vec3f, Vec3f, tfc_type, typeof(td.lambda), Point2f, Float32))
-        @test test_no_dispatch(Hikari.sample_bsdf_spectral,
-            (typeof(emissive_mat), typeof(td.rgb2spec_table), typeof(td.materials), Vec3f, Vec3f, Vec3f, tfc_type, typeof(td.lambda), Point2f, Float32))
+        # What the shading kernels sample: the BSDF each material of the scene builds at a hit
+        # (`material_bxdf`), reading the view of the materials its kernel takes (`shade_set`).
+        # It asked `get_bxdf`, which a shader material does not build its BSDF with: the glass,
+        # a Principled, came back as itself, and no BSDF method took it.
+        # The types are the kernel's: device arrays, which index only under the device's
+        # method table. With the host's arrays and table, the glass's inference ended at its
+        # program's first read, and a check found nothing to report.
+        device = Hikari.mantle_device(Mantle.defaultbackend())
+        table, lambda = Mantle.devicetype(device, td.rgb2spec_table), typeof(td.lambda)
+        @testset "$(nameof(eltype(v)))" for v in td.materials.data
+            textures = Mantle.devicetype(device, Hikari.shade_set(td.materials, eltype(v)))
+            build = (eltype(v), table, textures, Hikari.VPMaterialEvalWorkItem, Hikari.PerspectiveCamera, Int32, lambda, Bool)
+            @test test_no_dispatch(Hikari.material_bxdf, build)
+            bsdf = only(Base.return_types(Hikari.material_bxdf, build;
+                                          interp = device_interpreter(device, Hikari.material_bxdf, build)))
+            @test isconcretetype(bsdf)
+            @test test_no_dispatch(Hikari.sample_bsdf_spectral,
+                (bsdf, table, textures, Vec3f, Vec3f, Vec3f, tfc_type, lambda, Point2f, Float32, Bool))
+            @test test_no_dispatch(Hikari.evaluate_bsdf_spectral,
+                (bsdf, table, textures, Vec3f, Vec3f, Vec3f, Vec3f, tfc_type, lambda, Bool))
+        end
     end
 
     @testset "Microfacet/Fresnel Functions" begin
-        @test test_no_dispatch(Hikari.sample_dielectric_transmission_spectral, (Float32, Vec3f, Float32))
-        @test test_no_dispatch(Hikari.sample_ggx_vndf, (Vec3f, Float32, Float32, Point2f))
         @test test_no_dispatch(Hikari.trowbridge_reitz_sample_wm, (Vec3f, Point2f, Float32, Float32))
     end
 end

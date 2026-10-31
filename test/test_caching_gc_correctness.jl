@@ -19,12 +19,12 @@ function _make_test_scene()
     scene = Hikari.Scene()
 
     # Floor
-    floor_mat = Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.7f0, 0.7f0, 0.7f0))
+    floor_mat = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.7f0, 0.7f0, 0.7f0))
     floor_mesh = normal_mesh(Rect3f(Vec3f(-2, -2, -0.01), Vec3f(4, 4, 0.01)))
     push!(scene, floor_mesh, floor_mat)
 
     # Sphere
-    sphere_mat = Hikari.Diffuse(Kd=(0.8, 0.2, 0.2))
+    sphere_mat = Hikari.Diffuse(color = (0.8, 0.2, 0.2))
     sphere_mesh = normal_mesh(Tesselation(Sphere(Point3f(0, 0, 0.5), 0.5f0), 16))
     push!(scene, sphere_mesh, sphere_mat)
 
@@ -93,7 +93,7 @@ end
         @testset "state takes its memory from the pool and gives all of it back" begin
             GC.gc(true)
             Mantle.flush!(Mantle.Device())
-            Mantle.drain!(Mantle.batchqueue(Mantle.Device()))
+            Mantle.waitidle(Mantle.Device())
             pool = Mantle.pool(Hikari.mantle_device(backend))
 
             scene = _make_test_scene()
@@ -120,6 +120,14 @@ end
             # was never given back. Everything the state owns — the queues, the
             # accumulators, the light BVH, the Sobol matrices and both spectral
             # tables — has to go through `DeviceMemory` for both to hold.
+            #
+            # Both counts are read settled the same way, collected and drained.
+            # The first was read after a `flush!` alone, so what the collection
+            # and drain before the second freed of earlier tests' buffers counted
+            # against these states: 7 before, 1 after, once in a full run on a
+            # Strix Halo.
+            GC.gc(true)
+            Mantle.waitidle(Mantle.Device())
             buffers = Mantle.live_buffer_count()
             for _ in 1:3
                 st = Hikari.VolPathState(
@@ -131,7 +139,7 @@ end
             end
             Mantle.flush!(Mantle.Device())
             GC.gc(true)
-            Mantle.drain!(Mantle.batchqueue(Mantle.Device()))
+            Mantle.waitidle(Mantle.Device())
             @test Mantle.reserved(pool) == reserved
             @test Mantle.live_buffer_count() == buffers
         end
@@ -190,7 +198,7 @@ end
             # nothing left to hand back twice.
             Hikari.free!(state)
             Mantle.flush!(Mantle.Device())
-            Mantle.drain!(Mantle.batchqueue(Mantle.Device()))
+            Mantle.waitidle(Mantle.Device())
         end
     end
 
@@ -252,7 +260,7 @@ end
         @testset "freed queues come back from the pool, not the device" begin
             GC.gc(true)
             Mantle.flush!(Mantle.Device())
-            Mantle.drain!(Mantle.batchqueue(Mantle.Device()))
+            Mantle.waitidle(Mantle.Device())
             pool = Mantle.pool(Hikari.mantle_device(backend))
 
             mem = Hikari.DeviceMemory(backend)
@@ -388,7 +396,7 @@ end
         @testset "buffer count stable across renders" begin
             GC.gc(true)
             Mantle.flush!(Mantle.Device())
-            Mantle.drain!(Mantle.batchqueue(Mantle.Device()))
+            Mantle.waitidle(Mantle.Device())
 
             scene = _make_test_scene()
             vp = Hikari.VolPath(samples=1, max_depth=2)
@@ -399,7 +407,7 @@ end
             vp(scene, film, camera)
             Mantle.flush!(Mantle.Device())
             GC.gc(true)
-            Mantle.drain!(Mantle.batchqueue(Mantle.Device()))
+            Mantle.waitidle(Mantle.Device())
             baseline = Mantle.live_buffer_count()
             pool = Mantle.pool(Hikari.mantle_device(Mantle.defaultbackend()))
             reserved = Mantle.reserved(pool)
@@ -412,7 +420,7 @@ end
                 Mantle.flush!(Mantle.Device())
             end
             GC.gc(true)
-            Mantle.drain!(Mantle.batchqueue(Mantle.Device()))
+            Mantle.waitidle(Mantle.Device())
             after = Mantle.live_buffer_count()
 
             @test after == baseline
@@ -424,7 +432,7 @@ end
 
             close(vp)
             Mantle.flush!(Mantle.Device())
-            Mantle.drain!(Mantle.batchqueue(Mantle.Device()))
+            Mantle.waitidle(Mantle.Device())
         end
     end
 
@@ -432,7 +440,7 @@ end
     @testset "resize! does not leak buffers" begin
         GC.gc(true)
         Mantle.flush!(Mantle.Device())
-        Mantle.drain!(Mantle.batchqueue(Mantle.Device()))
+        Mantle.waitidle(Mantle.Device())
         baseline = Mantle.live_buffer_count()
 
         # Pre-pool-block test bookkeeping: a tiny LavaArray comes out of an
@@ -450,7 +458,7 @@ end
 
         resize!(a, 100)
         Mantle.flush!(Mantle.Device())
-        Mantle.drain!(Mantle.batchqueue(Mantle.Device()))
+        Mantle.waitidle(Mantle.Device())
         after_resize = Mantle.live_buffer_count()
         @test after_resize <= baseline + 1
 
@@ -459,14 +467,14 @@ end
             resize!(a, sz)
         end
         Mantle.flush!(Mantle.Device())
-        Mantle.drain!(Mantle.batchqueue(Mantle.Device()))
+        Mantle.waitidle(Mantle.Device())
         after_multi = Mantle.live_buffer_count()
         @test after_multi <= baseline + 1
 
         # Free the array itself
         finalize(a)
         Mantle.flush!(Mantle.Device())
-        Mantle.drain!(Mantle.batchqueue(Mantle.Device()))
+        Mantle.waitidle(Mantle.Device())
         after_free = Mantle.live_buffer_count()
         @test after_free <= baseline + 1
     end

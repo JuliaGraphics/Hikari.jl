@@ -21,7 +21,7 @@ struct PointLight{S<:Spectrum} <: Light
 end
 
 # Point lights are delta lights (emit from a single point)
-is_δ_light(::PointLight) = true
+is_δ_light(::Type{<:PointLight}) = true
 
 function PointLight(position, i::S, scale::Float32=1f0) where S<:Spectrum
     PointLight(translate(Vec3f(position)), i, scale)

@@ -19,15 +19,14 @@ import KernelAbstractions as KA
 #
 # The big items (≥ 64 B) are the ones where the bandwidth difference shows
 # up at render scale. The defaults below cover every queue that's heavy
-# enough to matter: the two ray queues, surface-hit, material-eval, shadow,
-# escaped, and the two medium queues. Trait dispatch is read by
+# enough to matter: the ray queues (and the arrivals, which hold the same
+# items), shadow, escaped, and the two medium queues. A `VPSurfaceHit` is 40 B
+# and read whole by the shading kernel, so it stays an array of structs. Trait dispatch is read by
 # `WorkQueue{T}(backend, capacity)` which defaults `soa=should_use_soa(T)` —
 # so flagging a new work-item type here is sufficient to opt it in.
 should_use_soa(::Type{VPRayWorkItem}) = true
 should_use_soa(::Type{VPShadowRayWorkItem}) = true
 should_use_soa(::Type{VPEscapedRayWorkItem}) = true
-should_use_soa(::Type{VPHitSurfaceWorkItem}) = true
-should_use_soa(::Type{VPMaterialEvalWorkItem}) = true
 should_use_soa(::Type{VPMediumSampleWorkItem}) = true
 should_use_soa(::Type{VPMediumScatterWorkItem}) = true
 # No hint for a per-pixel Sobol cache: samples are computed inline in each
@@ -59,26 +58,20 @@ mutable struct VolPathState{Backend}
     # Medium scatter queue (real scattering events from delta tracking)
     medium_scatter_queue::WorkQueue{VPMediumScatterWorkItem}
 
-    # Shared surface-hit store. Every surface hit (fused SW trace, HW chit
-    # legacy path, medium survive-to-surface) is written here ONCE; the
-    # per-material typed queues hold 4-byte `TypedHitRef{T}` indices into it.
-    hit_surface_queue::WorkQueue{VPHitSurfaceWorkItem}
+    # Shared surface-hit store. Every surface hit (the trace's and the ones
+    # delta tracking delivers) is written here ONCE; the per-material typed
+    # queues hold 4-byte `TypedHitRef{T}` indices into it.
+    surface_hits::WorkQueue{VPSurfaceHit}
+
+    # The path state of rays a medium delivered to their surface, with its
+    # transmittance applied; a `VPSurfaceHit` with a negative `path` points here.
+    arrivals::WorkQueue{VPRayWorkItem}
 
     # Shadow ray queue
     shadow_queue::WorkQueue{VPShadowRayWorkItem}
 
     # Escaped ray queue
     escaped_queue::WorkQueue{VPEscapedRayWorkItem}
-
-    # Hit area-light queue — pbrt-v4 hitAreaLightQueue (wavefront/integrator.h).
-    # Surface hits on emissive triangles are pushed here in PARALLEL to the
-    # per-material queue push (see `enqueue_after_intersection!`); a dedicated
-    # emitter kernel (`vp_handle_emitters!`) drains it between trace and
-    # shade. Keeps the per-material kernels free of emission-MIS code +
-    # eliminates the corresponding fields (`arealight_id`,
-    # `triangle_area`, `t_hit`, `prev_intr_p`, `prev_intr_n`) from the path
-    # that surface BSDF eval traverses.
-    hit_area_light_queue::WorkQueue{VPHitAreaLightWorkItem}
 
     # Film buffer (spectral radiance per pixel, 4 wavelengths)
     pixel_L::AbstractVector{Float32}
@@ -117,16 +110,16 @@ mutable struct VolPathState{Backend}
     height::Int32
 
     # Sobol RNG for low-discrepancy sampling (allocated once, reused across frames)
-    sobol_rng::Any  # SobolRNG or nothing
+    sobol_rng::SobolRNG
 
-    # Per-material-type shading queues (one `WorkQueue{TypedHitRef{T}}` per
-    # concrete material type `T` in the scene).  Built lazily on first render
-    # from the scene's adapted `StaticMultiTypeSet` of materials; rebuilt
-    # when the type tuple changes (different scene).  Type is left `Any`
-    # because the concrete `MultiTypeMaterialQueue{Qs}` signature depends on
-    # which materials are present.
-    per_material_queue::Any              # MultiTypeMaterialQueue{...} | nothing
-    per_material_queue_signature::Any    # type tuple, used as freshness check
+    # The surface hits waiting for their material's shading kernel, a segment per
+    # slot of the scene's materials (`MaterialQueues`). Built on the first render
+    # from the scene's adapted `StaticMultiTypeSet` of materials, and again when
+    # its types change: a segment per slot, and which slots emit.
+    material_queues::Any                 # MaterialQueues | nothing
+    material_queues_signature::Any       # type tuple and inputs width, used as freshness check
+    # What the shaders' values kernels hand their closure kernels per hit (`ShaderInputs`).
+    shader_inputs::Any                   # ShaderInputs | nothing
 
     # Their own `DeviceMemory` and not the one above, because they have their own
     # lifetime: a scene with different material types replaces them, and regions
@@ -190,38 +183,26 @@ function VolPathState(
     sampler_seed::UInt32 = UInt32(0),  # Scrambling seed for Sobol
     accumulation_eltype::DataType = Float32,  # Element type for accumulators (Float32 for OpenCL)
     sensor::PixelSensor = PixelSensor(),  # Pixel sensor for spectral → RGB conversion
-    # When HW per-material chit slots own the shading, the post-hoc
-    # `vp_handle_emitters!` and `vp_shade_surfaces!` kernels never run, so the
-    # `hit_area_light_queue`, the shared `hit_surface_queue` and the typed
-    # per-material queues are unused. `hw_accel=true` allocates them with
-    # capacity=1 (placeholder slots that the chit body never touches) so the
-    # queue allocations don't blow past GPU memory.
-    hw_accel::Bool = false,
-    # Scenes without participating media never push to the medium queues;
-    # allocating them at full pixel capacity wasted ~580 MiB on a 1.4 Mpx
-    # render (VPMediumSampleWorkItem is 320 B). `has_media=false` allocates
-    # capacity-1 placeholders. The freshness check in `render!` rebuilds the
-    # state when a scene with media shows up.
+    # Scenes without participating media never push to the medium queues or
+    # the arrivals; allocating them at full pixel capacity is wasted memory on a
+    # large render. `has_media=false` allocates capacity-1 placeholders. The
+    # freshness check in `render!` rebuilds the state when a scene with media
+    # shows up.
     has_media::Bool = true,
 )
     mem = DeviceMemory(backend)
     n_pixels = width * height
-    vestigial_capacity = hw_accel ? 1 : queue_capacity
     medium_capacity = has_media ? queue_capacity : 1
-    # The shared hit store feeds the SW typed-queue shading path and the
-    # medium survive-to-surface path; with neither (HW chit + no media) a
-    # placeholder suffices.
-    hit_surface_capacity = hw_accel ? 1 : queue_capacity
 
     # Create work queues
     ray_queue_a = WorkQueue{VPRayWorkItem}(mem, queue_capacity)
     ray_queue_b = WorkQueue{VPRayWorkItem}(mem, queue_capacity)
     medium_sample_queue = WorkQueue{VPMediumSampleWorkItem}(mem, medium_capacity)
     medium_scatter_queue = WorkQueue{VPMediumScatterWorkItem}(mem, medium_capacity)
-    hit_surface_queue = WorkQueue{VPHitSurfaceWorkItem}(mem, hit_surface_capacity)
+    surface_hits = WorkQueue{VPSurfaceHit}(mem, queue_capacity)
+    arrivals = WorkQueue{VPRayWorkItem}(mem, medium_capacity)
     shadow_queue = WorkQueue{VPShadowRayWorkItem}(mem, queue_capacity)
     escaped_queue = WorkQueue{VPEscapedRayWorkItem}(mem, queue_capacity)
-    hit_area_light_queue = WorkQueue{VPHitAreaLightWorkItem}(mem, vestigial_capacity)
 
     n_paths = n_pixels * lanes
 
@@ -265,8 +246,7 @@ function VolPathState(
         mem,
         ray_queue_a, ray_queue_b,
         medium_sample_queue, medium_scatter_queue,
-        hit_surface_queue, shadow_queue, escaped_queue,
-        hit_area_light_queue,
+        surface_hits, arrivals, shadow_queue, escaped_queue,
         pixel_L, pixel_rgb, pixel_weight_sum,
         wavelengths_per_pixel, pdf_per_pixel, filter_weight_per_pixel,
         rgb2spec_table, cie_table,
@@ -275,9 +255,9 @@ function VolPathState(
         num_bvh_lights, num_infinite_lights, Int32(n_lights),
         Int32(max_depth), Int32(rr_depth), Int32(width), Int32(height),
         sobol_rng,
-        # Per-material typed queues (built lazily once we see the scene's
-        # adapted materials).
-        nothing, nothing, DeviceMemory(backend),
+        # The material queues (built once the scene's adapted materials are
+        # known).
+        nothing, nothing, nothing, DeviceMemory(backend),
         # Plans (built lazily on the first render, once the scene shape and the
         # film are known).
         nothing,
@@ -285,26 +265,25 @@ function VolPathState(
 end
 
 """
-    ensure_per_material_queue!(state, materials_static, capacity)
+    ensure_material_queues!(state, materials_static, capacity, inputs_width)
 
-Lazily build the per-material typed queue from the scene's adapted
-`StaticMultiTypeSet` of materials.  Rebuilt when the type signature
-changes (different scene); a no-op cache hit otherwise.  Called once at
-the start of each `render!` after scene adaptation.
+Build the material queues for the scene's adapted `StaticMultiTypeSet` of materials, and the
+shader inputs `inputs_width` floats a hit wide (`shader_inputs_width`), again when its types or
+that width changed; a no-op otherwise. Called on every rebuild of the render state.
 """
-function ensure_per_material_queue!(state::VolPathState, materials_static, capacity::Integer)
-    sig = typeof(materials_static).parameters[1]   # Data tuple of StaticMultiTypeSet
-    if state.per_material_queue === nothing || state.per_material_queue_signature !== sig
+function ensure_material_queues!(state::VolPathState, materials_static, capacity::Integer, inputs_width::Integer)
+    sig = (typeof(materials_static).parameters[1], inputs_width)   # Data tuple of StaticMultiTypeSet
+    if state.material_queues === nothing || state.material_queues_signature != sig
         # The previous scene's queues go back before the new ones are taken, so
         # switching scenes does not accumulate a set per scene. No wait: the
         # regions are retired, and the allocator that wants them next is the one
         # that decides whether the device is done with them.
-        state.per_material_queue === nothing || free!(state.per_material_memory)
-        state.per_material_queue =
-            build_per_material_queues(materials_static, capacity, state.per_material_memory)
-        state.per_material_queue_signature = sig
+        state.material_queues === nothing || free!(state.per_material_memory)
+        state.material_queues = MaterialQueues(materials_static, capacity, state.per_material_memory)
+        state.shader_inputs = ShaderInputs(state.surface_hits.capacity, inputs_width, state.per_material_memory)
+        state.material_queues_signature = sig
     end
-    return state.per_material_queue
+    return state.material_queues
 end
 
 # ============================================================================

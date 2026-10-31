@@ -68,13 +68,13 @@ Context is always StaticMultiTypeSet (from Adapt.adapt_structure on MultiTypeSet
 Materials should always use TextureRef or raw values, never Texture directly.
 """
 # TextureRef path
-@propagate_inbounds function eval_tex(ctx::Raycore.StaticMultiTypeSet, tref::Raycore.TextureRef, uv::Point2f)
+@propagate_inbounds function eval_tex(ctx::DeviceSet, tref::Raycore.TextureRef, uv::Point2f)
     data = Raycore.deref(ctx, tref)
     return sample_texture_data(data, uv)
 end
 
 # Raw value path (constant) - for Float32, RGB, Spectrum types
-@propagate_inbounds function eval_tex(::Raycore.StaticMultiTypeSet, val::T, ::Point2f) where T<:Union{Float32, RGB{Float32}, Spectrum}
+@propagate_inbounds function eval_tex(::DeviceSet, val::T, ::Point2f) where T<:Union{Float32, RGB{Float32}, Spectrum}
     return val
 end
 
@@ -90,19 +90,19 @@ This is the preferred interface for materials - uses bilinear filtering
 and UV derivatives for future mipmap support.
 """
 # TextureRef path with context
-@propagate_inbounds function eval_tex(ctx::Raycore.StaticMultiTypeSet, tref::Raycore.TextureRef, tfc::TextureFilterContext)
+@propagate_inbounds function eval_tex(ctx::DeviceSet, tref::Raycore.TextureRef, tfc::TextureFilterContext)
     data = Raycore.deref(ctx, tref)
     return sample_texture_data_filtered(data, tfc.uv, tfc.dudx, tfc.dudy, tfc.dvdx, tfc.dvdy)
 end
 
 # Raw value path (constant) - context ignored
-@propagate_inbounds function eval_tex(::Raycore.StaticMultiTypeSet, val::T, ::TextureFilterContext) where T<:Union{Float32, RGB{Float32}, Spectrum}
+@propagate_inbounds function eval_tex(::DeviceSet, val::T, ::TextureFilterContext) where T<:Union{Float32, RGB{Float32}, Spectrum}
     return val
 end
 
 # PiecewiseLinearSpectrum passthrough (not a texture, stored directly in material)
-@propagate_inbounds eval_tex(::Raycore.StaticMultiTypeSet, val::PiecewiseLinearSpectrum, ::Point2f) = val
-@propagate_inbounds eval_tex(::Raycore.StaticMultiTypeSet, val::PiecewiseLinearSpectrum, ::TextureFilterContext) = val
+@propagate_inbounds eval_tex(::DeviceSet, val::PiecewiseLinearSpectrum, ::Point2f) = val
+@propagate_inbounds eval_tex(::DeviceSet, val::PiecewiseLinearSpectrum, ::TextureFilterContext) = val
 
 # ============================================================================
 # CheckerboardTexture evaluation — pbrt-v4 textures.cpp Checkerboard(), 2D case
@@ -148,7 +148,7 @@ end
 
 # Checkerboard() 2D branch + UVMapping::Map fused, then the
 # (1 - w) * tex1 + w * tex2 mix from {Float,Spectrum}CheckerboardTexture::Evaluate.
-@propagate_inbounds function eval_tex(ctx::Raycore.StaticMultiTypeSet, cb::CheckerboardTexture,
+@propagate_inbounds function eval_tex(ctx::DeviceSet, cb::CheckerboardTexture,
                                       tfc::TextureFilterContext)
     s = cb.su * tfc.uv[1] + cb.du
     t = cb.sv * tfc.uv[2] + cb.dv
@@ -162,9 +162,9 @@ end
 
 # Derivative-free entry points point-sample (r = 0 ⇒ checker_bf hits the exact
 # ±1 branch), matching pbrt with zero differentials.
-@propagate_inbounds eval_tex(ctx::Raycore.StaticMultiTypeSet, cb::CheckerboardTexture, uv::Point2f) =
+@propagate_inbounds eval_tex(ctx::DeviceSet, cb::CheckerboardTexture, uv::Point2f) =
     eval_tex(ctx, cb, TextureFilterContext(uv))
-@propagate_inbounds eval_tex(ctx::Raycore.StaticMultiTypeSet, cb::CheckerboardTexture, si::SurfaceInteraction) =
+@propagate_inbounds eval_tex(ctx::DeviceSet, cb::CheckerboardTexture, si::SurfaceInteraction) =
     eval_tex(ctx, cb, TextureFilterContext(si.uv))
 
 # ============================================================================
@@ -183,7 +183,7 @@ The derivatives are passed through for future mipmap implementation.
 """
 # TextureRef path with filtering
 @propagate_inbounds function eval_tex_filtered(
-    ctx::Raycore.StaticMultiTypeSet, tref::Raycore.TextureRef, uv::Point2f,
+    ctx::DeviceSet, tref::Raycore.TextureRef, uv::Point2f,
     dudx::Float32, dudy::Float32, dvdx::Float32, dvdy::Float32
 )
     data = Raycore.deref(ctx, tref)
@@ -192,7 +192,7 @@ end
 
 # Raw value path (constant) - derivatives ignored
 @propagate_inbounds function eval_tex_filtered(
-    ::Raycore.StaticMultiTypeSet, val::T, ::Point2f,
+    ::DeviceSet, val::T, ::Point2f,
     ::Float32, ::Float32, ::Float32, ::Float32
 ) where T<:Union{Float32, RGB{Float32}, Spectrum}
     return val
@@ -337,12 +337,12 @@ end
 # ============================================================================
 
 # Regular textures: extract UV from SI
-@propagate_inbounds eval_tex(ctx::Raycore.StaticMultiTypeSet, tref::Raycore.TextureRef, si::SurfaceInteraction) = eval_tex(ctx, tref, si.uv)
-@propagate_inbounds eval_tex(::Raycore.StaticMultiTypeSet, val::T, ::SurfaceInteraction) where T<:Union{Float32, RGB{Float32}, Spectrum} = val
-@propagate_inbounds eval_tex(::Raycore.StaticMultiTypeSet, val::PiecewiseLinearSpectrum, ::SurfaceInteraction) = val
+@propagate_inbounds eval_tex(ctx::DeviceSet, tref::Raycore.TextureRef, si::SurfaceInteraction) = eval_tex(ctx, tref, si.uv)
+@propagate_inbounds eval_tex(::DeviceSet, val::T, ::SurfaceInteraction) where T<:Union{Float32, RGB{Float32}, Spectrum} = val
+@propagate_inbounds eval_tex(::DeviceSet, val::PiecewiseLinearSpectrum, ::SurfaceInteraction) = val
 
 # VertexColorTexture: barycentric interpolation using face_idx and bary from SI
-@propagate_inbounds function eval_tex(ctx::Raycore.StaticMultiTypeSet, vtex::VertexColorTexture, si::SurfaceInteraction)
+@propagate_inbounds function eval_tex(ctx::DeviceSet, vtex::VertexColorTexture, si::SurfaceInteraction)
     data = Raycore.deref(ctx, vtex.face_colors)
     fi = si.face_idx
     b = si.bary
@@ -350,7 +350,7 @@ end
 end
 
 # VertexColorTexture: barycentric interpolation using face_idx and bary from TextureFilterContext
-@propagate_inbounds function eval_tex(ctx::Raycore.StaticMultiTypeSet, vtex::VertexColorTexture, tfc::TextureFilterContext)
+@propagate_inbounds function eval_tex(ctx::DeviceSet, vtex::VertexColorTexture, tfc::TextureFilterContext)
     data = Raycore.deref(ctx, vtex.face_colors)
     fi = tfc.face_idx
     b = tfc.bary
@@ -358,7 +358,7 @@ end
 end
 
 # VertexColorTexture fallback for UV-only paths (fast-wavefront) - gray placeholder
-@propagate_inbounds eval_tex(::Raycore.StaticMultiTypeSet, ::VertexColorTexture, ::Point2f) = RGBSpectrum(0.5f0)
+@propagate_inbounds eval_tex(::DeviceSet, ::VertexColorTexture, ::Point2f) = RGBSpectrum(0.5f0)
 
 # Light skip methods are in lights/light-sampler.jl (after light types are defined)
 # Distribution types are now converted via the standard texture ref infrastructure

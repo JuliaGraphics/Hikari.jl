@@ -26,7 +26,7 @@ const EMPTY_META = Raycore.Triangle{Hikari.TriangleMeta}
     # And a populated one agrees, which is the point: one kernel, not two.
     scene = Hikari.Scene(; backend)
     push!(scene, GeometryBasics.normal_mesh(Sphere(Point3f(0), 0.5f0)),
-          Hikari.Diffuse(Kd = Hikari.RGBSpectrum(0.7f0)))
+          Hikari.Diffuse(color = Hikari.RGBSpectrum(0.7f0)))
     Hikari.sync!(scene)
     @test eltype(scene.accel) == EMPTY_META
 end

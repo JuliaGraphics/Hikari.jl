@@ -21,20 +21,20 @@ intersection point lets `work.ns` itself be the perturbed normal — the
 BSDF, MIS, and direct-lighting paths all see the same shading frame.
 """
 @propagate_inbounds get_perturbed_shading_frame(
-    materials::StaticMultiTypeSet, idx::SetKey,
+    materials::DeviceSet, idx::SetKey,
     ns::Vec3f, dpdus::Vec3f, dpdu::Vec3f, dpdv::Vec3f,
     dndu::Vec3f, dndv::Vec3f,
     ng::Vec3f, tfc::TextureFilterContext
 ) = get_perturbed_shading_frame(materials, idx, ns, dpdus, dpdu, dpdv, ng, () -> (dndu, dndv, tfc))
 
 @propagate_inbounds function get_perturbed_shading_frame(
-    materials::StaticMultiTypeSet, idx::SetKey,
+    materials::DeviceSet, idx::SetKey,
     ns::Vec3f, dpdus::Vec3f, dpdu::Vec3f, dpdv::Vec3f,
     ng::Vec3f, bump_inputs::F
 )::Tuple{Vec3f, Vec3f} where {F}
     # A surface whose material is not in the set has no displacement to read, so
     # the frame is the geometric one. Same guard, same reason as
-    # `get_surface_alpha_dispatch`: a null-material medium boundary carries an
+    # `surface_transparency_dispatch`: a null-material medium boundary carries an
     # INVALID index, and on a scene whose only object is a volume the material
     # set is EMPTY, where `with_index` expands to `error(...)` — unraisable in a
     # GPU kernel, so the ray simply disappeared. This is the call on the medium
@@ -104,16 +104,16 @@ Returns (should_continue::Bool, new_beta::SpectralRadiance).
 end
 
 """
-    get_surface_alpha_dispatch(materials::StaticMultiTypeSet, idx::SetKey, tfc) -> Float32
+    surface_transparency_dispatch(materials, idx::SetKey, tfc) -> Vec3f
 
-Type-stable dispatch for evaluating surface alpha at a hit. `tfc` is the hit's
-point-sampled `TextureFilterContext(uv, face_idx, bary)`: a vertex-colour alpha
-needs the face, not only the UV.
-Returns alpha ∈ [0, 1] where 0 = fully transparent, 1 = fully opaque.
+What the material `idx` lets straight through at a hit (`surface_transparency`). `tfc` is the
+hit's point-sampled `TextureFilterContext(uv, face_idx, bary)`: a vertex-colour alpha needs the
+face, not only the UV. A view of the materials (`shade_set`) holds the types that can be cut out;
+any other lets nothing through.
 """
-@propagate_inbounds function get_surface_alpha_dispatch(
-    materials::StaticMultiTypeSet, idx::SetKey, tfc::TextureFilterContext
-)::Float32
+@propagate_inbounds function surface_transparency_dispatch(
+    materials::DeviceSet, idx::SetKey, tfc::TextureFilterContext
+)::Vec3f
     # A surface with no material in the set is not alpha-tested: opaque, so the
     # caller proceeds to the null-material branch that owns this case.
     #
@@ -128,23 +128,38 @@ Returns alpha ∈ [0, 1] where 0 = fully transparent, 1 = fully opaque.
     # same invalid index instead fell into `with_index`'s else-branch and read
     # some ARBITRARY material's alpha — opaque by luck, which is why adding an
     # unrelated sphere "fixed" it.
-    Raycore.is_valid(idx) || return 1.0f0
-    return with_index(get_surface_alpha, materials, idx, materials, tfc)
+    Raycore.is_valid(idx) || return Vec3f(0)
+    return with_index(surface_transparency, materials, idx, materials, tfc)
 end
 
+"""The coverage of the material `idx` at a hit: 1 opaque, 0 letting everything through."""
+@propagate_inbounds surface_alpha_dispatch(materials::DeviceSet, idx::SetKey, tfc::TextureFilterContext) =
+    1f0 - _avg(surface_transparency_dispatch(materials, idx, tfc))
+
+
+"""
+    may_cut(T) -> Bool
+
+Whether a material of device type `T` can let a ray through where it is hit: one with a
+`surface_transparency` of its own. Every other type is opaque wherever it is, so a shadow ray needs
+no code for it (`shade_set`).
+"""
+may_cut(T::Type) = which(surface_transparency, Tuple{T, Any, TextureFilterContext}) !==
+                   which(surface_transparency, Tuple{Material, Any, TextureFilterContext})
 
 # ============================================================================
 # The materials that have no BSDF of their own
 # ============================================================================
 #
-# The shading pass dispatches a `vp_shade_material_kernel!{T}` per concrete type
-# in the scene's material set, so every one of them needs BSDF methods to
-# compile — including the types that never actually shade a hit:
+# The shading pass dispatches a `vp_shade_kernel!` per concrete type in the
+# scene's material set, and a mix's kernel dispatches its component over all of
+# them, so every one needs BSDF methods to compile — including the types that
+# never actually shade a hit:
 #
-#   * `MixMaterial` is re-pointed at one of its sub-materials at the PUSH site
-#     (`resolve_mix_material` in `vp_trace_and_shade_kernel!` and in delta
-#     tracking), so a `TypedHitRef{MixMaterial}` is never produced.
-#   * `Emissive` lives in `MediumInterface.emission`, not in the material slot;
+#   * `MixMaterial` is re-pointed at one of its components in its own kernel
+#     (`resolve_mix_material` in `vp_shade_surface_hit!`), so the mix itself is
+#     never shaded.
+#   * `Emission` lives in `MediumInterface.emission`, not in the material slot;
 #     it only reaches the material set if something pushes it directly.
 #
 # These return no sample and no contribution rather than something plausible.
@@ -154,7 +169,7 @@ end
 # BxDF carrier, and turned a specular dielectric medium boundary into a diffuse
 # wall. That took two months to notice precisely because a gray surface looks
 # like a surface. A black one does not.
-const BSDFLessMaterial = Union{Emissive, MixMaterial}
+const BSDFLessMaterial = Union{Emission, MixMaterial}
 
 @propagate_inbounds sample_bsdf_spectral(
     ::BSDFLessMaterial, ::RGBToSpectrumTable, textures,
@@ -177,10 +192,7 @@ const BSDFLessMaterial = Union{Emissive, MixMaterial}
 # For materials Hikari takes over completely: `to_device_material` rewrites the
 # texture-carrying fields into `TexHandle`s (storing whatever needs a slot),
 # which is what collapses "same material, different parameter spelling" into a
-# single concrete type and therefore a single closest-hit shader.
+# single concrete type and therefore a single shading kernel.
 Raycore.maybe_convert_field(dhv::Raycore.MultiTypeSet, m::Material) =
     to_device_material(dhv, m)
 
-# UV-only compatibility for image and constant textures. Vertex colours need the full hit context.
-@propagate_inbounds get_surface_alpha_dispatch(materials::StaticMultiTypeSet, idx::SetKey, uv::Point2f) =
-    get_surface_alpha_dispatch(materials, idx, TextureFilterContext(uv))

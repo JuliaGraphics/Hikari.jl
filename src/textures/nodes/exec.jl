@@ -101,7 +101,7 @@ const _RAMP_DATA = Int32(cld(RAMP_TABLE_SIZE, RAMP_ENTRIES_PER_DATA))
     elseif _has(ins, NodeFeature.IMAGE) && op == NodeOp.IMAGE
         rgb = Raycore.with_texture(_node_image, textures, reinterpret(Int32, ins.k[9]), reinterpret(Int32, ins.k[10]),
                                    Point2f(_v(s, ins, 1)[1], _v(s, ins, 1)[2]))
-        s = _store(s, ins, Vec3f(rgb.c[1], rgb.c[2], rgb.c[3]))
+        s = _store(s, ins, Vec3f(rgb.c[1], rgb.c[2], rgb.c[3]), _splat(rgb.c[4]))
     end
     return s, Int32(0)
 end
@@ -124,9 +124,12 @@ call site would multiply the kernel's size.
     return Vec3f(0)
 end
 
-@propagate_inbounds _th_nodes_spec(prog::AbstractVector{<:NodeInstr}, textures, tfc) =
-    RGBSpectrum(eval_nodes(prog, textures, tfc))
+# A `TexHandle` names a texture's program (`NodeFeature.TEXTURE`). The texture slots it is looked
+# up among hold the shaders' programs too, which it never names, and running one of those here
+# would compile that shader's interpreter into every texture read.
+@propagate_inbounds _th_nodes_spec(prog::AbstractVector{NodeInstr{F}}, textures, tfc) where {F} =
+    F & NodeFeature.TEXTURE != zero(UInt32) ? RGBSpectrum(eval_nodes(prog, textures, tfc)) : _TH_ZERO
 @propagate_inbounds _th_nodes_spec(prog, textures, tfc) = _TH_ZERO
-@propagate_inbounds _th_nodes_float(prog::AbstractVector{<:NodeInstr}, textures, tfc) =
-    eval_nodes(prog, textures, tfc)[1]
+@propagate_inbounds _th_nodes_float(prog::AbstractVector{NodeInstr{F}}, textures, tfc) where {F} =
+    F & NodeFeature.TEXTURE != zero(UInt32) ? eval_nodes(prog, textures, tfc)[1] : 0f0
 @propagate_inbounds _th_nodes_float(prog, textures, tfc) = 0f0

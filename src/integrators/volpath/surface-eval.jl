@@ -202,14 +202,31 @@ vertex-colour bump height indexes with them.
 end
 
 """The shading frame at the hit `geom` of `primitive`, perturbed by the material's bump, if it has one."""
-@propagate_inbounds function bumped_shading_frame(materials, mat_idx, camera, work, geom, primitive,
-                                                  samples_per_pixel::Int32, bary)
+@propagate_inbounds function bumped_shading_frame(::Type{T}, materials, mat_idx, camera, work, geom, primitive,
+                                                  samples_per_pixel::Int32, bary) where {T}
     face_idx = primitive.metadata.primitive_index
     bump_inputs() = (vp_compute_normal_derivatives(primitive)...,
                      bump_filter_context(camera, work, geom, samples_per_pixel, face_idx, SVector{3, Float32}(bary)))
-    return get_perturbed_shading_frame(materials, mat_idx, geom.ns, geom.dpdus, geom.dpdu, geom.dpdv, geom.n,
-                                       bump_inputs)
+    return perturbed_frame(T, materials, mat_idx, geom.ns, geom.dpdus, geom.dpdu, geom.dpdv, geom.n, bump_inputs)
 end
+
+# The kernel of a material type knows the material: only its own bump is compiled. A mix's
+# component is known per hit, so its kernel asks every type in the set.
+@propagate_inbounds perturbed_frame(::Type{T}, materials, idx::SetKey, ns, dpdus, dpdu, dpdv, ng, bump_inputs) where {T} =
+    perturb_shading_frame_impl(material_of_type(materials, T, idx.vec_idx), materials, ns, dpdus, dpdu, dpdv, ng,
+                               bump_inputs)
+@propagate_inbounds perturbed_frame(::Type{<:MixMaterial}, materials, idx::SetKey, ns, dpdus, dpdu, dpdv, ng, bump_inputs) =
+    get_perturbed_shading_frame(materials, idx, ns, dpdus, dpdu, dpdv, ng, bump_inputs)
+
+"""
+    shaded_material(T, materials, key, p, wo, tfc) -> SetKey
+
+The material a hit in the queue of type `T` is shaded with: the mesh's (`key`), and for a mix the
+component it picks at this hit (`resolve_mix_material`).
+"""
+@propagate_inbounds shaded_material(::Type, materials, key::SetKey, p::Point3f, wo::Vec3f, tfc::TextureFilterContext) = key
+@propagate_inbounds shaded_material(::Type{<:MixMaterial}, materials, key::SetKey, p::Point3f, wo::Vec3f,
+                                    tfc::TextureFilterContext) = resolve_mix_material(materials, key, p, wo, tfc)
 
 """
     compute_uv_derivatives(dpdu, dpdv, dpdx, dpdy) -> (dudx, dudy, dvdx, dvdy)
@@ -297,31 +314,26 @@ end
 # measured 128 registers on RTX 4000 Ada, right at the occupancy cliff (above
 # 128 the per-SM thread count drops from 512 to 256).
 #
-# This is the ONLY surface-shading implementation, and the closest-hit shaders
-# call the same two inner functions. A second, `with_index`-based copy would be
-# dispatched for exactly one configuration (hardware RT on a scene with media),
-# which is how such a copy drifts: move every BSDF onto a `get_bxdf` carrier,
-# update one copy, and the other keeps calling the raw material and silently
-# matches a gray-Lambertian `::Material` catch-all — a
-# specular medium boundary became a diffuse wall and `medium_smoke_point`
-# rendered at 0.037 of reference on HW while SW was correct. Everything that
-# copy did beyond shading — MixMaterial resolution, the null-material medium
-# swap — already happens at the push site for both producers
-# (`vp_trace_and_shade_kernel!` and delta tracking's `vp_sample_medium_kernel!`),
-# so it was redundant as well as divergent.
+# This is the ONLY surface-shading implementation, for every traversal and for
+# hits delivered by the trace and by delta tracking alike. A second copy is how
+# shading drifts: a `with_index`-based one, dispatched for exactly one
+# configuration (hardware RT on a scene with media), kept calling the raw
+# material after every BSDF moved onto a `get_bxdf` carrier, silently matched a
+# gray-Lambertian `::Material` catch-all, and rendered `medium_smoke_point` at
+# 0.037 of reference on hardware while software was correct.
 #
 # Pieces:
 #   * `surface_direct_lighting_inner!` / `evaluate_material_inner!` — take the
 #     BxDF carrier `get_bxdf` built for this hit and call
 #     `evaluate_bsdf_spectral` / `sample_bsdf_spectral` on it directly. Sobol
 #     inlined, shadow trace inlined.
-#   * `vp_shade_material_kernel!` — reads `TypedHitRef{T}`, loads the hit from
-#     the shared `hit_surface_queue`, looks up the
-#     concrete instance via `material_of_type(materials, T, vec_idx)` (one
-#     array load resolved at compile time), accumulates emission, runs DL
-#     + indirect path.
-#   * the "shade" pass (graph.jl) — one dispatch per queue of the
-#     `MultiTypeMaterialQueue`, all in ONE pass, because they are independent:
+#   * `vp_shade_kernel!` — reads a `TypedHitRef{T}` from its `SlotQueue{T}`, loads the `VPSurfaceHit`
+#     from the shared `surface_hits` store and its path, expands the surface,
+#     looks up the concrete instance via `material_of_type(materials, T,
+#     vec_idx)` (one array load resolved at compile time), accumulates emission,
+#     runs DL + indirect path.
+#   * the "shade" pass (graph.jl) — one dispatch per slot of the
+#     `MaterialQueues`, all in ONE pass, because they are independent:
 #     each per-type kernel writes disjoint slots of the shared `next_ray_queue`
 #     and atomic `pixel_L`. A pass is the unit barriers go between, so they
 #     overlap on idle SMs rather than serialising.
@@ -358,9 +370,10 @@ write/read of two `pixel_samples_direct_*` arrays per bounce — measured as
     num_lights < Int32(1) && return
 
     # Null-material boundaries never reach a per-material queue: both push
-    # sites (`vp_trace_and_shade_kernel!` and delta tracking's
-    # `vp_sample_medium_kernel!`) handle the medium swap inline and return, so
-    # a `bxdf` here always came from a real material.
+    # sites (`vp_trace!` and delta tracking's `sample_medium_interaction!`)
+    # handle the medium swap inline and return, and a mix that resolves to no
+    # material is handled likewise in `vp_shade_surface_hit!`, so a `bxdf` here
+    # always came from a real material.
 
     # Inline Sobol. Dimension allocation matches the original
     # `vp_generate_ray_samples_kernel!`: 6 (camera) + 7 * depth + dim-offset;
@@ -460,6 +473,7 @@ carrier, applies Russian roulette, pushes the continuation ray."""
 @propagate_inbounds function evaluate_material_inner!(
     bxdf::B,
     next_ray_queue,
+    film_pdf,
     work::VPMaterialEvalWorkItem,
     materials,
     media,
@@ -469,6 +483,7 @@ carrier, applies Russian roulette, pushes the continuation ray."""
     rgb2spec_table,
     max_depth::Int32,
     do_regularize::Bool,
+    emitters_reachable::Bool,
     sobol_rng,
     sample_idx::Int32,
     camera,
@@ -477,9 +492,9 @@ carrier, applies Russian roulette, pushes the continuation ray."""
 ) where B
     # Null material → never sees a typed kernel (routed at push site).
     new_depth = work.depth + Int32(1)
-    if new_depth >= max_depth
-        return
-    end
+    # The deepest vertex samples the BSDF for the emission its ray reaches, if any can be
+    # (`emission_reachable`, decided for the scene when the plans are built).
+    (new_depth < max_depth || emitters_reachable) || return
 
     px, py, sample_idx = path_pixel_sample(sobol_rng, work.pixel_index, sample_idx)
     base_dim = Int32(6) + Int32(7) * work.depth
@@ -529,8 +544,8 @@ carrier, applies Russian roulette, pushes the continuation ray."""
             end
             ray_origin = offset_surface_origin(work.pi,work.n,sample.wi)
             new_ray = Raycore.Ray(o=ray_origin, d=sample.wi, t_max=Inf32, time=0f0)
-            new_lambda = if sample.secondary_terminated
-                terminate_secondary_wavelengths(work.lambda)
+            new_lambda = if sample.secondary_terminated && !secondary_terminated(work.lambda)
+                record_wavelengths!(film_pdf, work.pixel_index, terminate_secondary_wavelengths(work.lambda))
             else
                 work.lambda
             end
@@ -563,74 +578,216 @@ carrier, applies Russian roulette, pushes the continuation ray."""
     return
 end
 
-"""Per-material-type shading kernel — drains one slot of the
-`MultiTypeMaterialQueue`.  Julia specialises this function separately for
-each concrete `T`, so each per-type dispatch's SPIR-V contains exactly one
-material's BSDF code — no `with_index` switching on the material axis.
+"""
+    vp_shade_kernel!(q, surface_hits, cur, arrivals, …)
 
-Emission MIS still uses `with_index` on `lights` (light-type axis, separate
-concern from materials)."""
-@propagate_inbounds function vp_shade_material_kernel!(
-    typed::TypedHitRef{T},
-    hit_surface_queue,
-    next_ray_queue,
-    pixel_L,
-    accel,
-    media_interfaces,
-    media,
-    materials,
-    lights,
-    rgb2spec_table,
-    bvh_nodes,
-    infinite_light_indices,
-    light_to_bit_trail,
-    num_infinite_lights::Int32,
-    num_bvh_lights::Int32,
-    num_lights::Int32,
-    max_depth::Int32,
-    do_regularize::Bool,
-    sobol_rng,
-    sample_idx_ref,
-    camera_ref,
-    samples_per_pixel::Int32,
-    rr_depth::Int32,
-) where T
-    sample_idx = @inbounds sample_idx_ref[Int32(1)]
-    # Behind a `GPURef`, like the sample index: a moved camera is an update in
-    # the run's own submission, not a new plan.
-    camera = @inbounds camera_ref[Int32(1)]
-    # The typed queue carries 4-byte indices; the hit payload lives once in
-    # the shared hit_surface_queue.
-    work = hit_surface_queue.items[typed.idx]
-    wo = -work.ray.d
+Shade the hits of one material type: drains the `SlotQueue{T}` of its slot of the
+`MaterialQueues`, so each specialisation compiles exactly one material's code (and
+a `MixMaterial`'s, its components').
+"""
+@kernel inbounds = true function vp_shade_kernel!(
+    q, surface_hits, cur, arrivals,
+    next_ray_queue, pixel_L, film_pdf, accel, media_interfaces, media, materials, lights,
+    rgb2spec_table, bvh_nodes, infinite_light_indices, light_to_bit_trail,
+    num_infinite_lights::Int32, num_bvh_lights::Int32, num_lights::Int32,
+    max_depth::Int32, do_regularize::Bool, emitters_reachable::Bool, sobol_rng, sample_idx_ref, camera_ref,
+    samples_per_pixel::Int32, rr_depth::Int32,
+)
+    j = @index(Global)
+    if j <= queuelength(q)
+        vp_shade_surface_hit!(q[j], surface_hits, cur, arrivals,
+            next_ray_queue, pixel_L, film_pdf, accel, media_interfaces, media, materials, lights,
+            rgb2spec_table, bvh_nodes, infinite_light_indices, light_to_bit_trail,
+            num_infinite_lights, num_bvh_lights, num_lights,
+            max_depth, do_regularize, emitters_reachable, sobol_rng, sample_idx_ref, camera_ref,
+            samples_per_pixel, rr_depth)
+    end
+end
 
-    # Concrete material instance — compile-time slot lookup + indexed array
-    # load.  No `with_index` switch in this kernel's SPIR-V.
-    mat = material_of_type(materials, T, work.material_idx.vec_idx)
+"""
+    expanded_hit(idx, surface_hits, cur, arrivals, accel, media_interfaces)
 
-    # Emission MIS for indirect rays hitting area lights now runs in its own
-    # kernel (`vp_handle_emitters_kernel!` draining `hit_area_light_queue`),
-    # matching pbrt-v4 wavefront. The per-material kernels stay focused on
-    # BSDF sampling + direct lighting.
+The surface hit `idx` of `surface_hits` expanded: its path state (the round's ray, or the arrival a
+medium delivered), record, primitive, barycentrics, medium interface, surface and `wo`. A shader's
+values kernel and its closure kernel expand a hit by this one function, so both see one surface.
+"""
+@propagate_inbounds function expanded_hit(idx::Int32, surface_hits, cur, arrivals, accel, media_interfaces)
+    sh = surface_hits.items[idx]
+    work = sh.path > Int32(0) ? cur.items[sh.path] : arrivals.items[-sh.path]
+    rec = sh.hit
+    primitive = Raycore.hit_primitive(accel, rec)
+    bary = Raycore.hit_barycentric(accel, rec)
+    mi = media_interfaces[resolve_mi_idx(rec.custom, primitive)]
+    geom = vp_compute_surface_geometry(primitive, bary, work.ray.o, work.ray.d, rec.t)
+    return (; work, rec, primitive, bary, mi, geom, wo = -work.ray.d)
+end
 
-    # Stack-local material-eval work item.
-    mat_work = VPMaterialEvalWorkItem(work, wo, work.material_idx)
+"""
+    vp_shade_surface_hit!(ref, surface_hits, cur, arrivals, …)
 
-    # pbrt-v4 wavefront `EvaluateMaterialAndBSDF<ConcreteMaterial>` builds the
-    # BxDF once per surface hit via `Material::GetBxDF` so the subsequent
-    # `Sample_f` and `f` calls operate on a small struct with already-resolved
-    # spectra / textures.  Default `get_bxdf` is identity, so materials whose
-    # BSDF state is already small (Diffuse: 16 B) pay nothing; Conductor's
-    # 900-byte `PiecewiseLinearSpectrum{56}`-bearing struct collapses to a
-    # 40-byte `ConductorEvaluated`, eliminating 8-16 redundant
-    # `eval_ior_spectral` binary searches per surface hit.
-    regularize_for_bxdf = regularizes(work, media, do_regularize)
+Expand one surface hit and shade it with its material (`shaded_type(ref)`): the surface from the
+hit record, the bump-perturbed shading frame, the emission of an area light it landed on
+(MIS-weighted against light sampling), then the material's BSDF sampling and direct lighting
+(`vp_shade_resolved_hit!`).
+"""
+@propagate_inbounds function vp_shade_surface_hit!(
+    ref, surface_hits, cur, arrivals,
+    next_ray_queue, pixel_L, film_pdf, accel, media_interfaces, media, materials, lights,
+    rgb2spec_table, bvh_nodes, infinite_light_indices, light_to_bit_trail,
+    num_infinite_lights::Int32, num_bvh_lights::Int32, num_lights::Int32,
+    max_depth::Int32, do_regularize::Bool, emitters_reachable::Bool, sobol_rng, sample_idx_ref, camera_ref,
+    samples_per_pixel::Int32, rr_depth::Int32,
+)
+    T = shaded_type(ref)
+    # Behind `GPURef`s: a new sample index or a moved camera is an update in the
+    # run's own submission, not a new plan.
+    sample_idx = sample_idx_ref[Int32(1)]
+    camera = camera_ref[Int32(1)]
+    (; work, rec, primitive, bary, mi, geom, wo) = expanded_hit(ref.idx, surface_hits, cur, arrivals, accel,
+                                                               media_interfaces)
+    t_hit = rec.t
+    # The mesh's material; a `MixMaterial` picks its component here, per hit.
+    resolved = shaded_material(T, materials, mi.material, geom.pi, wo,
+        TextureFilterContext(geom.uv, primitive.metadata.primitive_index, bary, geom.pi))
+
+    # A mix that resolved to no material: emission, then the ray goes on, as at a
+    # surface without a material in the trace.
+    if !Raycore.is_valid(resolved)
+        accumulate_arealight_hit!(pixel_L, lights, rgb2spec_table,
+            bvh_nodes, light_to_bit_trail, num_infinite_lights, num_bvh_lights,
+            primitive.metadata.arealight_id, geom.n, geom.uv, wo,
+            work, work.beta, work.r_u, work.r_l, Raycore.area(primitive), t_hit)
+        ray_d = -wo
+        new_medium = null_crossing_medium(mi, work.medium_idx, ray_d, geom.n)
+        new_ray = Raycore.Ray(o=offset_surface_origin(geom.pi, geom.n, ray_d), d=ray_d,
+                              t_max=Inf32, time=0f0)
+        push!(next_ray_queue, VPRayWorkItem(
+            new_ray, work.depth,
+            work.lambda, work.pixel_index,
+            work.beta, work.r_u, work.r_l,
+            work.prev_intr_p, work.prev_intr_n,
+            work.eta_scale,
+            work.specular_bounce, work.any_non_specular_bounces,
+            new_medium))
+        return nothing
+    end
+
+    # True ray differentials on camera rays, camera approximation deeper, as
+    # pbrt-v4's ComputeDifferentials.
+    ns_b, dpdus_b = bumped_shading_frame(T, materials, resolved, camera, work, geom, primitive,
+                                         samples_per_pixel, bary)
+    hit_work = VPHitSurfaceWorkItem(
+        work,
+        geom.pi, geom.ps, geom.n, geom.dpdu, geom.dpdv,
+        ns_b, dpdus_b, cross(ns_b, dpdus_b),
+        geom.uv, resolved, mi,
+        primitive.metadata.primitive_index, bary,
+    )
+    accumulate_arealight_hit!(pixel_L, lights, rgb2spec_table,
+        bvh_nodes, light_to_bit_trail, num_infinite_lights, num_bvh_lights,
+        primitive.metadata.arealight_id, hit_work.n, hit_work.uv, wo,
+        hit_work, hit_work.beta, hit_work.r_u, hit_work.r_l, Raycore.area(primitive), t_hit)
+
+    # A concrete material is the queue's type, read by its slot at compile time.
+    # A mix's component was picked above, so it is dispatched on its key.
+    if T <: MixMaterial
+        Raycore.with_index(vp_shade_resolved_hit!, materials, resolved,
+            hit_work, wo, resolved,
+            next_ray_queue, pixel_L, film_pdf, accel, media_interfaces, media,
+            materials, lights, rgb2spec_table,
+            bvh_nodes, infinite_light_indices,
+            num_infinite_lights, num_bvh_lights, num_lights,
+            max_depth, do_regularize, emitters_reachable, sobol_rng, sample_idx,
+            camera, samples_per_pixel, rr_depth)
+    else
+        mat = shaded_instance(ref, materials, resolved)
+        vp_shade_resolved_hit!(mat,
+            hit_work, wo, resolved,
+            next_ray_queue, pixel_L, film_pdf, accel, media_interfaces, media,
+            materials, lights, rgb2spec_table,
+            bvh_nodes, infinite_light_indices,
+            num_infinite_lights, num_bvh_lights, num_lights,
+            max_depth, do_regularize, emitters_reachable, sobol_rng, sample_idx,
+            camera, samples_per_pixel, rr_depth)
+    end
+    return nothing
+end
+
+"""
+Record in the film that the path in slot `pixel_index` ended its secondary wavelengths: the film
+divides all of the slot's radiance by these pdfs, as pbrt-v4's divides a sample's by the path's
+last, so what the path gathered before counts as its first wavelength's alone too. Returns `lambda`.
+"""
+@propagate_inbounds function record_wavelengths!(film_pdf, pixel_index::Int32, lambda::Wavelengths)
+    base = (pixel_index - Int32(1)) * Int32(4)
+    film_pdf[base + Int32(1)] = lambda.pdf[1]
+    film_pdf[base + Int32(2)] = lambda.pdf[2]
+    film_pdf[base + Int32(3)] = lambda.pdf[3]
+    film_pdf[base + Int32(4)] = lambda.pdf[4]
+    return lambda
+end
+
+"""
+The hit with its path's secondary wavelengths ended where `bxdf` ends them on meeting it, before
+the lights are sampled there (`terminates_at_vertex`, pbrt-v4's `GetBxDF`).
+"""
+@propagate_inbounds function end_dispersion(bxdf, work::VPMaterialEvalWorkItem, film_pdf)
+    (terminates_at_vertex(bxdf) && !secondary_terminated(work.lambda)) || return work
+    return with_lambda(work, record_wavelengths!(film_pdf, work.pixel_index, terminate_secondary_wavelengths(work.lambda)))
+end
+
+@inline with_lambda(w::VPMaterialEvalWorkItem, lambda::Wavelengths) =
+    VPMaterialEvalWorkItem(w.pi, w.ps, w.n, w.dpdu, w.dpdv, w.time, w.ns, w.dpdus, w.dpdvs, w.uv, w.face_idx, w.bary,
+                           w.wo, w.material_idx, w.interface, lambda, w.pixel_index, w.beta, w.r_u, w.r_l, w.depth,
+                           w.eta_scale, w.specular_bounce, w.any_non_specular_bounces, w.prev_intr_p, w.prev_intr_n,
+                           w.current_medium)
+
+# Shade one surface hit with the RESOLVED concrete material instance: build
+# the typed BxDF, BSDF sample + RR + continuation push, then direct lighting
+# (inline shadow trace). Called by the per-material shading kernel, directly or,
+# for a mix's component, through `with_index`.
+@propagate_inbounds function vp_shade_resolved_hit!(
+    mat,
+    hit_work, wo::Vec3f, resolved_mat_idx::SetKey,
+    next_ray_queue, pixel_L, film_pdf, accel, media_interfaces, media,
+    materials, lights, rgb2spec_table,
+    bvh_nodes, infinite_light_indices,
+    num_infinite_lights::Int32, num_bvh_lights::Int32, num_lights::Int32,
+    max_depth::Int32, do_regularize::Bool, emitters_reachable::Bool, sobol_rng, sample_idx::Int32,
+    camera, samples_per_pixel::Int32, rr_depth::Int32,
+)
+    # The depth limit ends a path after the emission at its vertex, as pbrt-v4's VolPath:
+    # the vertex before it sampled the lights AND the BSDF, and the BSDF ray's share of
+    # the MIS is the light it reaches here, an area light's (`accumulate_arealight_hit!`) or
+    # the material's own.
+    at_limit = hit_work.depth >= max_depth
+    at_limit && !emits(mat) && return
+    mat_work = VPMaterialEvalWorkItem(hit_work, wo, resolved_mat_idx)
+
+    regularize_for_bxdf = regularizes(hit_work, media, do_regularize)
     bxdf = material_bxdf(mat, rgb2spec_table, materials, mat_work, camera, samples_per_pixel,
-                         work.lambda, regularize_for_bxdf)
+                         hit_work.lambda, regularize_for_bxdf)
     add_emission!(pixel_L, bxdf, mat_work)
+    at_limit && return
+    mat_work = end_dispersion(bxdf, mat_work, film_pdf)
     bxdf, mat_work = subsurface_scatter(bxdf, mat_work, accel, sample_idx)
 
-    # Direct lighting + inline shadow + accumulate (typed BSDF eval).
+    # BSDF sample + RR + push continuation, before the direct lighting: the
+    # shadow ray is traced inside it, and anything live across that trace is
+    # held through the whole traversal. Sampled after it, the BSDF was: its
+    # lobes spilled around the traversal loop, and on the 7900 XTX that made
+    # the hardware path twice the cost of the software one.
+    evaluate_material_inner!(
+        bxdf,
+        next_ray_queue, film_pdf,
+        mat_work, materials, media, lights, num_infinite_lights, num_bvh_lights, rgb2spec_table, max_depth,
+        do_regularize, emitters_reachable,
+        sobol_rng, sample_idx,
+        camera, samples_per_pixel,
+        rr_depth,
+    )
+
+    # Direct lighting + inline shadow trace + accumulate (typed BSDF eval).
     surface_direct_lighting_inner!(
         bxdf,
         pixel_L, accel, media_interfaces, media,
@@ -641,67 +798,57 @@ concern from materials)."""
         camera, samples_per_pixel,
         do_regularize,
     )
-
-    # BSDF sample + RR + push continuation (typed BSDF sample).
-    evaluate_material_inner!(
-        bxdf,
-        next_ray_queue,
-        mat_work, materials, media, lights, num_infinite_lights, num_bvh_lights, rgb2spec_table, max_depth,
-        do_regularize,
-        sobol_rng, sample_idx,
-        camera, samples_per_pixel,
-        rr_depth,
-    )
-    return
+    return nothing
 end
 
-"""Drain `hit_area_light_queue`: applies emission-MIS to each surface hit
-that landed on an area-light triangle. Direct port of pbrt-v4's
-"Handle emitters hit by indirect rays" kernel
-(wavefront/integrator.cpp:540-572). Runs in parallel with `vp_shade_surfaces!`
-because both write only to per-pixel atomic `pixel_L` accumulators (the
-emitter kernel writes only `pixel_L`; the material kernels also write
-`next_ray_queue` but that's disjoint from `pixel_L`)."""
-@propagate_inbounds function vp_handle_emitters_kernel!(
-    work,                            # VPHitAreaLightWorkItem (per-thread)
-    pixel_L,
-    lights, rgb2spec_table,
-    bvh_nodes, light_to_bit_trail,
-    num_infinite_lights::Int32, num_bvh_lights::Int32, num_lights::Int32,
-)
-    # Le(p, n, uv, wo)
-    light_key = arealight_key(work.arealight_id)
-    Le = with_index(arealight_Le, lights, light_key,
-        lights, rgb2spec_table, work.wo, Vec3f(work.n), work.uv, work.lambda,
-    )
-    is_black(Le) && return
+"""
+    accumulate_arealight_hit!(pixel_L, lights, rgb2spec_table, bvh_nodes,
+        light_to_bit_trail, num_infinite_lights, num_bvh_lights,
+        arealight_id, n, uv, wo, path, beta, r_u, r_l, triangle_area, t_hit)
 
-    contribution = work.beta * Le
-    final_contrib = if work.depth == Int32(0) || work.specular_bounce
-        contribution / average(work.r_u)
+Add the emission of a hit on an area light (`arealight_id > 0`) to the pixel,
+MIS-weighted against light sampling unless the path is a camera ray or came off a
+specular bounce (pbrt-v4's "Handle emitters hit by indirect rays",
+wavefront/integrator.cpp:540). `path` is the ray's work item (wavelengths, depth,
+previous interaction, pixel).
+"""
+@propagate_inbounds function accumulate_arealight_hit!(
+    pixel_L, lights, rgb2spec_table,
+    bvh_nodes, light_to_bit_trail, num_infinite_lights::Int32, num_bvh_lights::Int32,
+    arealight_id::UInt32, n, uv::Point2f, wo::Vec3f,
+    path, beta::SpectralRadiance, r_u::SpectralRadiance, r_l::SpectralRadiance,
+    triangle_area::Float32, t_hit::Float32,
+)
+    arealight_id > UInt32(0) || return nothing
+    light_key = arealight_key(arealight_id)
+    Le = with_index(arealight_Le, lights, light_key,
+        lights, rgb2spec_table, wo, Vec3f(n), uv, path.lambda,
+    )
+    is_black(Le) && return nothing
+    contribution = beta * Le
+    final_contrib = if path.depth == Int32(0) || path.specular_bounce
+        contribution / average(r_u)
     else
         lightChoicePDF = bvh_pmf(
             bvh_nodes, light_to_bit_trail,
             num_infinite_lights, num_bvh_lights,
-            work.prev_intr_p, work.prev_intr_n, light_flat_index(lights, light_key),
+            path.prev_intr_p, path.prev_intr_n, light_flat_index(lights, light_key),
         )
-        cos_theta = abs(dot(work.n, work.wo))   # wo = -ray.d → abs(dot(n, -ray.d)) = abs(dot(n, ray.d))
-        lightPDF = if cos_theta > 0f0 && work.triangle_area > 0f0
-            pdf_li = (work.t_hit * work.t_hit) / (cos_theta * work.triangle_area)
+        cos_theta = abs(dot(Vec3f(n), wo))
+        lightPDF = if cos_theta > 0f0 && triangle_area > 0f0
+            pdf_li = (t_hit * t_hit) / (cos_theta * triangle_area)
             lightChoicePDF * pdf_li
         else
             0f0
         end
-        r_l = work.r_l * lightPDF
-        mis_denom = average(work.r_u + r_l)
+        mis_denom = average(r_u + r_l * lightPDF)
         if mis_denom > 1f-10
             contribution / mis_denom
         else
-            contribution / average(work.r_u)
+            contribution / average(r_u)
         end
     end
-
-    base_idx = (work.pixel_index - Int32(1)) * Int32(4)
+    base_idx = (path.pixel_index - Int32(1)) * Int32(4)
     accumulate_spectrum!(pixel_L, base_idx, final_contrib)
-    return
+    return nothing
 end

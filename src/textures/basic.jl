@@ -191,7 +191,8 @@ to_texture(v::Real) = to_texture(Float32(v))
 to_texture(v::Tuple{Real,Real,Real}) = to_texture(RGBSpectrum(Float32(v[1]), Float32(v[2]), Float32(v[3])))
 # Support Colors.jl RGB types (RGB, RGBA, etc.)
 to_texture(c::Colorant) = to_texture(RGBSpectrum(Float32(red(c)), Float32(green(c)), Float32(blue(c))))
-to_texture(c::AbstractMatrix{<: RGB}) = Texture(map(c-> RGBSpectrum(Float32(red(c)), Float32(green(c)), Float32(blue(c))), c))
+to_texture(img::AbstractMatrix{<:Colorant}) =
+    Texture(map(c -> RGBSpectrum(Float32(red(c)), Float32(green(c)), Float32(blue(c)), Float32(alpha(c))), img))
 # Identity passthrough for PiecewiseLinearSpectrum (not a texture, stored directly)
 to_texture(s::PiecewiseLinearSpectrum) = s
 

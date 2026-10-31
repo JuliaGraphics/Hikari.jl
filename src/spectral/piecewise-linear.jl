@@ -13,7 +13,7 @@ end
     # indices into an `NTuple{N,Float32}`, so without it every access carries a
     # bounds check that can throw — and a throwing call cannot be a separate
     # OpFunction (GPUCompiler force-inlines anything containing `unreachable`),
-    # so the error paths land inline in the chit. This one function contributed
+    # so the error paths land inline in the shader. This one function contributed
     # 96 of the 218 error/boxing call sites in the bump-gold closest-hit shader.
     #
     # Safe by construction rather than by assumption: `lo` starts at 1, `hi` at

@@ -483,8 +483,8 @@ end
 # in that box's stretch of the ray, and the winning hit comes back as the exact tangent
 # plane there, so nothing downstream knows the water was not triangles.
 
-import Mantle: procedural_miss, procedural_candidate, procedural_commit, procedural_bary,
-               candidate_primitive_index, candidate_object_ray, commit_intersection!
+import Mantle: procedural_miss, procedural_candidate, procedural_opaque, procedural_commit, procedural_bary,
+               candidate_primitive_index, candidate_object_ray
 
 """
     Everywhere()
@@ -626,12 +626,13 @@ struct MetaballElements{B<:Metaballs,C<:AbstractVector{Int32},F<:AbstractVector{
     interface::UInt32
     region::R
     tile::Float32       # metres per texture repeat, in x and y
+    opaque::Bool        # the interface stops shadow rays (see `opaque`)
 end
 
 # The region is adapted too: one may hold device arrays (a level set, say).
 Adapt.adapt_structure(to, e::MetaballElements) =
     MetaballElements(Adapt.adapt(to, e.balls), Adapt.adapt(to, e.cells), Adapt.adapt(to, e.bricks), e.lattice,
-                     e.interface, Adapt.adapt(to, e.region), e.tile)
+                     e.interface, Adapt.adapt(to, e.region), e.tile, e.opaque)
 
 "The exact field at every lattice point of every box (see [`MetaballElements`](@ref))."
 @kernel function fieldbricks_kernel!(bricks, @Const(cells), mb::Metaballs, lattice::Int32)
@@ -677,12 +678,13 @@ struct MetaballHit
 end
 
 @inline procedural_miss(::MetaballElements) = MetaballHit(1f30, 0f0, 0f0, 0f0)
+@inline procedural_opaque(e::MetaballElements) = e.opaque
 
-@inline function procedural_candidate(e::MetaballElements, best::MetaballHit)
+@inline function procedural_candidate(e::MetaballElements, best::MetaballHit, q)
     mb = e.balls
-    o, d = candidate_object_ray()
+    o, d = candidate_object_ray(q)
     o = Point3f(o[1], o[2], o[3]); d = Vec3f(d[1], d[2], d[3])
-    box = Int32(candidate_primitive_index())
+    box = Int32(candidate_primitive_index(q))
     cell = Int32(@inbounds e.cells[box])
     k = e.lattice + Int32(1)
     first = (box - Int32(1)) * k * k * k + Int32(1)
@@ -718,10 +720,7 @@ end
                 end
             end
             p = o + h * d
-            if counts(e.region, p)
-                commit_intersection!(h)
-                return MetaballHit(h, p[1], p[2], p[3])
-            end
+            counts(e.region, p) && return MetaballHit(h, p[1], p[2], p[3])
             # Not surface here: carry on from the other side.
             inside = !inside
         end
@@ -804,15 +803,14 @@ function Base.push!(scene::Scene, m::MetaballSurface, mi::UInt32; transform = Ma
     k = Int(m.lattice) + 1
     bricks = Mantle.devicearray(accel.backend, Float32, length(cells) * k^3)
     isempty(cells) || fieldbricks_kernel!(accel.backend)(bricks, dcells, balls, m.lattice; ndrange = length(bricks))
-    accel.procedural = MetaballElements(balls, dcells, bricks, m.lattice, UInt32(mi), m.region, m.tile)
+    accel.procedural = MetaballElements(balls, dcells, bricks, m.lattice, UInt32(mi), m.region, m.tile,
+                                        opaque(m.interface))
     return SceneHandle(scene, mi, handle)
 end
 
 # The stored material of a metaball surface is its interface (its geometry is rebuilt
-# by `push!` into the slot). Two methods, not one on a `Union`: the slot-index method
-# for any material is equally specific on the key and Julia calls that a tie.
-update_material!(scene::Scene, key::UInt32, m::MetaballSurface) = update_material!(scene, key, m.interface)
-update_material!(scene::Scene, key::MediumInterfaceIdx, m::MetaballSurface) = update_material!(scene, key, m.interface)
+# by `push!` into the slot).
+store_interface!(scene::Scene, mi::MediumInterfaceIdx, m::MetaballSurface) = store_interface!(scene, mi, m.interface)
 
 # ─── water with air in it ────────────────────────────────────────────────────
 

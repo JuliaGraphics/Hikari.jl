@@ -45,13 +45,19 @@ function store_lookup_tables!(dhv)
     return nothing
 end
 
-"""The lookup tables in a texture set, found by their element type; `nothing` in a set without them."""
-@generated function lookup_tables(textures::Raycore.StaticMultiTypeSet{D, Tex}) where {D, Tex}
+"""
+The lookup tables in a texture set, the whole set or a shading kernel's view of it, found by their
+element type. A set holding a shader holds them (`store_lookup_tables!`).
+
+There was a fallback of no tables, read as 1. A view of the set had no method here, so every
+shading kernel took it: the specular layer's albedo was 1 and the diffuse base under it black.
+"""
+@generated function lookup_tables(textures::Union{Raycore.StaticMultiTypeSet{D, Tex}, Raycore.SetView{<:Any, <:Any, D, Tex}}) where {D, Tex}
     slot = findfirst(T -> eltype(eltype(T)) === LookupValue, Tex.parameters)
-    slot === nothing && return :(nothing)
+    slot === nothing && error("lookup_tables: $(textures) holds no lookup tables, which every shader material stores " *
+                              "with its program (`store_lookup_tables!`)")
     return :(@inbounds textures.textures[$slot][1])
 end
-lookup_tables(textures) = nothing
 
 @inline function lookup_table_read(lut::AbstractVector{LookupValue}, x::Float32, offset::Int32, size::Int32)
     x = clamp(x, 0f0, 1f0) * Float32(size - Int32(1))
@@ -88,6 +94,3 @@ end
     return (1f0 - t) * data0 + t * data1
 end
 
-lookup_table_read(::Nothing, x, offset, size) = 1f0
-lookup_table_read_2d(::Nothing, x, y, offset, xsize, ysize) = 1f0
-lookup_table_read_3d(::Nothing, x, y, z, offset, xsize, ysize, zsize) = 1f0

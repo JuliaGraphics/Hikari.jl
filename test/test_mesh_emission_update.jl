@@ -6,8 +6,8 @@ import Raycore
     scene = Hikari.Scene(; backend = KA.CPU())
     mesh = GeometryBasics.Mesh(Point3f[(0,0,0),(1,0,0),(1,1,0),(0,1,0)],
         GLTriangleFace[(1,2,3),(1,3,4)])
-    emission(v; scale=1f0) = Hikari.MediumInterface(Hikari.NullMaterial();
-        emission=Hikari.Emissive(Hikari.Texture(fill(Hikari.RGBSpectrum(v), 4, 4)), scale, true))
+    emission(v; strength=1f0) = Hikari.MediumInterface(Hikari.NullMaterial();
+        emission=Hikari.Emission(color = Hikari.Texture(fill(Hikari.RGBSpectrum(v), 4, 4)), strength = strength, two_sided = true))
     handle = push!(scene, mesh, emission(0f0))
     keys = copy(handle.area_lights)
     @test length(keys) == 2
@@ -15,19 +15,19 @@ import Raycore
     slots = length(scene.lights.texture_gpu_arrays)
     @test slots == 1
     for v in (1f0, .2f0, .9f0)
-        Hikari.update_material!(scene, handle, emission(v; scale=2f0))
+        Hikari.update_material!(scene, handle, emission(v; strength=2f0))
         @test handle.geometry === geometry && handle.area_lights == keys
         @test length(scene.lights.texture_gpu_arrays) == slots
         @test length(scene.lights) == 2
         lights = [scene.lights[key] for key in keys]
-        @test all(l -> l.scale == 2f0 && l.two_sided, lights)
+        @test all(l -> l.scale == 2f0 / Hikari.D65_PHOTOMETRIC && l.two_sided, lights)
         @test lights[1].Le === lights[2].Le
         @test all(c -> c == Hikari.RGBSpectrum(v), only(scene.lights.texture_gpu_arrays))
     end
     Hikari.update_material!(scene, handle, Hikari.NullMaterial())
     @test all(key -> scene.lights[key].scale == 0f0, keys)
     Hikari.update_material!(scene, handle, emission(.8f0))
-    @test all(key -> scene.lights[key].scale == 1f0, keys)
+    @test all(key -> scene.lights[key].scale == 1f0 / Hikari.D65_PHOTOMETRIC, keys)
     for i in 1:3
         delete!(scene.accel, handle.geometry)
         moved = GeometryBasics.Mesh(Point3f[(i,0,0),(i+1,0,0),(i+1,1,0),(i,1,0)],
@@ -39,7 +39,7 @@ import Raycore
         @test scene.lights[first(keys)].vertices[1] == Point3f(i,0,0)
     end
     constant(v) = Hikari.MediumInterface(Hikari.NullMaterial();
-        emission=Hikari.Emissive(; Le=(v,v,v), scale=1f0, two_sided=true))
+        emission=Hikari.Emission(; color = (v,v,v), strength = 1f0, two_sided=true))
     solid = push!(scene, mesh, constant(1f0))
     Hikari.update_material!(scene, solid, constant(2f0))
     @test all(key -> scene.lights[key].Le == Hikari.RGBSpectrum(2f0), solid.area_lights)

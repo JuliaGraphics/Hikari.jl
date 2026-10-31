@@ -36,7 +36,7 @@ function gen_test_scene()
     mesh = GeometryBasics.Mesh(points, faces)
 
     # Create a simple matte material with textures
-    material = Hikari.Diffuse(Kd=Hikari.RGBSpectrum(0.5f0))
+    material = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.5f0))
 
     # Create scene using push! API
     scene = Hikari.Scene()

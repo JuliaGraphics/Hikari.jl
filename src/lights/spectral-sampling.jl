@@ -122,18 +122,15 @@ end
     return LightSampleSpectral(Li, wi, pdf, p_light, false)
 end
 
-@propagate_inbounds function sample_light_spectral(
-    light::AmbientLight, table::RGBToSpectrumTable, lights, p::Point3f, lambda::Wavelengths, u::Point2f
-)::LightSampleSpectral
-    z = 1f0 - 2f0 * u[1]
-    r = sqrt(max(0f0, 1f0 - z * z))
-    phi = 2f0 * Float32(π) * u[2]
-    wi = Vec3f(r * cos(phi), r * sin(phi), z)
-    pdf = 1f0 / (4f0 * Float32(π))
-    p_light = Point3f(p + 1f6 * wi)
-    Li = light.scale * Sample(table, light.i, lambda)
-    return LightSampleSpectral(Li, wi, pdf, p_light, false)
-end
+"""
+No sample of the uniform sky, as pbrt-v4's `UniformInfiniteLight::SampleLi` with
+`allowIncompletePDF`, what its path tracers ask: sampling the BSDF or phase function finds it at
+least as well, and its density for those samples is zero too (`env_light_pdf_single`). Combined
+with the BSDF's samples instead, the light came out up to 2 % brighter than pbrt's on a layered
+BSDF, whose stochastic `f` and sampled paths do not agree exactly.
+"""
+@propagate_inbounds sample_light_spectral(::AmbientLight, ::RGBToSpectrumTable, lights, ::Point3f, ::Wavelengths,
+                                          ::Point2f) = LightSampleSpectral()
 
 @propagate_inbounds function sample_light_spectral(
     light::DiffuseAreaLight, table::RGBToSpectrumTable, lights, p::Point3f, lambda::Wavelengths, u::Point2f
@@ -185,20 +182,11 @@ end
 # Light PDF Evaluation (for MIS)
 # ============================================================================
 
-@propagate_inbounds pdf_li_spectral(::PointLight, ::Point3f, ::Vec3f) = 0f0
-@propagate_inbounds pdf_li_spectral(::DirectionalLight, ::Point3f, ::Vec3f) = 0f0
-@propagate_inbounds pdf_li_spectral(::SunLight, ::Point3f, ::Vec3f) = 0f0
-@propagate_inbounds pdf_li_spectral(::SpotLight, ::Point3f, ::Vec3f) = 0f0
-
 @propagate_inbounds function pdf_li_spectral(lights, light::EnvironmentLight, ::Point3f, wi::Vec3f)
     uv = direction_to_uv(wi, light.env_map.rotation)
     map_pdf = pdf(light.env_map.distribution, uv, lights)
     return map_pdf / (4f0 * Float32(π))
 end
-
-@propagate_inbounds pdf_li_spectral(::AmbientLight, ::Point3f, ::Vec3f) = 1f0 / (4f0 * Float32(π))
-
-@propagate_inbounds pdf_li_spectral(::Light, ::Point3f, ::Vec3f) = 0f0
 
 # ============================================================================
 # StaticMultiTypeSet Dispatch
@@ -256,7 +244,7 @@ end
     return pdf_li_spectral(lights, light, Point3f(0f0, 0f0, 0f0), wi)
 end
 
-@propagate_inbounds env_light_pdf_single(::AmbientLight, lights, ::Vec3f)::Float32 = 1f0 / (4f0 * Float32(π))
+@propagate_inbounds env_light_pdf_single(::AmbientLight, lights, ::Vec3f)::Float32 = 0f0
 
 @propagate_inbounds env_light_pdf_single(::Light, lights, ::Vec3f)::Float32 = 0f0
 
@@ -341,8 +329,12 @@ Following pbrt-v4 surfscatter.cpp lines 288-316 + interaction.h:
     else
         Point3f((p - offset)...)
     end
-    to_light = ls.p_light - ray_origin
-    t_max = sqrt(dot(to_light, to_light)) - 1f-3
+    # Aimed from where the ray leaves, as pbrt's `SpawnRayTo`: `ls.wi` is from the hit, and
+    # the shadow point is off it, so along `ls.wi` the ray would end beside the light point,
+    # past a light the hit faces at an angle, and the light itself would shadow it.
+    to_light = Vec3f(ls.p_light - ray_origin)
+    dist = sqrt(dot(to_light, to_light))
+    t_max = dist - 1f-3
     new_bsdf_pdf = if ls.is_delta
         0f0
     else
@@ -352,7 +344,7 @@ Following pbrt-v4 surfscatter.cpp lines 288-316 + interaction.h:
     new_r_l = r_u * ls.pdf
     return DirectLightingResult(
         ray_origin,
-        ls.wi,
+        to_light / dist,
         t_max,
         Ld,
         new_r_u,
