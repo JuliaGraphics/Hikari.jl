@@ -101,7 +101,7 @@ Type-stable dispatch for evaluating surface alpha at a UV point.
 Returns alpha ∈ [0, 1] where 0 = fully transparent, 1 = fully opaque.
 """
 @propagate_inbounds function get_surface_alpha_dispatch(
-    materials::StaticMultiTypeSet, idx::SetKey, uv::Point2f
+    materials::StaticMultiTypeSet, idx::SetKey, tfc::TextureFilterContext
 )::Float32
     # A surface with no material in the set is not alpha-tested: opaque, so the
     # caller proceeds to the null-material branch that owns this case.
@@ -118,7 +118,7 @@ Returns alpha ∈ [0, 1] where 0 = fully transparent, 1 = fully opaque.
     # some ARBITRARY material's alpha — opaque by luck, which is why adding an
     # unrelated sphere "fixed" it.
     Raycore.is_valid(idx) || return 1.0f0
-    return with_index(get_surface_alpha, materials, idx, materials, uv)
+    return with_index(get_surface_alpha, materials, idx, materials, tfc)
 end
 
 
@@ -169,3 +169,7 @@ const BSDFLessMaterial = Union{Emissive, MixMaterial}
 # single concrete type and therefore a single closest-hit shader.
 Raycore.maybe_convert_field(dhv::Raycore.MultiTypeSet, m::Material) =
     to_device_material(dhv, m)
+
+# UV-only compatibility for image and constant textures. Vertex colours need the full hit context.
+@propagate_inbounds get_surface_alpha_dispatch(materials::StaticMultiTypeSet, idx::SetKey, uv::Point2f) =
+    get_surface_alpha_dispatch(materials, idx, TextureFilterContext(uv))

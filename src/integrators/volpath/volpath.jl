@@ -190,6 +190,38 @@ end
 invalidate_plans!(vp::VolPath) = invalidate!(vp)
 
 """
+    refresh_lights!(vp::VolPath, scene)
+
+A light changed its values in place (`update_light!`). The plans read the
+lights from the scene's buffers, where the new values already are; what `vp`
+holds of its own is the light BVH the sampler walks, built from where the
+lights were. It is built again and written over the old one, and the plans
+stay. (Dropping the plans, as a light change used to, rebuilt them around the
+OLD BVH: the state that holds it is only remade when the film or the number of
+lights changes.) A BVH of another shape, or other counts, remakes the state.
+"""
+function refresh_lights!(vp::VolPath, scene::AbstractScene)
+    st = vp.state
+    (st === nothing || st.num_lights == 0) && return nothing
+    sampler = BVHLightSampler(scene.lights; scene_radius = world_radius(scene))
+    # `upload!` gave an empty array one element (a kernel needs an address).
+    fits(dev, host) = length(dev) == max(1, length(host))
+    if fits(st.bvh_nodes, sampler.nodes) && fits(st.light_to_bit_trail, sampler.light_to_bit_trail) &&
+       fits(st.infinite_light_indices, sampler.infinite_light_indices) &&
+       sampler.num_bvh_lights == st.num_bvh_lights && sampler.num_infinite_lights == st.num_infinite_lights
+        for (dev, host) in ((st.bvh_nodes, sampler.nodes), (st.light_to_bit_trail, sampler.light_to_bit_trail),
+                            (st.infinite_light_indices, sampler.infinite_light_indices))
+            isempty(host) || copyto!(dev, 1, host, 1, length(host))
+        end
+    else
+        invalidate!(vp)
+        free!(st)
+        vp.state = nothing
+    end
+    return nothing
+end
+
+"""
     Base.close(vp::VolPath)
 
 Release all GPU memory held by the integrator's cached render state and adapted scene.

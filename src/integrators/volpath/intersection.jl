@@ -378,7 +378,9 @@ end
         mat_idx = mi.material
 
         uv = vp_compute_uv_barycentric(primitive, barycentric)
-        alpha = get_surface_alpha_dispatch(materials, mat_idx, uv)
+        tfc = TextureFilterContext(uv, 0f0, 0f0, 0f0, 0f0,
+                primitive.metadata.primitive_index, SVector{3,Float32}(barycentric))
+        alpha = get_surface_alpha_dispatch(materials, mat_idx, tfc)
 
         if alpha < 1f0
             rng = pcg32_init(pbrt_hash(ray.o), pbrt_hash(ray.d))
@@ -542,7 +544,9 @@ while opaque surfaces block it. The final contribution is computed as:
             # Following pbrt-v4: use deterministic hash of ray origin+direction
             uv = vp_compute_uv_barycentric(primitive, barycentric)
             mat_idx = mi.material
-            alpha = get_surface_alpha_dispatch(materials, mat_idx, uv)
+            tfc = TextureFilterContext(uv, 0f0, 0f0, 0f0, 0f0,
+                primitive.metadata.primitive_index, SVector{3,Float32}(barycentric))
+            alpha = get_surface_alpha_dispatch(materials, mat_idx, tfc)
 
             if alpha < 1f0
                 # Deterministic stochastic test (same ray always gets same decision)
