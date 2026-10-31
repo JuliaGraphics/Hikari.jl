@@ -155,6 +155,44 @@ end
 
 test_nanofield()
 
+function test_nanoregion(; backend=nothing)
+    @testset "NanoVDB fields limited to a round region" begin
+        rng = MersenneTwister(20261023)
+        origins = Vec{3,Int32}[Vec{3,Int32}(i,j,0) for i in -16:8:8 for j in -16:8:8]
+        tree = Hikari.NanoTree(origins,rand(rng,Float32,512*length(origins)),Point3f(0),.1f0;backend=KA.CPU())
+        centre = Point2f(.3,-.2)
+        @test_throws ArgumentError Hikari.NanoRegion(tree,centre,1,1)
+        @test_throws ArgumentError Hikari.NanoRegion(tree,centre,-.1,1)
+        field = Hikari.NanoRegion(tree,centre,.6,1)
+        points = [Point3f(-1.6f0 + 3.2f0*rand(rng,Float32), -1.6f0 + 3.2f0*rand(rng,Float32), .05f0 + .7f0*rand(rng,Float32))
+                  for _ in 1:2000]
+        weight(p) = (r = hypot(p[1]-centre[1],p[2]-centre[2]); r <= .6f0 ? 1f0 : r >= 1f0 ? 0f0 :
+                     (s = (1f0-r)/.4f0; s*s*(3f0-2f0s)))
+        for p in points
+            @test Hikari.nanofield_sample(field,nothing,p) ≈ weight(p)*Hikari.nanosample(tree,tree.words,p) atol=2f-6
+        end
+        bounds = Hikari.nanobounds(field)
+        @test bounds.p_min[1] ≈ centre[1]-1 && bounds.p_max[2] ≈ centre[2]+1
+        @test bounds.p_min[3] == Hikari.nanobounds(tree).p_min[3]
+        res = Vec{3,Int32}(5,6,7)
+        @test Hikari.nanomajorant(field,bounds,res).voxels == Hikari.nanomajorant(tree,bounds,res).voxels
+        @test Hikari.with_blend_weight(field,.5) === field
+        blended = Hikari.NanoRegion(Hikari.NanoBlend(tree,tree,0),centre,.6,1)
+        @test Hikari.with_blend_weight(blended,.25).field.weight == .25f0
+        if backend !== nothing
+            set = RC.MultiTypeSet(backend)
+            key = push!(set,Hikari.NanoGridMedium(field;majorant_res=Tuple(res)))
+            stored = set[key]
+            output = KA.allocate(backend,Float32,length(points))
+            nanofield_stored_samples!(backend,64)(output,Adapt.adapt(backend,set.static),stored.density,
+                Mantle.devicearray(backend,points);ndrange=length(points))
+            @test maximum(abs.(Array(output) .- Hikari.nanofield_sample.(Ref(field),nothing,points))) <= 2f-6
+        end
+    end
+end
+
+test_nanoregion()
+
 @testset "NanoVDB ZIP decompression validates complete streams" begin
     data = UInt8[1,2,3,4,5]
     compressed = Hikari.compress_zlib(data)

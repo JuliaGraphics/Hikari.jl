@@ -108,6 +108,14 @@ function nanomajorant(t::NanoTree, bounds::Bounds3, res::Vec{3,Int32}; tight::Bo
 end
 Adapt.@adapt_structure NanoTree
 
+"""
+    translate(t::NanoTree, v) -> NanoTree
+
+The same grid moved by `v`: its words shared, from an origin `v` further on.
+"""
+translate(t::NanoTree, v::Vec3f) = NanoTree(t.words, t.upper, t.lower, t.leaf, t.uppers, t.lowers, t.leaves,
+                                            t.roottiles, t.lo + v, t.voxel, t.background, t.imin, t.imax)
+
 "`p` in index space: voxel centres at whole numbers."
 @inline indexspace(t::NanoTree, p) = Vec3f(p - t.lo) / t.voxel - Vec3f(0.5f0)
 "The world position of index-space point `q`."
