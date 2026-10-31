@@ -1487,4 +1487,4 @@ end
 # to allow light through alpha-masked geometry (e.g. GLTF BLEND mode foliage).
 
 # All other material types are fully opaque (Diffuse override is in diffuse.jl)
-@propagate_inbounds get_surface_alpha(::Material, ::Any, ::Point2f) = 1f0
+@propagate_inbounds get_surface_alpha(::Material, ::Any, ::TextureFilterContext) = 1f0

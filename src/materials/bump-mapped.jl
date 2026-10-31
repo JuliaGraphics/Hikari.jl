@@ -113,10 +113,14 @@ new bumped normal against `ng`, not against the original interpolated `ns`.
     # original screen-space derivatives so filtered procedural textures see the
     # same footprint at all three sample points.
     h0 = _bump_height(bump, materials, tfc)
+    # The face and barycentrics ride along: a vertex-colour height has nothing
+    # else to index with (see `TextureFilterContext(uv, face_idx, bary)`).
     hu = _bump_height(bump, materials,
-        TextureFilterContext(Point2f(uv[1] + δu, uv[2]), tfc.dudx, tfc.dudy, tfc.dvdx, tfc.dvdy))
+        TextureFilterContext(Point2f(uv[1] + δu, uv[2]), tfc.dudx, tfc.dudy, tfc.dvdx, tfc.dvdy,
+                             tfc.face_idx, tfc.bary))
     hv = _bump_height(bump, materials,
-        TextureFilterContext(Point2f(uv[1], uv[2] + δv), tfc.dudx, tfc.dudy, tfc.dvdx, tfc.dvdy))
+        TextureFilterContext(Point2f(uv[1], uv[2] + δv), tfc.dudx, tfc.dudy, tfc.dvdx, tfc.dvdy,
+                             tfc.face_idx, tfc.bary))
     dhdu = (hu - h0) / δu
     dhdv = (hv - h0) / δv
 

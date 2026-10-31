@@ -32,6 +32,15 @@ end
 TextureFilterContext(uv::Point2f) = TextureFilterContext(uv, 0f0, 0f0, 0f0, 0f0, UInt32(0), SVector{3,Float32}(0f0, 0f0, 0f0))
 TextureFilterContext(uv::Point2f, dudx, dudy, dvdx, dvdy) = TextureFilterContext(uv, dudx, dudy, dvdx, dvdy, UInt32(0), SVector{3,Float32}(0f0, 0f0, 0f0))
 
+# A hit's point-sampled context: no footprint, but the face and barycentrics a
+# vertex-colour texture indexes with. The contexts above carry face 0, which a
+# `VertexColorTexture` reads as `data[k, 0]` — in front of its buffer. That is
+# what the intersection-time alpha test and `MixMaterial`'s amount did: the
+# alpha of whatever lay there decided whether the ray passed through, and a quad
+# in vertex colours rendered as the background on Metal (`test_colour_encoding`).
+TextureFilterContext(uv::Point2f, face_idx::UInt32, bary::SVector{3, Float32}) =
+    TextureFilterContext(uv, 0f0, 0f0, 0f0, 0f0, face_idx, bary)
+
 # ============================================================================
 # Unified Texture Evaluation - Same code path for CPU and GPU
 # ============================================================================

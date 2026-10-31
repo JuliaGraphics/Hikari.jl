@@ -227,7 +227,8 @@ end
         # `vp_trace_and_shade_kernel!`.
         wo = -work.ray.d
         resolved_mat_idx = resolve_mix_material(
-            materials, work.hit_material_idx, work.hit_pi, wo, work.hit_uv,
+            materials, work.hit_material_idx, work.hit_pi, wo,
+            TextureFilterContext(work.hit_uv, work.hit_face_idx, work.hit_bary),
         )
 
         # Null-material surface (pbrt `Material "interface"` / nullptr):

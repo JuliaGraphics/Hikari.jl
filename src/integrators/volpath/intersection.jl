@@ -340,7 +340,8 @@ end
 
             geom = vp_compute_surface_geometry(primitive, barycentric, work.ray.o, work.ray.d, t_hit)
 
-            tfc_bump = bump_filter_context(camera, work, geom, samples_per_pixel)
+            tfc_bump = bump_filter_context(camera, work, geom, samples_per_pixel,
+                                       primitive.metadata.primitive_index, SVector{3,Float32}(barycentric))
             dndu, dndv = vp_compute_normal_derivatives(primitive)
             ns_b, dpdus_b = get_perturbed_shading_frame(materials, mat_idx,
                                                        geom.ns, geom.dpdus,
@@ -377,8 +378,9 @@ end
         mi = media_interfaces[mi_idx]
         mat_idx = mi.material
 
-        uv = vp_compute_uv_barycentric(primitive, barycentric)
-        alpha = get_surface_alpha_dispatch(materials, mat_idx, uv)
+        hit_tfc = TextureFilterContext(vp_compute_uv_barycentric(primitive, barycentric),
+                                       primitive.metadata.primitive_index, SVector{3,Float32}(barycentric))
+        alpha = get_surface_alpha_dispatch(materials, mat_idx, hit_tfc)
 
         if alpha < 1f0
             rng = pcg32_init(pbrt_hash(ray.o), pbrt_hash(ray.d))
@@ -399,7 +401,8 @@ end
         # null-material boundary inline.
         geom = vp_compute_surface_geometry(primitive, barycentric, ray.o, ray.d, t_hit)
         wo = -ray.d
-        resolved_mat_idx = resolve_mix_material(materials, mat_idx, geom.pi, wo, geom.uv)
+        resolved_mat_idx = resolve_mix_material(materials, mat_idx, geom.pi, wo,
+            TextureFilterContext(geom.uv, primitive.metadata.primitive_index, SVector{3,Float32}(barycentric)))
 
         # Null-material surface (pbrt `Material "interface"` / nullptr): no
         # BSDF, no direct lighting.  Push a continuation ray with the medium
@@ -429,7 +432,8 @@ end
 
         # Camera-approximated differentials for every hit, matching pbrt-v4
         # ComputeDifferentials (see the trace-kernel comment above).
-        tfc_bump = bump_filter_context(camera, work, geom, samples_per_pixel)
+        tfc_bump = bump_filter_context(camera, work, geom, samples_per_pixel,
+                                       primitive.metadata.primitive_index, SVector{3,Float32}(barycentric))
         dndu, dndv = vp_compute_normal_derivatives(primitive)
         ns_b, dpdus_b = get_perturbed_shading_frame(materials, resolved_mat_idx,
                                                    geom.ns, geom.dpdus,
@@ -540,9 +544,10 @@ while opaque surfaces block it. The final contribution is computed as:
         if !is_transmissive
             # Check alpha for stochastic pass-through (e.g. GLTF BLEND mode foliage)
             # Following pbrt-v4: use deterministic hash of ray origin+direction
-            uv = vp_compute_uv_barycentric(primitive, barycentric)
+            hit_tfc = TextureFilterContext(vp_compute_uv_barycentric(primitive, barycentric),
+                                           primitive.metadata.primitive_index, SVector{3,Float32}(barycentric))
             mat_idx = mi.material
-            alpha = get_surface_alpha_dispatch(materials, mat_idx, uv)
+            alpha = get_surface_alpha_dispatch(materials, mat_idx, hit_tfc)
 
             if alpha < 1f0
                 # Deterministic stochastic test (same ray always gets same decision)

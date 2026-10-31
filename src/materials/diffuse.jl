@@ -166,7 +166,7 @@ end
 # Surface Alpha Evaluation
 # ============================================================================
 
-@propagate_inbounds function get_surface_alpha(mat::Diffuse, textures, uv::Point2f)
-    kd_rgb = eval_handle_spectrum(textures, mat.Kd, TextureFilterContext(uv))
+@propagate_inbounds function get_surface_alpha(mat::Diffuse, textures, tfc::TextureFilterContext)
+    kd_rgb = eval_handle_spectrum(textures, mat.Kd, tfc)
     return get_alpha(kd_rgb)
 end

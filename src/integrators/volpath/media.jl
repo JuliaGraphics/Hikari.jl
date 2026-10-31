@@ -219,7 +219,8 @@ end
 # ============================================================================
 
 # NOTE: get_template_grid and get_template_grid_from_tuple are defined after
-# HomogeneousMedium and GridMedium structs (see end of file)
+# the medium structs they dispatch on (HomogeneousMedium, GridMedium,
+# RGBGridMedium), further down this file
 
 # ============================================================================
 # DDA Majorant Iterator (for heterogeneous media)
@@ -947,47 +948,6 @@ end
 # Template grid extraction for GridMedium (defined here after GridMedium struct)
 @inline get_template_grid(medium::GridMedium) = medium.majorant_grid
 
-"""
-    get_template_grid_from_tuple(media::Tuple) -> MajorantGrid
-
-Extract a template grid from the first GridMedium or RGBGridMedium in the tuple, or EmptyMajorantGrid() if none.
-This is used to ensure all majorant iterators have consistent types for GPU compilation.
-"""
-@generated function get_template_grid_from_tuple(media::M) where {M <: Tuple}
-    N = length(M.parameters)
-
-    # Find first GridMedium or RGBGridMedium in the tuple
-    for i in 1:N
-        T = M.parameters[i]
-        if T <: GridMedium || T <: RGBGridMedium
-            return :(@inbounds get_template_grid(media[$i]))
-        end
-    end
-
-    # No GridMedium/RGBGridMedium found - return empty grid (all homogeneous)
-    # Use function call instead of global const to be GPU-compatible
-    return :(EmptyMajorantGrid())
-end
-
-# Single medium case
-@inline get_template_grid_from_tuple(medium::Medium) = get_template_grid(medium)
-
-# StaticMultiTypeSet case - inspect element types of data arrays
-@generated function get_template_grid_from_tuple(media::Raycore.StaticMultiTypeSet{Data, Textures}) where {Data<:Tuple, Textures}
-    N = length(Data.parameters)
-
-    # Find first array whose element type is GridMedium or RGBGridMedium
-    for i in 1:N
-        ArrayT = Data.parameters[i]
-        ElemT = eltype(ArrayT)
-        if ElemT <: GridMedium || ElemT <: RGBGridMedium
-            return :(@inbounds get_template_grid(media.data[$i][1]))
-        end
-    end
-
-    # No GridMedium/RGBGridMedium found - return empty grid
-    return :(EmptyMajorantGrid())
-end
 
 # ============================================================================
 # RGB Grid Medium (Heterogeneous with per-voxel RGB coefficients)
@@ -1251,6 +1211,52 @@ end
 
 # Template grid extraction for RGBGridMedium
 @inline get_template_grid(medium::RGBGridMedium) = medium.majorant_grid
+
+# After BOTH grid media: the generators below name `RGBGridMedium`, and under
+# Julia 1.12's binding rules a generator defined before the type cannot see it —
+# inference of every call then failed with an `UndefVarError`, which broke every
+# scene with a medium.
+"""
+    get_template_grid_from_tuple(media::Tuple) -> MajorantGrid
+
+Extract a template grid from the first GridMedium or RGBGridMedium in the tuple, or EmptyMajorantGrid() if none.
+This is used to ensure all majorant iterators have consistent types for GPU compilation.
+"""
+@generated function get_template_grid_from_tuple(media::M) where {M <: Tuple}
+    N = length(M.parameters)
+
+    # Find first GridMedium or RGBGridMedium in the tuple
+    for i in 1:N
+        T = M.parameters[i]
+        if T <: GridMedium || T <: RGBGridMedium
+            return :(@inbounds get_template_grid(media[$i]))
+        end
+    end
+
+    # No GridMedium/RGBGridMedium found - return empty grid (all homogeneous)
+    # Use function call instead of global const to be GPU-compatible
+    return :(EmptyMajorantGrid())
+end
+
+# Single medium case
+@inline get_template_grid_from_tuple(medium::Medium) = get_template_grid(medium)
+
+# StaticMultiTypeSet case - inspect element types of data arrays
+@generated function get_template_grid_from_tuple(media::Raycore.StaticMultiTypeSet{Data, Textures}) where {Data<:Tuple, Textures}
+    N = length(Data.parameters)
+
+    # Find first array whose element type is GridMedium or RGBGridMedium
+    for i in 1:N
+        ArrayT = Data.parameters[i]
+        ElemT = eltype(ArrayT)
+        if ElemT <: GridMedium || ElemT <: RGBGridMedium
+            return :(@inbounds get_template_grid(media.data[$i][1]))
+        end
+    end
+
+    # No GridMedium/RGBGridMedium found - return empty grid
+    return :(EmptyMajorantGrid())
+end
 
 # Following pbrt-v4: bool IsEmissive() const { return LeGrid && LeScale > 0; }
 @propagate_inbounds is_emissive(medium::RGBGridMedium) = !isnothing(medium.Le_grid) && medium.Le_scale > 0f0
