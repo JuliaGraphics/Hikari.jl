@@ -128,6 +128,20 @@ two allocators over the same memory.
 mantle_device(::Lava.LavaBackend) = Mantle.Device(Lava)
 mantle_device(::KA.CPU) = Mantle.Device(Mantle.Host())
 
+"""
+Every other KA backend: ask Mantle directly.
+
+Not a CUDA method, because Hikari must not depend on CUDA to render on it —
+`Mantle.Device` already dispatches on the backend, and `MantleCUDAExt` supplies
+the `CUDABackend` one when CUDA is loaded. A backend with no Mantle device still
+fails, just one call further down and naming the thing that is actually missing.
+
+Lava keeps its own method above because `MantleLavaExt` keys on the MODULE
+(`Device(::typeof(Lava))`) rather than the backend value, so this fallback would
+not find it.
+"""
+mantle_device(b) = Mantle.Device(b)
+
 # Smallest kernel that reads one buffer and writes another, so a test can pin
 # that a Mantle pass reaches Hikari's own allocations. Lives here rather than in
 # the test file because a `@kernel` has to be compiled into the package that

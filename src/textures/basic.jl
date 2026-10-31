@@ -8,8 +8,24 @@ struct Texture{ElType, N, T<:AbstractArray{ElType, N}}
     isconst::Bool
 end
 Texture(data::AbstractArray{T,N}) where {T,N} = Texture{T,N,typeof(data)}(data, zero(T), false)
+"""
+A constant texture. The value goes in BOTH fields.
+
+`data` used to be left `Array{T,0}(undef)`, on the reasoning that `isconst`
+tells every reader to take `constval` instead — which `evaluate_texture` and
+`constant_value` do. The call operator `(::Texture)(::SurfaceInteraction)` does
+not: it goes straight to `sample_texture_data(c.data, uv)`, and for a 0-d array
+that is `data[]`, i.e. uninitialised memory, silently, as a colour.
+
+Writing the value costs one store per const texture and makes the two fields
+agree, so no reader can be wrong regardless of which one it reaches for. That is
+worth more than the store: the failure mode is a garbage `RGBSpectrum` — the one
+observed held `-5.1e7` in a channel — used as reflectance or emission, which
+renders as a blown-out surface whose colour changes from process to process.
+"""
 function ConstTexture(val::T) where {T}
     arr = Array{T,0}(undef)
+    arr[] = val
     Texture{T,0,typeof(arr)}(arr, val, true)
 end
 
