@@ -34,7 +34,7 @@ ss_textures(scene, V) = [eltype(eltype(typeof(scene.materials.static.textures).p
             )
         )
         push!(scene, sphere, Hikari.Glass(ior = 1.5))
-        @test length(scene.materials.static.data) == 5
+        @test length(scene.materials.static.data) == 4
         @test (ss_view(scene, P), ss_view(scene, C)) == before
     end
 
@@ -100,11 +100,10 @@ end
     push!(scene, sphere(-1), Hikari.Glass(ior = 1.5))
     Hikari.sync!(scene)
     vp(scene, film, camera)
-    @test length(scene.materials.static.data) == 3
+    @test length(scene.materials.static.data) == 2
     @test stage("trace") == trace
-    # A closure kernel per set of BSDF nodes, dispatched in every round: the two Principled
-    # shaders share theirs, whatever their programs.
-    @test length(unique(stage("shade"))) == 2
+    # Glass is a Principled preset: all three shaders share the same BSDF kernel.
+    @test length(unique(stage("shade"))) == 1
     # A cut-out material is read by the trace, so it does change it.
     push!(scene, sphere(2), Hikari.Principled(base_color = (0.5, 0.5, 0.5), alpha = greater(xyz().x, 2.0)))
     Hikari.sync!(scene)

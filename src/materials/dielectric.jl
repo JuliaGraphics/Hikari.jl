@@ -3,7 +3,7 @@
 # ============================================================================
 #
 # The glass models of pbrt-v4, for the pbrt importer, whose renders must match pbrt's. A user's
-# glass is `Glass`, Blender's Glass BSDF, which is the same lobe in Cycles' convention.
+# `Glass` is the canonical Principled transmission preset in Cycles' convention.
 
 """
 pbrt-v4's `DielectricMaterial`: one GGX glass lobe with the dielectric Fresnel, single scattering,

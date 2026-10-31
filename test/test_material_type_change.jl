@@ -63,7 +63,7 @@ tc_mean(img) = mean(p -> Float64(p.r + p.g + p.b), img)
         Hikari.update_material!(scene, handle, glass)
         moved = tc_interface(scene, handle).material
         @test moved.type_idx != before.type_idx
-        @test store[moved] isa Hikari.ShaderMaterial{<:Hikari.ShaderProgram, Nothing, Tuple{Hikari.GlassBSDF}}
+        @test store[moved] isa Hikari.ShaderMaterial{<:Hikari.ShaderProgram, Nothing, Tuple{Hikari.PrincipledBSDF{false, false, false}}}
         @test length(store) == n
         # Back to the first type: into the slot it left, so the store does not grow.
         Hikari.update_material!(scene, handle, Hikari.Diffuse(color = (0.1, 0.1, 0.8)))

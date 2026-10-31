@@ -15,8 +15,9 @@
 What Hikari renders Blender's BSDFs with (`surface_material`): a shader graph, as Blender's
 Material Output takes one, of BSDF nodes combined by mixes and sums, with node textures and `bump`
 at any of their inputs. The graph's values are compiled to one program, and its BSDF nodes are the
-material's type (`bsdf_nodes`): a kernel holds the lobes those nodes produce and nothing else, and
-graphs that differ in their values alone share it. A shader with transparency holds a second
+material's type (`bsdf_nodes`). The BSDF kernel uses either those typed lobes or bounded runtime
+storage (`bsdf_kernel_nodes`); supported mixtures share it across node combinations and orderings.
+A shader with transparency holds a second
 program, of its transparency alone (`transparency_graph`), which is all an alpha test runs.
 
 On the device it also names its BSDF program (`closure_program`): its BSDF nodes read

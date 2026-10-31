@@ -184,12 +184,12 @@ end
         @test front.fresnel.film_thickness == 450f0
         @test front.fresnel.film_ior ≈ 1.33f0
         @test back.ior ≈ 1f0 / 1.5f0
-        @test back.fresnel.film_ior ≈ 1.33f0 / 1.5f0
+        @test back.fresnel.film_ior ≈ 1.33f0
         metal = only(lobes(Hikari.Metallic(thin_film_thickness = 350, thin_film_ior = 1.4))).lobe
         @test metal.fresnel isa F82Tint
         @test metal.fresnel.film_thickness == 350f0
         @test metal.fresnel.film_ior ≈ 1.4f0
-        @test Hikari.bsdf_nodes(Hikari.ShaderGraph(Hikari.shader_node(Hikari.Glass()))) == Tuple{Hikari.GlassBSDF}
+        @test Hikari.bsdf_nodes(Hikari.ShaderGraph(Hikari.shader_node(Hikari.Glass()))) == Tuple{Hikari.PrincipledBSDF{false, false, false}}
         @test Hikari.bsdf_nodes(Hikari.ShaderGraph(Hikari.shader_node(Hikari.Metallic()))) == Tuple{Hikari.MetallicBSDF}
     end
 
@@ -350,7 +350,8 @@ end
         @test Hikari.emits(Hikari.surface_material(emissive))
         @test Hikari.bsdf_nodes(Hikari.ShaderGraph(Hikari.shader_node(Hikari.Principled()))) ==
               Tuple{Hikari.PrincipledBSDF{false, false, false}}
-        @test_throws ArgumentError Hikari.shader_node(Hikari.Principled(distribution = :beckmann))
+        @test Hikari.bsdf_nodes(Hikari.ShaderGraph(Hikari.shader_node(Hikari.Principled(distribution = :beckmann)))) ==
+              Tuple{Hikari.SingleScatterBSDF{Hikari.PrincipledBSDF{false, false, false}, Hikari.CyclesBeckmann}}
     end
 
     @testset "standalone microfacet distributions use the selected scattering model" begin

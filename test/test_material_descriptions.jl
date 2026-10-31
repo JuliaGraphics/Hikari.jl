@@ -50,7 +50,7 @@ program(m) = Hikari.link(Hikari.compile_shader(Hikari.ShaderGraph(Hikari.shader_
         own = Hikari.Diffuse(color = (0.5, 0.5, 0.5))
         @test nodes(Hikari.surface_material(own)) == Tuple{Hikari.DiffuseBSDF}
         @test nodes(Hikari.surface_material(Hikari.Diffuse(normal = bump(xyz().x)))) == Tuple{Hikari.DiffuseBSDF}
-        @test nodes(Hikari.surface_material(Hikari.Glass())) == Tuple{Hikari.GlassBSDF}
+        @test nodes(Hikari.surface_material(Hikari.Glass())) == Tuple{Hikari.PrincipledBSDF{false, false, false}}
         @test nodes(Hikari.surface_material(Hikari.Mix(Hikari.Diffuse(), Hikari.Glossy()))) ==
             Tuple{Hikari.DiffuseBSDF, Hikari.GlossyBSDF}
         @test nodes(Hikari.surface_material(Hikari.Add(Hikari.Diffuse(), Hikari.Emission()))) ==

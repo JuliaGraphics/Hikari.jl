@@ -245,9 +245,13 @@ function shade_pass!(g, state::VolPathState, @nospecialize(refs), cur::WorkQueue
                          group = shader_values_workgroupsize(group), name = "shader-values")
     end
     for (slot, T) in enumerate(types)
-        q, view = splits(T) ? (ClosureQueue{bsdf_nodes(T)}(queues, slot, inputs,
-                                  state.material_queues_signature.programs[slot]), closure_set(refs.materials)) :
-                              (SlotQueue{T}(queues, slot), shade_set(refs.materials, T))
+        if splits(T)
+            M = bsdf_kernel_nodes(bsdf_nodes(T), Mantle.syncbackend(state.memory.dev))
+            q = ClosureQueue{M}(queues, slot, inputs, state.material_queues_signature.programs[slot])
+            view = closure_set(refs.materials)
+        else
+            q, view = SlotQueue{T}(queues, slot), shade_set(refs.materials, T)
+        end
         Mantle.dispatch!(g, vp_shade_kernel!,
                          (q, state.surface_hits, cur, state.arrivals,
                           nxt, state.pixel_L, state.pdf_per_pixel,

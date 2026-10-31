@@ -96,6 +96,16 @@ end
     return material_bsdf(M, produced, table, lambda)
 end
 
+@propagate_inbounds function material_bxdf(mat::GatheredShader{M}, table, textures, work, camera,
+                                           samples_per_pixel::Int32, lambda::Wavelengths,
+                                           regularize::Bool) where {M <: RuntimeBSDFNodes}
+    program = @inbounds mat.inputs.program[mat.program_offset + work.material_idx.vec_idx]
+    prog = closure_programs(textures)[program]
+    s = GatheredStack(mat.inputs.values, mat.inputs.capacity, mat.hit)
+    return runtime_bsdf(M, s, prog, closure_context(work),
+                        LobeSetup(lookup_tables(textures), regularize), table, lambda)
+end
+
 """
     vp_shader_values_kernel!(q, surface_hits, cur, arrivals, accel, media_interfaces, materials, inputs, camera, samples_per_pixel)
 

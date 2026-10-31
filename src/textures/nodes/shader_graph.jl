@@ -85,8 +85,6 @@ function closure_node(kind::UInt8)
     kind == ClosureKind.PHYSICAL_METALLIC_FILM && return PhysicalMetallicBSDF{true}
     kind == ClosureKind.REFRACTION_BECKMANN && return RefractionBSDF{CyclesBeckmann}
     kind == ClosureKind.REFRACTION_GGX && return RefractionBSDF{CyclesGGX}
-    kind == ClosureKind.GLASS && return GlassBSDF
-    kind == ClosureKind.GLASS_FILM && return GlassFilmBSDF
     kind == ClosureKind.SHEEN && return SheenBSDF
     kind == ClosureKind.TOON_DIFFUSE && return ToonBSDF{false}
     kind == ClosureKind.TOON_GLOSSY && return ToonBSDF{true}
@@ -99,7 +97,7 @@ function principled_node(c::NodeCore)
     thin_wall = c.inputs[34]
     thin_wall isa Real || error("a Principled BSDF's thin wall is a constant, not a node graph: it decides which lobes the material has")
     node = PrincipledBSDF{Float32(thin_wall) > 0.5f0, !_zero(c.inputs[9]), !_zero(c.inputs[31])}
-    return c.mode[2] == 0x00 ? node : SingleScatterBSDF{node, CyclesGGX}
+    return c.mode[2] == 0x00 ? node : SingleScatterBSDF{node, c.mode[2] == 0x02 ? CyclesBeckmann : CyclesGGX}
 end
 
 _zero(x) = _constant(x, 0)

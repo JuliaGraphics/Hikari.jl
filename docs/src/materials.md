@@ -49,7 +49,7 @@ Blender's Principled BSDF with all its inputs: `base_color`, `metallic`, `roughn
 ```julia
 Hikari.Principled(base_color = (0.8, 0.1, 0.1), roughness = 0.3, coat_weight = 1)     # car paint
 Hikari.Principled(base_color = (0.9, 0.6, 0.2), metallic = 1, roughness = 0.2)        # gold
-Hikari.Principled(transmission_weight = 1, roughness = 0)                             # glass
+Hikari.Glass()                                                                      # Principled glass preset
 ```
 
 The `distribution` setting is `:multi_ggx` by default, as in Blender. Use `:ggx` for
@@ -104,7 +104,16 @@ Hikari.Glossy(distribution = :beckmann, roughness = 0.4, anisotropy = 0.5)
 
 ### Glass
 
-Reflection and refraction with the dielectric Fresnel, tinted by `color`.
+`Glass(...)` returns a `Principled` with `transmission_weight = 1`, white `base_color`,
+`roughness = 0` and `ior = 1.5`. It has exactly the same description, graph and shader path
+as that Principled configuration. Use `base_color` for colour and nested updates; the old
+`color` constructor keyword remains an input alias. Reflection and transmission follow
+Principled's tinting, including the square root of the base colour for solid transmission.
+There is no separate Glass BSDF implementation.
+
+The preset accepts thin film, thin walls and dispersion. In addition to Blender's Principled
+`:multi_ggx` and `:ggx` distributions, Hikari supports `:beckmann` through the same Principled
+path. Coat and thin-wall transmission retain their existing GGX behavior.
 
 ```julia
 Hikari.Glass(ior = 1.5)                    # clear glass
@@ -208,9 +217,16 @@ fields, so nested updates such as `plot.material.roughness = 0.2` work directly.
 
 `Hikari.update_material!(scene, handle, material)` with a material of the same kind (other values,
 images or node parameters) writes it where the old one is: the next frame renders it without
-compiling anything. Another kind of material, or a shader with other node types or other BSDFs,
-is a new material type: its shading kernel is compiled once, and the kernels of every other
-material stay as they are.
+compiling anything. Changing node families or BSDFs can require a new values program or BSDF
+kernel. Other materials retain their compiled kernels.
+
+Mixtures of two through eight `Diffuse`, `Sheen` and multi-scattering `Glossy` nodes share a
+BSDF kernel by storage capacity rather than by their exact node order. Vulkan uses capacities
+four and eight; Metal additionally has a capacity of three and evaluates the local records
+in a loop. Setup and spectral conversion happen once per hit, with no additional global BSDF
+buffer. An individual BSDF keeps its elementary implementation. Other BSDF combinations retain
+their typed implementation. Reordering supported nodes within one capacity reuses the BSDF
+kernel, although other renderer passes can still compile for a changed graph structure.
 
 ### Materials Showcase
 
