@@ -42,6 +42,11 @@ with zero SPIR-V and LLVM optimization misses, and both images must be finite
 and nonblack. Elapsed time is reported separately from these deterministic
 cache assertions.
 
+The two probe processes share a dedicated `JULIA_OBJCACHE_PATH`. The general
+object cache is bounded and shared by concurrent Julia processes; a large test
+suite can evict freshly compiled probe shaders. Isolating this small working set
+tests persistence without depending on unrelated cache traffic.
+
 CI runs the shared test registry in four disjoint groups plus a dedicated pbrt
 reference group, each in a fresh process. This releases compiler and driver state
 between groups; a complete single-process GPU run can exceed 10 GiB of resident

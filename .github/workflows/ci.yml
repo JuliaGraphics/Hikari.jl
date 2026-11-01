@@ -70,6 +70,8 @@ jobs:
         if: matrix.group == '1'
         env:
           HIKARI_TEST_LAVAPIPE: "true"
+          # Keep this working set independent of the preceding full test group.
+          JULIA_OBJCACHE_PATH: ${{ runner.temp }}/hikari-material-cache-probe
         run: |
           xvfb-run -a julia --project=.ci .ci/cache_probe.jl
           xvfb-run -a julia --project=.ci .ci/cache_probe.jl --cached
