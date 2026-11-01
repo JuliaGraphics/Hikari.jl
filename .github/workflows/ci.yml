@@ -72,6 +72,7 @@ jobs:
           HIKARI_TEST_LAVAPIPE: "true"
           # Keep this working set independent of the preceding full test group.
           JULIA_OBJCACHE_PATH: ${{ runner.temp }}/hikari-material-cache-probe
+          HIKARI_CACHE_PROBE_REFERENCE: ${{ runner.temp }}/hikari-material-cache-image.sha256
         run: |
           xvfb-run -a julia --project=.ci .ci/cache_probe.jl
           xvfb-run -a julia --project=.ci .ci/cache_probe.jl --cached

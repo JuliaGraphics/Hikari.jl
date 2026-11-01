@@ -41,6 +41,7 @@ CI also renders a small Principled scene in two separate Julia processes using
 with zero SPIR-V and LLVM optimization misses, and both images must be finite
 and nonblack. Elapsed time is reported separately from these deterministic
 cache assertions.
+The cached render must also match the first process's image hash exactly.
 
 The two probe processes share a dedicated `JULIA_OBJCACHE_PATH`. The general
 object cache is bounded and shared by concurrent Julia processes; a large test
