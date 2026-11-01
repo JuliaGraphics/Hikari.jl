@@ -274,6 +274,33 @@ function run_pbrt_mix_selection()
         @test length(nested.program.closures) == 3
     end
 end
+function run_fused_bump_render()
+    backend = Mantle.defaultbackend()
+    hardware = Mantle.supports_hwtlas(backend) ? (false, true) : (false,)
+    return @testset "fused native bump readers retain immutable values" begin
+        for name in ("tex_conductor_bump_flat_light_point", "tex_conductor_scalebump_texrough_light_point"), hw in hardware
+            @testset "$name / hardware=$hw" begin
+                path = joinpath(@__DIR__, "pbrt", "scenes", name * ".pbrt")
+                source = replace(read(path, String), "\"integer xresolution\" 128" => "\"integer xresolution\" 32", "\"integer yresolution\" 128" => "\"integer yresolution\" 32")
+                parsed = Hikari.parse_pbrt_string(source; base_dir = dirname(path), filename = path)
+                r = Hikari.build_hikari_scene(parsed; backend, samples = 4, max_depth = 3, hw_accel = hw)
+                integrator = Hikari.VolPath(samples = 4, max_depth = 3, regularize = r.integrator_settings.regularize, hw_accel = hw)
+                try
+                    @test any(T -> T <: Hikari.ShaderMaterial{<:Hikari.FusedShaderProgram}, r.scene.materials.data_order)
+                    integrator(r.scene, r.film, r.camera)
+                    pixels = Array(r.film.framebuffer)
+                    @test all(p -> isfinite(p.r + p.g + p.b), pixels)
+                    @test any(p -> p.r > 0, pixels)
+                    @test all(n -> all(isfinite, n), Array(r.film.normal))
+                finally
+                    close(integrator)
+                    Hikari.free!(r.film)
+                end
+            end
+        end
+    end
+end
+run_fused_bump_render()
 run_pbrt_mix_selection()
 run_exact()
 run_bump()

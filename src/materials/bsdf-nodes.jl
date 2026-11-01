@@ -164,6 +164,9 @@ end
 end
 @noinline function shader_bsdf(::Val{true}, ::Type{M}, prog, textures, sc, regularize, table, lambda) where {M <: Tuple}
     s, i = run_values(prog, textures, sc)
+    # Native parameter readers retain the stack while constructing the BSDF
+    # and its frame. Keep their context immutable, as in shader_guides.
+    s = SVector(s)
     produced = node_lobes(M, s, prog, i, sc, LobeSetup(lookup_tables(textures), regularize))
     return material_bsdf(M, produced, table, lambda)
 end
