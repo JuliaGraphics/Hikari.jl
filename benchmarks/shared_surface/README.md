@@ -148,6 +148,26 @@ demonstrates a residual evaluation cost without setup, not its native cause.
 The complete material and runtime report is in Mantle's
 `docs/metal-material-validation.md`.
 
+`metal_active_capacity.jl`, loaded after those two Metal modules, isolates the
+effect of unused capacity without GPU material setup. It passes the same typed,
+shared and CPU-trimmed BSDFs to the same kernel, checks all outputs, then records
+51 alternating wall-time triples and 30 GPU timestamps per implementation:
+
+```julia
+include(joinpath(pkgdir(Hikari), "benchmarks/shared_surface/metal_active_capacity.jl"))
+MetalActiveCapacityProbe.run(; result_path="/tmp/metal-active-capacity.json");
+```
+
+On M5, trimming the five-active-term Principled fixture from eight slots to five
+reduces mixture-only device time from 670.6 to 325.5 microseconds. Trimming the
+one-active-term Glass fixture from eight slots to one reduces it from 655.2 to
+132.9 microseconds. With sampling added, the reductions are 663.8 to 346.3 and
+654.3 to 198.7 microseconds. All 16 comparisons pass. These are standalone
+dispatches over 65,536 lanes, not full-frame speedups. The experiment changes
+the capacity specialization as well as storage size, so it does not isolate a
+register/spill mechanism. Value-dependent capacity is not adopted: it would
+change the kernel class when a numeric material edit activates another term.
+
 `metal_single_lobe.jl`, loaded after `metal_stages.jl`, isolates one further
 experiment for positive, single-lobe Diffuse/Sheen/Glossy programs:
 
