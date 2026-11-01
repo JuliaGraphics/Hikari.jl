@@ -44,15 +44,15 @@ function test_scene(scene_name; backend, samples, hw_accel)
     # to be here were an override channel no caller ever used, while the gallery
     # grew its own table that reached tile=0.55 for scenes checked at 0.07 here.
     ref = ensure_reference(scene_name)
-    fb  = render_scene(scene_name; backend, samples, hw_accel)
-    m   = compute_metrics(ref, fb)
+    fb = render_scene(scene_name; backend, samples, hw_accel)
+    m = compute_metrics(ref, fb)
 
     # Record before asserting, so a failing scene is still in the gallery — that
     # is the one you most want to look at.
     record_scene!(scene_name, fb, m; hw_accel, samples)
 
-    println("  $(scene_name): tile=$(round(m.tile, digits=4)) energy=$(round(m.energy_ratio, digits=3))")
-    @test m.tile         < TILE_THRESHOLD
+    println("  $(scene_name): tile=$(round(m.tile, digits = 4)) energy=$(round(m.energy_ratio, digits = 3))")
+    @test m.tile < TILE_THRESHOLD
     @test m.energy_ratio > ENERGY_LOW
     @test m.energy_ratio < ENERGY_HIGH
     return m
@@ -64,55 +64,66 @@ function test_scenes_matching(prefix; backend, samples, hw_accel)
             test_scene(name; backend, samples, hw_accel)
         end
     end
+    return
 end
 
 # ── Main entry point ────────────────────────────────────────────────────────
 
 """
     run_pbrt_suite(; backend=Mantle.defaultbackend(), samples=DEFAULT_SPP,
-                     hw_accel=false, media_energy=(0.80, 1.20))
+                     hw_accel=false, group=:all)
 
 Run the full pbrt reference comparison under `@testset`s. All parameters are
 explicit — callers (runtests.jl, standalone invocation) pick the backend and
 hw_accel flag. Skips scenes whose `.pbrt` is missing.
+`group` selects `:materials`, `:textures` or `:other` for isolated CI processes;
+the default `:all` runs every category with the same image thresholds.
 """
-function run_pbrt_suite(; backend=Mantle.defaultbackend(),
-                          samples::Int=DEFAULT_SPP,
-                          hw_accel::Bool=false)
+function run_pbrt_suite(;
+        backend = Mantle.defaultbackend(),
+        samples::Int = DEFAULT_SPP,
+        hw_accel::Bool = false,
+        group::Symbol = :all
+    )
+    group in (:all, :materials, :textures, :other) ||
+        throw(ArgumentError("unknown pbrt test group: $group"))
     label = hw_accel ? "HW RT" : "SW BVH"
     if samples != REFERENCE_SPP
         @warn """Rendering at $samples spp against references rendered at $REFERENCE_SPP spp.
-                 The two sides now have different noise floors and the difference is
-                 scored against Hikari. Results are indicative, not a pass/fail signal."""
+        The two sides now have different noise floors and the difference is
+        scored against Hikari. Results are indicative, not a pass/fail signal."""
     end
     begin_record!(hw_accel)
-    @testset "pbrt reference ($label, $samples spp)" begin
-        @testset "Materials × Lights" begin
-            for mat in BASE_MATERIALS
-                @testset "$mat" begin
-                    for light in BASE_LIGHTS
-                        scene = "mat_$(mat)_light_$(light)"
-                        @testset "$light" begin
-                            test_scene(scene; backend, samples, hw_accel)
+    return @testset "pbrt reference ($label, $samples spp)" begin
+        if group in (:all, :materials)
+            @testset "Materials × Lights" begin
+                for mat in BASE_MATERIALS
+                    @testset "$mat" begin
+                        for light in BASE_LIGHTS
+                            scene = "mat_$(mat)_light_$(light)"
+                            @testset "$light" begin
+                                test_scene(scene; backend, samples, hw_accel)
+                            end
                         end
                     end
                 end
-            end
-            @testset "mix" begin
-                test_scene("mat_mix_light_point"; backend, samples, hw_accel)
+                @testset "mix" begin
+                    test_scene("mat_mix_light_point"; backend, samples, hw_accel)
+                end
             end
         end
 
         # `cam_` and `integ_` were dead prefixes: scenes sat in scenes/ that no
         # testset matched, so cam_dof_light_point.pbrt had never once run.
-        @testset "Camera"         test_scenes_matching("cam_";    backend, samples, hw_accel)
-        @testset "Integrator"     test_scenes_matching("integ_";  backend, samples, hw_accel)
-        @testset "Textures"       test_scenes_matching("tex_";    backend, samples, hw_accel)
-        @testset "Cast shadows"   test_scenes_matching("shadow_"; backend, samples, hw_accel)
-        @testset "Light variants" test_scenes_matching("light_";  backend, samples, hw_accel)
-        @testset "Filters"        test_scenes_matching("filter_"; backend, samples, hw_accel)
-        @testset "Sensors"        test_scenes_matching("sensor_"; backend, samples, hw_accel)
-        @testset "Media"          test_scenes_matching("medium_"; backend, samples, hw_accel)
+        for (name, prefix, category) in (
+                ("Camera", "cam_", :other), ("Integrator", "integ_", :other),
+                ("Textures", "tex_", :textures), ("Cast shadows", "shadow_", :other),
+                ("Light variants", "light_", :other), ("Filters", "filter_", :other),
+                ("Sensors", "sensor_", :other), ("Media", "medium_", :other),
+            )
+            group in (:all, category) || continue
+            @testset "$name" test_scenes_matching(prefix; backend, samples, hw_accel)
+        end
 
     end
 end
@@ -125,8 +136,8 @@ end
 
 if abspath(PROGRAM_FILE) == @__FILE__
     spp = parse(Int, get(ENV, "HIKARI_PBRT_SPP", string(DEFAULT_SPP)))
-    run_pbrt_suite(; samples=spp, hw_accel=false)
+    run_pbrt_suite(; samples = spp, hw_accel = false)
     if hw_rt_available()
-        run_pbrt_suite(; samples=spp, hw_accel=true)
+        run_pbrt_suite(; samples = spp, hw_accel = true)
     end
 end

@@ -145,6 +145,7 @@ function render_scene(scene_name::AbstractString;
         return Array(r.film.framebuffer)
     finally
         close_vp && close(vp)
+        Hikari.free!(r.film)
     end
 end
 

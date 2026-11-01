@@ -18,10 +18,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: ["1", "2", "3", "4", "pbrt"]
+        group: ["1", "2", "3", "4", "pbrt-materials", "pbrt-textures", "pbrt-other"]
     runs-on: ubuntu-latest
     # Isolated groups release compiler and driver state between test processes.
-    # The reference group retains the complete 256-spp pbrt comparison.
+    # The reference groups retain the complete 256-spp pbrt comparison.
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4

@@ -48,9 +48,10 @@ object cache is bounded and shared by concurrent Julia processes; a large test
 suite can evict freshly compiled probe shaders. Isolating this small working set
 tests persistence without depending on unrelated cache traffic.
 
-CI runs the shared test registry in four disjoint groups plus a dedicated pbrt
-reference group, each in a fresh process. This releases compiler and driver state
+CI runs the shared test registry in four disjoint groups plus three pbrt
+reference groups, each in a fresh process. This releases compiler and driver state
 between groups; a complete single-process GPU run can exceed 10 GiB of resident
-memory. `.ci/run_tests.jl 1` through `4` select the unit groups, and `pbrt` selects
-the complete 256-spp reference gate. The aggregate `Tests` check requires every
-group to succeed. `Pkg.test("Hikari")` still runs everything by default.
+memory. `.ci/run_tests.jl 1` through `4` select the unit groups. `pbrt-materials`,
+`pbrt-textures` and `pbrt-other` divide the complete 256-spp reference gate;
+`pbrt` selects all three together for local use. The aggregate `Tests` check
+requires every group to succeed. `Pkg.test("Hikari")` still runs everything by default.
