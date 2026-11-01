@@ -805,7 +805,7 @@ function build_pbrt_material(entity::PBRTEntity, pbrt::PBRTScene,
         mat2 = get(mat_cache, mat_names[2], nothing)
         mat1 === nothing && error("mix: unknown material '$(mat_names[1])'")
         mat2 === nothing && error("mix: unknown material '$(mat_names[2])'")
-        return Mix(mat1, mat2; factor = amount)
+        return pbrt_mix_material(mat1, mat2, amount)
 
     else
         @warn "pbrt: unsupported material type '$type', using default Diffuse"

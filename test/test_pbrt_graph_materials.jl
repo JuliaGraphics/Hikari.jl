@@ -240,6 +240,41 @@ function run_gpu_composition()
         end
     end
 end
+function run_pbrt_mix_selection()
+    return @testset "pbrt mixes select a complete BSDF before radiance clamping" begin
+        a = Hikari.Diffuse(color = (0.8f0, 0.1f0, 0.1f0), roughness = 0.2f0)
+        b = Hikari.Conductor(reflectance = (0.9f0, 0.7f0, 0.2f0), roughness = 0.2f0)
+        description = Hikari.pbrt_mix_material(a, b, 0.5f0)
+        store = Raycore.MultiTypeSet(CPU())
+        aa, bb = Hikari.to_device_material(store, a), Hikari.to_device_material(store, b)
+        graph = Hikari.to_device_material(store, description)
+        textures = Raycore.StaticMultiTypeSet((), Tuple(T[x for x in store.texture_gpu_arrays if typeof(x) === T] for T in store.texture_order))
+        table = Hikari.get_srgb_table()
+        lambda = Hikari.sample_wavelengths_stratified((0.11f0, 0.27f0, 0.53f0, 0.79f0))
+        n, t = Vec3f(0, 0, 1), Vec3f(1, 0, 0)
+        wo, wi = normalize(Vec3f(0.3f0, 0.2f0, 1)), normalize(Vec3f(-0.1f0, 0.4f0, 1))
+        seen = Set{Int}()
+        for j in 1:64
+            tfc = Hikari.TextureFilterContext(Point2f(0.5f0), Point3f(j * 0.013f0, -0.2f0, 0.7f0), n)
+            sc = Hikari.ShaderContext(tfc, wo, Vec3f(0), Vec3f(0), t, n, 1.0f0, Vec3f(0), Point2f(0))
+            bsdf = evaluate_graph(graph, textures, sc, lambda)
+            f, pdf = Hikari.evaluate_bsdf_spectral(bsdf, table, textures, wo, wi, n, t, tfc, lambda)
+            matches = map((aa, bb)) do original
+                reference = Hikari.get_bxdf(original, table, textures, tfc, lambda, false, wo, n, t)
+                rf, rp = Hikari.evaluate_bsdf_spectral(reference, table, textures, wo, wi, n, t, tfc, lambda)
+                all(isapprox.(f.data, rf.data)) && isapprox(pdf, rp)
+            end
+            @test count(identity, matches) == 1
+            union!(seen, findall(identity, matches))
+        end
+        @test seen == Set((1, 2))
+        # Nested imported mixes remain a single ordinary shader graph.
+        nested = Hikari.pbrt_mix_material(description, Hikari.CoatedDiffuse(), 0.3f0)
+        @test nested isa Hikari.ShaderMaterial
+        @test length(nested.program.closures) == 3
+    end
+end
+run_pbrt_mix_selection()
 run_exact()
 run_bump()
 run_composition()

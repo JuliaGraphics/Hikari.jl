@@ -5,7 +5,7 @@
 struct GraphParameter{J} end
 struct GraphSpectrum{N, Offset} end
 
-struct PbrtBSDF{Model, Schema, Arguments, Data, Alpha, UnitWeight, Frame} <: ShaderBSDF end
+struct PbrtBSDF{Model, Schema, Arguments, Data, Alpha, UnitWeight, Frame, SelectComponent} <: ShaderBSDF end
 struct PbrtNodeData{T}
     values::Vector{Float32}
 end
@@ -14,7 +14,7 @@ inline_before_colors(::PbrtNodeData) = true
 function bsdf_node_data(::PbrtNodeData{T}, c::NodeCore) where {T}
     M, S, A, D, Alpha = T.parameters[1:5]
     Frame = T.parameters[7]
-    return PbrtBSDF{M, S, A, D, Alpha, _one(c.inputs[1]), Frame}
+    return PbrtBSDF{M, S, A, D, Alpha, _one(c.inputs[1]), Frame, T.parameters[8]}
 end
 instruction_count(::Type{<:PbrtBSDF{M, S, A, D}}) where {M, S, A, D} = cld(A, NODE_ARGS) + cld(D, NODE_ARGS)
 
@@ -37,7 +37,7 @@ graph_constant_alpha(x::RGBSpectrum) = get_alpha(x)
 graph_constant_alpha(x::Texture{T, 0}) where {T} = graph_constant_alpha(constant_value(x))
 graph_constant_alpha(x::TexHandle) = x.kind == TexKind.CONST_SPECTRUM ? get_alpha(x.rgb) : 1.0f0
 
-function pbrt_shader_node(m::Material)
+function pbrt_shader_node(m::Material; select_component = false)
     inputs = Any[]
     data = Float32[]
     parameters = IdDict{Any, Any}()
@@ -53,7 +53,7 @@ function pbrt_shader_node(m::Material)
             append!(data, x.lambdas)
             append!(data, x.values)
             (:spectrum, length(x.lambdas), offset)
-        elseif field in (:roughness, :interface_roughness, :conductor_roughness)
+        elseif field in (:roughness, :interface_roughness, :conductor_roughness) && !(m isa Diffuse)
             u, v = roughness_pair(x)
             a = pbrt_parameter!(inputs, parameters, scalars, u, true)
             b = pbrt_parameter!(inputs, parameters, scalars, v, true)
@@ -94,12 +94,30 @@ function pbrt_shader_node(m::Material)
             inputs[j] = pbrt_parameter_normal(inputs[j], normal, memo)
         end
     end
-    T = PbrtBSDF{model, schema, length(inputs) + 1, length(data), alpha_index, false, frame}
+    T = PbrtBSDF{model, schema, length(inputs) + 1, length(data), alpha_index, false, frame, select_component}
     return BSDFNode(NodeOp.CLOSURE, (ClosureKind.PBRT, 0x00, 0x00), inputs, PbrtNodeData{T}(data))
 end
 shader_node(m::PbrtGraphMaterial) = pbrt_shader_node(m)
 nests(::PbrtGraphMaterial) = true
 surface_material(m::PbrtGraphMaterial) = ShaderMaterial(shader_node(m))
+# pbrt selects a complete material before lighting at each vertex. Preserve
+# that estimator inside the unified graph: weighting both BSDFs before the
+# film's radiance clamp changes the image even though their unclamped means
+# agree. The public Cycles Mix continues to sum its weighted lobes.
+pbrt_mix_graph(m::Union{Diffuse, PbrtGraphMaterial}) = ShaderGraph(pbrt_shader_node(m; select_component = true))
+pbrt_mix_graph(m::ShaderMaterial{ShaderGraph}) = m.program
+pbrt_mix_graph(m::Material) = ShaderGraph(shader_node(m))
+function pbrt_mix_material(a::Material, b::Material, factor)
+    factor = clamp(node_input(factor), 0.0f0, 1.0f0)
+    function weighted(g, weight)
+        return map(g.closures) do c
+            NodeCore(c.op, c.mode, Any[weight * c.inputs[1]; c.inputs[2:end]], c.widths, c.data)
+        end
+    end
+    graph = ShaderGraph(vcat(weighted(pbrt_mix_graph(a), 1.0f0 - factor), weighted(pbrt_mix_graph(b), factor)))
+    return ShaderMaterial(graph)
+end
+
 pbrt_isset(x) = true
 pbrt_isset(::Nothing) = false
 pbrt_isset(x::TexHandle) = !is_none(x)
@@ -237,6 +255,7 @@ end
 # and continuation. Dispersive pbrt nodes likewise keep wavelength termination
 # attached to the selected model instead of terminating unrelated graph branches.
 function selects_component(::Type{B}) where {M, S, B <: PbrtBSDF{M, S}}
+    B.parameters[8] && return true
     B.parameters[7] != 0 && return true
     M <: Union{CoatedDiffuse, CoatedConductor, CoatedDiffuseTransmission} && return true
     M <: Union{Dielectric, ThinDielectric} || return false
