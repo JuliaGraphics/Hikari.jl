@@ -41,3 +41,10 @@ CI also renders a small Principled scene in two separate Julia processes using
 with zero SPIR-V and LLVM optimization misses, and both images must be finite
 and nonblack. Elapsed time is reported separately from these deterministic
 cache assertions.
+
+CI runs the shared test registry in four disjoint groups plus a dedicated pbrt
+reference group, each in a fresh process. This releases compiler and driver state
+between groups; a complete single-process GPU run can exceed 10 GiB of resident
+memory. `.ci/run_tests.jl 1` through `4` select the unit groups, and `pbrt` selects
+the complete 256-spp reference gate. The aggregate `Tests` check requires every
+group to succeed. `Pkg.test("Hikari")` still runs everything by default.

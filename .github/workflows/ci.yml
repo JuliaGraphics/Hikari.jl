@@ -13,13 +13,15 @@ concurrency:
   cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
 
 jobs:
-  test:
-    name: Tests
+  test-group:
+    name: Tests / ${{ matrix.group }}
+    strategy:
+      fail-fast: false
+      matrix:
+        group: ["1", "2", "3", "4", "pbrt"]
     runs-on: ubuntu-latest
-    # Raised from 60: the pbrt suite now renders at 256 spp (tight gate, no
-    # relaxations). ~19 min locally on a 12-core lavapipe; the slower Azure
-    # runner needs the extra headroom. If this still times out, the suite
-    # should move to a self-hosted real-GPU runner, not drop back to low spp.
+    # Isolated groups release compiler and driver state between test processes.
+    # The reference group retains the complete 256-spp pbrt comparison.
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
@@ -34,7 +36,7 @@ jobs:
       - name: Resolve published backend dependencies
         run: julia --project=.ci .ci/setup.jl
       - name: Run tests with Lavapipe_jll
-        run: xvfb-run -a julia --project=.ci -e 'using Pkg; Pkg.test("Hikari"; allow_reresolve = false, julia_args = `--check-bounds=auto`)'
+        run: xvfb-run -a julia --project=.ci .ci/run_tests.jl "${{ matrix.group }}"
         env:
           # pbrt reference suite renders at HIGH spp so the gate can stay
           # TIGHT (tile<0.07, energy in [0.95,1.05]) with no per-scene or
@@ -65,11 +67,23 @@ jobs:
           HIKARI_SKIP_PBRT_HW: "true"
 
       - name: Verify material shader cache across Julia sessions
+        if: matrix.group == '1'
         env:
           HIKARI_TEST_LAVAPIPE: "true"
         run: |
           xvfb-run -a julia --project=.ci .ci/cache_probe.jl
           xvfb-run -a julia --project=.ci .ci/cache_probe.jl --cached
+
+  test:
+    name: Tests
+    needs: test-group
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every test group
+        env:
+          GROUP_RESULT: ${{ needs['test-group'].result }}
+        run: test "$GROUP_RESULT" = success
 
   pbrt-comparison:
     name: pbrt-v4 Comparison
