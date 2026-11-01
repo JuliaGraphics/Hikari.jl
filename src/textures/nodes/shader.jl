@@ -183,7 +183,9 @@ complex division widens to `Complex{Float64}` and its square root rescales with 
 this function a fifth of every Principled shading kernel, in `Float64` code that Apple GPUs cannot
 compile at all.
 """
-@noinline function _thin_film_reflectance(cos_i::Float32, thickness::Float32, eta2::Float32, eta3::Float32,
+# Let the device compiler choose inlining: a forced call boundary penalizes
+# shared BSDF shading even when the material has no film.
+function _thin_film_reflectance(cos_i::Float32, thickness::Float32, eta2::Float32, eta3::Float32,
                                         k3::Float32, lambda::Float32, f82::Float32 = -1f0)
     if thickness < 1f0
         t = clamp(thickness, 0f0, 1f0)
