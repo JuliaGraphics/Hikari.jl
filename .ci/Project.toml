@@ -1,4 +1,5 @@
 [deps]
+GeometryBasics = "5c1252a2-5f33-56bf-86c9-59e7332b4326"
 CompilerCaching = "9db33cc3-5358-4881-8759-fa4194144afd"
 Vulkan = "9f14b124-c50e-4008-a7d4-969b3a6cd68a"
 VulkanCore = "16167f82-ea26-5cba-b1de-ed6fd5e30a11"
