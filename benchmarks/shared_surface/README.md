@@ -148,6 +148,22 @@ demonstrates a residual evaluation cost without setup, not its native cause.
 The complete material and runtime report is in Mantle's
 `docs/metal-material-validation.md`.
 
+`metal_single_lobe.jl`, loaded after `metal_stages.jl`, isolates one further
+experiment for positive, single-lobe Diffuse/Sheen/Glossy programs:
+
+```julia
+MetalSingleLobeProbe.run(; count=65536, pairs=51, result_path="/tmp/metal-single-lobe.json")
+```
+
+It compares the stored record with decoding its runtime tag once before
+evaluation and sampling. Both variants receive the same runtime program; no
+material type enters the kernel signature. The second and third models must
+produce zero compiler misses after the first model. Concrete BSDF construction
+stays inside each tag branch to retain inference. Output comparisons precede
+51 alternating pairs and six alternating groups of five GPU timestamp samples.
+The packaged M5 check passes eight output/reuse assertions. This diagnostic
+does not change production rendering or establish correctness for larger graphs.
+
 Latest follow-up results (2026-10-31): inlining the shared evaluator avoids the
 sparse-graph GPU fault and passes standalone setup/evaluation/sampling. Four
 Principled/Glass/Sheen/Glossy graph combinations reuse the same native BSDF
