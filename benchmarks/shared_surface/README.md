@@ -240,3 +240,12 @@ The candidate preserves the image within 4.77e-7, reduces native code from
 and shared memory (25,344 bytes) unchanged. The typed reference uses 22,784
 shared bytes. Inlining therefore gives no substantial recovery of the roughly
 9% runtime gap; it is retained as a diagnostic, and production setup is unchanged.
+
+The follow-up workgroup probe (`workgroup_size.jl`) keeps the typed reference
+and 64-thread shared pipeline alive while compiling a 128-thread shared pipeline.
+At 512², 8 spp and 51 alternating triples on the idle RTX, Metallic measured
+22.543 ms typed, 24.581 ms shared/64 and 24.683 ms shared/128. Images agreed to
+5.96e-8. Register use remained 255, code size remained 487,424 bytes, and the
+reported shared memory increased from 25,344 to 48,640 bytes per workgroup.
+Increasing the group therefore did not recover the regression; this diagnostic
+does not change the renderer's default group size.
