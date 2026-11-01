@@ -87,6 +87,7 @@ const TEST_FILES = [
     "volpath_integration.jl",
     "denoise.jl",
     "test_aux_alignment.jl",
+    "test_shader_guides.jl",
     "test_scene_mesh_reuse.jl",
     "test_mesh_emission_update.jl",
     "test_caching_gc_correctness.jl",

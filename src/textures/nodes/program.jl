@@ -159,7 +159,7 @@ end
 
 @inline _new_stack(::Val{N}) where {N} = MVector{N, Float32}(undef)
 
-@inline _get(s::MVector, o) = @inbounds s[o]
+@inline _get(s::Union{MVector, SVector}, o) = @inbounds s[o]
 @inline _set(s::MVector, o, x::Float32) = (@inbounds s[o] = x; s)
 
 """Input `i` as a scalar: a vector source gives its first component."""

@@ -270,11 +270,12 @@ end
 end
 @inline shader_guide(w::Weighted, depth) = w.sample_weight > 0.0f0 ? guide_albedo(w.lobe, w.weight) : Vec3f(0)
 
-# Consume native parameter readers before returning, so a value stack never
-# escapes this function through a guide term.
+# Native parameter readers carry their value stack in each term. Freeze it
+# before constructing those readers, so the mutable evaluation stack cannot
+# escape into a GPU heap allocation.
 @noinline function shader_guides(::Type{M}, prog, textures, sc, depth) where {M <: Tuple}
     s, i = run_values(prog, textures, sc)
-    terms, _, _ = node_lobes(M, s, prog, i, sc, LobeSetup(lookup_tables(textures), false))
+    terms, _, _ = node_lobes(M, SVector(s), prog, i, sc, LobeSetup(lookup_tables(textures), false))
     albedo = reduce(+, map(w -> shader_guide(w, depth), terms); init = Vec3f(0))
     normal = reduce(+, map(shader_guide_normal, terms); init = Vec3f(0))
     return albedo, normal
