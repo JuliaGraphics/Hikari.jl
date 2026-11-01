@@ -10,6 +10,7 @@ end
 Texture(data::AbstractArray{T,N}) where {T,N} = Texture{T,N,typeof(data)}(data, zero(T), false)
 function ConstTexture(val::T) where {T}
     arr = Array{T,0}(undef)
+    arr[] = val
     Texture{T,0,typeof(arr)}(arr, val, true)
 end
 
