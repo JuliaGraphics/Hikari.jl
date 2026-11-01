@@ -196,3 +196,47 @@ prlimit --data=4294967296 timeout --kill-after=5s 60s ./native_compile RTX captu
 The independent compile checks compiler resource use only. Render correctness
 still needs the Hikari image/reference tests. Hardware-ray-query shaders require
 a matching device feature/layout setup and are outside this small probe's scope.
+
+### Validation follow-up, 2026-11-01
+
+The material acceptance group passes 28,803 checks on both Radeon 8060S
+(RADV STRIX_HALO) and `Lavapipe_jll` (Mesa 26.2.2, LLVM 22.1.8). It covers
+canonical Glass, storage classes, direct evaluation and inference, native
+compositions, render parity, structural updates, shade-kernel sharing,
+white-furnace checks and the Cycles reference batches. The same 28,803 checks
+also pass on the M5 through Metal, including the updated direct shader path.
+
+An idle RTX 4000 Ada comparison uses 512² pixels, eight samples, software
+traversal, five warmups and 51 alternating pairs. These are full-frame medians:
+
+| Material | Typed reference | Shared storage | Change |
+|---|---:|---:|---:|
+| Layered Principled | 26.759 ms | 27.977 ms | +4.55% |
+| Diffuse | 21.041 ms | 21.786 ms | +3.54% |
+| Sheen | 21.817 ms | 22.385 ms | +2.60% |
+| Glossy | 21.962 ms | 22.796 ms | +3.80% |
+| Glass, roughness 0.25 | 37.745 ms | 38.320 ms | +1.53% |
+| Metallic | 22.440 ms | 24.497 ms | +9.17% |
+
+Maximum component errors are below 9e-7. Diffuse/Sheen/Glossy use the same
+native pipeline; Principled/Glass use the same native pipeline. The default
+zero-roughness Glass scene is black with this point light and background, so it
+is rejected by the benchmark's nonblack assertion and is not a valid timing
+fixture. The rough Glass row above replaces that attempt. These results still
+contain runtime regressions, especially Metallic, and do not establish Metal
+performance parity; see Mantle's Metal material validation report.
+
+The CI cache probe renders a nonblack Principled scene before and after a Julia
+restart. The second run reports 27 shader hits, zero shader misses and zero
+LLVM optimization misses. Its measured render-call startup was 28.4 seconds
+while other compiler tests were running; this is cache correctness evidence,
+not an idle-host startup benchmark or a claim that host compilation is solved.
+
+`inline_single_setup.jl` isolates the setup function boundary for one-record
+classes while preserving the shared runtime interpreter. With Metallic and 51
+alternating triples, the typed/shared/inline medians are 22.404/24.566/24.445 ms.
+The candidate preserves the image within 4.77e-7, reduces native code from
+487,424 to 465,536 bytes, and leaves registers (255), local memory (16 bytes)
+and shared memory (25,344 bytes) unchanged. The typed reference uses 22,784
+shared bytes. Inlining therefore gives no substantial recovery of the roughly
+9% runtime gap; it is retained as a diagnostic, and production setup is unchanged.
