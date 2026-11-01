@@ -115,6 +115,39 @@ Neither file is loaded by `load.jl`.
 The related plan and acceptance criteria are in Mantle's
 `docs/material-compilation-reuse-plan.md`.
 
+## Metal stage probes
+
+On Metal, load `renderer.jl`, then `metal_stages.jl` and `metal_prebuilt.jl`
+into Main. These diagnostics compare the production shared representation with
+the typed differential reference without changing renderer selection:
+
+```julia
+MetalBSDFStageProbe.run(; count=65536, pairs=31, result_path="/tmp/metal-stages.json")
+MetalBSDFPrebuiltProbe.run(; count=65536, pairs=31, result_path="/tmp/metal-prebuilt.json")
+```
+
+The first probe constructs BSDFs on the GPU. Stage zero observes only their
+total weight, emission and dispersion, so the compiler can remove unobserved
+scattering fields; this is not a measurement of complete setup in isolation.
+Stage one adds mixture evaluation, and stage two adds sampling. The second
+probe passes already constructed, immutable BSDFs as kernel arguments, varying
+the directions and sampling choices across lanes. It removes graph setup and
+RGB lifting from the measured kernel. Both check every output against the typed
+reference before measuring 31 alternating pairs after five warmups.
+
+Unlike full-frame indirect replay, these standalone dispatches are visible to
+`Metal.@profile`. Results keep both paired wall times and five separately
+profiled dispatches per variant. Do not mix the two measurements or subtract
+stages as if they were an additive pass decomposition: each stage is compiled
+independently, and dead-code elimination and register allocation can differ.
+
+The initial M5 run preserved all outputs exactly (20 assertions). Prebuilt
+mixture-only evaluation still cost 2.19 times the typed reference for Principled
+and 3.01 times for Glass; with sampling the ratios were 1.11 and 1.27. This
+demonstrates a residual evaluation cost without setup, not its native cause.
+The complete material and runtime report is in Mantle's
+`docs/metal-material-validation.md`.
+
 Latest follow-up results (2026-10-31): inlining the shared evaluator avoids the
 sparse-graph GPU fault and passes standalone setup/evaluation/sampling. Four
 Principled/Glass/Sheen/Glossy graph combinations reuse the same native BSDF
