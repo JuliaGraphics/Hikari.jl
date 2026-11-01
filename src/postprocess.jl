@@ -77,7 +77,7 @@ const TONEMAP_FILMIC = UInt8(5)
 """
     tonemap_code(tonemap::Union{Symbol, Nothing}) -> UInt8
 
-The code [`apply_tonemap`](@ref) takes for a `postprocess!` tonemap name, so a
+The code `apply_tonemap` takes for a `postprocess!` tonemap name, so a
 caller outside the film (a rasteriser drawing into the same picture) applies the
 same curve. An unknown name is an error: it used to mean "no tonemapping", which
 turned a typo into a washed-out picture with nothing to say why.

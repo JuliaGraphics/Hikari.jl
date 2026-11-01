@@ -12,13 +12,18 @@ end
 ```
 
 ```@autodocs
-Modules = [Hikari]
+Modules = [Hikari, Hikari.TextureNodes]
 Private = false
 ```
 
 ## Internal API
 
 ```@autodocs
-Modules = [Hikari]
+Modules = [Hikari, Hikari.TextureNodes]
 Public = false
+```
+```@docs
+Hikari.TexKind
+Hikari.NodeFeature
+Hikari.ClosureKind
 ```

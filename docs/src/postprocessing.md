@@ -3,11 +3,12 @@
 Hikari separates rendering from display mapping. The integrator writes sensor-calibrated linear HDR values to the framebuffer. Postprocessing converts those to a display-ready image without re-rendering.
 
 ```@setup postprocessing
-using GeometryBasics, Hikari, ImageShow
-to_mesh(prim) = normal_mesh(prim isa Sphere ? Tesselation(prim, 64) : prim)
+using GeometryBasics, Hikari, Mantle, ImageShow, Adapt
+backend = Mantle.defaultbackend()
+to_mesh(prim) = normal_mesh(prim isa Sphere ? Tessellation(prim, 64) : prim)
 
 function make_scene()
-    scene = Hikari.Scene()
+    scene = Hikari.Scene(; backend)
     push!(scene, to_mesh(Sphere(Point3f(-0.6f0, 0.4f0, 0f0), 0.4f0)),
           Hikari.Gold(roughness=0.03f0))
     push!(scene, to_mesh(Sphere(Point3f(0.5f0, 0.3f0, 0.2f0), 0.3f0)),
@@ -46,7 +47,7 @@ postprocess!(film; exposure=1.0, tonemap=:aces, gamma=2.2)  # step 3: display
 
 ```@example postprocessing
 scene = make_scene()
-film = Hikari.Film(Point2f(512, 512))
+film = Hikari.Film(backend, Hikari.Film(Point2f(512, 512)))
 camera = Hikari.PerspectiveCamera(
     Point3f(2f0, 1.5f0, -2.5f0), Point3f(0f0, 0.3f0, 0f0), film; fov=45f0)
 Hikari.clear!(film)
@@ -87,7 +88,7 @@ Hikari.clear!(film)
 Hikari.VolPath(samples=4, max_depth=8)(scene, film, camera)
 
 # Fill auxiliary buffers for edge detection
-Hikari.fill_aux_buffers!(film, scene, camera)
+Hikari.fill_aux_buffers!(film, Adapt.adapt(backend, scene), camera)
 
 # Denoise the framebuffer
 Hikari.denoise!(film)

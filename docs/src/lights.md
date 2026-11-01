@@ -5,11 +5,12 @@ Hikari supports delta lights (point, directional, spot), area lights created fro
 All lights are added to the scene with `push!(scene, light)`.
 
 ```@setup lights
-using GeometryBasics, LinearAlgebra, Hikari, ImageShow
-to_mesh(prim) = normal_mesh(prim isa Sphere ? Tesselation(prim, 64) : prim)
+using GeometryBasics, LinearAlgebra, Hikari, Mantle, ImageShow
+backend = Mantle.defaultbackend()
+to_mesh(prim) = normal_mesh(prim isa Sphere ? Tessellation(prim, 64) : prim)
 
 function render_light(lights; res=512, spp=48, eye=Point3f(0f0, 1.5f0, -3f0), lookat=Point3f(0f0, 0.4f0, 0f0))
-    scene = Hikari.Scene()
+    scene = Hikari.Scene(; backend)
     # Three spheres: matte, mirror, glass
     push!(scene, to_mesh(Sphere(Point3f(-0.8f0, 0.3f0, 0.2f0), 0.3f0)),
           Hikari.Diffuse(color = Hikari.RGBSpectrum(0.8f0, 0.3f0, 0.2f0)))
@@ -28,7 +29,7 @@ function render_light(lights; res=512, spp=48, eye=Point3f(0f0, 1.5f0, -3f0), lo
           Hikari.Diffuse(color = Hikari.RGBSpectrum(0.15f0, 0.6f0, 0.15f0)))
     for l in lights; push!(scene, l); end
     Hikari.sync!(scene)
-    film   = Hikari.Film(Point2f(res, res))
+    film   = Hikari.Film(backend, Hikari.Film(Point2f(res, res)))
     camera = Hikari.PerspectiveCamera(eye, lookat, film; fov=50f0)
     Hikari.clear!(film)
     Hikari.VolPath(samples=spp, max_depth=10)(scene, film, camera)
@@ -105,7 +106,7 @@ push!(scene, panel_mesh, emissive_panel)
 
 ```@example lights
 let
-    scene = Hikari.Scene()
+    scene = Hikari.Scene(; backend)
     push!(scene, to_mesh(Sphere(Point3f(-0.8f0, 0.3f0, 0.2f0), 0.3f0)),
           Hikari.Diffuse(color = Hikari.RGBSpectrum(0.8f0, 0.3f0, 0.2f0)))
     push!(scene, to_mesh(Sphere(Point3f(0f0, 0.5f0, 0f0), 0.5f0)),
@@ -124,7 +125,7 @@ let
     panel = to_mesh(Rect3f(Vec3f(-0.5f0, 2.9f0, -0.5f0), Vec3f(1f0, 0.01f0, 1f0)))
     push!(scene, panel, Hikari.Emission(color = (3.0, 3.0, 2.85), strength = 1f0, two_sided=true))
     Hikari.sync!(scene)
-    film   = Hikari.Film(Point2f(512, 512))
+    film   = Hikari.Film(backend, Hikari.Film(Point2f(512, 512)))
     camera = Hikari.PerspectiveCamera(
         Point3f(0f0, 1.5f0, -3f0), Point3f(0f0, 0.4f0, 0f0), film; fov=50f0)
     Hikari.clear!(film)

@@ -1,21 +1,29 @@
 ## Get Started
 
-Hikari is a physically-based, spectrally-aware wavefront path tracer. It runs on CPU and GPU via [KernelAbstractions.jl](https://github.com/JuliaGPU/KernelAbstractions.jl) and implements the volumetric path tracing algorithm from [pbrt-v4](https://pbrt.org).
+Hikari is a physically-based, spectrally-aware wavefront path tracer. It uses Vulkan and Metal through Mantle, with Lavapipe for CPU validation, and implements the volumetric path tracing algorithm from [pbrt-v4](https://pbrt.org).
 
 ### Installation
 
-```julia
-using Pkg
-Pkg.add(url="https://github.com/JuliaGraphics/Hikari.jl")
+The development branch uses backend packages that are not all registered yet.
+Its `.ci` project records their published sources:
+
+```sh
+git clone --branch sd/lava-refactor https://github.com/JuliaGraphics/Hikari.jl
+cd Hikari.jl
+julia --project=.ci .ci/setup.jl
+julia --project=.ci
 ```
+
+Use the same project when running examples.
 
 ### Your First Scene
 
 Every Hikari render follows the same five steps: build a scene, set up a camera and film, run the integrator, postprocess, and display.
 
 ```@setup getstarted
-using GeometryBasics, Hikari, ImageShow
-to_mesh(prim) = normal_mesh(prim isa Sphere ? Tesselation(prim, 64) : prim)
+using GeometryBasics, Hikari, Mantle, ImageShow
+backend = Mantle.defaultbackend()
+to_mesh(prim) = normal_mesh(prim isa Sphere ? Tessellation(prim, 64) : prim)
 ```
 
 ```@example getstarted
@@ -25,7 +33,7 @@ white = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.85f0))
 gold  = Hikari.Gold(roughness=0.05f0)
 
 # 2. Build the scene
-scene = Hikari.Scene()
+scene = Hikari.Scene(; backend)
 push!(scene, to_mesh(Sphere(Point3f(0, 0.5, 0), 0.5f0)), gold)
 push!(scene, to_mesh(Rect3f(Vec3f(-3, 0, -3), Vec3f(6, 0.01, 6))), white)
 push!(scene, Hikari.PointLight(Point3f(2f0, 3f0, -2f0), Hikari.RGBSpectrum(40f0)))
@@ -33,7 +41,7 @@ push!(scene, Hikari.AmbientLight(Hikari.RGBSpectrum(0.5f0)))
 Hikari.sync!(scene)  # builds the BVH acceleration structure
 
 # 3. Camera and film
-film   = Hikari.Film(Point2f(512, 512))
+film   = Hikari.Film(backend, Hikari.Film(Point2f(512, 512)))
 camera = Hikari.PerspectiveCamera(
     Point3f(2f0, 1.5f0, -2.5f0), Point3f(0f0, 0.3f0, 0f0), film; fov=45f0)
 
@@ -62,7 +70,7 @@ Hikari.RGBSpectrum(1f0, 0.84f0, 0f0)        # gold-ish
 A `Scene` is a collection of meshes with materials, plus light sources. Use `push!` to add objects and lights, then call `sync!` to build the acceleration structure before rendering.
 
 ```julia
-scene = Hikari.Scene()
+scene = Hikari.Scene(; backend)
 push!(scene, mesh, material)   # add a surface
 push!(scene, light)            # add a light
 Hikari.sync!(scene)            # required before rendering
@@ -73,7 +81,7 @@ Hikari.sync!(scene)            # required before rendering
 `Film` holds the image buffer. `PerspectiveCamera` describes the viewpoint.
 
 ```julia
-film   = Hikari.Film(Point2f(width, height))
+film   = Hikari.Film(backend, Hikari.Film(Point2f(width, height)))
 camera = Hikari.PerspectiveCamera(eye, lookat, film; fov=55f0)
 ```
 

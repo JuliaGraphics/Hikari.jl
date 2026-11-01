@@ -643,7 +643,7 @@ with, so the first sample compares against it and stores nothing.
 `Mantle.Plan` turns the graph into passes, barriers and pipelines; recording
 writes the command buffers, and `run!` does it on the first run. A caller who
 wants that cost outside a timing loop calls `Mantle.record!` on each of
-[`allplans`](@ref) first.
+`allplans` first.
 
 Deep medium budgets divisible by 64 use bounded submissions: setup and the
 sample-index increment happen once, the same round graph runs up to the FULL

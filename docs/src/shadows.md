@@ -3,8 +3,9 @@
 A complete walkthrough of a Cornell box scene, demonstrating shadows, inter-reflections, caustics through glass, and multiple material types.
 
 ```@setup rendering
-using GeometryBasics, Hikari, ImageShow
-to_mesh(prim) = normal_mesh(prim isa Sphere ? Tesselation(prim, 64) : prim)
+using GeometryBasics, Hikari, Mantle, ImageShow
+backend = Mantle.defaultbackend()
+to_mesh(prim) = normal_mesh(prim isa Sphere ? Tessellation(prim, 64) : prim)
 ```
 
 ### Cornell Box
@@ -19,7 +20,7 @@ glass  = Hikari.Glass(ior = 1.5f0)
 gold   = Hikari.Gold(roughness=0.04f0)
 
 # --- Scene ---
-scene = Hikari.Scene()
+scene = Hikari.Scene(; backend)
 
 # Spheres
 push!(scene, to_mesh(Sphere(Point3f(0f0, 0.5f0, 0f0),    0.5f0)), mirror)
@@ -40,7 +41,7 @@ push!(scene, to_mesh(Rect3f(Vec3f(-0.4f0, 2.98f0, -0.4f0), Vec3f(0.8f0, 0.01f0, 
 Hikari.sync!(scene)
 
 # --- Camera ---
-film   = Hikari.Film(Point2f(512, 512))
+film   = Hikari.Film(backend, Hikari.Film(Point2f(512, 512)))
 camera = Hikari.PerspectiveCamera(
     Point3f(0f0, 1.5f0, -3.2f0), Point3f(0f0, 1f0, 0f0), film; fov=48f0)
 
@@ -53,20 +54,22 @@ Array(Hikari.postprocess!(film; tonemap=:aces, exposure=1.2f0, gamma=2.2f0))
 
 ### GPU Rendering
 
-To render on GPU, pass a GPU backend when constructing the `Scene` and ensure your geometry and film are on device memory.
+Mantle selects Vulkan on Linux and Windows, and Metal on Apple GPUs. Use that
+same backend for the scene and the film:
 
 ```julia
-import CUDA, KernelAbstractions as KA
-
-scene = Hikari.Scene(; backend=KA.CUDABackend())
+using Hikari, Mantle, GeometryBasics
+backend = Mantle.defaultbackend()
+scene = Hikari.Scene(; backend)
 # push! geometry and lights as normal ...
 Hikari.sync!(scene)
-
-film = Hikari.Film(Point2f(1920, 1080))
+film = Hikari.Film(backend, Hikari.Film(Point2f(1920, 1080)))
+# Construct a camera for this film, then render.
 Hikari.VolPath(samples=512, max_depth=12)(scene, film, camera)
 ```
 
-The same code path is used for CPU and GPU — only the `backend` keyword differs.
+Lavapipe provides software Vulkan for CPU validation. It executes the same
+material graph and rendering kernels as the Vulkan GPU backend.
 
 ### Loading pbrt Scenes
 

@@ -57,7 +57,7 @@ makedocs(; sitename = "Hikari", authors = "Anton Smirnov, Simon Danisch and cont
     draft = false,
     source = "src",
     build = "build",
-    warnonly = true,
+    warnonly = false,
     pages = [
         "Home" => "index.md",
         "Get Started" => "get_started.md",

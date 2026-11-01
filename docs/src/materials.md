@@ -1,14 +1,15 @@
 ## Materials
 
 ```@setup materials
-using GeometryBasics, Hikari, ImageShow
-to_mesh(prim) = normal_mesh(prim isa Sphere ? Tesselation(prim, 64) : prim)
+using GeometryBasics, Hikari, Mantle, ImageShow
+backend = Mantle.defaultbackend()
+to_mesh(prim) = normal_mesh(prim isa Sphere ? Tessellation(prim, 64) : prim)
 sphere(r, x, z) = to_mesh(Sphere(Point3f(x, r, z), r))
 floor_mat = Hikari.Diffuse(color = (0.82, 0.82, 0.82))
 
 function render_scene(materials; res=768, spp=32)
     r = 0.38f0; sx = 1.0f0; sz = 1.1f0
-    scene = Hikari.Scene()
+    scene = Hikari.Scene(; backend)
     positions = [(-sx, sz), (0f0, sz), (sx, sz),
                  (-sx, 0f0), (0f0, 0f0), (sx, 0f0),
                  (-sx, -sz), (0f0, -sz), (sx, -sz)]
@@ -21,7 +22,7 @@ function render_scene(materials; res=768, spp=32)
     push!(scene, Hikari.PointLight(Point3f(0f0, 3f0, 3f0), Hikari.RGBSpectrum(25f0)))
     push!(scene, Hikari.AmbientLight(Hikari.RGBSpectrum(0.5f0)))
     Hikari.sync!(scene)
-    film   = Hikari.Film(Point2f(res, res))
+    film   = Hikari.Film(backend, Hikari.Film(Point2f(res, res)))
     camera = Hikari.PerspectiveCamera(
         Point3f(0f0, 3.5f0, -5f0), Point3f(0f0, 0.2f0, 0f0), film; fov=40f0)
     Hikari.clear!(film)

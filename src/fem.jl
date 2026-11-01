@@ -573,7 +573,7 @@ and `y` maps and the solution — and `warp` is how far the solution displaces t
 element out of plane.
 
 `surface` is **any Hikari material**, and the field is merged into whatever that
-material uses as its colour ([`merge_color_with_material`](@ref)). That is the
+material uses as its colour (`merge_color_with_material`). That is the
 entire argument for the field being a texture rather than a shading path: it
 composes, so a solution can be matte, lacquered, or polished metal without any
 of those knowing what an element is.

@@ -12,7 +12,7 @@ is_infinite_light(::Type{<:Light}) = false
 
 Whether a ray that hits nothing comes back carrying THIS light's radiance.
 
-Narrower than [`is_infinite_light`](@ref) and not a synonym for it. Both a
+Narrower than `is_infinite_light` and not a synonym for it. Both a
 `DirectionalLight` and an `EnvironmentLight` are at infinity, but only the
 environment map is *visible* along an escaped ray: a directional light is a delta
 light in direction, so its `Le` is zero for every ray that misses everything.
