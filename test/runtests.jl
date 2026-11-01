@@ -1,3 +1,5 @@
+include("lavapipe.jl")
+
 using Test
 using Hikari
 using GeometryBasics
@@ -7,6 +9,17 @@ using Raycore
 # Mantle for everything with a device behind it: the backend, arrays, the graph.
 # Lava for the files that compile Hikari's kernels to SPIR-V themselves.
 using Lava, Mantle
+
+if get(ENV, "HIKARI_TEST_LAVAPIPE", "false") == "true"
+    @testset "Lavapipe_jll test device" begin
+        @test isfile(Lavapipe_jll.lvp_icd)
+        @test Lava.HAS_OBJECT_CACHE
+        if Lava.HAS_OBJECT_CACHE
+            @test Lava.ObjCache.enabled()
+        end
+        @test occursin("llvmpipe", lowercase(Mantle.devicename(Mantle.todevice(Mantle.defaultbackend()))))
+    end
+end
 
 # The Vulkan backend module, for the test files that name backend internals.
 #
@@ -147,6 +160,13 @@ include(joinpath(@__DIR__, "pbrt", "test_pbrt_all_materials.jl"))
 
 const PBRT_SPP = parse(Int, get(ENV, "HIKARI_PBRT_SPP", "256"))
 
+# Pkg.test("Hikari"; test_args = ["gpu_compat.jl", ...]) supports focused
+# compiler/device checks. With no arguments every file and reference runs.
+const REQUESTED_TESTS = Set(ARGS)
+const UNKNOWN_TESTS = setdiff(REQUESTED_TESTS, Set([TEST_FILES; "pbrt"]))
+isempty(UNKNOWN_TESTS) || error("Unknown Hikari test files: $(join(sort!(collect(UNKNOWN_TESTS)), ", "))")
+const RUN_PBRT = isempty(REQUESTED_TESTS) || "pbrt" in REQUESTED_TESTS
+
 # One testset over the unit files AND the reference suite. The reference suite
 # has to be inside it: a top-level `@testset` throws when it ends with a
 # failure, so anything after it in this file is skipped. With the suite outside,
@@ -154,16 +174,18 @@ const PBRT_SPP = parse(Int, get(ENV, "HIKARI_PBRT_SPP", "256"))
 # the run went green-ish in 95 seconds and never rendered a scene.
 @testset "Hikari" begin
     for fname in TEST_FILES
+        isempty(REQUESTED_TESTS) || fname in REQUESTED_TESTS || continue
+        @info "Hikari tests" file = fname
         @testset "$fname" begin
             include(fname)
         end
     end
 
-    if get(ENV, "HIKARI_SKIP_PBRT_SW", "false") != "true"
-        run_pbrt_suite(; samples=PBRT_SPP, hw_accel=false)
+    if RUN_PBRT && get(ENV, "HIKARI_SKIP_PBRT_SW", "false") != "true"
+        run_pbrt_suite(; samples = PBRT_SPP, hw_accel = false)
     end
 
-    if get(ENV, "HIKARI_SKIP_PBRT_HW", "false") != "true" && hw_rt_available()
-        run_pbrt_suite(; samples=PBRT_SPP, hw_accel=true)
+    if RUN_PBRT && get(ENV, "HIKARI_SKIP_PBRT_HW", "false") != "true" && hw_rt_available()
+        run_pbrt_suite(; samples = PBRT_SPP, hw_accel = true)
     end
 end

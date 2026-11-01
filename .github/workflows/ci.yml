@@ -3,8 +3,10 @@ on:
   push:
     branches:
       - master
+      - sd/lava-refactor
     tags: ['*']
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -21,44 +23,18 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
-      - name: Install Vulkan (lavapipe) + Xvfb
+      - name: Install virtual display
         run: |
           sudo apt-get update
-          # mesa-vulkan-drivers ships lavapipe. xvfb is for the GLFW init
-          # path Lava + Hikari both invoke at __init__ (windowing scaffold,
-          # even though the headless tests never open a window).
-          sudo apt-get install -y mesa-vulkan-drivers vulkan-tools xvfb
-          # Detect the lavapipe ICD JSON: Ubuntu 22.04 named it
-          # `lvp_icd.x86_64.json`, 24.04 ships `lavapipe_icd.x86_64.json`.
-          # `VK_ICD_FILENAMES` accepts an absolute path so we resolve it
-          # once and export to the workflow env. If both exist we take
-          # whichever is found first.
-          # Locate the lavapipe ICD JSON. Different mesa-vulkan-drivers
-          # versions ship it under different names (`lvp_icd.x86_64.json`
-          # on 22.04, `lavapipe_icd.x86_64.json` on later releases) and
-          # some ship a `dzn_icd.x86_64.json` for Direct3D-on-Vulkan that
-          # we DON'T want. Match by case-insensitive "lvp" or "lavapipe"
-          # in the filename anywhere under the standard ICD search dirs.
-          icd=$(ls /usr/share/vulkan/icd.d/*.json /etc/vulkan/icd.d/*.json 2>/dev/null \
-                 | grep -iE "(lvp|lavapipe)" | head -1)
-          if [ -z "$icd" ]; then
-            echo "::error::No lavapipe ICD found"
-            ls -la /usr/share/vulkan/icd.d/ || true
-            ls -la /etc/vulkan/icd.d/ 2>/dev/null || true
-            exit 1
-          fi
-          echo "Using lavapipe ICD: $icd"
-          echo "VK_ICD_FILENAMES=$icd" >> $GITHUB_ENV
-          # Start Xvfb on display :99 so GLFW's __init__ succeeds even
-          # though the suite is fully headless.
-          Xvfb :99 -screen 0 1280x720x24 &
-          echo "DISPLAY=:99" >> $GITHUB_ENV
+          sudo apt-get install -y xvfb
       - uses: julia-actions/setup-julia@v2
         with:
-          version: '1'
+          version: '1.12'
       - uses: julia-actions/cache@v2
-      - uses: julia-actions/julia-buildpkg@v1
-      - uses: julia-actions/julia-runtest@v1
+      - name: Resolve published backend dependencies
+        run: julia --project=.ci .ci/setup.jl
+      - name: Run tests with Lavapipe_jll
+        run: xvfb-run -a julia --project=.ci -e 'using Pkg; Pkg.test("Hikari"; allow_reresolve = false, julia_args = `--check-bounds=auto`)'
         env:
           # pbrt reference suite renders at HIGH spp so the gate can stay
           # TIGHT (tile<0.07, energy in [0.95,1.05]) with no per-scene or
@@ -67,6 +43,7 @@ jobs:
           # scenes) clears the tight band at 256 spp; locally on lavapipe
           # (LLVM 22, 12-core) that is ~19 min. The Azure CI runner is
           # slower, hence the raised job timeout below.
+          HIKARI_TEST_LAVAPIPE: "true"
           HIKARI_PBRT_SPP: "256"
           # Skip the HW-RT pbrt run on CI. Modern Mesa lavapipe DOES report
           # rt_pipeline_properties (so `hw_rt_available()` returns true and
@@ -87,37 +64,29 @@ jobs:
           # expected to run on real-HW (RADV / NVIDIA) developer machines.
           HIKARI_SKIP_PBRT_HW: "true"
 
+      - name: Verify material shader cache across Julia sessions
+        env:
+          HIKARI_TEST_LAVAPIPE: "true"
+        run: |
+          xvfb-run -a julia --project=.ci .ci/cache_probe.jl
+          xvfb-run -a julia --project=.ci .ci/cache_probe.jl --cached
+
   pbrt-comparison:
     name: pbrt-v4 Comparison
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-      - name: Install Vulkan (lavapipe) + Xvfb
-        # Same lavapipe ICD detection + Xvfb setup as the Tests job —
-        # `using Hikari` triggers Lava's GLFW __init__, which dies without a
-        # DISPLAY, and the Vulkan loader needs the lavapipe JSON path.
+      - name: Install virtual display
         run: |
           sudo apt-get update
-          sudo apt-get install -y mesa-vulkan-drivers vulkan-tools xvfb
-          icd=$(ls /usr/share/vulkan/icd.d/*.json /etc/vulkan/icd.d/*.json 2>/dev/null \
-                 | grep -iE "(lvp|lavapipe)" | head -1)
-          if [ -z "$icd" ]; then
-            echo "::error::No lavapipe ICD found"
-            ls -la /usr/share/vulkan/icd.d/ || true
-            ls -la /etc/vulkan/icd.d/ 2>/dev/null || true
-            exit 1
-          fi
-          echo "Using lavapipe ICD: $icd"
-          echo "VK_ICD_FILENAMES=$icd" >> $GITHUB_ENV
-          Xvfb :99 -screen 0 1280x720x24 &
-          echo "DISPLAY=:99" >> $GITHUB_ENV
+          sudo apt-get install -y xvfb
       - uses: julia-actions/setup-julia@v2
         with:
-          version: '1'
+          version: '1.12'
       - uses: julia-actions/cache@v2
       - name: Install comparison dependencies
-        run: julia --project=test/pbrt -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
+        run: julia --project=.ci .ci/setup.jl test/pbrt
       # Two steps, because rendering and presenting are separate now: the suite
       # renders, checks and records, and run_comparison.jl only turns that
       # record into a page. It used to do both, with its own thresholds, and
@@ -129,11 +98,12 @@ jobs:
           # noise floor the ±5 % band assumes, so scenes will show as failing
           # here that pass at 256 spp on real hardware — this job builds a
           # report, the normal test job is what decides pass/fail.
+          HIKARI_TEST_LAVAPIPE: "true"
           HIKARI_PBRT_SPP: "32"
         continue-on-error: true
-        run: julia --project=test/pbrt test/pbrt/test_pbrt_all_materials.jl
+        run: xvfb-run -a julia --project=.ci -e 'include("test/lavapipe.jl"); include("test/pbrt/test_pbrt_all_materials.jl"); run_pbrt_suite(; samples = parse(Int, ENV["HIKARI_PBRT_SPP"]), hw_accel = false)'
       - name: Build gallery
-        run: julia --project=test/pbrt test/pbrt/run_comparison.jl
+        run: julia --project=.ci test/pbrt/run_comparison.jl
       - uses: actions/upload-artifact@v4
         with:
           name: pbrt-comparison
@@ -145,34 +115,22 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - name: Install Vulkan (lavapipe) + Xvfb
-        # Lava's GLFW __init__ runs at `using Hikari` even on the docs
-        # build (Documenter loads Hikari for docstring extraction), so we
-        # need a DISPLAY + a Vulkan ICD on this job too.
+      - name: Install virtual display
         run: |
           sudo apt-get update
-          sudo apt-get install -y mesa-vulkan-drivers vulkan-tools xvfb
-          icd=$(ls /usr/share/vulkan/icd.d/*.json /etc/vulkan/icd.d/*.json 2>/dev/null \
-                 | grep -iE "(lvp|lavapipe)" | head -1)
-          if [ -z "$icd" ]; then
-            echo "::error::No lavapipe ICD found"
-            ls -la /usr/share/vulkan/icd.d/ || true
-            ls -la /etc/vulkan/icd.d/ 2>/dev/null || true
-            exit 1
-          fi
-          echo "Using lavapipe ICD: $icd"
-          echo "VK_ICD_FILENAMES=$icd" >> $GITHUB_ENV
-          Xvfb :99 -screen 0 1280x720x24 &
-          echo "DISPLAY=:99" >> $GITHUB_ENV
+          sudo apt-get install -y xvfb
       - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.12'
       - uses: julia-actions/cache@v2
       - name: Install dependencies
-        run: julia --project=docs -e 'using Pkg; pkg"dev ."; Pkg.instantiate(); Pkg.precompile()'
+        run: julia --project=.ci .ci/setup.jl docs
       - name: Build (without comparison gallery)
         env:
+          HIKARI_TEST_LAVAPIPE: "true"
           GKSwstype: "100"
           DATADEPS_ALWAYS_ACCEPT: true
-        run: julia --project=docs/ --color=yes docs/make.jl
+        run: xvfb-run -a julia --project=.ci --color=yes -e 'include("test/lavapipe.jl"); include("docs/make.jl")'
       - uses: actions/upload-artifact@v4
         with:
           name: docs-build
@@ -180,6 +138,7 @@ jobs:
 
   deploy-docs:
     name: Deploy Docs
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/')
     needs: [pbrt-comparison, docs-build]
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -189,6 +148,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.12'
       - uses: julia-actions/cache@v2
       - name: Download docs build
         uses: actions/download-artifact@v4
@@ -201,13 +162,13 @@ jobs:
           name: pbrt-comparison
           path: docs/build/1/pbrt-comparison/
       - name: Install dependencies
-        run: julia --project=docs -e 'using Pkg; pkg"dev ."; Pkg.instantiate()'
+        run: julia --project=.ci .ci/setup.jl docs
       - name: Deploy
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY }}
         run: |
-          julia --project=docs -e '
+          julia --project=.ci -e '
             using DocumenterVitepress
             DocumenterVitepress.deploydocs(;
               root = "docs",
