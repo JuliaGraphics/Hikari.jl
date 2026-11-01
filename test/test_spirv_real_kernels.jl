@@ -286,9 +286,13 @@ import .SPIRVTestUtils: check, check_not, check_vendor_safety, spirv_opt_roundtr
         isshade(job) = job isa Lava.LavaCompilerJob &&
             job.source.specTypes.parameters[1] === typeof(Hikari.gpu_vp_shade_kernel!)
         job = only(unique(filter(isshade, jobs)))
-        # The queue the kernel drains holds hits on the measured-spectrum conductor.
-        @test job.source.specTypes.parameters[3] <:
-              Hikari.SlotQueue{<:Hikari.Conductor{Hikari.PiecewiseLinearSpectrum{56}}}
+        # Native presets now enter the same material graph. The queue's BSDF
+        # adapter must still carry the measured-spectrum conductor schema.
+        queue_type = job.source.specTypes.parameters[3]
+        @test queue_type <: Hikari.ClosureQueue
+        nodes = queue_type.parameters[1]
+        @test only(nodes.parameters) <: Hikari.PbrtBSDF{Hikari.Conductor}
+        @test (:spectrum, 56, 0) in only(nodes.parameters).parameters[2]
 
         bytes = Lava.compile_or_lookup(job).spirv_bytes
         @test !isempty(bytes)

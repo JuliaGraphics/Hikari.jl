@@ -157,9 +157,9 @@ end
 @inline function shader_bsdf(::Type{M}, prog, textures, sc, regularize, table, lambda) where {M <: Tuple}
     return shader_bsdf(Val(has_pbrt_nodes(M)), M, prog, textures, sc, regularize, table, lambda)
 end
-@inline function shader_bsdf(::Val{false}, M, prog, textures, sc, regularize, table, lambda)
+@inline function shader_bsdf(::Val{false}, ::Type{M}, prog, textures, sc, regularize, table, lambda) where {M <: Tuple}
     s, first_node = run_values(prog, textures, sc)
-    return surface_program_bsdf(surface_program_class(M, nothing), s, prog, sc,
+    return surface_program_bsdf(direct_surface_program_class(M), s, prog, sc,
                                 LobeSetup(lookup_tables(textures), regularize), table, lambda, first_node)
 end
 @noinline function shader_bsdf(::Val{true}, ::Type{M}, prog, textures, sc, regularize, table, lambda) where {M <: Tuple}

@@ -18,7 +18,7 @@ using Test, Hikari, GeometryBasics, LinearAlgebra, Raycore, KernelAbstractions
         textures = Raycore.StaticMultiTypeSet((), Tuple(T[a for a in store.texture_gpu_arrays if typeof(a) === T] for T in store.texture_order))
         program = Hikari.shader_programs(textures, mat.program)[mat.program.idx]
         m = typeof(mat).parameters[3]
-        actual = Hikari.shader_bsdf(m, program, textures, sc, false, table, lambda)
+        actual = @inferred Hikari.shader_bsdf(m, program, textures, sc, false, table, lambda)
         expected = Hikari.lobe_bsdf(m, Hikari.shader_lobes(m, program, textures, sc, false), table, lambda)
         @test actual.lobes isa Hikari.SurfaceLobeSpan
         @test actual.total ≈ expected.total

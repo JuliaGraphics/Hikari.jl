@@ -88,6 +88,13 @@ function surface_program_class(::Type{M}, api) where {M <: Tuple}
     n = slots <= 1 ? slots : nextpow(2, max(4, slots))
     return SurfaceProgramNodes{n, true, mask, emits(M)}
 end
+# Direct shader calls also run inside GPU kernels. Resolve their storage type
+# during specialization: reflecting over M.parameters at runtime leaves the
+# returned BSDF abstract and introduces device-side dynamic dispatch.
+@generated function direct_surface_program_class(::Type{M}) where {M <: Tuple}
+    return QuoteNode(surface_program_class(M, nothing))
+end
+
 @inline surface_chunks(ins) = ins.op == NodeOp.PRINCIPLED ? instruction_count(PrincipledBSDF) :
     ins.mode[1] == ClosureKind.PHYSICAL_METALLIC_FILM ? instruction_count(PhysicalMetallicBSDF{true}) : 1
 
