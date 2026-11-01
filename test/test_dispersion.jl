@@ -9,7 +9,8 @@
 # its default, 1.5, and an inline one as its first wavelength. Termination also divided again
 # where a path refracted twice, as pbrt's does not.
 
-using Test, Hikari, Mantle, Colors
+using Test, Hikari, Mantle, Colors, Raycore
+include("host_materials.jl")
 isdefined(@__MODULE__, :render_scene) || include(joinpath(@__DIR__, "pbrt", "suite.jl"))
 
 @testset "dispersion" begin
@@ -52,9 +53,10 @@ isdefined(@__MODULE__, :render_scene) || include(joinpath(@__DIR__, "pbrt", "sui
         # The material as the device holds it, and its BSDF.
         function bsdf(m)
             scene = Hikari.Scene(; hw_accel = false)
-            key = scene.media_interfaces[push!(scene, m)].material
-            static = scene.materials.static
-            return Hikari.get_bxdf(static.data[key.type_idx][key.vec_idx], table, static, tfc, lambda, false,
+            interface = push!(scene, m)
+            key = Array(scene.media_interfaces)[interface].material
+            static = host_materials(scene.materials)
+            return host_bxdf(static.data[key.type_idx][key.vec_idx], table, static, tfc, lambda, false,
                                    Hikari.Vec3f(0, 0, 1), Hikari.Vec3f(0, 0, 1), Hikari.Vec3f(1, 0, 0))
         end
         @test Hikari.terminates_at_vertex(bsdf(d))

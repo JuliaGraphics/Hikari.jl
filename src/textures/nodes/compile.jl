@@ -514,7 +514,17 @@ families, whatever its length. Else it is stored anew, where it returns.
 function updated_program!(dhv::Raycore.MultiTypeSet, place::Tuple{Int, Int}, c::CompiledProgram, placed::Places)
     old = Array(stored_array(dhv, place))
     program = link(c, place!(dhv, c.data, placed, array_places(old)))
-    return holds(dhv, place, program) ? copied!(dhv, place, program) : stored!(dhv, program)
+    return holds(dhv, place, program) ? copied_program!(dhv, place, program) : stored!(dhv, program)
+end
+
+# Constant folding can shorten a program during a value-only edit (for example
+# changing a diffuse colour to black). Every interpreter stops at the first
+# RESULT, so trailing RESULT instructions keep the existing buffer shape and
+# recorded plans valid without executing extra work.
+function copied_program!(dhv::Raycore.MultiTypeSet, place, program::Vector{<:NodeInstr})
+    count = length(stored_array(dhv, place)) - length(program)
+    count > 0 && append!(program, fill(last(program), count))
+    return copied!(dhv, place, program)
 end
 
 function device_param(dhv, n::TexNode)

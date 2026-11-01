@@ -46,7 +46,7 @@ _fbmean(film) = mean(Float32(c.r) for c in Array(film.framebuffer))
 
     # A moved camera between renders is an update, not a rebuild…
     Hikari.render!(vp, scene, film, _inv_camera(film, 1f0))
-    @test vp.state.plans === plans
+    @test objectid(vp.state.plans) == objectid(plans)
 
     # …and it took: the film now holds the average of the two views, which a
     # camera that did NOT move could not produce.
@@ -66,7 +66,7 @@ _fbmean(film) = mean(Float32(c.r) for c in Array(film.framebuffer))
     # the plans.
     Hikari.render!(vp, scene, film, cam)
     @test vp.state.plans !== nothing
-    @test vp.state.plans !== plans
+    @test objectid(vp.state.plans) != objectid(plans)
     # The accel was rebuilt for the edit (the flag `push!` set is consumed by
     # the adapt's `sync!`), and the plans were built from THAT snapshot. With
     # the adaptation cached across the edit neither holds: the flag stays set,
@@ -81,7 +81,7 @@ _fbmean(film) = mean(Float32(c.r) for c in Array(film.framebuffer))
     @test vp.state.plans === nothing
     Hikari.render!(vp, scene, film, cam)
     @test vp.state.plans !== nothing
-    @test vp.state.plans !== plans3
+    @test objectid(vp.state.plans) != objectid(plans3)
 end
 
 @testset "an in-place material update keeps the plans" begin
@@ -104,10 +104,20 @@ end
     # A new value in the same slot is a write into the buffers the plans were
     # packed with: the same plans answer…
     Hikari.update_material!(scene, handle, Hikari.Diffuse(color = Hikari.RGBSpectrum(0f0)))
-    @test vp.state.plans === plans
+    @test objectid(vp.state.plans) == objectid(plans)
     Hikari.render!(vp, scene, film, cam)
-    @test vp.state.plans === plans
+    @test objectid(vp.state.plans) == objectid(plans)
     # …and they read the new value: the second sample of a black sphere halves
     # the average. Plans that still saw the old albedo would keep it near `m1`.
     @test _fbmean(film) < 0.75f0 * m1
+
+    # Black folds to a shorter instruction stream. Restoring the original
+    # colour must still reuse both instruction buffers and the recorded plans.
+    Hikari.update_material!(scene, handle, Hikari.Diffuse(color = Hikari.RGBSpectrum(0.7f0, 0.4f0, 0.4f0)))
+    @test objectid(vp.state.plans) == objectid(plans)
+    Hikari.clear!(film)
+    Hikari.clear!(vp)
+    Hikari.render!(vp, scene, film, cam)
+    @test objectid(vp.state.plans) == objectid(plans)
+    @test _fbmean(film) ≈ m1
 end

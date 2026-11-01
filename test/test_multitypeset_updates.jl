@@ -25,6 +25,7 @@ using GeometryBasics: normal_mesh, Tesselation, Rect3f, Sphere, Point3f, Vec3f, 
 using LinearAlgebra: I
 using Statistics: mean
 using GPUArraysCore: @allowscalar
+using KernelAbstractions: @kernel, @index, allocate, synchronize
 
 # ── Test helpers ────────────────────────────────────────────────────────────
 
@@ -235,6 +236,23 @@ end
 
 # ── J6. Adapted-snapshot freshness contract ────────────────────────────────
 
+# Read the material through the adapted program on the device. The graph's
+# constants live in its instruction buffer rather than a `.color` field.
+@kernel function _read_material_guide!(out, materials)
+    i = @index(Global, Linear)
+    if i == 1
+        material = first(materials.data)[2] # floor first, sphere second
+        tfc = Hikari.TextureFilterContext(Point2f(0.5f0), Point3f(0), Vec3f(0, 0, 1))
+        out[1] = Hikari.guide_material(material, materials, tfc, Val(3))
+    end
+end
+function _read_material_kd(materials)
+    out = allocate(_BACKEND, Hikari.RGB{Float32}, 1)
+    _read_material_guide!(_BACKEND, 1)(out, materials; ndrange = 1)
+    synchronize(_BACKEND)
+    return only(Array(out))
+end
+
 @testset "J6: Adapt.adapt(backend, scene) reflects update_material!" begin
     scene, handle = _make_sphere_scene(; hw_accel=false)
 
@@ -242,18 +260,6 @@ end
     Hikari.sync!(scene)
     adapted_before = Adapt.adapt(_BACKEND, scene)
 
-    # An adapted scene has `.materials` as a `StaticMultiTypeSet`.  Read
-    # the first material's Kd via @allowscalar.  We compare the raw `data`
-    # values, not the layout — the test cares that update_material! flows
-    # through to the static snapshot's contents.
-    function _read_material_kd(static_mts)
-        # `static_mts.data` is a Tuple of device arrays (one per type slot);
-        # the first non-empty slot holds the floor's diffuse, the second
-        # holds the sphere's diffuse.  We index by slot then element.
-        mats_arr = first(static_mts.data)
-        @assert length(mats_arr) >= 2
-        return @allowscalar mats_arr[2].color  # sphere is the second push!
-    end
     kd_before = _read_material_kd(adapted_before.materials)
 
     # Update to green.
@@ -265,9 +271,7 @@ end
 
     @info "J6: Kd before/after" before=kd_before after=kd_after
 
-    # The two Kds must differ — confirms the adapted form sees the update.
-    # Each Kd is an RGBSpectrum/Texture; compare the channel that should
-    # have changed.  The exact compare path depends on Hikari's texture
-    # representation; using string comparison as a robust proxy.
-    @test string(kd_before) != string(kd_after)
+    @test kd_before.r ≈ 0.9f0
+    @test kd_after.r ≈ 0.1f0
+    @test kd_after.g ≈ 0.9f0
 end

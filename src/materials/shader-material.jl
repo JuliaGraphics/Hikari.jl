@@ -133,7 +133,7 @@ closure_slot(dhv::Raycore.MultiTypeSet) = findfirst(AT -> eltype(AT) === NodeIns
 """The closure program `instructions` in place of the one at index `idx`, by the rule programs are placed by."""
 function updated_closures!(dhv::Raycore.MultiTypeSet, idx::Int32, instructions)
     place = (closure_slot(dhv), Int(idx))
-    return Int32(last(holds(dhv, place, instructions) ? copied!(dhv, place, instructions) : stored!(dhv, instructions)))
+    return Int32(last(holds(dhv, place, instructions) ? copied_program!(dhv, place, instructions) : stored!(dhv, instructions)))
 end
 
 Raycore.update_item(::Raycore.MultiTypeSet, ::ShaderMaterial{<:Union{ShaderProgram, FusedShaderProgram}}, new::ShaderMaterial{ShaderGraph}) = new

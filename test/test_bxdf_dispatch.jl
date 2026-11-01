@@ -11,7 +11,7 @@ include("host_materials.jl")
 #
 # Surface shading has exactly one implementation: `vp_shade_kernel!`, one
 # specialisation per material type, on every traversal. It
-# resolves the BxDF once per hit with `get_bxdf` — pbrt-v4's
+# resolves the BxDF once per hit with `material_bxdf` — pbrt-v4's
 # `Material::GetBxDF` — and then calls the BSDF methods on the carrier that
 # comes back.
 #
@@ -76,7 +76,7 @@ bsdf_argtypes(M, static) = Tuple{M, typeof(TABLE), typeof(static), Vec3f, Vec3f,
                 stored, static = device_material(mat)
 
                 # The carrier shades.
-                bxdf = Hikari.get_bxdf(stored, TABLE, static, TFC, LAMBDA, false, WO, NS, DPDUS)
+                bxdf = host_bxdf(stored, TABLE, static, TFC, LAMBDA, false, WO, NS, DPDUS)
                 s = Hikari.sample_bsdf_spectral(bxdf, TABLE, static, WO, NS, DPDUS,
                                                 TFC, LAMBDA, U, RNG, false)
                 @test s isa Hikari.SpectralBSDFSample
@@ -107,7 +107,7 @@ bsdf_argtypes(M, static) = Tuple{M, typeof(TABLE), typeof(static), Vec3f, Vec3f,
     # ray inside the smoke box.
     @testset "eta=1 dielectric transmits" begin
         stored, static = device_material(Hikari.Dielectric(ior = 1.0f0))
-        bxdf = Hikari.get_bxdf(stored, TABLE, static, TFC, LAMBDA, false, WO, NS, DPDUS)
+        bxdf = host_bxdf(stored, TABLE, static, TFC, LAMBDA, false, WO, NS, DPDUS)
         s = Hikari.sample_bsdf_spectral(bxdf, TABLE, static, WO, NS, DPDUS,
                                         TFC, LAMBDA, U, RNG, false)
         @test s.pdf == 1f0
@@ -126,7 +126,7 @@ bsdf_argtypes(M, static) = Tuple{M, typeof(TABLE), typeof(static), Vec3f, Vec3f,
                     Hikari.MixMaterial(Hikari.TexHandle(0.5f0), Raycore.SetKey(), Raycore.SetKey()))
             stored, static = device_material(mat)
             @test typeof(stored) <: Hikari.BSDFLessMaterial
-            bxdf = Hikari.get_bxdf(stored, TABLE, static, TFC, LAMBDA, false, WO, NS, DPDUS)
+            bxdf = host_bxdf(stored, TABLE, static, TFC, LAMBDA, false, WO, NS, DPDUS)
             s = Hikari.sample_bsdf_spectral(bxdf, TABLE, static, WO, NS, DPDUS,
                                             TFC, LAMBDA, U, RNG, false)
             @test s.pdf == 0f0
