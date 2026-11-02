@@ -94,16 +94,18 @@ end
             for pp in pl.passes if pp.pass.name == name for d in pp.pass.dispatches
     ]
     vp(scene, film, camera)
-    trace = stage("trace")
+    trace, shade = stage("trace"), unique(stage("shade"))
     @test !isempty(trace)
+    @test length(shade) == 3
     push!(scene, sphere(1), Hikari.Principled(base_color = voronoi(xyz()).color))
     push!(scene, sphere(-1), Hikari.Glass(ior = 1.5))
     Hikari.sync!(scene)
     vp(scene, film, camera)
     @test length(scene.materials.static.data) == 2
     @test stage("trace") == trace
-    # Glass is a Principled preset: all three shaders share the same BSDF kernel.
-    @test length(unique(stage("shade"))) == 1
+    # Glass is a Principled preset: adding it and a different value program
+    # reuses the same bounded BSDF kernels rather than adding graph variants.
+    @test unique(stage("shade")) == shade
     # A cut-out material is read by the trace, so it does change it.
     push!(scene, sphere(2), Hikari.Principled(base_color = (0.5, 0.5, 0.5), alpha = greater(xyz().x, 2.0)))
     Hikari.sync!(scene)
@@ -137,7 +139,7 @@ end
     )
     vp(scene, film, camera)
     closures, values = stage("shade"), stage("shader-values")
-    @test length(closures) == 1 && length(values) == 1
+    @test length(closures) == 3 && length(values) == 1
     Hikari.update_material!(scene, h, Hikari.Principled(base_color = voronoi(xyz()).color, roughness = 0.3))
     vp(scene, film, camera)
     @test stage("shade") == closures
