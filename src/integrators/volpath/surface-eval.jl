@@ -332,11 +332,9 @@ end
 #     looks up the concrete instance via `material_of_type(materials, T,
 #     vec_idx)` (one array load resolved at compile time), accumulates emission,
 #     runs DL + indirect path.
-#   * the "shade" pass (graph.jl) — one dispatch per slot of the
-#     `MaterialQueues`, all in ONE pass, because they are independent:
-#     each per-type kernel writes disjoint slots of the shared `next_ray_queue`
-#     and atomic `pixel_L`. A pass is the unit barriers go between, so they
-#     overlap on idle SMs rather than serialising.
+#   * the "shade" passes (graph.jl) — one dispatch per material slot and
+#     storage-capacity class. Each has its own pass; its declared accesses
+#     determine ordering around writes to `next_ray_queue` and atomic `pixel_L`.
 
 """Direct lighting for one surface hit: BVH light sample, BSDF evaluation on
 the already-resolved `bxdf` carrier, MIS weight, shadow ray pushed inline.
@@ -630,6 +628,33 @@ hit record, the bump-perturbed shading frame, the emission of an area light it l
 (MIS-weighted against light sampling), then the material's BSDF sampling and direct lighting
 (`vp_shade_resolved_hit!`).
 """
+@propagate_inbounds function vp_shade_surface_hit!(
+    ref::CapacityRef{M, C, S}, surface_hits, cur, arrivals,
+    next_ray_queue, pixel_L, film_pdf, accel, media_interfaces, media, materials, lights,
+    rgb2spec_table, bvh_nodes, infinite_light_indices, light_to_bit_trail,
+    num_infinite_lights::Int32, num_bvh_lights::Int32, num_lights::Int32,
+    max_depth::Int32, do_regularize::Bool, emitters_reachable::Bool, sobol_rng, sample_idx_ref, camera_ref,
+    samples_per_pixel::Int32, rr_depth::Int32,
+) where {M, C, S}
+    sh = surface_hits.items[ref.idx]
+    primitive = Raycore.hit_primitive(accel, sh.hit)
+    mi = media_interfaces[resolve_mi_idx(sh.hit.custom, primitive)]
+    key = mi.material
+    Raycore.is_valid(key) || return nothing
+    program = ref.inputs.program[ref.program_offset + key.vec_idx]
+    prog = closure_programs(materials)[program]
+    closure_capacity_hint(prog[Int32(1)]) == C || return nothing
+    hit = GatheredRef{M, S}(ref.idx, ref.inputs, ref.program_offset)
+    return vp_shade_surface_hit!(
+        hit, surface_hits, cur, arrivals, next_ray_queue,
+        pixel_L, film_pdf, accel, media_interfaces, media,
+        materials, lights, rgb2spec_table, bvh_nodes, infinite_light_indices,
+        light_to_bit_trail, num_infinite_lights, num_bvh_lights, num_lights, max_depth,
+        do_regularize, emitters_reachable, sobol_rng, sample_idx_ref, camera_ref,
+        samples_per_pixel, rr_depth,
+    )
+end
+
 @propagate_inbounds function vp_shade_surface_hit!(
     ref, surface_hits, cur, arrivals,
     next_ray_queue, pixel_L, film_pdf, accel, media_interfaces, media, materials, lights,

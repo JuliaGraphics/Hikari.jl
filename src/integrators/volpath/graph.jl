@@ -216,13 +216,11 @@ function escaped_pass!(g, state::VolPathState, @nospecialize(refs))
 end
 
 """
-Surface shading, one dispatch per concrete material type.
+Surface shading, one dispatch per material slot and storage-capacity class.
 
-They go in ONE pass because they are mutually independent — each drains its own
-slot's queue and writes atomically-claimed slots in the shared next-ray queue —
-and a pass is the unit Mantle emits barriers between. A hand-placed
-`concurrent_indirect_group` says the same thing; here it follows from the
-dispatches sharing a pass, and the backend fuses their prepares into one.
+Each dispatch has its own Mantle pass. It drains its slot's queue and writes
+atomically claimed slots in the shared next-ray queue. Mantle derives ordering
+from the kernel's accesses, including the device-written dispatch count.
 
 A shader's computed values run separately (`splits`): its values kernel runs its program
 and gathers what its BSDF nodes read (`vp_shader_values_kernel!`), then the closure kernel
@@ -252,19 +250,21 @@ function shade_pass!(g, state::VolPathState, @nospecialize(refs), cur::WorkQueue
         else
             q, view = SlotQueue{T}(queues, slot), shade_set(refs.materials, T)
         end
-        Mantle.dispatch!(g, vp_shade_kernel!,
-                         (q, state.surface_hits, cur, state.arrivals,
-                          nxt, state.pixel_L, state.pdf_per_pixel,
-                          refs.accel, refs.media_interfaces, refs.media,
-                          view, refs.lights, state.rgb2spec_table,
-                          state.bvh_nodes, state.infinite_light_indices,
-                          state.light_to_bit_trail,
-                          state.num_infinite_lights, state.num_bvh_lights,
-                          state.num_lights, state.max_depth, refs.regularize, refs.emitters_reachable,
-                          state.sobol_rng, refs.sample_idx,
-                          refs.camera, refs.samples_per_pixel, state.rr_depth),
-                         Mantle.DeviceRange(queues.sizes; max = Int(queues.capacity), at = slot);
-                         group = T <: ShaderMaterial ? shader_bsdf_workgroupsize(group) : group, name = "shade")
+        for shade_queue in shade_queues(q)
+            Mantle.dispatch!(g, vp_shade_kernel!,
+                             (shade_queue, state.surface_hits, cur, state.arrivals,
+                              nxt, state.pixel_L, state.pdf_per_pixel,
+                              refs.accel, refs.media_interfaces, refs.media,
+                              view, refs.lights, state.rgb2spec_table,
+                              state.bvh_nodes, state.infinite_light_indices,
+                              state.light_to_bit_trail,
+                              state.num_infinite_lights, state.num_bvh_lights,
+                              state.num_lights, state.max_depth, refs.regularize, refs.emitters_reachable,
+                              state.sobol_rng, refs.sample_idx,
+                              refs.camera, refs.samples_per_pixel, state.rr_depth),
+                             Mantle.DeviceRange(queues.sizes; max = Int(queues.capacity), at = slot);
+                             group = T <: ShaderMaterial ? shader_bsdf_workgroupsize(group) : group, name = "shade")
+        end
     end
 end
 

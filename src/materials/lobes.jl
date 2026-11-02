@@ -208,7 +208,9 @@ the smooth surface than `n` says, and for diffuse lobes the GGX shadowing of a m
 rough as the tilt, which keeps the bumps from lighting up past the terminator.
 """
 @inline function bump_shadowing(diffuse::Bool, n::Vec3f, ns::Vec3f, wi::Vec3f)
-    n == ns && return 1f0
+    # Keep this fixed-size comparison scalar: the generic array comparison
+    # introduces iterator loops into every packed lobe evaluation.
+    (n[1] == ns[1] && n[2] == ns[2] && n[3] == ns[3]) && return 1f0
     cos_si, cos_sn = dot(ns, wi), dot(ns, n)
     cos_si * cos_sn * dot(n, wi) < 0f0 && return 0f0
     diffuse || return 1f0

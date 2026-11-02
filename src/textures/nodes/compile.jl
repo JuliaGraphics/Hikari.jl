@@ -246,7 +246,36 @@ function closure_program(c::CompiledProgram)
     end
     g < Int(WIDE_CONSTANT_ARG) || throw(ArgumentError(
         "a shader's BSDF nodes read $g floats of computed values; at most $(Int(WIDE_CONSTANT_ARG) - 1) are gathered"))
+    # Closure instructions do not write value outputs. Their first instruction's
+    # unused high output-width bits hold a conservative storage bound. Keeping
+    # this in the program makes in-place value edits update the bound too.
+    hint = closure_capacity_bound(instructions)
+    ins = first(instructions)
+    instructions[1] = typeof(ins)(ins.op, ins.mode, ins.out,
+        (ins.outwide & UInt8((1 << NODE_OUTS) - 1)) | UInt8(hint << NODE_OUTS),
+        ins.arg, ins.wide, ins.k)
     return instructions, g
+end
+
+@inline closure_capacity_hint(ins::NodeInstr{NodeFeature.CLOSURES}) = Int32(ins.outwide >> NODE_OUTS)
+
+function closure_capacity_bound(instructions)
+    first(instructions).op == NodeOp.PRINCIPLED || return 0
+    after = next_node(instructions, Int32(1), instruction_count(PrincipledBSDF))
+    instructions[after].op == NodeOp.RESULT || return 0
+    # Computed control inputs retain the general bound. Other computed inputs
+    # (colour, roughness, normals, etc.) cannot add a layer.
+    function scalar(k)
+        ins = instructions[1 + (k - 1) ÷ NODE_ARGS]
+        a = (k - 1) % NODE_ARGS + 1
+        return ins.arg[a] == NO_SLOT ? ins.k[a] : NaN32
+    end
+    scalar(9) == 0f0 && scalar(34) <= 0.5f0 || return 0
+    # Opaque: sheen, coat, metal, specular and diffuse, at most five records.
+    scalar(19) == 0f0 && return 5
+    # Full transmission, with no overlying layers, produces one glass record.
+    scalar(19) == 1f0 && scalar(3) == 0f0 && scalar(22) == 0f0 && scalar(27) == 0f0 || return 0
+    return 1
 end
 
 """A BSDF input the compiler folds into the BSDF's instruction: the shading normal, as `normal()` reads it."""

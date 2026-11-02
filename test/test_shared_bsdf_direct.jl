@@ -31,3 +31,22 @@ using Test, Hikari, GeometryBasics, LinearAlgebra, Raycore, KernelAbstractions
         end
     end
 end
+
+@testset "one-record storage observes its live count" begin
+    n = normalize(Vec3f(0.2, -0.3, 1))
+    wo = normalize(Vec3f(0.3, 0.2, 1))
+    lambda = Hikari.Wavelengths((450f0, 510f0, 570f0, 630f0), (0.25f0, 0.25f0, 0.25f0, 0.25f0))
+    native = Hikari.Weighted(Hikari.LambertLobe(Hikari.SpectralRadiance), Hikari.SpectralRadiance(0.4f0), 0.4f0, n, Vec3f(0))
+    stored = Hikari.surface_store(native, Val(true), Val(Hikari.SURFACE_SIMPLE_MASK))
+    for count in (Int32(0), Int32(1)), wi in (n, -n), restriction in (Hikari.AnyScattering(), Hikari.OnlyReflection(), Hikari.OnlyTransmission())
+        span = Hikari.SurfaceLobeSpan((stored,), count)
+        expected = count == 0 ? (Hikari.SpectralRadiance(0f0), 0f0) : Hikari.mixture((native,), wo, wi, n, lambda, restriction)
+        actual = Hikari.mixture(span, wo, wi, n, lambda, restriction)
+        @test actual[1].data == expected[1].data
+        @test actual[2] == expected[2]
+    end
+    inactive = Hikari.Weighted(stored.lobe, stored.weight, 0f0, stored.n, stored.t)
+    f, pdf = Hikari.mixture(Hikari.SurfaceLobeSpan((inactive,), Int32(1)), wo, n, n, lambda)
+    @test f.data == Hikari.SpectralRadiance(0f0).data
+    @test pdf == 0f0
+end

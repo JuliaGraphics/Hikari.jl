@@ -1,6 +1,10 @@
 # A finite capability mask and capacity replace the exact ordered node tuple.
 const SURFACE_SIMPLE_MASK = foldl(|, (UInt32(1) << k for k in (1, 2, 3)); init = UInt32(0))
 const SURFACE_PRINCIPLED_MASK = foldl(|, (UInt32(1) << k for k in (1, 2, 3, 4, 5, 6, 7, 10)); init = UInt32(0))
+# A dispatch proof, outside the lobe-kind bits: this program has no transmission
+# or thin-wall/subsurface layers. The program interpreter still needs bit seven
+# to recognize Principled; scattering dispatch can exclude its glass cases.
+const SURFACE_OPAQUE_STORAGE = UInt32(1) << 31
 @inline surface_has_walk(::Val{Mask}) where {Mask} = Mask isa Bool ? Mask : !iszero(Mask & (UInt32(1) << 14))
 @inline function surface_apply(f, l::SurfaceStoredLobe{Looped, Mask}, args...) where {Looped, Mask}
     return surface_apply_fields(f, Val(Looped), Val(Mask), l.kind, l.data..., args...)
@@ -16,6 +20,9 @@ Base.@constprop :none @inline @generated function surface_apply_fields(
     ) where {Looped, Mask}
     kinds = Mask isa Bool ? [1:13;15:20] : [k for k in 1:20 if !iszero(Mask & (UInt32(1) << k))]
     Mask === true && push!(kinds, 14)
+    if Mask isa UInt32 && !iszero(Mask & SURFACE_OPAQUE_STORAGE)
+        filter!(k -> !(k in (7, 10, 18)), kinds)
+    end
     # Dispatch Fresnel separately while sharing geometry across distributions.
     groups = ((:reflection, (3, 4, 5, 6, 8, 15, 16, 17, 19)), (:glass, (7, 18)), (:refraction, (9, 20)))
     grouped = Set(k for (_, ks) in groups for k in ks)
@@ -139,8 +146,24 @@ Base.@constprop :none @noinline function surface_setup_slots(::Val{0}, s, prog, 
 end
 
 
+# The dispatch proofs expose exact zero/one controls to the compiler. This
+# eliminates unused layer setup while
+# continuing to use the same Principled formulas as every other program.
+@inline @generated function surface_proven_inputs(p::PrincipledInputs, ::Val{Mask}) where {Mask}
+    opaque = Mask isa UInt32 && !iszero(Mask & SURFACE_OPAQUE_STORAGE)
+    glass = Mask in (UInt32(1) << 7, (UInt32(1) << 7) | (UInt32(1) << 18))
+    opaque || glass || return :p
+    fields = map(fieldnames(PrincipledInputs)) do f
+        f === :transmission && return opaque ? :(0f0) : :(1f0)
+        f in (:subsurface, :thin_wall) && return :(0f0)
+        glass && f in (:metallic, :coat_weight, :sheen_weight) && return :(0f0)
+        return :(getfield(p, $(QuoteNode(f))))
+    end
+    return Expr(:call, :PrincipledInputs, fields...)
+end
+
 @inline function surface_principled_store!(storage, at, s, prog, i, sc, lut, table, lambda, scale, mode, mask::Val{Mask}) where {Mask}
-    p = principled_inputs(s, prog, i, sc)
+    p = surface_proven_inputs(principled_inputs(s, prog, i, sc), mask)
     @inbounds distribution = prog[i].mode[2]
     if !iszero(Mask & (UInt32(1) << 18)) && distribution == 0x02
         after, emission = surface_principled_layers!(

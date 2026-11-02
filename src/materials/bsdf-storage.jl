@@ -184,6 +184,19 @@ end
     end
     return f, pdf
 end
+# A one-record class needs no runtime indexing, while an empty counted span
+# must still ignore its backing record. Larger classes retain the shared loop.
+@inline function surface_mixture(lobes::Tuple{W}, count, wo, wi, ns, lambda, s) where {W <: SurfaceStoredWeight}
+    f, pdf = SpectralRadiance(0.0f0), 0.0f0
+    if count == 1
+        w = first(lobes)
+        if w.sample_weight > 0.0f0
+            fi, pi = weighted_f(w, wo, wi, ns, lambda, s)
+            f += fi;pdf += pi * w.sample_weight
+        end
+    end
+    return f, pdf
+end
 @inline function pick_sample(
         lobes::Tuple{SurfaceStoredWeight{true}, Vararg{SurfaceStoredWeight{true}}},
         target::Float32, before::Float32, wo::Vec3f, u::Point2f, lambda::Wavelengths,

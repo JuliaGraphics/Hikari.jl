@@ -14,13 +14,13 @@ function material(order; computed = false, bump_normal = false)
     return foldl((a, b) -> Hikari.Mix(a, b; factor = 0.35), (nodes[i] for i in order))
 end
 
-function fixture(desc; hardware = true)
+function fixture(desc; hardware = true, resolution = 48, tessellation = 24)
     backend = Mantle.defaultbackend()
     scene = Hikari.Scene(; backend, hw_accel = hardware)
-    handle = push!(scene, normal_mesh(Tesselation(Sphere(Point3f(0), 0.7f0), 24)), desc)
+    handle = push!(scene, normal_mesh(Tesselation(Sphere(Point3f(0), 0.7f0), tessellation)), desc)
     push!(scene, Hikari.PointLight(Point3f(-2, -2, 3), Hikari.RGBSpectrum(40.0f0)))
     Hikari.sync!(scene)
-    film = Hikari.Film(backend, Hikari.Film(Point2f(48, 48)))
+    film = Hikari.Film(backend, Hikari.Film(Point2f(resolution, resolution)))
     camera = Hikari.PerspectiveCamera(Point3f(0, -3, 1), Point3f(0), film; fov = 40.0f0)
     vp = Hikari.VolPath(samples = 4, max_depth = 4)
     return (; scene, handle, film, camera, vp, dev = Hikari.mantle_device(backend))
@@ -77,6 +77,32 @@ end
                     @test signatures(f) == before
                 end
             end
+        finally
+            release(f)
+        end
+    end
+end
+
+# Constant-index packed evaluation used to change rough Diffuse's image in the
+# full shader on Metal, although standalone scattering kernels agreed. Keep the
+# full renderer, interpolated sphere normals and independent typed reference.
+@testset "one-record surface rendering" begin
+    for hardware in (false, true), desc in (
+            Hikari.Diffuse(color = (0.4, 0.2, 0.1), roughness = 0.3),
+            Hikari.Sheen(color = (0.4, 0.2, 0.1)),
+            Hikari.Glossy(color = (0.4, 0.2, 0.1), roughness = 0.3),
+            Hikari.Glass(roughness = 0.2, thin_film_thickness = 400),
+        )
+        f = fixture(desc; hardware, resolution = 96, tessellation = 32)
+        try
+            expected = reference_image(f)
+            close(f.vp)
+            f = merge(f, (; vp = Hikari.VolPath(samples = 4, max_depth = 4)))
+            actual = Base.invokelatest(draw, f)
+            @test all(isfinite, rgb_values(actual))
+            @test maximum(rgb_values(expected)) > 0f0
+            @test rgb_values(actual) ≈ rgb_values(expected) rtol = 5f-5 atol = 2f-5
+            @test rgb_values(Base.invokelatest(draw, f)) ≈ rgb_values(actual) rtol = 5f-5 atol = 2f-5
         finally
             release(f)
         end

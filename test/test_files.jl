@@ -51,6 +51,7 @@ const TEST_FILES = [
     "test_checkerboard_texture.jl",
     "test_node_textures.jl",
     "test_shader_material.jl",
+    "test_closure_capacity.jl",
     "test_runtime_bsdf.jl",
     "test_shared_bsdf_classes.jl",
     "test_shared_bsdf_direct.jl",

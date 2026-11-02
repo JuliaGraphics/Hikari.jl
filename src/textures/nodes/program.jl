@@ -142,7 +142,8 @@ One instruction of a compiled node program. `arg[i]` is the stack offset input
 whether that offset holds a vector. `out[j]` is where output `j` is stored
 (`NO_SLOT`: not needed), bit `j` of `outwide` whether it is a vector. `mode`
 holds the node's settings, such as a math operation or a noise type. `F` is the
-program's `NodeFeature` bits.
+program's `NodeFeature` bits. In a closure program, the first instruction uses
+the upper three `outwide` bits for its conservative storage bound (zero: general).
 """
 struct NodeInstr{F}
     op::UInt8

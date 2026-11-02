@@ -245,6 +245,42 @@ end
 @propagate_inbounds Base.getindex(q::ClosureQueue{M, V, S}, j::Integer) where {M, V, S} =
     GatheredRef{M, S}(q.items[q.offset + j], q.inputs, q.program_offset)
 
+# The same queue is visited by a fixed set of bounded kernels. Exactly one
+# accepts each hit, according to its material program's storage hint. No new
+# per-pixel buffer or graph-specific kernel type is needed.
+struct CapacityQueue{M, C, Q}
+    queue::Q
+end
+struct CapacityRef{M, C, S <: ShaderInputs}
+    idx::Int32
+    inputs::S
+    program_offset::Int32
+end
+function Adapt.adapt_structure(to, q::CapacityQueue{M, C}) where {M, C}
+    queue = Adapt.adapt(to, q.queue)
+    return CapacityQueue{M, C, typeof(queue)}(queue)
+end
+@propagate_inbounds queuelength(q::CapacityQueue) = queuelength(q.queue)
+@propagate_inbounds function Base.getindex(q::CapacityQueue{M, C}, j::Integer) where {M, C}
+    ref = q.queue[j]
+    return CapacityRef{M, C, typeof(ref.inputs)}(ref.idx, ref.inputs, ref.program_offset)
+end
+
+shade_queues(q) = (q,)
+function shade_queues(q::ClosureQueue{SurfaceProgramNodes{N, L, K, E}}) where {N, L, K, E}
+    # Only Principled programs currently have a tighter bound. Smaller classes
+    # and all other BSDF capability sets keep their single dispatch. A single
+    # eligible Principled node fits class eight; larger compositions cannot
+    # receive either hint and need no extra kernels.
+    if N == 8 && !surface_has_walk(Val(K)) && !iszero(K & (UInt32(1) << 7))
+        glass = K & ((UInt32(1) << 7) | (UInt32(1) << 18))
+        return (CapacityQueue{SurfaceProgramNodes{1, L, glass, E}, 1, typeof(q)}(q),
+                CapacityQueue{SurfaceProgramNodes{5, L, K | SURFACE_OPAQUE_STORAGE, E}, 5, typeof(q)}(q),
+                CapacityQueue{SurfaceProgramNodes{N, L, K, E}, 0, typeof(q)}(q))
+    end
+    return (q,)
+end
+
 """The material type a hit reference is shaded as: its queue's, or the closures of its nodes."""
 shaded_type(::TypedHitRef{T}) where {T} = T
 shaded_type(::GatheredRef{M}) where {M} = ShaderClosures{M}
