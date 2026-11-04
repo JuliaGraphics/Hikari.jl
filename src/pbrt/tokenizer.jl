@@ -118,10 +118,11 @@ mutable struct TokenStream
     tokens::Vector{Token}
     pos::Int
     filename::String
+    base_dir::String
 end
 
-TokenStream(tokens::Vector{Token}; filename="<string>") =
-    TokenStream(tokens, 1, filename)
+TokenStream(tokens::Vector{Token}; filename="<string>", base_dir=".") =
+    TokenStream(tokens, 1, filename, base_dir)
 
 Base.eof(ts::TokenStream) = ts.pos > length(ts.tokens)
 

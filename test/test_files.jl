@@ -83,6 +83,7 @@ const TEST_FILES = [
     "test_ambient_light_pbrt.jl",
     "test_pbrt_material_import.jl",
     "test_conductor_reflectance.jl",
+    "test_pbrt_spectrum_file.jl",
     "test_camera_medium_probe.jl",
     "test_crossing_rounds.jl",
     "test_dispersion.jl",

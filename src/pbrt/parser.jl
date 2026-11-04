@@ -175,9 +175,28 @@ function parse_params!(ts::TokenStream)
             end
         end
 
-        params[name] = PBRTParam(type_sym, name, values)
+        params[name] = PBRTParam(type_sym, name, spectrumfile(type_sym, values, ts.base_dir))
     end
     return params
+end
+
+"""
+A `"spectrum"` parameter's values with a file it names read in. pbrt takes a named spectrum or a
+file of (λ, value) pairs under the same syntax: `"spectrum eta" [ "spds/Au.eta.spd" ]`. Read here,
+the only place that knows the scene's directory, a file looks like the same pairs given inline.
+"""
+function spectrumfile(type::Symbol, values::Vector{Any}, base_dir::AbstractString)
+    (type === :spectrum && length(values) == 1 && values[1] isa AbstractString) || return values
+    path = isabspath(values[1]) ? values[1] : joinpath(base_dir, values[1])
+    isfile(path) || return values
+    pairs = Any[]
+    for line in eachline(path)
+        for word in split(first(split(line, '#')))
+            push!(pairs, parse(Float64, word))
+        end
+    end
+    iseven(length(pairs)) || throw(ArgumentError("pbrt: $path holds an odd count of numbers, not (λ, value) pairs"))
+    return pairs
 end
 
 # ============================================================================
@@ -194,7 +213,7 @@ function parse_pbrt_string(text::AbstractString;
                            base_dir::AbstractString=".",
                            filename::AbstractString="<string>")
     tokens = tokenize(text)
-    ts = TokenStream(tokens; filename=filename)
+    ts = TokenStream(tokens; filename=filename, base_dir=base_dir)
 
     # Scene state
     film = nothing
