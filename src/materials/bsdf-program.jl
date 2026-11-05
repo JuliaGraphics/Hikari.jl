@@ -139,7 +139,12 @@ end
     return next_node(prog, i, instruction_count(T)), after, emission
 end
 Base.@constprop :none @inline function surface_setup_slots(::Val{N}, s, prog, i, sc, lut, table, lambda, scale, mode::Val{Looped}, mask::Val{Mask}) where {N, Looped, Mask}
-    storage = MVector{N, SurfaceStoredWeight{Looped, Mask}}(surface_empty(Val(N), mode, mask))
+    # The tuple classes read every record, so they start empty. The array is
+    # only read below the count: filling all 16 records on every hit cost
+    # 15-34% of a mixed-graph frame on NVIDIA (RTX 4000 Ada), growing with the
+    # capacity.
+    storage = N <= 5 ? MVector{N, SurfaceStoredWeight{Looped, Mask}}(surface_empty(Val(N), mode, mask)) :
+        MVector{N, SurfaceStoredWeight{Looped, Mask}}(undef)
     at = Int32(1); emission = Vec3f(0)
     @inbounds while prog[i].op != NodeOp.RESULT
         i, prefix = surface_zero_prefix(s, prog, i, sc)
@@ -319,16 +324,21 @@ end
     end
     return transparency_sum, dispersive
 end
-@inline surface_sample_total(slots::Tuple) = reduce(+, map(w -> w.sample_weight, slots); init = 0.0f0)
-@inline surface_sample_total(slots::MVector{N}) where {N} =
-    reduce(+, ntuple(i -> slots[i].sample_weight, Val(N)); init = 0.0f0)
+@inline surface_sample_total(slots::Tuple, count) = reduce(+, map(w -> w.sample_weight, slots); init = 0.0f0)
+@inline function surface_sample_total(slots::MVector, count)
+    total = 0.0f0
+    @inbounds for j in 1:count
+        total += slots[j].sample_weight
+    end
+    return total
+end
 @inline function surface_program_bsdf(::Type{SurfaceProgramNodes{N, Looped, Mask, E}}, s, prog, sc, lut, table, lambda, start::Int32 = Int32(1)) where {N, Looped, Mask, E}
     transparency_sum, dispersive = surface_program_metadata(s, prog, sc, Val(Mask), start)
     alpha = 1.0f0 - _avg(transparency_sum)
     scale = alpha > 1.0f-6 ? 1.0f0 / alpha : 0.0f0
     slots, emission, count = surface_setup_slots(Val(N), s, prog, start, sc, lut, table, lambda, scale, Val(Looped), Val(Mask))
     lobes = SurfaceLobeSpan(slots, count)
-    total = surface_sample_total(slots)
+    total = surface_sample_total(slots, count)
     L = E && _max(emission) > 0.0f0 ? uplift_rgb_illuminant(table, RGBSpectrum(emission...), lambda) / D65_PHOTOMETRIC : SpectralRadiance(0.0f0)
     return LobeBSDF(lobes, total, lambda, L, dispersive)
 end

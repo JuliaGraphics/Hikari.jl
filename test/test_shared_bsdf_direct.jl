@@ -51,7 +51,11 @@ end
             Hikari.surface_store(native, Val(true), Val(Hikari.SURFACE_PRINCIPLED_MASK))
         end
         data = Hikari.MVector{capacity, typeof(first(records))}(records)
-        @test Hikari.surface_sample_total(data) == Hikari.surface_sample_total(records)
+        @test Hikari.surface_sample_total(data, Int32(capacity)) == Hikari.surface_sample_total(records, Int32(capacity))
+        # Records past the count are never written on the device, so the total
+        # must not read them. Every record here has a nonzero sample weight.
+        @test Hikari.surface_sample_total(data, Int32(capacity - 1)) ==
+            foldl(+, (records[j].sample_weight for j in 1:(capacity - 1)); init = 0f0)
         for count in Int32(0):Int32(capacity)
             span = Hikari.SurfaceLobeSpan(data, count)
             tuple_span = Hikari.SurfaceLobeSpan(records, count)
