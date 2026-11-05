@@ -106,12 +106,14 @@ end
                     max_depth=4, samples_per_pixel=1
                 )
                 Mantle.flush!(Mantle.Device())
-                @test Hikari.nallocations(state.memory) > 10   # queues, accumulators, BVH, Sobol
+                @test Hikari.nallocations(state.memory) > 10   # queues, BVH, Sobol
+                @test Hikari.nallocations(state.accumulation_memory) == 2
                 reserved = Mantle.reserved(pool)
 
                 Hikari.free!(state)
                 Mantle.flush!(Mantle.Device())
                 @test Hikari.nallocations(state.memory) == 0
+                @test Hikari.nallocations(state.accumulation_memory) == 0
                 @test Hikari.nallocations(state.per_material_memory) == 0
 
                 # And the regions really are back: more identical states cost the

@@ -146,14 +146,16 @@ on every traversal: the software BVH, Vulkan's inline ray query and Metal's
 intersector. Of the materials it reads the cut-out ones (`cut_set`), so another
 material type leaves its kernel as it was.
 """
-function trace_pass!(g, state::VolPathState, @nospecialize(refs), cur::WorkQueue, nxt::WorkQueue)
-    Mantle.dispatch!(g, vp_trace_kernel!,
-                     (cur, nxt, state.escaped_queue, state.medium_sample_queue,
+function trace_arguments(state::VolPathState, @nospecialize(refs), cur::WorkQueue, nxt::WorkQueue)
+    return (cur, nxt, state.infinite_light_indices, state.medium_sample_queue,
                       state.material_queues, state.surface_hits,
                       state.pixel_L, refs.accel, refs.media_interfaces, refs.media,
                       cut_set(refs.materials), refs.lights, state.rgb2spec_table,
                       state.bvh_nodes, state.light_to_bit_trail,
-                      state.num_infinite_lights, state.num_bvh_lights, state.max_depth),
+                      state.num_infinite_lights, state.num_bvh_lights, state.max_depth)
+end
+function trace_pass!(g, state::VolPathState, @nospecialize(refs), cur::WorkQueue, nxt::WorkQueue)
+    Mantle.dispatch!(g, vp_trace_kernel!, trace_arguments(state, refs, cur, nxt),
                      Mantle.DeviceRange(cur.size; max = Int(cur.capacity));
                      group = DEFAULT_WORKGROUPSIZE, name = "trace")
 end
@@ -215,6 +217,33 @@ function escaped_pass!(g, state::VolPathState, @nospecialize(refs))
                      group = DEFAULT_WORKGROUPSIZE, name = "escaped")
 end
 
+function partitioned_shade_queues!(g, state::VolPathState, @nospecialize(refs), q)
+    choices = shade_queues(q)
+    length(choices) == 1 && return choices
+    p = state.shader_partition::ShaderCapacityPartition
+    uniform = length(refs.materials.data[q.slot]) == 1
+    if uniform
+        Mantle.dispatch!(g, vp_shader_capacity_counts_kernel!,
+            (p.sizes, q, closure_programs(refs.materials)), 1; group = 1, name = "capacity-counts")
+        return map(enumerate(choices) |> Tuple) do (bin, choice)
+            partition_queue(choice, bin, p; uniform=true)
+        end
+    end
+    Mantle.dispatch!(g, zero_size_counters_kernel!, ((p.sizes,),), 1; group = 1, name = "partition-reset")
+    Mantle.dispatch!(g, vp_partition_shader_capacity_kernel!,
+        (q, state.surface_hits, refs.accel, refs.media_interfaces, closure_programs(refs.materials),
+         p.items, p.sizes, p.capacity, Val(capacity_group_reservation(state.backend))),
+        Mantle.DeviceRange(q.sizes; max = Int(p.capacity), at = q.slot);
+        group = 128, name = "partition")
+    return map(enumerate(choices) |> Tuple) do (bin, choice)
+        partition_queue(choice, bin, p)
+    end
+end
+
+shade_range(q, queues, slot) = Mantle.DeviceRange(queues.sizes; max = Int(queues.capacity), at = slot)
+shade_range(q::CapacityQueue, queues, slot) =
+    Mantle.DeviceRange(q.queue.sizes; max = Int(queues.capacity), at = q.queue.slot)
+
 """
 Surface shading, one dispatch per material slot and storage-capacity class.
 
@@ -250,7 +279,7 @@ function shade_pass!(g, state::VolPathState, @nospecialize(refs), cur::WorkQueue
         else
             q, view = SlotQueue{T}(queues, slot), shade_set(refs.materials, T)
         end
-        for shade_queue in shade_queues(q)
+        for shade_queue in partitioned_shade_queues!(g, state, refs, q)
             Mantle.dispatch!(g, vp_shade_kernel!,
                              (shade_queue, state.surface_hits, cur, state.arrivals,
                               nxt, state.pixel_L, state.pdf_per_pixel,
@@ -262,7 +291,7 @@ function shade_pass!(g, state::VolPathState, @nospecialize(refs), cur::WorkQueue
                               state.num_lights, state.max_depth, refs.regularize, refs.emitters_reachable,
                               state.sobol_rng, refs.sample_idx,
                               refs.camera, refs.samples_per_pixel, state.rr_depth),
-                             Mantle.DeviceRange(queues.sizes; max = Int(queues.capacity), at = slot);
+                             shade_range(shade_queue, queues, slot);
                              group = T <: ShaderMaterial ? shader_bsdf_workgroupsize(group) : group, name = "shade")
         end
     end
@@ -271,7 +300,10 @@ end
 # Smaller BSDF groups keep the high-register shaders occupied as queues drain.
 # Values use larger groups: their shorter live ranges tolerate more threads.
 shader_values_workgroupsize(group) = min(group, 128)
-shader_bsdf_workgroupsize(group) = min(group, 64)
+# A 32-invocation group also keeps divergent private-record writes correct
+# across the complete subsurface shader on wave64 hardware. Use the same
+# launch shape everywhere; no subgroup-width requirement enters the pipeline.
+shader_bsdf_workgroupsize(group) = min(group, 32)
 
 """Transmittance along the shadow rays the medium direct lighting queued."""
 function shadow_pass!(g, state::VolPathState, @nospecialize(refs))
@@ -301,12 +333,17 @@ function round_passes!(g, state::VolPathState, @nospecialize(refs), cur::WorkQue
                        has_media::Bool, has_lights::Bool)
     reset_pass!(g, state, nxt)
     trace_pass!(g, state, refs, cur, nxt)
+    finish_round_passes!(g, state, refs, cur, nxt; has_media, has_lights)
+end
+
+function finish_round_passes!(g, state::VolPathState, @nospecialize(refs), cur::WorkQueue, nxt::WorkQueue;
+                              has_media::Bool, has_lights::Bool)
     if has_media
         medium_sample_pass!(g, state, refs, nxt)
         has_lights && medium_dl_pass!(g, state, refs)
         medium_scatter_pass!(g, state, refs, nxt)
     end
-    has_lights && escaped_pass!(g, state, refs)
+    has_media && state.num_infinite_lights > 0 && escaped_pass!(g, state, refs)
     shade_pass!(g, state, refs, cur, nxt; group = has_media ? volume_workgroupsize() : DEFAULT_WORKGROUPSIZE)
     has_media && has_lights && shadow_pass!(g, state, refs)
     return g
@@ -352,16 +389,35 @@ nothing orders them against each other — the fact the `concurrent_dispatch_gro
 around them was there to assert.
 """
 function setup_passes!(g, state::VolPathState, @nospecialize(refs), cur::WorkQueue)
+    clear_sample_passes!(g, state, cur)
+    Mantle.dispatch!(g, vp_generate_camera_rays_kernel!, camera_arguments(state, refs, cur),
+                     Int(state.sobol_rng.pixels) * Int(state.sobol_rng.lanes); name = "camera")
+    return g
+end
+
+function clear_sample_passes!(g, state::VolPathState, cur::WorkQueue)
     Mantle.dispatch!(g, vp_clear_kernel!, (state.pixel_L, 0f0),
                      length(state.pixel_L); name = "clear")
     Mantle.dispatch!(g, zero_size_counters_kernel!, ((cur.size,),), 1;
                      group = 1, name = "clear-queue")
-    Mantle.dispatch!(g, vp_generate_camera_rays_kernel!,
-                     (cur, state.wavelengths_per_pixel, state.pdf_per_pixel,
+    return g
+end
+
+function camera_arguments(state::VolPathState, @nospecialize(refs), cur::WorkQueue)
+    return (cur, state.wavelengths_per_pixel, state.pdf_per_pixel,
                       state.filter_weight_per_pixel, state.height,
                       refs.camera, refs.sample_idx, refs.initial_medium,
-                      refs.filter_params, refs.filter_sampler, state.sobol_rng),
-                     Int(state.sobol_rng.pixels) * Int(state.sobol_rng.lanes); name = "camera")
+                      refs.filter_params, refs.filter_sampler, state.sobol_rng)
+end
+
+function primary_passes!(g, state::VolPathState, @nospecialize(refs); has_media::Bool, has_lights::Bool)
+    cur, nxt = state.ray_queue_a, state.ray_queue_b
+    clear_sample_passes!(g, state, cur)
+    reset_pass!(g, state, nxt)
+    args = (camera_arguments(state, refs, cur)..., Base.tail(trace_arguments(state, refs, cur, nxt)))
+    Mantle.dispatch!(g, vp_generate_primary_rays_kernel!, args,
+                     Int(state.sobol_rng.pixels) * Int(state.sobol_rng.lanes); group = 64, name = "primary")
+    finish_round_passes!(g, state, refs, cur, nxt; has_media, has_lights)
     return g
 end
 
@@ -417,6 +473,8 @@ sample_rounds(max_depth::Int32, emitters_reachable::Bool, crossings::Bool) =
 
 A whole sample as one graph: setup, a bounce loop of `d` rounds (`sample_rounds`), accumulate.
 
+The camera generation and first trace share a primary pass. The first two
+rounds are peeled off to return the ping-pong queues to A before the loop.
 The loop is a `Mantle.repeat!` gated on the ray queue's own live count. That is
 the whole reason this can be one graph — the host neither reads that count nor
 decides how many rounds run, so there is nothing to break the recording up for.
@@ -451,16 +509,23 @@ function sample_graph(dev, state::VolPathState, @nospecialize(refs), d::Int;
     # `record!`.
     Mantle.dispatch!(g, vp_next_sample_kernel!, (refs.sample_idx, state.sobol_rng.lanes), 1;
                      group = 1, name = "next sample")
-    setup_passes!(g, state, refs, a)
+    if d == 0
+        setup_passes!(g, state, refs, a)
+    else
+        primary_passes!(g, state, refs; has_media, has_lights)
+    end
     if d >= 2
-        Mantle.repeat!(g, d ÷ 2; while_nonzero = a.size) do _
+        round_passes!(g, state, refs, state.ray_queue_b, a; has_media, has_lights)
+    end
+    if d >= 4
+        Mantle.repeat!(g, d ÷ 2 - 1; while_nonzero = a.size) do _
             rounds_passes!(g, state, refs, 2; has_media, has_lights)
         end
     end
     # An odd count has one round the pairs cannot cover. It runs unconditionally:
     # a round on an empty queue is every stage sizing itself to zero work, which
     # is what makes the loop legal in the first place.
-    isodd(d) && rounds_passes!(g, state, refs, 1; has_media, has_lights)
+    isodd(d) && d > 1 && rounds_passes!(g, state, refs, 1; has_media, has_lights)
     accumulate_passes!(g, state, refs)
     return g
 end
@@ -577,8 +642,8 @@ runsample!(plans::VPPlans) = run_sample_plan!(plans.sample)
 run_sample_plan!(p::Mantle.Plan) = Mantle.run!(p)
 function run_sample_plan!(p::ChunkedSamplePlan)
     Mantle.run!(p.setup)
-    for _ in 1:p.batches
-        Mantle.run!(p.rounds)
+    for batch in 1:p.batches
+        batch > 1 && Mantle.run!(p.rounds)
         Mantle.waitidle(p.rounds.graph.dev)
         copyto!(p.hostcounter,p.counter)
         p.hostcounter[1]==0 && break
@@ -646,8 +711,9 @@ wants that cost outside a timing loop calls `Mantle.record!` on each of
 `allplans` first.
 
 Deep medium budgets divisible by 64 use bounded submissions: setup and the
-sample-index increment happen once, the same round graph runs up to the FULL
-budget (a round per depth and the emission-only one after it) in 64-round
+sample-index increment happen once alongside the first 64 rounds. The remaining
+round graph runs up to the FULL budget (a round per depth and the emission-only
+one after it) in 64-round
 batches, and accumulation happens once. This avoids keeping
 a long curved-transport workload in one GPU submission. Ordinary short paths
 retain their single-graph fast path.
@@ -661,7 +727,11 @@ function build_plans(backend, state::VolPathState, framebuffer, @nospecialize(re
         head=Mantle.Graph(dev)
         Mantle.dispatch!(head,vp_next_sample_kernel!,(refs.sample_idx,state.sobol_rng.lanes),1;
                          group=1,name="next sample")
-        setup_passes!(head,state,refs,state.ray_queue_a)
+        primary_passes!(head,state,refs;has_media,has_lights)
+        round_passes!(head,state,refs,state.ray_queue_b,state.ray_queue_a;has_media,has_lights)
+        Mantle.repeat!(head,31;while_nonzero=state.ray_queue_a.size) do _
+            rounds_passes!(head,state,refs,2;has_media,has_lights)
+        end
         body=Mantle.Graph(dev)
         Mantle.repeat!(body,32;while_nonzero=state.ray_queue_a.size) do _
             rounds_passes!(body,state,refs,2;has_media,has_lights)

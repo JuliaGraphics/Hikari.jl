@@ -254,7 +254,7 @@ function closure_program(c::CompiledProgram)
     instructions[1] = typeof(ins)(ins.op, ins.mode, ins.out,
         (ins.outwide & UInt8((1 << NODE_OUTS) - 1)) | UInt8(hint << NODE_OUTS),
         ins.arg, ins.wide, ins.k)
-    return instructions, g
+    return pack_principled_inputs(instructions), g
 end
 
 @inline closure_capacity_hint(ins::NodeInstr{NodeFeature.CLOSURES}) = Int32(ins.outwide >> NODE_OUTS)
@@ -271,8 +271,13 @@ function closure_capacity_bound(instructions)
         return ins.arg[a] == NO_SLOT ? ins.k[a] : NaN32
     end
     scalar(9) == 0f0 && scalar(34) <= 0.5f0 || return 0
-    # Opaque: sheen, coat, metal, specular and diffuse, at most five records.
-    scalar(19) == 0f0 && return 5
+    if scalar(19) == 0f0
+        # With no overlying layers and an endpoint metallic weight, only
+        # diffuse + specular, or metal, can remain. Computed controls cannot
+        # establish this bound and keep the five-record opaque class.
+        scalar(22) == 0f0 && scalar(27) == 0f0 && scalar(3) in (0f0, 1f0) && return 2
+        return 5
+    end
     # Full transmission, with no overlying layers, produces one glass record.
     scalar(19) == 1f0 && scalar(3) == 0f0 && scalar(22) == 0f0 && scalar(27) == 0f0 || return 0
     return 1

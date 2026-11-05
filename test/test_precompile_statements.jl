@@ -21,4 +21,9 @@ end
     @test total > 0
     @test ok == total
     @test PrecompileDeviceProbe.constructions[] == 0
+    @test Hikari._precompile_shader_signatures(PrecompileDeviceProbe.Device) === ()
+    for device in Hikari._precompile_device_types()
+        Hikari._precompile_shader_workload(device)
+    end
+    @test PrecompileDeviceProbe.constructions[] == 0
 end

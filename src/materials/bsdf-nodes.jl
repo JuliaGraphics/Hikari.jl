@@ -443,7 +443,7 @@ end
     f0 = _specular_f0(ior, p.specular_level)
     specular_lobe = MicrofacetLobe{:reflection}(SchlickFresnel(min.(f0 * specular_tint, 1f0), Vec3f(1), Vec3f(1),
                                                                film_thickness, film_ior); alpha_x = ax, alpha_y = ay, ior = eta, convention)
-    l_specular = if eta != 1f0 || film_thickness > THIN_FILM_THICKNESS_CUTOFF
+    l_specular = if (eta != 1f0 || film_thickness > THIN_FILM_THICKNESS_CUTOFF) && w != Vec3f(0f0)
         specular, refl = setup_fresnel(lut, Weighted(specular_lobe, w, vn; t), dot(vn, wo), multiscatter)
         w = _layering(specular.weight .* refl, w)
         specular

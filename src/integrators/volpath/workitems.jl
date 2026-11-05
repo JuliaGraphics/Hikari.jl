@@ -255,11 +255,15 @@ the hit record and where the ray's path state is. `path > 0` is its index in the
 round's ray queue; `path < 0` is `-index` into the arrivals, the paths a medium
 delivered to their surface with its transmittance applied. The shading kernel
 expands the record, so the surface is computed once, where it is shaded.
+`primary` tags a camera path whose constant scattering state is reconstructed
+instead of stored. Medium arrivals and subsequent rays always retain full state.
 """
 struct VPSurfaceHit
     path::Int32
     hit::Raycore.HitRecord
+    primary::Bool
 end
+VPSurfaceHit(path::Int32, hit::Raycore.HitRecord) = VPSurfaceHit(path, hit, false)
 
 # ============================================================================
 # Escaped Ray Work Item

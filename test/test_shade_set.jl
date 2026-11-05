@@ -78,31 +78,60 @@ end
 # new type, every node edit that changes a shader's families, compiled it again: the biggest
 # kernel there is, 5 s in Lava and as much in the driver on an RTX 4000 Ada, for each edit. It
 # takes the queues' flat store and the cut-out types now (`MaterialQueues`, `cut_set`).
-@testset "a new material type leaves the trace kernel as it was" begin
+@testset "a new material type leaves the trace kernel as it was (hw_accel=$hw_accel)" for hw_accel in (false, true)
     backend = Mantle.defaultbackend()
     dev = Hikari.mantle_device(backend)
-    scene = Hikari.Scene(; backend)
+    scene = Hikari.Scene(; backend, hw_accel)
     sphere(x) = normal_mesh(Tesselation(Sphere(Point3f(x, 0, 0.5), 0.4f0), 16))
     push!(scene, sphere(0), Hikari.Principled(base_color = (0.8, 0.2, 0.1), roughness = 0.3))
     push!(scene, Hikari.PointLight(Point3f(0, -2, 3), Hikari.RGBSpectrum(30.0f0)))
     Hikari.sync!(scene)
     film = Hikari.Film(backend, Hikari.Film(Point2f(16, 16)))
     camera = Hikari.PerspectiveCamera(Point3f(0, -3, 1), Point3f(0, 0, 0.5), film; up = Vec3f(0, 0, 1), fov = 40.0f0)
-    vp = Hikari.VolPath(samples = 1, max_depth = 3)
+    vp = Hikari.VolPath(samples = 1, max_depth = 3, hw_accel = hw_accel)
     stage(name) = [
         (d.kernel, Mantle.devicetype(dev, d.args)) for pl in Hikari.allplans(vp.state.plans)
             for pp in pl.passes if pp.pass.name == name for d in pp.pass.dispatches
     ]
     vp(scene, film, camera)
-    trace, shade = stage("trace"), unique(stage("shade"))
+    trace, primary, shade = stage("trace"), stage("primary"), unique(stage("shade"))
     @test !isempty(trace)
-    @test length(shade) == 3
+    @test !isempty(primary)
+    @test length(shade) == 4
+    precompiled = Hikari._precompile_shader_signatures(typeof(dev))
+    if !isempty(precompiled)
+        actual = Type[]
+        raw_signatures = Type[]
+        for plan in Hikari.allplans(vp.state.plans), pass in plan.passes
+            pass.pass.name == "shade" || continue
+            for (original, compiled) in zip(pass.pass.dispatches, pass.dispatches)
+                raw = Mantle.resolve(dev, original.args)
+                touches = Mantle.argument_usage(dev, original.kernel, original.args,
+                                                original.ndrange, original.group)
+                args = Mantle.readonlyargs(plan.graph, touches, raw,
+                    Mantle.devargs(Mantle.adaptor(dev.default_bq), raw))
+                raw_types = Mantle.devicetype(dev, original.args)
+                push!(raw_signatures, Tuple{typeof(compiled.kernel), typeof(compiled.iter.ka_ctx),
+                                            raw_types.parameters...})
+                push!(actual, Tuple{typeof(compiled.kernel), typeof(compiled.iter.ka_ctx),
+                                    map(Core.Typeof, args)...})
+            end
+        end
+        append!(precompiled, Hikari._precompile_shader_signatures(typeof(dev); hw_accel = false))
+        @test length(unique(actual)) == 4
+        @test Set(actual) ⊆ Set(precompiled)
+        precompiled_raw = vcat(Hikari._precompile_shader_signatures(typeof(dev); readonly = false),
+            Hikari._precompile_shader_signatures(typeof(dev); hw_accel = false, readonly = false))
+        @test length(unique(raw_signatures)) == 4
+        @test Set(raw_signatures) ⊆ Set(precompiled_raw)
+    end
     push!(scene, sphere(1), Hikari.Principled(base_color = voronoi(xyz()).color))
     push!(scene, sphere(-1), Hikari.Glass(ior = 1.5))
     Hikari.sync!(scene)
     vp(scene, film, camera)
     @test length(scene.materials.static.data) == 2
     @test stage("trace") == trace
+    @test stage("primary") == primary
     # Glass is a Principled preset: adding it and a different value program
     # reuses the same bounded BSDF kernels rather than adding graph variants.
     @test unique(stage("shade")) == shade
@@ -139,7 +168,7 @@ end
     )
     vp(scene, film, camera)
     closures, values = stage("shade"), stage("shader-values")
-    @test length(closures) == 3 && length(values) == 1
+    @test length(closures) == 4 && length(values) == 1
     Hikari.update_material!(scene, h, Hikari.Principled(base_color = voronoi(xyz()).color, roughness = 0.3))
     vp(scene, film, camera)
     @test stage("shade") == closures

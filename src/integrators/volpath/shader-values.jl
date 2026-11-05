@@ -47,6 +47,8 @@ struct GatheredStack{V}
 end
 
 @inline _get(s::GatheredStack, o) = @inbounds s.values[(Int32(o) - Int32(1)) * s.capacity + s.hit]
+@inline principled_inputs(s::GatheredStack, prog, i::Int32, sc::ShaderContext) =
+    packed_principled_inputs(s, prog, i, sc)
 
 """
     GatheredShader{M}

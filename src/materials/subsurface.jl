@@ -41,8 +41,8 @@ end
     selected = subsurface_choice(bsdf.lobes, u * total)
     if selected == 0
         rest = total - weight
-        rest > 0f0 || return (no_samples(typeof(bsdf.lobes), bsdf.lambda), work)
-        lobes = map(without_subsurface_samples, bsdf.lobes)
+        rest > 0f0 || return (no_samples(bsdf.lobes, bsdf.lambda), work)
+        lobes = without_subsurface_lobes(bsdf.lobes)
         return (LobeBSDF(lobes, rest, bsdf.lambda, bsdf.emission, bsdf.dispersive), with_beta(work, work.beta * (total / rest)))
     end
     # The walk traces rays, so what is live across it is held through every traversal: the walk's
@@ -51,11 +51,11 @@ end
     params, sample_weight = picked_walk_params(bsdf.lobes, selected, Val(K))
     lambda = bsdf.lambda
     exited, exit_work, n = random_walk(params, work, accel, rng, total / sample_weight)
-    exited || return (no_samples(typeof(bsdf.lobes), lambda), work)
+    exited || return (no_samples(bsdf.lobes, lambda), work)
     # After exiting, only one diffuse lobe remains. Use a fixed subsurface slot
     # for it regardless of which walk was picked, so the expensive walk and
     # traversal appear once in the kernel even for a mix of many BSSRDFs.
-    lobes = with_lobe(typeof(bsdf.lobes), Val(K), exit_lobe(typeof(bsdf.lobes[K]), params, n))
+    lobes = with_lobe(bsdf.lobes, Val(K), exit_lobe(typeof(bsdf.lobes[K]), params, n))
     return (LobeBSDF(lobes, 1f0, lambda, SpectralRadiance(0f0), false), exit_work)
 end
 
@@ -111,6 +111,9 @@ end
 @inline without_samples(w::Weighted) = Weighted(w.lobe, w.weight, 0f0, w.n, w.t)
 @inline without_subsurface_samples(w::Weighted) = w
 @inline without_subsurface_samples(w::Weighted{<:SubsurfaceLobe}) = without_samples(w)
+@inline without_subsurface_lobes(lobes) = map(without_subsurface_samples, lobes)
+@inline with_lobe(lobes::Union{Tuple, AbstractLobeStorage}, k::Val, w) = with_lobe(typeof(lobes), k, w)
+@inline no_samples(lobes::Union{Tuple, AbstractLobeStorage}, lambda::Wavelengths) = no_samples(typeof(lobes), lambda)
 """A BSDF of lobes of the types `L` that takes no samples and reflects nothing."""
 @inline no_samples(::Type{L}, lambda::Wavelengths) where {L <: Tuple} =
     LobeBSDF(blank(L), 0f0, lambda, SpectralRadiance(0f0), false)

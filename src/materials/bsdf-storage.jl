@@ -197,6 +197,37 @@ end
     end
     return f, pdf
 end
+
+# Constant indices in the opaque classes avoid large runtime tuple
+# selections. Retain the live-count check and reverse accumulation order.
+@inline function surface_mixture(lobes::NTuple{2, W}, count, wo, wi, ns, lambda, s) where {W <: SurfaceStoredWeight}
+    f, pdf = SpectralRadiance(0.0f0), 0.0f0
+    Base.Cartesian.@nexprs 2 k -> begin
+        if count >= 3 - k
+            w = lobes[3 - k]
+            if w.sample_weight > 0.0f0
+                fi, pi = weighted_f(w, wo, wi, ns, lambda, s)
+                f += fi
+                pdf += pi * w.sample_weight
+            end
+        end
+    end
+    return f, pdf
+end
+@inline function surface_mixture(lobes::NTuple{5, W}, count, wo, wi, ns, lambda, s) where {W <: SurfaceStoredWeight}
+    f, pdf = SpectralRadiance(0.0f0), 0.0f0
+    Base.Cartesian.@nexprs 5 k -> begin
+        if count >= 6 - k
+            w = lobes[6 - k]
+            if w.sample_weight > 0.0f0
+                fi, pi = weighted_f(w, wo, wi, ns, lambda, s)
+                f += fi
+                pdf += pi * w.sample_weight
+            end
+        end
+    end
+    return f, pdf
+end
 @inline function pick_sample(
         lobes::Tuple{SurfaceStoredWeight{true}, Vararg{SurfaceStoredWeight{true}}},
         target::Float32, before::Float32, wo::Vec3f, u::Point2f, lambda::Wavelengths,
@@ -249,7 +280,7 @@ end
 end
 
 # Store only live terms; the capability mask and capacity bound kernel types.
-struct SurfaceLobeSpan{L <: Tuple} <: AbstractLobeStorage
+struct SurfaceLobeSpan{L <: Union{Tuple, MVector}} <: AbstractLobeStorage
     data::L
     count::Int32
 end
@@ -269,10 +300,52 @@ end
     surface_pick_sample(s.data, s.count, target, before, wo, u, lambda, restriction)
 @inline terminates_at_vertex(::LobeBSDF{<:SurfaceLobeSpan}) = false
 subsurface_slot(::Type{SurfaceLobeSpan{L}}) where {L} = subsurface_slot(L) == 0 ? 0 : 1
-@inline subsurface_weight(s::SurfaceLobeSpan) = subsurface_weight(s.data)
-@inline subsurface_choice(s::SurfaceLobeSpan, target::Float32) = subsurface_choice(s.data, target)
+subsurface_slot(::Type{SurfaceLobeSpan{L}}) where {N, Looped, Mask, L <: MVector{N, SurfaceStoredWeight{Looped, Mask}}} =
+    surface_has_walk(Val(Mask)) ? 1 : 0
+@inline function subsurface_weight(s::SurfaceLobeSpan)
+    weight = 0.0f0
+    @inbounds for i in 1:s.count
+        w = s.data[i]
+        w.lobe.kind == 14 && (weight += w.sample_weight)
+    end
+    return weight
+end
+@inline function subsurface_choice(s::SurfaceLobeSpan, target::Float32)
+    @inbounds for i in 1:s.count
+        w = s.data[i]
+        if w.lobe.kind == 14
+            target < w.sample_weight && return Int32(i)
+            target -= w.sample_weight
+        end
+    end
+    return Int32(0)
+end
 @inline picked_walk_params(s::SurfaceLobeSpan, selected::Int32, k::Val) = picked_walk_params(s.data, selected, k)
+@inline picked_walk_params(data::MVector{N, W}, selected::Int32, ::Val) where {N, W <: SurfaceStoredWeight} =
+    (WalkParams(data[selected]), data[selected].sample_weight)
 @inline with_lobe(::Type{SurfaceLobeSpan{L}}, k::Val{K}, w) where {L, K} = SurfaceLobeSpan(with_lobe(L, k, w), Int32(K))
+@inline function with_lobe(::Type{SurfaceLobeSpan{L}}, ::Val{K}, w) where {N, W, L <: MVector{N, W}, K}
+    data = MVector{N, W}(ntuple(_ -> blank(W), Val(N)))
+    @inbounds data[K] = w
+    return SurfaceLobeSpan(data, Int32(K))
+end
+@inline blank(::Type{SurfaceLobeSpan{L}}) where {N, W, L <: MVector{N, W}} =
+    SurfaceLobeSpan(MVector{N, W}(ntuple(_ -> blank(W), Val(N))), Int32(0))
+# The mutable backing belongs to one hit. Reuse it through every outcome of a
+# walk: a phi over separately allocated arrays cannot be stack-promoted by
+# Julia's GPU allocation pass, even when all the arrays have a fixed size.
+@inline function without_subsurface_lobes(s::SurfaceLobeSpan{<:MVector})
+    @inbounds for i in 1:s.count
+        s.data[i] = without_subsurface_samples(s.data[i])
+    end
+    return s
+end
+@inline function with_lobe(s::SurfaceLobeSpan{<:MVector}, ::Val{K}, w) where {K}
+    @inbounds s.data[K] = w
+    return SurfaceLobeSpan(s.data, Int32(K))
+end
+@inline no_samples(s::SurfaceLobeSpan{<:MVector}, lambda::Wavelengths) =
+    LobeBSDF(SurfaceLobeSpan(s.data, Int32(0)), 0.0f0, lambda, SpectralRadiance(0.0f0), false)
 @inline no_samples(::Type{S}, lambda::Wavelengths) where {S <: SurfaceLobeSpan} =
     LobeBSDF(blank(S), 0.0f0, lambda, SpectralRadiance(0.0f0), false)
 

@@ -44,7 +44,7 @@ Contains all work queues and buffers for VolPath wavefront rendering.
 mutable struct VolPathState{Backend}
     backend::Backend
 
-    # Every device allocation below comes from here and goes back through it.
+    # Path-state allocations come from here and go back through it.
     # See `device-memory.jl`: nothing in this package finalizes a GPU resource.
     memory::DeviceMemory
 
@@ -79,6 +79,8 @@ mutable struct VolPathState{Backend}
     # Accumulators for progressive rendering (moved from main loop)
     # NOTE: Default Float64 matches pbrt-v4's double precision accumulators (film.h:304-305)
     # Use Float32 for OpenCL backends that don't support double precision atomics
+    # Kept when a different batch size resizes the path queues.
+    accumulation_memory::DeviceMemory
     pixel_rgb::AbstractVector  # n_pixels * 3 (RGB accumulator)
     pixel_weight_sum::AbstractVector  # n_pixels (filter weight accumulator)
     wavelengths_per_pixel::AbstractVector{Float32}  # n_pixels * 4 (wavelength samples)
@@ -120,6 +122,7 @@ mutable struct VolPathState{Backend}
     material_queues_signature::Any       # types and shader input layout, used as freshness check
     # What the shaders' values kernels hand their closure kernels per hit (`ShaderInputs`).
     shader_inputs::Any                   # ShaderInputs | nothing
+    shader_partition::Any                # ShaderCapacityPartition | nothing
 
     # Their own `DeviceMemory` and not the one above, because they have their own
     # lifetime: a scene with different material types replaces them, and regions
@@ -142,7 +145,8 @@ end
 function Base.show(io::IO, state::VolPathState)
     print(io, "VolPathState(", state.width, "×", state.height, ", ", state.num_lights,
           " lights, max_depth ", state.max_depth, ", ",
-          nallocations(state.memory), " allocations, ",
+          nallocations(state.memory) + nallocations(state.accumulation_memory) +
+          nallocations(state.per_material_memory), " allocations, ",
           state.plans === nothing ? "no plans" : "plans recorded", ")")
 end
 
@@ -164,6 +168,7 @@ function free!(state::VolPathState)
     # the Sobol matrices are all regions of one pool, so there is no order to get
     # right and nothing here to keep in step with the constructor.
     free!(state.memory)
+    free!(state.accumulation_memory)
     free!(state.per_material_memory)
     return nothing
 end
@@ -182,6 +187,7 @@ function VolPathState(
     samples_per_pixel::Integer = 1,  # For SobolRNG parameter computation
     sampler_seed::UInt32 = UInt32(0),  # Scrambling seed for Sobol
     accumulation_eltype::DataType = Float32,  # Element type for accumulators (Float32 for OpenCL)
+    accumulators = nothing,
     sensor::PixelSensor = PixelSensor(),  # Pixel sensor for spectral → RGB conversion
     # Scenes without participating media never push to the medium queues or
     # the arrivals; allocating them at full pixel capacity is wasted memory on a
@@ -201,8 +207,9 @@ function VolPathState(
     medium_scatter_queue = WorkQueue{VPMediumScatterWorkItem}(mem, medium_capacity)
     surface_hits = WorkQueue{VPSurfaceHit}(mem, queue_capacity)
     arrivals = WorkQueue{VPRayWorkItem}(mem, medium_capacity)
-    shadow_queue = WorkQueue{VPShadowRayWorkItem}(mem, queue_capacity)
-    escaped_queue = WorkQueue{VPEscapedRayWorkItem}(mem, queue_capacity)
+    # Surface direct lighting traces inline; only medium scattering queues shadows.
+    shadow_queue = WorkQueue{VPShadowRayWorkItem}(mem, medium_capacity)
+    escaped_queue = WorkQueue{VPEscapedRayWorkItem}(mem, medium_capacity)
 
     n_paths = n_pixels * lanes
 
@@ -210,8 +217,13 @@ function VolPathState(
     pixel_L = alloc!(mem, Float32, n_paths * 4, 0f0)
 
     # Accumulators for progressive rendering (configurable eltype for OpenCL compatibility)
-    pixel_rgb = alloc!(mem, accumulation_eltype, n_pixels * 3, zero(accumulation_eltype))
-    pixel_weight_sum = alloc!(mem, accumulation_eltype, n_pixels, zero(accumulation_eltype))
+    accumulation_memory, pixel_rgb, pixel_weight_sum = if accumulators === nothing
+        owner = DeviceMemory(backend)
+        (owner, alloc!(owner, accumulation_eltype, n_pixels * 3, zero(accumulation_eltype)),
+                alloc!(owner, accumulation_eltype, n_pixels, zero(accumulation_eltype)))
+    else
+        accumulators
+    end
     wavelengths_per_pixel = alloc!(mem, Float32, n_paths * 4, 0f0)
     pdf_per_pixel = alloc!(mem, Float32, n_paths * 4, 0f0)
     filter_weight_per_pixel = alloc!(mem, Float32, n_paths, 0f0)
@@ -247,7 +259,7 @@ function VolPathState(
         ray_queue_a, ray_queue_b,
         medium_sample_queue, medium_scatter_queue,
         surface_hits, arrivals, shadow_queue, escaped_queue,
-        pixel_L, pixel_rgb, pixel_weight_sum,
+        pixel_L, accumulation_memory, pixel_rgb, pixel_weight_sum,
         wavelengths_per_pixel, pdf_per_pixel, filter_weight_per_pixel,
         rgb2spec_table, cie_table,
         sensor.output_from_sensor, sensor.imaging_ratio,
@@ -257,7 +269,7 @@ function VolPathState(
         sobol_rng,
         # The material queues (built once the scene's adapted materials are
         # known).
-        nothing, nothing, nothing, DeviceMemory(backend),
+        nothing, nothing, nothing, nothing, DeviceMemory(backend),
         # Plans (built lazily on the first render, once the scene shape and the
         # film are known).
         nothing,
@@ -281,6 +293,13 @@ function ensure_material_queues!(state::VolPathState, materials_static, capacity
         state.material_queues === nothing || free!(state.per_material_memory)
         state.material_queues = MaterialQueues(materials_static, capacity, state.per_material_memory)
         state.shader_inputs = ShaderInputs(state.surface_hits.capacity, layout, state.per_material_memory)
+        bounded = map(slot_types(materials_static)) do T
+            splits(T) && has_capacity_classes(bsdf_kernel_nodes(bsdf_nodes(T), Mantle.syncbackend(state.memory.dev)))
+        end
+        needs_indices = any(eachindex(bounded)) do slot
+            bounded[slot] && length(materials_static.data[slot]) > 1
+        end
+        state.shader_partition = any(bounded) ? ShaderCapacityPartition(capacity, state.per_material_memory; indices=needs_indices) : nothing
         state.material_queues_signature = sig
     end
     return state.material_queues

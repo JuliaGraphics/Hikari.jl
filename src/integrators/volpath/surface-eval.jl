@@ -611,7 +611,8 @@ values kernel and its closure kernel expand a hit by this one function, so both 
 """
 @propagate_inbounds function expanded_hit(idx::Int32, surface_hits, cur, arrivals, accel, media_interfaces)
     sh = surface_hits.items[idx]
-    work = sh.path > Int32(0) ? cur.items[sh.path] : arrivals.items[-sh.path]
+    work = sh.path < Int32(0) ? arrivals.items[-sh.path] :
+        sh.primary ? primary_work(cur.items, sh.path) : cur.items[sh.path]
     rec = sh.hit
     primitive = Raycore.hit_primitive(accel, rec)
     bary = Raycore.hit_barycentric(accel, rec)

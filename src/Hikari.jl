@@ -183,6 +183,7 @@ include("materials/beckmann.jl")
 include("materials/lobes.jl")
 include("materials/layered.jl")
 include("materials/bsdf-nodes.jl")
+include("materials/packed-inputs.jl")
 include("materials/shader-material.jl")
 include("materials/descriptions.jl")
 include("materials/pbrt-nodes.jl")
@@ -309,6 +310,9 @@ Mantle.@setup_workload begin
         # Scene insertion and synchronization need concrete device types. Infer
         # those types and precompile their host methods without running them.
         _precompile_statements()
+        for device in _precompile_device_types()
+            _precompile_shader_workload(device)
+        end
     end
 end
 

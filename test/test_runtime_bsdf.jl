@@ -66,7 +66,14 @@ module SharedBSDFDifferentialTests
                 packed = candidate.lobes
                 @test candidate.total ≈ reference.total
                 @test all(isapprox.(candidate.emission.data, reference.emission.data))
-                @test isbitstype(typeof(candidate))
+                # Up to five records live in an isbits tuple. Larger classes
+                # keep a stack array of isbits records, read below its count.
+                if P.parameters[1] <= 5
+                    @test isbitstype(typeof(candidate))
+                else
+                    @test packed.data isa Hikari.MVector{P.parameters[1]}
+                    @test isbitstype(eltype(packed.data))
+                end
                 @test candidate.dispersive == reference.dispersive
                 @test Hikari.subsurface_weight(packed) ≈ Hikari.subsurface_weight(reference.lobes)
                 for fraction in (0.0f0, 0.1f0, 0.9f0)

@@ -5,6 +5,9 @@ const SURFACE_PRINCIPLED_MASK = foldl(|, (UInt32(1) << k for k in (1, 2, 3, 4, 5
 # or thin-wall/subsurface layers. The program interpreter still needs bit seven
 # to recognize Principled; scattering dispatch can exclude its glass cases.
 const SURFACE_OPAQUE_STORAGE = UInt32(1) << 31
+# A program of one Principled node, without walks: its hits can use the bounded
+# kernels of `shade_queues`. Not a lobe kind; those use the bits up to 20.
+const SURFACE_ONE_PRINCIPLED = UInt32(1) << 30
 @inline surface_has_walk(::Val{Mask}) where {Mask} = Mask isa Bool ? Mask : !iszero(Mask & (UInt32(1) << 14))
 @inline function surface_apply(f, l::SurfaceStoredLobe{Looped, Mask}, args...) where {Looped, Mask}
     return surface_apply_fields(f, Val(Looped), Val(Mask), l.kind, l.data..., args...)
@@ -83,6 +86,9 @@ surface_node_capacity(::Type{<:PrincipledBSDF{T}}, mask) where {T} =
     (T ? 7 : 6) + (surface_has_walk(Val(mask)) ? 2 : 0)
 surface_node_capacity(::Type{SingleScatterBSDF{B, C}}, mask) where {B, C} = surface_node_capacity(B, mask)
 surface_node_capacity(::Type{<:SubsurfaceBSDF}, mask) = surface_has_walk(Val(mask)) ? 2 : 1
+is_principled(::Type) = false
+is_principled(::Type{<:PrincipledBSDF}) = true
+is_principled(::Type{SingleScatterBSDF{B, C}}) where {B, C} = is_principled(B)
 
 function surface_program_class(::Type{M}, api) where {M <: Tuple}
     masks = map(surface_node_mask, M.parameters)
@@ -92,8 +98,12 @@ function surface_program_class(::Type{M}, api) where {M <: Tuple}
     # A one-lobe graph needs no dynamic slot selection. Keeping four records
     # here cost ~20% on simple materials; the same interpreter with one record
     # costs ~3.5%. Compositions retain the shared minimum-four class.
-    n = slots <= 1 ? slots : nextpow(2, max(4, slots))
-    return SurfaceProgramNodes{n, true, mask, emits(M)}
+    # Larger programs use a local array of at least sixteen records. On NVIDIA
+    # (RTX 3070, RTX 4000 Ada) smaller arrays render 3-8x slower with identical
+    # pixels, and cost rises from 8 to 12 records before dropping at 16.
+    n = slots <= 1 ? slots : slots <= 4 ? 4 : nextpow(2, max(16, slots))
+    one = length(M.parameters) == 1 && is_principled(M.parameters[1]) && !surface_has_walk(Val(mask))
+    return SurfaceProgramNodes{n, true, one ? mask | SURFACE_ONE_PRINCIPLED : mask, emits(M)}
 end
 # Direct shader calls also run inside GPU kernels. Resolve their storage type
 # during specialization: reflecting over M.parameters at runtime leaves the
@@ -119,16 +129,16 @@ end
 @inline surface_empty(::Val{N}, ::Val{Looped}, ::Val{Mask}) where {N, Looped, Mask} =
     ntuple(_ -> Weighted(SurfaceStoredLobe{Looped, Mask}(0, ntuple(_ -> 0.0f0, Val(15))), SpectralRadiance(0.0f0), 0.0f0, Vec3f(0, 0, 1), Vec3f(0)), Val(N))
 
-# Set up each node once into a local mutable array, then expose an isbits tuple
-# to the existing BSDF carrier. This avoids recursively expanding every possible
-# node kind at every remaining capacity during inference/LLVM optimization.
+# Set up each node once. Small fixed classes use constant tuple indices; larger
+# programs keep their local array so a dynamic index does not select every field
+# of every record. The counted BSDF traversal is shared by both layouts.
 @inline surface_append!(storage, ::Tuple{}, at, table, lambda, scale, mode, mask) = at
 @inline function surface_store_node!(::Type{T}, storage, at, s, prog, i, sc, lut, table, lambda, scale, mode, mask) where {T}
     terms, _, emission = node_lobes(T, s, prog, i, sc, lut)
     after = surface_append!(storage, terms, at, table, lambda, scale, mode, mask)
     return next_node(prog, i, instruction_count(T)), after, emission
 end
-Base.@constprop :none @noinline function surface_setup_slots(::Val{N}, s, prog, i, sc, lut, table, lambda, scale, mode::Val{Looped}, mask::Val{Mask}) where {N, Looped, Mask}
+Base.@constprop :none @inline function surface_setup_slots(::Val{N}, s, prog, i, sc, lut, table, lambda, scale, mode::Val{Looped}, mask::Val{Mask}) where {N, Looped, Mask}
     storage = MVector{N, SurfaceStoredWeight{Looped, Mask}}(surface_empty(Val(N), mode, mask))
     at = Int32(1); emission = Vec3f(0)
     @inbounds while prog[i].op != NodeOp.RESULT
@@ -138,7 +148,7 @@ Base.@constprop :none @noinline function surface_setup_slots(::Val{N}, s, prog, 
         i, at, e = surface_store_dispatch!(storage, at, s, prog, i, sc, lut, table, lambda, scale, mode, mask)
         emission += e
     end
-    return Tuple(storage), emission, at - Int32(1)
+    return (N <= 5 ? Tuple(storage) : storage), emission, at - Int32(1)
 end
 Base.@constprop :none @noinline function surface_setup_slots(::Val{0}, s, prog, i, sc, lut, table, lambda, scale, mode::Val, mask::Val)
     _, emission = surface_zero_prefix(s, prog, i, sc)
@@ -149,7 +159,7 @@ end
 # The dispatch proofs expose exact zero/one controls to the compiler. This
 # eliminates unused layer setup while
 # continuing to use the same Principled formulas as every other program.
-@inline @generated function surface_proven_inputs(p::PrincipledInputs, ::Val{Mask}) where {Mask}
+@inline @generated function surface_proven_inputs(p::PrincipledInputs, ::Val{Mask}, ::Val{Capacity}=Val(0)) where {Mask, Capacity}
     opaque = Mask isa UInt32 && !iszero(Mask & SURFACE_OPAQUE_STORAGE)
     glass = Mask in (UInt32(1) << 7, (UInt32(1) << 7) | (UInt32(1) << 18))
     opaque || glass || return :p
@@ -157,6 +167,7 @@ end
         f === :transmission && return opaque ? :(0f0) : :(1f0)
         f in (:subsurface, :thin_wall) && return :(0f0)
         glass && f in (:metallic, :coat_weight, :sheen_weight) && return :(0f0)
+        opaque && Capacity == 2 && f in (:coat_weight, :sheen_weight) && return :(0f0)
         return :(getfield(p, $(QuoteNode(f))))
     end
     return Expr(:call, :PrincipledInputs, fields...)
@@ -291,12 +302,12 @@ end
     @inbounds while prog[i].op != NodeOp.RESULT
         ins = prog[i]
         if ins.op == NodeOp.PRINCIPLED
-            c = instruction_count(PrincipledBSDF)
-            transparency_sum += Vec3f(node_f(s, prog, i, 1, c, sc) * (1.0f0 - clamp(node_f(s, prog, i, 6, c, sc), 0.0f0, 1.0f0)))
+            p = principled_inputs(s, prog, i, sc)
+            transparency_sum += Vec3f(p.weight * (1.0f0 - clamp(p.alpha, 0.0f0, 1.0f0)))
             if !iszero(Mask & (UInt32(1) << 7))
-                abbe = max(node_f(s, prog, i, 21, c, sc), 0.0f0)
-                dispersion = clamp(node_f(s, prog, i, 20, c, sc), 0.0f0, 1.0f0)
-                thin = node_f(s, prog, i, 34, c, sc) > 0.5f0
+                abbe = max(p.abbe, 0.0f0)
+                dispersion = clamp(p.dispersion, 0.0f0, 1.0f0)
+                thin = p.thin_wall > 0.5f0
                 dispersive |= !thin && abbe > 0.0f0 && dispersion > 0.0f0
             end
         elseif ins.mode[1] == ClosureKind.DIFFUSE
@@ -308,15 +319,50 @@ end
     end
     return transparency_sum, dispersive
 end
+@inline surface_sample_total(slots::Tuple) = reduce(+, map(w -> w.sample_weight, slots); init = 0.0f0)
+@inline surface_sample_total(slots::MVector{N}) where {N} =
+    reduce(+, ntuple(i -> slots[i].sample_weight, Val(N)); init = 0.0f0)
 @inline function surface_program_bsdf(::Type{SurfaceProgramNodes{N, Looped, Mask, E}}, s, prog, sc, lut, table, lambda, start::Int32 = Int32(1)) where {N, Looped, Mask, E}
     transparency_sum, dispersive = surface_program_metadata(s, prog, sc, Val(Mask), start)
     alpha = 1.0f0 - _avg(transparency_sum)
     scale = alpha > 1.0f-6 ? 1.0f0 / alpha : 0.0f0
     slots, emission, count = surface_setup_slots(Val(N), s, prog, start, sc, lut, table, lambda, scale, Val(Looped), Val(Mask))
     lobes = SurfaceLobeSpan(slots, count)
-    total = reduce(+, map(w -> w.sample_weight, slots); init = 0.0f0)
+    total = surface_sample_total(slots)
     L = E && _max(emission) > 0.0f0 ? uplift_rgb_illuminant(table, RGBSpectrum(emission...), lambda) / D65_PHOTOMETRIC : SpectralRadiance(0.0f0)
     return LobeBSDF(lobes, total, lambda, L, dispersive)
+end
+
+# These hints prove one Principled node with a fixed set of possible models.
+# Keep their layouts instead of tagging/unpacking records at every evaluation.
+# The number of kernel classes stays fixed as graph structure changes.
+@inline function surface_principled_bsdf(::Val{Capacity}, ::Val{Mask}, ::Val{E}, s, prog, sc, lut, table,
+                                        lambda, start::Int32) where {Capacity, Mask, E}
+    p = surface_proven_inputs(principled_inputs(s, prog, start, sc), Val(Mask), Val(Capacity))
+    convention = iszero(Mask & (UInt32(1) << 18)) ? CyclesGGX() : CyclesBeckmann()
+    rgb, transparency, emission = principled_lobes(Val(false), Val(false), p, sc, lut,
+                                                  prog[start].mode[2] == 0x00, convention)
+    # Opaque classes exclude the zero transmission term and its dispersion.
+    # Capacity two permits metal OR specular/diffuse: three fixed model layouts,
+    # at most two live weights. Keeping the absent model avoids a union type.
+    terms = Capacity == 1 ? (rgb[4],) : Capacity == 2 ? (rgb[3], rgb[5], rgb[6]) :
+        (rgb[1], rgb[2], rgb[3], rgb[5], rgb[6])
+    return lobe_bsdf(Tuple{PrincipledBSDF{false, false, E}}, (terms, transparency, emission), table, lambda)
+end
+
+@inline surface_program_bsdf(::Type{SurfaceProgramNodes{2, L, M, E}}, s, prog, sc, lut, table,
+                            lambda, start::Int32=Int32(1)) where {L,M,E} =
+    surface_principled_bsdf(Val(2), Val(M), Val(E), s, prog, sc, lut, table, lambda, start)
+@inline surface_program_bsdf(::Type{SurfaceProgramNodes{5, L, M, E}}, s, prog, sc, lut, table,
+                            lambda, start::Int32=Int32(1)) where {L,M,E} =
+    surface_principled_bsdf(Val(5), Val(M), Val(E), s, prog, sc, lut, table, lambda, start)
+
+# Other one-record programs include Diffuse/Sheen/Glossy. Only these exact
+# masks carry the proof of a single full-transmission Principled node.
+for mask in (UInt32(1) << 7, (UInt32(1) << 7) | (UInt32(1) << 18))
+    @eval @inline surface_program_bsdf(::Type{SurfaceProgramNodes{1, L, $mask, E}}, s, prog, sc, lut, table,
+                                     lambda, start::Int32=Int32(1)) where {L,E} =
+        surface_principled_bsdf(Val(1), Val($mask), Val(E), s, prog, sc, lut, table, lambda, start)
 end
 
 """Select storage by scattering capabilities and capacity, independently of node order."""

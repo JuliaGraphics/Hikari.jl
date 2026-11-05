@@ -267,18 +267,107 @@ end
 end
 
 shade_queues(q) = (q,)
+has_capacity_classes(::Type) = false
+has_capacity_classes(::Type{SurfaceProgramNodes{N, L, K, E}}) where {N, L, K, E} =
+    !iszero(K & SURFACE_ONE_PRINCIPLED)
 function shade_queues(q::ClosureQueue{SurfaceProgramNodes{N, L, K, E}}) where {N, L, K, E}
-    # Only Principled programs currently have a tighter bound. Smaller classes
-    # and all other BSDF capability sets keep their single dispatch. A single
-    # eligible Principled node fits class eight; larger compositions cannot
-    # receive either hint and need no extra kernels.
-    if N == 8 && !surface_has_walk(Val(K)) && !iszero(K & (UInt32(1) << 7))
-        glass = K & ((UInt32(1) << 7) | (UInt32(1) << 18))
+    if has_capacity_classes(SurfaceProgramNodes{N, L, K, E})
+        mask = K & ~SURFACE_ONE_PRINCIPLED
+        glass = mask & ((UInt32(1) << 7) | (UInt32(1) << 18))
         return (CapacityQueue{SurfaceProgramNodes{1, L, glass, E}, 1, typeof(q)}(q),
-                CapacityQueue{SurfaceProgramNodes{5, L, K | SURFACE_OPAQUE_STORAGE, E}, 5, typeof(q)}(q),
-                CapacityQueue{SurfaceProgramNodes{N, L, K, E}, 0, typeof(q)}(q))
+                CapacityQueue{SurfaceProgramNodes{2, L, mask | SURFACE_OPAQUE_STORAGE, E}, 2, typeof(q)}(q),
+                CapacityQueue{SurfaceProgramNodes{5, L, mask | SURFACE_OPAQUE_STORAGE, E}, 5, typeof(q)}(q),
+                CapacityQueue{SurfaceProgramNodes{N, L, mask, E}, 0, typeof(q)}(q))
     end
     return (q,)
+end
+
+@inline capacity_bin(hint) = hint == 1 ? Int32(1) : hint == 2 ? Int32(2) : hint == 5 ? Int32(3) : Int32(4)
+
+# Scratch indices shared by every bounded material slot and every round. The
+# hit payload stays in surface_hits; only its four-byte index is partitioned.
+struct ShaderCapacityPartition{V <: AbstractVector{Int32}}
+    items::V
+    sizes::V
+    capacity::Int32
+end
+ShaderCapacityPartition(capacity::Integer, mem::DeviceMemory; indices::Bool=true) =
+    ShaderCapacityPartition(alloc!(mem, Int32, indices ? 4 * capacity : 1), alloc!(mem, Int32, 4), Int32(capacity))
+
+function partition_queue(q::CapacityQueue, bin::Integer, p::ShaderCapacityPartition; uniform::Bool=false)
+    original = q.queue
+    items = uniform ? original.items : p.items
+    offset = uniform ? original.offset : Int32((bin - 1) * p.capacity)
+    base = typeof(original)(items, p.sizes, Int32(bin), offset,
+                            original.inputs, original.program_offset)
+    # Keep the existing queue/ref type and all its compiled shading kernels.
+    return typeof(q)(base)
+end
+
+# A slot with one material program has one class for every hit. Read its
+# current hint on the GPU so edits keep the recorded plan and queue types.
+@kernel inbounds=true function vp_shader_capacity_counts_kernel!(sizes, q, programs)
+    if @index(Global) == 1
+        program = q.inputs.program[q.program_offset + Int32(1)]
+        hint = closure_capacity_hint(programs[program][Int32(1)])
+        n = q.sizes[q.slot]
+        bin = capacity_bin(hint)
+        for k in 1:4
+            sizes[k] = bin == k ? n : Int32(0)
+        end
+    end
+end
+
+@inline function store_capacity_index!(::Val{false}, items, sizes, capacity::Int32, idx::Int32, target::Int32)
+    if target != 0
+        pos = @atomic :monotonic sizes[target] += Int32(1)
+        pos <= capacity && (@inbounds items[(target - Int32(1)) * capacity + pos] = idx)
+    end
+    return nothing
+end
+
+@inline function store_capacity_index!(::Val{true}, items, sizes, capacity::Int32, idx::Int32, target::Int32)
+    lane = KernelInterface.get_sub_group_local_id(Int32)
+    preceding = (UInt64(1) << (lane - Int32(1))) - UInt64(1)
+    # One reservation per subgroup/class avoids a contended increment per hit.
+    # Padding participates too; every subgroup executes the same collectives.
+    for bin in Int32(1):Int32(4)
+        mask = KernelInterface.sub_group_ballot(target == bin)
+        base = Int32(0)
+        if lane == Int32(1) && !iszero(mask)
+            count = Int32(count_ones(mask))
+            base = (@atomic :monotonic sizes[bin] += count) - count
+        end
+        base = KernelInterface.shfl(base, Int32(1))
+        if target == bin
+            pos = base + Int32(count_ones(mask & preceding)) + Int32(1)
+            pos <= capacity && (@inbounds items[(bin - Int32(1)) * capacity + pos] = idx)
+        end
+    end
+    return nothing
+end
+
+capacity_group_reservation(backend) = KernelInterface.supports_subgroups(backend) &&
+    KernelInterface.supports_shuffle(backend, Int32) && KernelInterface.sub_group_size(backend) <= 64
+
+# Disable implicit index masking so padded invocations reach the collectives.
+# The explicit count guards every payload read, including partial workgroups.
+@kernel unsafe_indices=true inbounds=true function vp_partition_shader_capacity_kernel!(
+    q, hits, accel, interfaces, programs, items, sizes, capacity::Int32, mode::Val,
+)
+    j = KernelInterface.get_global_id(Int32).x
+    idx = Int32(0); target = Int32(0)
+    if j <= queuelength(q)
+        ref = q[j]
+        idx = ref.idx
+        sh = hits.items[idx]
+        primitive = Raycore.hit_primitive(accel, sh.hit)
+        key = interfaces[resolve_mi_idx(sh.hit.custom, primitive)].material
+        program = q.inputs.program[q.program_offset + key.vec_idx]
+        hint = closure_capacity_hint(programs[program][Int32(1)])
+        target = capacity_bin(hint)
+    end
+    store_capacity_index!(mode, items, sizes, capacity, idx, target)
 end
 
 """The material type a hit reference is shaded as: its queue's, or the closures of its nodes."""

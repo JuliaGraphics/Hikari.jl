@@ -78,6 +78,7 @@ mutable struct VolPath <: Integrator
     # until the first `render!` builds plans, and again when they are dropped.
     # The plans own the object; this is the typed handle to it.
     perrun::Union{Nothing, PerRun{PerspectiveCamera}, PerRun{MatrixCamera}}
+    path_limit::Int
 end
 
 """
@@ -145,6 +146,7 @@ function VolPath(;
         nothing,           # listening_to
         nothing,           # adapted
         nothing,           # perrun
+        0,                 # path_limit, selected with the first state
     )
     # No GC finalizer — the VolPathState is shared with scene_state.integrator_state,
     # so proactive free! from a finalizer would free arrays still in use by the render loop.
@@ -242,6 +244,7 @@ function Base.close(vp::VolPath)
     vp.listening_to = nothing
     vp.adapted = nothing
     vp.perrun = nothing
+    vp.path_limit = 0
     return nothing
 end
 
@@ -276,25 +279,24 @@ end
 # ============================================================================
 
 """
-    vp_generate_camera_rays_kernel!(...)
+    generate_camera_work!(...)
 
 Generate camera rays with per-pixel wavelength sampling and filter weight computation.
 Following pbrt-v4's GetCameraSample: samples the filter, computes offset and weight.
 """
-@kernel inbounds=true function vp_generate_camera_rays_kernel!(
-    ray_queue,  # WorkQueue passed via Adapt
+@inline function generate_camera_work!(
     wavelengths_per_pixel,
     pdf_per_pixel,
     filter_weight_per_pixel,
-    @Const(height::Int32),
-    @Const(camera_ref),         # GPURef: one-element device array holding the camera
-    @Const(sample_idx_ref),
-    @Const(initial_medium_ref), # GPURef{SetKey}: the medium the camera starts in
-    @Const(filter_params_ref),  # GPURef{GPUFilterParams}
-    filter_sampler_data,  # GPUFilterSamplerData or nothing for Box/Triangle
-    rng  # SobolRNG passed via Adapt
+    height::Int32,
+    camera_ref,
+    sample_idx_ref,
+    initial_medium_ref,
+    filter_params_ref,
+    filter_sampler_data,
+    rng,
+    idx::Int32,
 )
-    idx = @index(Global)
     # The sample index is a `Mantle.GPURef`, a one-element device array whose
     # ADDRESS the recorded commands hold, so one recording renders every sample.
     # So are the camera, the initial medium and the filter params — per-run
@@ -309,18 +311,14 @@ Following pbrt-v4's GetCameraSample: samples the filter, computes offset and wei
     # reads on a value already in registers, so the kernel computes them.
     camera_needs_time = camera_uses_motion_blur(camera)  # shutter_open != shutter_close
     camera_needs_lens = camera_uses_lens(camera)         # lens_radius > 0
-    num_paths = rng.pixels * rng.lanes
-
-    @inbounds if idx <= num_paths
+    @inbounds begin
         x, y, path_sample = path_pixel_sample(rng, Int32(idx), sample_idx)
 
         # ZSobol sampling: deterministic low-discrepancy samples based on (pixel, sample_index)
         # Matches PBRT-v4's ZSobolSampler for better convergence.  Skip the
         # lens 2D sample for pinhole cameras and the time 1D sample for
-        # shutter-stopped cameras — both are pure waste on those configs
-        # and the camera-ray kernel is Sobol-bound.  Effects flags come
-        # from the kernel arguments (computed CPU-side) so the GPU code
-        # path is just two uniform branches, not a getproperty chain.
+        # shutter-stopped cameras. The flags are shared by every ray of
+        # the camera, so these branches are uniform across the workgroup.
         pixel_sample = compute_pixel_sample(rng, x, y, path_sample,
                                             camera_needs_time, camera_needs_lens)
         wavelength_u = pixel_sample.wavelength_u
@@ -358,26 +356,53 @@ Following pbrt-v4's GetCameraSample: samples the filter, computes offset and wei
         camera_sample = CameraSample(p_film, Point2f(pixel_sample.lens_u, pixel_sample.lens_v), pixel_sample.time)
         ray, weight = generate_ray(camera, camera_sample)
 
+        raycore_ray = Raycore.Ray(o=ray.o, d=ray.d, t_max=ray.t_max)
+
+        work_item = VPRayWorkItem(
+            raycore_ray,
+            Int32(0),  # depth
+            lambda,
+            Int32(idx),
+            SpectralRadiance(1f0),  # beta
+            SpectralRadiance(1f0),  # r_u
+            SpectralRadiance(1f0),  # r_l
+            Point3f(0f0),          # prev_intr_p
+            Vec3f(0f0, 0f0, 1f0),  # prev_intr_n
+            1f0,                   # eta_scale
+            false,                 # specular_bounce
+            false,                 # any_non_specular_bounces
+            initial_medium_idx
+        )
+        return work_item, weight
+    end
+end
+
+@kernel inbounds=true function vp_generate_camera_rays_kernel!(
+    ray_queue, wavelengths_per_pixel, pdf_per_pixel, filter_weight_per_pixel,
+    @Const(height::Int32), @Const(camera_ref), @Const(sample_idx_ref),
+    @Const(initial_medium_ref), @Const(filter_params_ref), filter_sampler_data, rng,
+)
+    idx = @index(Global)
+    if idx <= rng.pixels * rng.lanes
+        work, weight = generate_camera_work!(wavelengths_per_pixel, pdf_per_pixel,
+            filter_weight_per_pixel, height, camera_ref, sample_idx_ref, initial_medium_ref,
+            filter_params_ref, filter_sampler_data, rng, Int32(idx))
+        weight > 0f0 && push!(ray_queue, work)
+    end
+end
+
+@kernel inbounds=true function vp_generate_primary_rays_kernel!(
+    ray_queue, wavelengths_per_pixel, pdf_per_pixel, filter_weight_per_pixel,
+    @Const(height::Int32), @Const(camera_ref), @Const(sample_idx_ref),
+    @Const(initial_medium_ref), @Const(filter_params_ref), filter_sampler_data, rng, trace_args,
+)
+    idx = @index(Global)
+    if idx <= rng.pixels * rng.lanes
+        work, weight = generate_camera_work!(wavelengths_per_pixel, pdf_per_pixel,
+            filter_weight_per_pixel, height, camera_ref, sample_idx_ref, initial_medium_ref,
+            filter_params_ref, filter_sampler_data, rng, Int32(idx))
         if weight > 0f0
-            raycore_ray = Raycore.Ray(o=ray.o, d=ray.d, t_max=ray.t_max)
-
-            work_item = VPRayWorkItem(
-                raycore_ray,
-                Int32(0),  # depth
-                lambda,    # Already a SampledWavelengths from sample_wavelengths_visible
-                Int32(idx),
-                SpectralRadiance(1f0),  # beta
-                SpectralRadiance(1f0),  # r_u
-                SpectralRadiance(1f0),  # r_l
-                Point3f(0f0),           # prev_intr_p
-                Vec3f(0f0, 0f0, 1f0),   # prev_intr_n
-                1f0,                    # eta_scale
-                false,                  # specular_bounce
-                false,                  # any_non_specular_bounces
-                initial_medium_idx
-            )
-
-            push!(ray_queue, work_item)
+            vp_trace!(work, Int32(idx), PrimaryRayStore(ray_queue.items), trace_args...)
         end
     end
 end
@@ -636,11 +661,12 @@ function render!(
     # the state) or a first call. The film and the camera are call ARGUMENTS,
     # which cannot announce themselves; scene mutation never comes through here
     # at all.
-    lanes = wave_lanes(samples, width * height)
+    path_limit = wave_path_limit(vp, mantle_device(backend))
+    lanes = wave_lanes(samples, width * height, path_limit)
     plans = vp.state === nothing ? nothing : vp.state.plans
     if plans === nothing || plans.framebuffer !== img || !holdscamera(vp.perrun, camera) ||
        vp.state.sobol_rng.lanes != lanes
-        rebuild_render_state!(vp, scene, film, camera, backend, initial_medium, lanes)
+        rebuild_render_state!(vp, scene, film, camera, backend, initial_medium, lanes, path_limit)
         plans = (vp.state::VolPathState).plans
     end
 
@@ -676,16 +702,25 @@ function render!(
 end
 
 """The most paths a wave holds: what its queues and buffers are sized for."""
-const WAVE_PATHS = 1 << 19
+# Larger waves amortize fixed wavefront dispatch costs. Keep the conservative
+# bound on smaller/unknown devices; a reported budget of at least 12 GiB leaves
+# room for four-million-path state, medium queues and scene assets together.
+# Full-resolution films retain at least one lane even beyond the path bound.
+const WAVE_PATHS = 1 << 21
+wave_path_limit(dev) = wave_path_limit(Mantle.capacity(dev))
+wave_path_limit(budget::Integer) = budget != typemax(Int) && budget >= (12 << 30) ? 2 * WAVE_PATHS : WAVE_PATHS
+# Other GPU allocations can change the reported budget between frames. Keep
+# the original bound for this state instead of repeatedly rebuilding its plans.
+wave_path_limit(vp::VolPath, dev) = vp.state === nothing ? wave_path_limit(dev) : vp.path_limit
 
 """
-    wave_lanes(samples, n_pixels) -> Int
+    wave_lanes(samples, n_pixels, path_limit=WAVE_PATHS) -> Int
 
 How many samples of every pixel one wave of paths holds when `samples` are taken: the most that
-divide `samples` and keep a wave within [`WAVE_PATHS`](@ref) paths.
+divide `samples` and keep a wave within `path_limit` paths.
 """
-function wave_lanes(samples::Integer, n_pixels::Integer)
-    most = clamp(WAVE_PATHS ÷ n_pixels, 1, samples)
+function wave_lanes(samples::Integer, n_pixels::Integer, path_limit::Integer = WAVE_PATHS)
+    most = clamp(path_limit ÷ n_pixels, 1, samples)
     return findlast(k -> samples % k == 0, 1:most)
 end
 
@@ -701,7 +736,7 @@ area light, the sky), or a material's own emission (`emits`).
 has_crossings(media_interfaces) = any(mi -> !Raycore.is_valid(mi.material), Array(media_interfaces))
 
 """
-    rebuild_render_state!(vp, scene, film, camera, backend, initial_medium, lanes)
+    rebuild_render_state!(vp, scene, film, camera, backend, initial_medium, lanes, path_limit)
 
 Build everything a sample needs that does not change between samples: the
 `VolPathState`, the per-material queues, the filter sampler's device copy and
@@ -711,7 +746,8 @@ here; the state-rebuild condition answers the film the plans were just dropped
 for.
 """
 function rebuild_render_state!(vp::VolPath, scene::AbstractScene, film::Film,
-                               camera::Camera, backend, initial_medium, lanes::Integer)
+                               camera::Camera, backend, initial_medium, lanes::Integer,
+                               path_limit::Integer)
     img = film.framebuffer
     height, width = size(img)
     adapted = vp.adapted::Scene  # set by render! just above
@@ -737,7 +773,20 @@ function rebuild_render_state!(vp::VolPath, scene::AbstractScene, film::Film,
         # The previous state's regions go back before the new ones are taken,
         # so a resize does not hold two states' worth at once. No synchronize
         # and no finalizer race: nothing finalizes, and `free!` retires.
-        vp.state === nothing || free!(vp.state)
+        accumulators = nothing
+        if vp.state !== nothing
+            previous = vp.state
+            if previous.plans !== nothing && previous.plans.framebuffer === img &&
+               previous.width == width && previous.height == height &&
+               eltype(previous.pixel_rgb) === vp.accumulation_eltype
+                # A different sample batch resizes path queues, not the film's
+                # progressive history. Transfer its owner without copying or
+                # retiring the two per-pixel accumulator buffers.
+                accumulators = (previous.accumulation_memory, previous.pixel_rgb, previous.pixel_weight_sum)
+                previous.accumulation_memory = DeviceMemory()
+            end
+            free!(previous)
+        end
         # Use original scene.lights (MultiTypeSet) for PowerLightSampler (needs .backend)
         # Ensure SobolRNG has enough bits for progressive rendering:
         # When samples_per_pixel=1 (interactive mode), log2_spp=0 causes sample_idx
@@ -752,9 +801,11 @@ function rebuild_render_state!(vp::VolPath, scene::AbstractScene, film::Film,
                                 samples_per_pixel=sobol_spp,
                                 sampler_seed=UInt32(0),
                                 accumulation_eltype=vp.accumulation_eltype,
+                                accumulators=accumulators,
                                 sensor=vp.sensor,
                                 has_media=has_media)
     end
+    vp.path_limit = path_limit
     state = vp.state
 
     n_pixels = width * height
@@ -817,24 +868,12 @@ function (vp::VolPath)(
     film.iteration_index[] = Int32(0)
     # Clear RGB and weight accumulators for fresh render
     clear!(vp)
-    # Render all samples by calling render! repeatedly
-    # Flush GPU between samples to avoid driver timeout on long renders.
-    # Each sample generates ~100 dispatches; without flushing, N samples
-    # accumulate into a single massive GPU submission that can exceed
-    # the driver's preemption timeout (DEVICE_LOST).
     backend = KA.get_backend(film.framebuffer)
     dev = mantle_device(backend)
-    height, width = size(film.framebuffer)
-    lanes = wave_lanes(vp.samples_per_pixel, width * height)
-    waves = vp.samples_per_pixel ÷ lanes
-    for wave in 1:waves
-        render!(vp, scene, film, camera; samples = lanes, finalize_framebuffer = wave == waves)
-        # Device-wide, and meant to be: this bounds how much work one submission
-        # carries, which is a statement about the queue rather than about any one
-        # plan. Through Mantle rather than `KA.synchronize` so the wait is one
-        # Mantle can see — same reason as the early exit above.
-        Mantle.waitidle(dev)
-    end
+    # Each recorded plan already submits bounded work. Waiting after every
+    # wave drains the queue without making those submissions any smaller.
+    render!(vp, scene, film, camera; samples = Int(vp.samples_per_pixel))
+    Mantle.waitidle(dev)
 
     postprocess!(film)
     return film.postprocess

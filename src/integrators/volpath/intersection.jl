@@ -1,6 +1,38 @@
 # Ray tracing and intersection handling for VolPath
 # Handles ray-scene intersection and classifies results into work queues
 
+# Primary rays are traced before their path state reaches global memory. Only
+# surface hits need it afterwards; misses and medium samples already carry
+# what their consumers need in their own queues.
+struct PrimaryRayStore{A}
+    items::A
+end
+@inline function publish_traced_work!(rays, path, work, tinted)
+    tinted && (@inbounds rays.beta[path] = work.beta)
+    nothing
+end
+@inline function publish_traced_work!(rays::PrimaryRayStore, path, work, tinted)
+    # A primary has not scattered. Keep only its variable state; the tagged
+    # surface hit tells shading to reconstruct the known camera-path defaults.
+    @inbounds begin
+        rays.items.ray[path] = work.ray
+        rays.items.lambda[path] = work.lambda
+        rays.items.beta[path] = work.beta
+        rays.items.medium_idx[path] = work.medium_idx
+    end
+    nothing
+end
+@inline primary_hit(::Any) = false
+@inline primary_hit(::PrimaryRayStore) = true
+
+@inline function primary_work(rays, path::Int32)
+    # The fused camera kernel reserves slot idx for the path whose pixel_index
+    # is idx, including sample lanes. Ordinary queued rays do not have this identity.
+    @inbounds return VPRayWorkItem(rays.ray[path], Int32(0), rays.lambda[path], path,
+        rays.beta[path], SpectralRadiance(1f0), SpectralRadiance(1f0), Point3f(0f0), Vec3f(0, 0, 1),
+        1f0, false, false, rays.medium_idx[path])
+end
+
 "Offset to the outgoing side, including Float32 position error at large coordinates."
 @inline function offset_surface_origin(p::Point3f,n::Vec3f,d::Vec3f)
     normal=dot(d,n)>0f0 ? n : -n
@@ -317,7 +349,7 @@ end
 # here and reading it back there cost more than the shading on an RTX 4000 Ada.
 
 @kernel inbounds = true function vp_trace_kernel!(
-    cur, next_ray_queue, escaped_queue, medium_sample_queue,
+    cur, next_ray_queue, infinite_light_indices, medium_sample_queue,
     material_queues, surface_hits,
     pixel_L, accel, media_interfaces, media, materials, lights, rgb2spec_table,
     bvh_nodes, light_to_bit_trail,
@@ -325,7 +357,7 @@ end
 )
     i = @index(Global)
     if i <= cur.size[1]
-        vp_trace!(cur.items[i], Int32(i), cur.items, next_ray_queue, escaped_queue, medium_sample_queue,
+        vp_trace!(cur.items[i], Int32(i), cur.items, next_ray_queue, infinite_light_indices, medium_sample_queue,
                   material_queues, surface_hits,
                   pixel_L, accel, media_interfaces, media, materials, lights, rgb2spec_table,
                   bvh_nodes, light_to_bit_trail, num_infinite_lights, num_bvh_lights, max_depth)
@@ -333,7 +365,7 @@ end
 end
 
 @propagate_inbounds function vp_trace!(
-    work::VPRayWorkItem, path::Int32, rays, next_ray_queue, escaped_queue, medium_sample_queue,
+    work::VPRayWorkItem, path::Int32, rays, next_ray_queue, infinite_light_indices, medium_sample_queue,
     material_queues, surface_hits,
     pixel_L, accel, media_interfaces, media, materials, lights, rgb2spec_table,
     bvh_nodes, light_to_bit_trail,
@@ -355,7 +387,14 @@ end
     for _ in 1:Int32(16)
         rec = Raycore.closest_hit_record(accel, ray)
         if rec.kind == Raycore.HIT_MISS
-            push!(escaped_queue, VPEscapedRayWorkItem(work))
+            # Surface misses have all their path state here. Evaluate before
+            # discarding it rather than contending on a queue and copying it
+            # out and back in. Medium escape records still run after tracking.
+            if num_infinite_lights > 0
+                vp_handle_escaped_rays_kernel!(VPEscapedRayWorkItem(work),
+                    pixel_L, rgb2spec_table, lights, bvh_nodes, light_to_bit_trail,
+                    infinite_light_indices, num_infinite_lights, num_bvh_lights)
+            end
             return
         end
         primitive = Raycore.hit_primitive(accel, rec)
@@ -409,8 +448,8 @@ end
         end
 
         wants_shading(work.depth, max_depth, primitive.metadata.arealight_id, material_queues, mat_idx) || return
-        tinted && (rays.beta[path] = work.beta)
-        enqueue_surface_hit!(material_queues, surface_hits, mat_idx, VPSurfaceHit(path, rec))
+        publish_traced_work!(rays, path, work, tinted)
+        enqueue_surface_hit!(material_queues, surface_hits, mat_idx, VPSurfaceHit(path, rec, primary_hit(rays)))
         return
     end
     # 16 alpha-bounces exhausted (extremely unlikely): ray absorbed

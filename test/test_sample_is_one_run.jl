@@ -38,6 +38,39 @@ onerun_camera(film, x) = Hikari.PerspectiveCamera(
 devicesamples(plans) = (Mantle.waitfor!(plans.sample);
                         Array(Mantle.storage(plans.perrun.sample_idx))[1])
 
+@testset "complete rendering preserves progressive samples and resets" begin
+    backend = Mantle.defaultbackend()
+    scene = onerun_scene(backend)
+    a = Hikari.Film(backend, Hikari.Film(Point2f(16, 16)))
+    b = Hikari.Film(backend, Hikari.Film(Point2f(16, 16)))
+    camera = onerun_camera(a, 0f0)
+    complete = Hikari.VolPath(samples = 4, max_depth = 2)
+    progressive = Hikari.VolPath(samples = 4, max_depth = 2)
+    try
+        complete(scene, a, camera)
+        for _ in 1:4
+            Hikari.render!(progressive, scene, b, camera; samples = 1)
+        end
+        expected = Array(b.framebuffer)
+        actual = Array(a.framebuffer)
+        @test a.iteration_index[] == b.iteration_index[] == 4
+        @test devicesamples(complete.state.plans) == 4
+        @test devicesamples(progressive.state.plans) == 4
+        @test all(isapprox(x.r, y.r; rtol = 5f-5, atol = 2f-5) &&
+                  isapprox(x.g, y.g; rtol = 5f-5, atol = 2f-5) &&
+                  isapprox(x.b, y.b; rtol = 5f-5, atol = 2f-5)
+                  for (x, y) in zip(actual, expected))
+        complete(scene, a, camera)
+        @test Array(a.framebuffer) == actual
+        @test a.iteration_index[] == devicesamples(complete.state.plans) == 4
+    finally
+        close(complete)
+        close(progressive)
+        Hikari.free!(a)
+        Hikari.free!(b)
+    end
+end
+
 @testset "a still scene stores nothing per sample" begin
     backend = Mantle.defaultbackend()
     scene = onerun_scene(backend)

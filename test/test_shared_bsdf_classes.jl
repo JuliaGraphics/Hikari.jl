@@ -31,7 +31,12 @@ module SharedBSDFClassTests
                 )
                 @test class(material) === reference
             end
-            @test reference === principled
+            # One Principled node carries the proof that selects its bounded
+            # kernels. A composition does not, and otherwise shares its class.
+            @test !iszero(principled.parameters[3] & Hikari.SURFACE_ONE_PRINCIPLED)
+            @test iszero(reference.parameters[3] & Hikari.SURFACE_ONE_PRINCIPLED)
+            @test reference === Hikari.SurfaceProgramNodes{principled.parameters[1], principled.parameters[2],
+                principled.parameters[3] & ~Hikari.SURFACE_ONE_PRINCIPLED, principled.parameters[4]}
 
             @test class(Hikari.Metallic(fresnel_type = :physical_conductor)) ===
                 class(Hikari.Metallic(fresnel_type = :physical_conductor, thin_film_thickness = 400))
