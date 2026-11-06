@@ -43,6 +43,10 @@ end
         Hikari.Conductor(),
         Hikari.Conductor(reflectance = (0.2, 0.4, 0.7)),
         Hikari.Mix(Hikari.Diffuse(color = image), Hikari.CoatedDiffuse(reflectance = image); factor = 0.35),
+        # Its guide reads the term's program pointer through a stack copy of the
+        # term. Lava's forced inlining kept Julia's alias claims on that load, GVN
+        # folded it to `undef`, and the guide kernel failed SPIR-V validation.
+        Hikari.CoatedDiffuse(reflectance = (0.8, 0.2, 0.2), roughness = 0.1),
     )
     for material in materials
         expected = reference(material)
