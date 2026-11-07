@@ -6,6 +6,9 @@ end
 # Ambient lights are infinite (emit from all directions)
 is_infinite_light(::AmbientLight) = true
 is_infinite_light(::Type{<:AmbientLight}) = true
+# …and it is VISIBLE along an escaped ray, unlike a directional light.
+paints_escaped_rays(::AmbientLight) = true
+paints_escaped_rays(::Type{<:AmbientLight}) = true
 
 """
     AmbientLight(rgb::RGB{Float32})
@@ -30,8 +33,8 @@ end
 # Accept any RGB type (e.g., RGBf from Makie/Colors)
 AmbientLight(rgb::RGB) = AmbientLight(RGB{Float32}(rgb.r, rgb.g, rgb.b))
 
-# Legacy: direct spectrum constructor without normalization
-AmbientLight(s::S) where {S<:Spectrum} = AmbientLight{S}(s, 1f0)
+# RGBSpectrum constructor: apply photometric normalization (matching pbrt-v4)
+AmbientLight(s::RGBSpectrum) = AmbientLight{RGBSpectrum}(s, 1f0 / D65_PHOTOMETRIC)
 
 """
 Compute radiance arriving at `ref.p` interaction point at `ref.time` time
@@ -61,19 +64,4 @@ function sample_li(a::AmbientLight, i::Interaction, ::Point2f, ::AbstractScene)
     radiance = a.scale * a.i
     inew = Interaction()
     radiance, Vec3f(normalize(i.p)), pdf, VisibilityTester(inew, inew)
-end
-
-function sample_le(
-        a::AmbientLight, u1::Point2f, ::Point2f, ::Float32,
-    )::Tuple{RGBSpectrum,Ray,Normal3f,Float32,Float32}
-    ray = Ray(o=Point3f(0.0f0), d=uniform_sample_sphere(u1))
-    @real_assert norm(ray.d) ≈ 1.0f0
-    light_normal = Normal3f(ray.d)
-    pdf_pos = 1.0f0
-    pdf_dir = uniform_sphere_pdf()
-    return a.scale * a.i, ray, light_normal, pdf_pos, pdf_dir
-end
-
-@propagate_inbounds function power(p::AmbientLight)
-    4f0 * π * π * p.scale * p.i
 end

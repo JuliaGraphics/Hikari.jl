@@ -1,0 +1,123 @@
+# Hikari Hardware RT Integration
+#
+# VolPath-specific dispatch overrides for hardware-accelerated ray tracing.
+# Uses only Raycore types and stubs -- no backend (Lava/Metal) imports.
+# Backend extensions in Raycore implement the actual dispatch.
+
+# `Mantle`, not `Lava`. The Vulkan runtime — acceleration structures, the
+# backend, the device — moved into Mantle on 2026-08-27; Lava is the SPIR-V
+# compiler and has none of these names any more.
+import Mantle
+import Mantle: HWTLAS, AdaptedAccel
+
+# Any backend with hw_accel=true creates an HWTLAS.  Parametrised on
+# `Raycore.Triangle{TriangleMeta}` because Hikari's scene API pushes meshes
+# with `TriangleMeta` per-face data — `Mantle.HWTLAS(backend)`'s default
+# narrowing to `Triangle{UInt32}` would reject those pushes with a convert
+# error.
+default_accel(backend, ::Val{true}) = HWTLAS{Raycore.Triangle{TriangleMeta}}(backend)
+
+# Scene sync! for HWTLAS scenes
+function sync!(scene::Scene{<:HWTLAS})
+    # Same contract as the TLAS method: invalidate plans only when the sync!
+    # actually rebuilds (`dirty`); a transforms-only refit writes the same
+    # buffers in place and a recorded plan survives it.
+    changed = scene.accel.dirty
+    Raycore.sync!(scene.accel)
+    bound = Raycore.world_bound(scene.accel)
+    scene.bounds[] = (bound, bounding_sphere(bound))
+    changed && notify_scene_changed(scene)
+    return scene
+end
+
+# ============================================================================
+# fill_aux_buffers! for HWTLAS: trace primary rays via HW RT for depth
+# ============================================================================
+
+# Fused primary-ray + closest hit + depth/normal/albedo kernel.  One thread
+# per pixel: generate the camera ray, run inline ray query via
+# `Raycore.closest_hit(accel, ray)` (lowers to OpRayQueryInitializeKHR /
+# Proceed / Get*KHR through the polymorphic dispatch), write the aux buffers.
+# One kernel instead of a 3-step
+# (generate_rays → trace_closest_hits! → extract_depth) plus the dependency
+# on `aux_rays`/`aux_results` scratch buffers.
+@kernel inbounds = true function hw_fill_aux_kernel!(
+    depth, normal, albedo,
+    @Const(camera), @Const(filter), filter_data,
+    @Const(miss_depth::Float32), @Const(grid::Int32),
+    @Const(width::Int32), @Const(height::Int32),
+    accel, materials, interfaces,
+)
+    idx = @index(Global)
+    if idx <= width * height
+        h = height
+        row = Int32(((idx - Int32(1)) % h) + Int32(1))
+        col = Int32(((idx - Int32(1)) ÷ h) + Int32(1))
+        albedo[idx], normal[idx], depth[idx] =
+            pixel_guides(accel, materials, interfaces, camera, filter, filter_data, pixel_centre(row, col, h), miss_depth, grid)
+    end
+end
+
+function fill_aux_buffers!(film::Film, scene::Scene{<:AdaptedAccel}, camera;
+                           has_infinite_lights::Bool=false,
+                           cull_mask::UInt32=UInt32(0xFF), grid::Integer=GUIDE_GRID)
+    hwtlas = scene.accel.hwtlas
+    hwtlas === nothing && return nothing  # Adapt has not run; nothing to trace
+    Raycore.n_instances(hwtlas) == 0 && return nothing
+
+    backend = KA.get_backend(film.depth)
+    h, w = size(film.depth)
+    n = h * w
+    miss_depth = has_infinite_lights ? Float32(1e30) : Inf32
+
+    accel = Adapt.adapt(backend, hwtlas)  # CPU-form AdaptedAccel; LavaAdaptor
+                                           # will strip hwtlas at kernel-arg time
+    hw_fill_aux_kernel!(backend)(
+        film.depth, film.normal, film.albedo,
+        camera, film.filter_params, film.filter_sampler,
+        miss_depth, Int32(grid), Int32(w), Int32(h),
+        accel,scene.materials,scene.media_interfaces; ndrange=n)
+    Mantle.waitidle(mantle_device(backend))
+    return film
+end
+
+# ============================================================================
+# VolPath Dispatch Overrides
+# ============================================================================
+
+function detect_initial_medium(backend, accel::AdaptedAccel, mi, pos, vp::VolPath)
+    return Raycore.SetKey()
+end
+
+# Tracing needs no hardware override of its own: `Raycore.closest_hit_record`
+# on an `AdaptedAccel` is Mantle's ray-query loop on every backend, so
+# `vp_trace_kernel!` covers every traversal.
+
+# ============================================================================
+# Mantle device
+# ============================================================================
+
+"""
+    mantle_device(backend) -> Mantle.Device
+
+The Mantle device for a KernelAbstractions backend, which is what a graph
+allocates transients and records passes against.
+
+`Mantle.Device(VulkanAPI())` is cached one per `VkContext` and wraps that context's
+existing `default_bq`, so this reuses the runtime's device rather than creating a
+second one — a second would mean a second `Pool` over one `VkDevice`, which is
+two allocators over the same memory.
+"""
+# `Mantle.Device(backend)` dispatches on the KernelAbstractions backend itself,
+# so this needs no per-backend method and no backend import — which is what the
+# header of this file promises.
+mantle_device(backend) = Mantle.Device(backend)
+
+# Smallest kernel that reads one buffer and writes another, so a test can pin
+# that a Mantle pass reaches Hikari's own allocations. Lives here rather than in
+# the test file because a `@kernel` has to be compiled into the package that
+# dispatches it.
+@kernel function mantle_probe_scale!(dst, @Const(src), a::Float32)
+    i = @index(Global)
+    @inbounds dst[i] = src[i] * a
+end

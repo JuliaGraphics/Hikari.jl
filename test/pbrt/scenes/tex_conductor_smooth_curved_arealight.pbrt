@@ -1,0 +1,40 @@
+# Smooth curved gold mirror, NO bumpmap — isolates whether Hikari
+# forwards per-vertex normals smoothly under mirror BSDF.
+# Same dome topology, area-light setup, and mesh density as the bump
+# version but with displacement texture removed. pbrt-v4 and Hikari
+# should produce identical smooth reflection.
+
+LookAt 0 0 4   0 0 0   0 1 0
+Camera "perspective" "float fov" 35
+Film "rgb" "integer xresolution" 256 "integer yresolution" 256
+    "float maxcomponentvalue" 10
+Integrator "volpath" "integer maxdepth" 6 "bool regularize" false
+
+WorldBegin
+
+AttributeBegin
+    AreaLightSource "diffuse" "rgb L" [50 50 50] "bool twosided" true
+    Shape "trianglemesh"
+        "point3 P"   [ -2 -1 4.5   0 -1 4.5   0 1 4.5   -2 1 4.5 ]
+        "integer indices" [ 0 1 2  0 2 3 ]
+AttributeEnd
+
+# Mirror gold conductor — no displacement.
+Material "conductor"
+    "spectrum eta" "metal-Au-eta"
+    "spectrum k"   "metal-Au-k"
+
+# Use the same loopsubdiv mesh as the failing bump test — without
+# bump applied, normals interpolate smoothly across subdivisions.
+Shape "loopsubdiv" "integer levels" [4]
+    "point3 P"   [ -1.0  -1.0 0.0
+                    0.0  -1.0 0.3
+                    1.0  -1.0 0.0
+                   -1.0   0.0 0.3
+                    0.0   0.0 0.6
+                    1.0   0.0 0.3
+                   -1.0   1.0 0.0
+                    0.0   1.0 0.3
+                    1.0   1.0 0.0 ]
+    "integer indices" [ 0 1 4  0 4 3   1 2 5  1 5 4
+                        3 4 7  3 7 6   4 5 8  4 8 7 ]

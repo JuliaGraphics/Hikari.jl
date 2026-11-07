@@ -1,0 +1,63 @@
+## Bumpmap-leak regression: a cut-open gold hemisphere (bumpmapped, gold
+## conductor) sits over a CoatedDiffuse velvet plane. Area light is positioned
+## OUTSIDE the dome above. The dome is a solid gold conductor — gold blocks
+## all light (conductors don't transmit), so the velvet inside must only be
+## lit by light entering through the bottom opening and bouncing off the
+## inner dome surface. pbrt-v4 shows the velvet much darker than the dome
+## exterior because most light is absorbed/reflected outward.
+##
+## If Hikari shows the velvet uniformly bright (comparable to the exterior),
+## the bumped gold's BSDF is leaking sampled wi directions into the geometric
+## back-hemisphere — exactly the failure mode that washes out cast shadows
+## on Crown's velvet.
+
+LookAt 0 6 22   0 3 0   0 1 0
+Camera "perspective" "float fov" 35
+Film "rgb" "integer xresolution" 256 "integer yresolution" 256
+    "float maxcomponentvalue" 10
+Sampler "halton" "integer pixelsamples" 64
+Integrator "volpath" "integer maxdepth" 100 "bool regularize" false
+
+WorldBegin
+
+# One overhead area light, large enough to illuminate the whole dome from
+# above. Sits at y=18, above the dome's apex at y=10.
+AttributeBegin
+    AreaLightSource "diffuse" "float scale" [10] "blackbody L" [5500] "bool twosided" true
+    Shape "trianglemesh"
+        "integer indices" [ 0 1 2  0 2 3 ]
+        "point3 P" [ -10 18 -10   10 18 -10   10 18 10   -10 18 10 ]
+AttributeEnd
+
+# Procedural bumpmap: high-frequency checkerboard. Strong amplitude so the
+# bug (if present) shows clearly; not so strong that it's unphysical.
+Texture "dome_bump" "float" "checkerboard"
+    "float uscale" [ 40 ]
+    "float vscale" [ 40 ]
+    "float tex1" [ -0.3 ]
+    "float tex2" [  0.3 ]
+
+# Bumpmapped gold hemisphere. Sphere local z ∈ [-10, 0] (lower half).
+# Rotate +90° around X so local -z maps to world +y → upper hemisphere
+# in world space, apex at y=10, opening at y=0.
+AttributeBegin
+    Rotate 90 1 0 0
+    Material "conductor"
+        "texture displacement" [ "dome_bump" ]
+        "spectrum eta" [ "metal-Au-eta" ]
+        "spectrum k"   [ "metal-Au-k" ]
+        "float roughness" [ 0.0 ]
+    Shape "sphere" "float radius" 10  "float zmin" -10  "float zmax" 0
+AttributeEnd
+
+# Velvet receiver INSIDE the dome — Crown's exact dark_velvet material.
+# Sits at y = 0.05, just above the dome's bottom opening edge so it's
+# fully enclosed.
+AttributeBegin
+    Material "coateddiffuse"
+        "rgb reflectance" [ 0.15 0.0015 0.0015 ]
+        "float roughness" [ 0.2 ]
+    Shape "trianglemesh"
+        "point3 P"   [ -9 0.05 -9   9 0.05 -9   9 0.05 9   -9 0.05 9 ]
+        "integer indices" [ 0 1 2  0 2 3 ]
+AttributeEnd

@@ -296,8 +296,13 @@ function gauss_newton!(coeffs::Vector{Float64}, target_rgb::Vector{Float64},
             if r < 1e-6
                 break
             end
-        catch
-            # LU decomposition failed, keep current coefficients
+        catch e
+            # A singular Jacobian is a real outcome of Gauss-Newton near the
+            # gamut edge: stop and keep the coefficients we have. Anything else
+            # is a bug in this solver and propagates — the bare `catch` here
+            # treated the two identically, so a typo in the residual would have
+            # produced a quietly wrong table.
+            e isa LinearAlgebra.SingularException || e isa LinearAlgebra.LAPACKException || rethrow()
             break
         end
     end

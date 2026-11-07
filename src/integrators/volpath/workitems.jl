@@ -2,28 +2,17 @@
 # Extends PhysicalWavefront work items with medium support
 
 # ============================================================================
-# Ray Samples (pre-computed low-discrepancy samples per bounce)
+# Ray Samples: generated inline in each consumer
 # ============================================================================
 
-"""
-    VPRaySamples
-
-Pre-computed Sobol samples for a single bounce, matching pbrt-v4's RaySamples.
-These are generated once per bounce and stored in PixelSampleState.
-"""
-struct VPRaySamples
-    # Direct lighting samples
-    direct_uc::Float32      # Light source selection [0,1)
-    direct_u::Point2f       # Light position sample
-
-    # Indirect ray samples
-    indirect_uc::Float32    # BSDF component selection [0,1)
-    indirect_u::Point2f     # BSDF direction sample
-    indirect_rr::Float32    # Russian roulette decision [0,1)
-end
-
-# Default constructor with zero samples
-VPRaySamples() = VPRaySamples(0f0, Point2f(0f0), 0f0, Point2f(0f0), 0f0)
+# pbrt-v4 caches Sobol samples in a per-pixel `PixelSampleState.RaySamples`
+# buffer filled by `WavefrontPathIntegrator::GenerateRaySamples` once per
+# bounce. There is no such struct here: mirroring it with a per-pixel SOA
+# buffer and a kernel to fill it measures 58 % of total GPU time on killeroo
+# (RTX 4000 Ada), against ~0.1 % in the actual path-tracing kernels, so each
+# consumer (`surface_direct_lighting_inner!`, `evaluate_material_inner!`,
+# `medium_direct_lighting_inner!`, `medium_scatter_inner!`) generates the
+# dimensions it needs inline.
 
 # ============================================================================
 # Ray Work Item with Medium
@@ -49,6 +38,28 @@ struct VPRayWorkItem
     specular_bounce::Bool           # Was last bounce specular?
     any_non_specular_bounces::Bool  # Any non-specular bounces in path?
     medium_idx::SetKey         # Current medium (0 = vacuum)
+end
+
+"""`w` with the path throughput `beta`."""
+@inline with_beta(w::VPRayWorkItem, beta::SpectralRadiance) =
+    VPRayWorkItem(w.ray, w.depth, w.lambda, w.pixel_index, beta, w.r_u, w.r_l, w.prev_intr_p, w.prev_intr_n,
+                  w.eta_scale, w.specular_bounce, w.any_non_specular_bounces, w.medium_idx)
+
+"Prepare a curved chord before either hardware or software intersection."
+@propagate_inbounds function prepare_medium_work(work::VPRayWorkItem, media)
+    has_medium(work.medium_idx) || return work
+    ray=work.ray
+    h=Raycore.with_index(medium_step_limit,media,work.medium_idx,ray.o,ray.d)
+    isfinite(h) || return work
+    d=Raycore.with_index(medium_start_direction,media,work.medium_idx,ray.o,ray.d,h)
+    # A curved transport step is valid only over this chord. Querying geometry
+    # beyond it is unnecessary (and feeds an unbounded ray to HW traversal
+    # despite having a finite integration interval). A miss still goes through
+    # the medium continuation, which re-intersects from the next endpoint.
+    chord=Raycore.Ray(o=ray.o,d=d,t_min=ray.t_min,t_max=min(ray.t_max,h),time=ray.time)
+    VPRayWorkItem(chord,work.depth,work.lambda,work.pixel_index,
+        work.beta,work.r_u,work.r_l,work.prev_intr_p,work.prev_intr_n,
+        work.eta_scale,work.specular_bounce,work.any_non_specular_bounces,work.medium_idx)
 end
 
 function VPRayWorkItem(
@@ -85,8 +96,9 @@ Work item for rays in medium that need delta tracking.
 Follows pbrt-v4's approach: intersection is found FIRST, then delta tracking
 runs with the known t_max distance.
 
-If the ray reaches t_max without scattering/absorption, it processes the
-surface hit normally. This allows proper bounded medium traversal.
+If the ray reaches t_max without scattering/absorption, its surface hit goes to
+the material's shading kernel as any other does: `hit` is the record the trace
+found, which that kernel expands. A miss record when the ray escapes.
 """
 struct VPMediumSampleWorkItem
     # Ray info
@@ -109,36 +121,16 @@ struct VPMediumSampleWorkItem
     # Current medium
     medium_idx::SetKey
 
-    # Surface hit info (used if ray reaches t_max without medium event)
-    # If t_max == Inf, these are invalid (ray escaped)
-    has_surface_hit::Bool
-    hit_pi::Point3f
-    hit_n::Vec3f
-    hit_dpdu::Vec3f                 # Geometric position derivative w.r.t. u
-    hit_dpdv::Vec3f                 # Geometric position derivative w.r.t. v
-    hit_ns::Vec3f
-    hit_dpdus::Vec3f                # Shading position derivative w.r.t. u
-    hit_dpdvs::Vec3f                # Shading position derivative w.r.t. v
-    hit_uv::Point2f
-    hit_material_idx::SetKey
-    hit_interface::MediumInterfaceIdx  # For medium transitions at surface
-    hit_face_idx::UInt32              # Triangle face index (for vertex colors)
-    hit_bary::SVector{3, Float32}     # Barycentric coordinates (for vertex colors)
-    hit_arealight_flat_idx::UInt32    # Area light flat index (0 = no area light)
-    hit_triangle_area::Float32        # Triangle area (for PDF_Li)
+    # The surface the ray reaches if no medium event stops it first.
+    hit::Raycore.HitRecord
 end
 
-# Constructor from VPRayWorkItem with surface hit
-function VPMediumSampleWorkItem(
-    work::VPRayWorkItem,
-    t_max::Float32,
-    pi::Point3f, n::Vec3f, dpdu::Vec3f, dpdv::Vec3f,
-    ns::Vec3f, dpdus::Vec3f, dpdvs::Vec3f,
-    uv::Point2f, mat_idx::SetKey,
-    interface::MediumInterfaceIdx,
-    face_idx::UInt32, bary::SVector{3, Float32},
-    arealight_flat_idx::UInt32, triangle_area::Float32
-)
+"""Whether the medium ray reaches a surface at `t_max`, rather than escaping."""
+@inline has_surface_hit(work::VPMediumSampleWorkItem) = work.hit.kind != Raycore.HIT_MISS
+
+# Delta tracking is bounded by the hit, or by the ray's own extent on a miss.
+function VPMediumSampleWorkItem(work::VPRayWorkItem, hit::Raycore.HitRecord)
+    t_max = hit.kind == Raycore.HIT_MISS ? work.ray.t_max : hit.t
     VPMediumSampleWorkItem(
         work.ray, work.depth, t_max,
         work.lambda, work.beta, work.r_u, work.r_l,
@@ -146,26 +138,7 @@ function VPMediumSampleWorkItem(
         work.specular_bounce, work.any_non_specular_bounces,
         work.prev_intr_p, work.prev_intr_n,
         work.medium_idx,
-        true, pi, n, dpdu, dpdv, ns, dpdus, dpdvs, uv, mat_idx, interface,
-        face_idx, bary,
-        arealight_flat_idx, triangle_area
-    )
-end
-
-# Constructor from VPRayWorkItem for escaped rays (no surface hit)
-function VPMediumSampleWorkItem(work::VPRayWorkItem)
-    VPMediumSampleWorkItem(
-        work.ray, work.depth, Inf32,
-        work.lambda, work.beta, work.r_u, work.r_l,
-        work.pixel_index, work.eta_scale,
-        work.specular_bounce, work.any_non_specular_bounces,
-        work.prev_intr_p, work.prev_intr_n,
-        work.medium_idx,
-        false, Point3f(0f0), Vec3f(0f0, 0f0, 1f0), Vec3f(0f0), Vec3f(0f0),
-        Vec3f(0f0, 0f0, 1f0), Vec3f(0f0), Vec3f(0f0),
-        Point2f(0f0, 0f0), SetKey(), MediumInterfaceIdx(SetKey(), SetKey(), SetKey()),
-        UInt32(0), SVector{3, Float32}(0f0, 0f0, 0f0),
-        UInt32(0), 0f0
+        hit,
     )
 end
 
@@ -190,6 +163,7 @@ struct VPMediumScatterWorkItem
     depth::Int32
     medium_idx::SetKey         # Which medium we're in
     g::Float32                      # HG asymmetry at this point
+    eta_scale::Float32              # Accumulated IOR ratio (carried from path state)
 end
 
 # ============================================================================
@@ -209,6 +183,7 @@ computed on-the-fly during material evaluation using camera.Approximate_dp_dxy()
 struct VPMaterialEvalWorkItem
     # Surface interaction data (matching pbrt-v4 MaterialEvalWorkItem order)
     pi::Point3f                     # Intersection point
+    ps::Point3f                     # Where shadow rays leave (see `vp_shadow_point`)
     n::Vec3f                        # Geometric normal
     dpdu::Vec3f                     # Geometric position derivative w.r.t. u
     dpdv::Vec3f                     # Geometric position derivative w.r.t. v
@@ -265,7 +240,30 @@ struct VPShadowRayWorkItem
     r_l::SpectralRadiance           # MIS weight denominator
     pixel_index::Int32
     medium_idx::SetKey         # Medium the shadow ray travels through
+    refract::Bool              # Through Snell's window: bends at surfaces, `Ld` waits for the sky (see `snells_window`)
 end
+
+# ============================================================================
+# Surface Hit
+# ============================================================================
+
+"""
+    VPSurfaceHit
+
+A ray's surface hit as the trace leaves it for the material's shading kernel:
+the hit record and where the ray's path state is. `path > 0` is its index in the
+round's ray queue; `path < 0` is `-index` into the arrivals, the paths a medium
+delivered to their surface with its transmittance applied. The shading kernel
+expands the record, so the surface is computed once, where it is shaded.
+`primary` tags a camera path whose constant scattering state is reconstructed
+instead of stored. Medium arrivals and subsequent rays always retain full state.
+"""
+struct VPSurfaceHit
+    path::Int32
+    hit::Raycore.HitRecord
+    primary::Bool
+end
+VPSurfaceHit(path::Int32, hit::Raycore.HitRecord) = VPSurfaceHit(path, hit, false)
 
 # ============================================================================
 # Escaped Ray Work Item
@@ -319,9 +317,9 @@ end
 """
     VPHitSurfaceWorkItem
 
-Intermediate work item when ray hits a surface.
-Used to separate intersection from material evaluation.
-Stores surface partial derivatives for texture filtering (pbrt-v4 style).
+A surface hit expanded for shading: the path state with the surface's geometry,
+shading frame and partial derivatives for texture filtering (pbrt-v4 style).
+Built in registers by the shading kernel from a [`VPSurfaceHit`](@ref).
 """
 struct VPHitSurfaceWorkItem
     # Ray that hit
@@ -329,6 +327,7 @@ struct VPHitSurfaceWorkItem
 
     # Hit geometry (matching pbrt-v4 SurfaceInteraction decomposition)
     pi::Point3f                     # Intersection point
+    ps::Point3f                     # Where shadow rays leave (see `vp_shadow_point`)
     n::Vec3f                        # Geometric normal
     dpdu::Vec3f                     # Geometric position derivative w.r.t. u
     dpdv::Vec3f                     # Geometric position derivative w.r.t. v
@@ -343,10 +342,6 @@ struct VPHitSurfaceWorkItem
     face_idx::UInt32                # Triangle face index (for vertex colors)
     bary::SVector{3, Float32}       # Barycentric coordinates (for vertex colors)
 
-    # Area light info (for HandleEmissiveIntersection MIS)
-    arealight_flat_idx::UInt32      # Flat index into scene.lights (0 = no area light)
-    triangle_area::Float32          # Triangle area (for PDF_Li computation)
-
     # Path state
     lambda::Wavelengths
     pixel_index::Int32
@@ -357,67 +352,42 @@ struct VPHitSurfaceWorkItem
     eta_scale::Float32
     specular_bounce::Bool
     any_non_specular_bounces::Bool
+    # The previous interaction, for the MIS weight of emission the BSDF ray
+    # reaches from it.
     prev_intr_p::Point3f
     prev_intr_n::Vec3f
 
     # Medium info
     current_medium::SetKey
-
-    # Distance traveled through medium (for transmittance)
-    t_hit::Float32
 end
 
-# Constructor from VPRayWorkItem with hit geometry
+# Constructor from VPRayWorkItem with hit geometry.
 function VPHitSurfaceWorkItem(
     work::VPRayWorkItem,
-    pi::Point3f, n::Vec3f, dpdu::Vec3f, dpdv::Vec3f,
+    pi::Point3f, ps::Point3f, n::Vec3f, dpdu::Vec3f, dpdv::Vec3f,
     ns::Vec3f, dpdus::Vec3f, dpdvs::Vec3f,
     uv::Point2f, mat_idx::SetKey,
     interface::MediumInterfaceIdx,
     face_idx::UInt32, bary::SVector{3, Float32},
-    arealight_flat_idx::UInt32, triangle_area::Float32,
-    t_hit::Float32
 )
     VPHitSurfaceWorkItem(
         work.ray,
-        pi, n, dpdu, dpdv, ns, dpdus, dpdvs, uv, mat_idx, interface,
+        pi, ps, n, dpdu, dpdv, ns, dpdus, dpdvs, uv, mat_idx, interface,
         face_idx, bary,
-        arealight_flat_idx, triangle_area,
         work.lambda, work.pixel_index,
         work.beta, work.r_u, work.r_l,
         work.depth, work.eta_scale,
         work.specular_bounce, work.any_non_specular_bounces,
         work.prev_intr_p, work.prev_intr_n,
-        work.medium_idx, t_hit
-    )
-end
-
-# Constructor from VPMediumSampleWorkItem (with updated beta/r_u/r_l from delta tracking)
-function VPHitSurfaceWorkItem(
-    work::VPMediumSampleWorkItem,
-    beta::SpectralRadiance, r_u::SpectralRadiance, r_l::SpectralRadiance
-)
-    VPHitSurfaceWorkItem(
-        work.ray,
-        work.hit_pi, work.hit_n, work.hit_dpdu, work.hit_dpdv,
-        work.hit_ns, work.hit_dpdus, work.hit_dpdvs,
-        work.hit_uv, work.hit_material_idx, work.hit_interface,
-        work.hit_face_idx, work.hit_bary,
-        work.hit_arealight_flat_idx, work.hit_triangle_area,
-        work.lambda, work.pixel_index,
-        beta, r_u, r_l,
-        work.depth, work.eta_scale,
-        work.specular_bounce, work.any_non_specular_bounces,
-        work.prev_intr_p, work.prev_intr_n,
-        work.medium_idx, work.t_max
+        work.medium_idx,
     )
 end
 
 # Constructor for VPMaterialEvalWorkItem from VPHitSurfaceWorkItem
-# (wo and material_idx are computed externally, e.g. after MixMaterial resolution)
+# (wo and material_idx are computed externally, e.g. after Mix resolution).
 function VPMaterialEvalWorkItem(work::VPHitSurfaceWorkItem, wo::Vec3f, material_idx::SetKey)
     VPMaterialEvalWorkItem(
-        work.pi, work.n, work.dpdu, work.dpdv, work.ray.time,
+        work.pi, work.ps, work.n, work.dpdu, work.dpdv, work.ray.time,
         work.ns, work.dpdus, work.dpdvs, work.uv,
         work.face_idx, work.bary,
         wo, material_idx, work.interface,

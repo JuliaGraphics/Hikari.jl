@@ -1,0 +1,45 @@
+## Cast-shadow regression with Crown's actual materials:
+## CoatedDiffuse "velvet"-style receiver (reflectance 0.15, roughness 0.2),
+## CoatedDiffuse "pearl"-style sphere (reflectance 0.65, roughness 0.001).
+##
+## Pinned because Crown's pearl-on-velvet shadow looked uniform in Hikari
+## but cast a crisp dark disk in pbrt. If the diffuse-on-diffuse test passes
+## but THIS test fails, the regression is in how CoatedDiffuse interacts
+## with the shadow path (e.g. the coating's BSDF returning non-zero through
+## the substrate, or the BSDF-evaluation MIS denom blowing up).
+
+LookAt 0 1.4 2.5   0 0 0   0 1 0
+Camera "perspective" "float fov" 35
+Film "rgb" "integer xresolution" 256 "integer yresolution" 256
+    "float maxcomponentvalue" 10
+Sampler "halton" "integer pixelsamples" 64
+Integrator "volpath" "integer maxdepth" 6 "bool regularize" false
+
+WorldBegin
+
+AttributeBegin
+    AreaLightSource "diffuse" "rgb L" [25 25 25] "bool twosided" true
+    Shape "trianglemesh"
+        "point3 P"   [ -0.4 1.5 -0.4   0.4 1.5 -0.4   0.4 1.5 0.4   -0.4 1.5 0.4 ]
+        "integer indices" [ 0 1 2  0 2 3 ]
+AttributeEnd
+
+# Velvet-style receiver: dark red coateddiffuse, rough coat.
+AttributeBegin
+    Material "coateddiffuse"
+        "rgb reflectance" [ 0.15 0.0015 0.0015 ]
+        "float roughness" [ 0.2 ]
+    Shape "trianglemesh"
+        "point3 P"   [ -3 0 -3   3 0 -3   3 0 3   -3 0 3 ]
+        "integer indices" [ 0 1 2  0 2 3 ]
+AttributeEnd
+
+# Pearl-style caster: bright coateddiffuse, smooth coat.
+AttributeBegin
+    Material "coateddiffuse"
+        "rgb reflectance" [ 0.65 0.6 0.6 ]
+        "float uroughness" [ 0.001 ]
+        "float vroughness" [ 0.001 ]
+    Translate 0 0.5 0
+    Shape "sphere" "float radius" 0.3
+AttributeEnd

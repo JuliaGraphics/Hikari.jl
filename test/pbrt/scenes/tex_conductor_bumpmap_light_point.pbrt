@@ -1,0 +1,36 @@
+# Minimal pbrt reference: gold conductor with a height-field bump.
+# Crown's `mitra_right_back` / `mitra_right_front` are conductor materials
+# with `"texture displacement" "<height map>"`. If Hikari only wires bump
+# through diffuse-class BSDFs (and silently drops it for Conductor) the
+# spherical crown body renders as a smooth gold mirror instead of the
+# ornately-engraved gold surface pbrt produces.
+#
+# Expected: a flat gold quad lit by a side point light whose surface shows
+# clear ridge highlights/shadows from the bump map. A uniform smooth gold
+# render means the displacement isn't reaching the Conductor's microfacet
+# evaluation.
+
+LookAt 0 0 2   0 0 0   0 1 0
+Camera "perspective" "float fov" 60
+Film "rgb" "integer xresolution" 128 "integer yresolution" 128
+    "float maxcomponentvalue" 10
+Integrator "volpath" "integer maxdepth" 4 "bool regularize" true
+
+WorldBegin
+
+LightSource "point" "rgb I" [60 60 60] "point3 from" [2 0 1]
+
+Texture "bumps" "float" "imagemap"
+    "string filename" "textures/test_ridges.png"
+
+# Roughened gold so we can see the bump in microfacet shading (matches
+# Crown's mitra_right_back which has a textured roughness).
+Material "conductor"
+    "spectrum eta" "metal-Au-eta"
+    "spectrum k"   "metal-Au-k"
+    "float roughness" 0.05
+    "texture displacement" "bumps"
+Shape "trianglemesh"
+    "point3 P"   [ -1 -1 0   1 -1 0   1 1 0   -1 1 0 ]
+    "point2 uv"  [  0  0     1  0    1 1    0 1    ]
+    "integer indices" [ 0 1 2  0 2 3 ]

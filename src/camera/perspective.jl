@@ -7,6 +7,8 @@ struct ProjectiveCamera <: Camera
 
     lens_radius::Float32
     focal_distance::Float32
+    """Camera space to the image's window, 0 to 1 from the bottom left (homogeneous)."""
+    camera_to_window::Mat4f
 
     function ProjectiveCamera(
             camera_to_world::Transformation, camera_to_screen::Transformation,
@@ -34,6 +36,7 @@ struct ProjectiveCamera <: Camera
             camera_to_screen, raster_to_camera,
             screen_to_raster, raster_to_screen,
             lens_radius, focal_distance,
+            (inv_bounds * offset * camera_to_screen).m,
         )
     end
 end
@@ -52,16 +55,21 @@ struct PerspectiveCamera <: Camera
 
     """
     - `screen_window::Bounds2`: Screen space extent of the image.
+    - `near`/`far`: projection clip planes. They only shape the perspective
+      transform — no ray is clipped by them — so they are camera parameters
+      rather than renderer-wide constants. Anything needing the camera-space
+      plane the film maps onto must ask `raster_plane_z(camera)`, NOT assume
+      `near`: the projection puts that plane at `2 * near`.
     """
     function PerspectiveCamera(
         camera_to_world::Transformation, screen_window::Bounds2,
         shutter_open::Float32, shutter_close::Float32,
         lens_radius::Float32, focal_distance::Float32,
-        fov::Float32, film::Film,
+        fov::Float32, film::Film; near::Float32 = 0.01f0, far::Float32 = 1000f0,
     )
         pc = ProjectiveCamera(
             inv(camera_to_world),
-            perspective(fov, 0.01f0, 1000.0f0),
+            perspective(fov, near, far),
             screen_window, shutter_open, shutter_close,
             lens_radius, focal_distance, film,
         )
@@ -82,15 +90,24 @@ end
 
 function PerspectiveCamera(eyepos, lookat, film; up=Vec3f(0, 1, 0), fov=55)
     screen = Hikari.Bounds2(Point2f(-1f0), Point2f(1f0))
-    # Camera positioned to match the original perspective
-    # Low angle view showing spheres with their reflections on the mirror floor
+    # An `up` along the view leaves the camera's frame undefined: the image came out black.
+    dir = Vec3f(lookat) - Vec3f(eyepos)
+    norm(cross(normalize(dir), normalize(Vec3f(up)))) > 1f-6 || throw(ArgumentError(
+        "PerspectiveCamera: `up` = $up is parallel to the view direction $dir, which leaves no frame to " *
+        "orient the image by; pass an `up` across it"))
     return PerspectiveCamera(
         Hikari.look_at(eyepos, lookat, up),
-        screen, 0f0, 1f0, 0f0, 1f6, fov, film,
+        screen, 0f0, 1f0, 0f0, 1f6, Float32(fov), film,
     )
 end
 
-@propagate_inbounds get_film(c::PerspectiveCamera)::Film  = c.core.core.film
+# Camera effects accessors used by `vp_generate_camera_rays_kernel!` to
+# decide which Sobol dimensions to compute.  Pinhole + frozen shutter is
+# the common case (no DoF, no motion blur), and that's what the four
+# benchmark scenes use, so the camera-ray kernel can skip the lens 2D and
+# time 1D Sobol samples entirely.
+camera_uses_motion_blur(c::PerspectiveCamera) = c.core.core.shutter_close > c.core.core.shutter_open
+camera_uses_lens(c::PerspectiveCamera) = c.core.lens_radius > 0f0
 
 @propagate_inbounds function generate_ray(
         camera::PerspectiveCamera, sample::CameraSample,
@@ -121,8 +138,8 @@ end
         sample.time,
     )
     # TODO add medium
-    ctw = camera.core.core.camera_to_world
-    o = ctw(o)
-    d = ctw(Vec3f(d))  # Convert to Vec3f for proper direction transformation
+    ctw = camera.core.core.camera_to_world.m
+    o = Raycore.transform_point(ctw, o)
+    d = Raycore.transform_direction(ctw, Vec3f(d))  # Convert to Vec3f for proper direction transformation
     return Ray(d=normalize(d), o=o, time=time), 1.0f0
 end

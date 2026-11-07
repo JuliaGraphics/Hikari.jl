@@ -2,10 +2,10 @@
 # Perlin noise and fractional Brownian motion (fBm)
 
 # Smoothstep interpolation
-_lerp(t, a, b) = a + t * (b - a)
-_fade(t) = t * t * t * (t * (t * 6 - 15) + 10)
+lerp_noise(t, a, b) = a + t * (b - a)
+fade(t) = t * t * t * (t * (t * 6 - 15) + 10)
 
-function _grad3d(hash, x, y, z)
+function grad3d(hash, x, y, z)
     h = hash & 15
     u = h < 8 ? x : y
     v = h < 4 ? y : (h == 12 || h == 14 ? x : z)
@@ -13,7 +13,7 @@ function _grad3d(hash, x, y, z)
 end
 
 # Permutation table for Perlin noise
-const _PERM = UInt8[
+const PERM = UInt8[
     151,160,137,91,90,15,131,13,201,95,96,53,194,233,7,225,140,36,103,30,69,142,
     8,99,37,240,21,10,23,190,6,148,247,120,234,75,0,26,197,62,94,252,219,203,117,
     35,11,32,57,177,33,88,237,149,56,87,174,20,125,136,171,168,68,175,74,165,71,
@@ -27,7 +27,7 @@ const _PERM = UInt8[
     107,49,192,214,31,181,199,106,157,184,84,204,176,115,121,50,45,127,4,150,254,
     138,236,205,93,222,114,67,29,24,72,243,141,128,195,78,66,215,61,156,180
 ]
-_perm(i) = @inbounds _PERM[(i & 255) + 1]
+perm(i) = @inbounds PERM[(i & 255) + 1]
 
 """
     perlin3d(x, y, z) -> Float64
@@ -37,14 +37,14 @@ Classic 3D Perlin noise. Returns values in approximately [-1, 1].
 function perlin3d(x, y, z)
     X, Y, Z = floor(Int, x) & 255, floor(Int, y) & 255, floor(Int, z) & 255
     x, y, z = x - floor(x), y - floor(y), z - floor(z)
-    u, v, w = _fade(x), _fade(y), _fade(z)
-    A, B = _perm(X) + Y, _perm(X + 1) + Y
-    AA, AB, BA, BB = _perm(A) + Z, _perm(A + 1) + Z, _perm(B) + Z, _perm(B + 1) + Z
-    _lerp(w,
-        _lerp(v, _lerp(u, _grad3d(_perm(AA), x, y, z), _grad3d(_perm(BA), x-1, y, z)),
-                 _lerp(u, _grad3d(_perm(AB), x, y-1, z), _grad3d(_perm(BB), x-1, y-1, z))),
-        _lerp(v, _lerp(u, _grad3d(_perm(AA+1), x, y, z-1), _grad3d(_perm(BA+1), x-1, y, z-1)),
-                 _lerp(u, _grad3d(_perm(AB+1), x, y-1, z-1), _grad3d(_perm(BB+1), x-1, y-1, z-1))))
+    u, v, w = fade(x), fade(y), fade(z)
+    A, B = perm(X) + Y, perm(X + 1) + Y
+    AA, AB, BA, BB = perm(A) + Z, perm(A + 1) + Z, perm(B) + Z, perm(B + 1) + Z
+    lerp_noise(w,
+        lerp_noise(v, lerp_noise(u, grad3d(perm(AA), x, y, z), grad3d(perm(BA), x-1, y, z)),
+                 lerp_noise(u, grad3d(perm(AB), x, y-1, z), grad3d(perm(BB), x-1, y-1, z))),
+        lerp_noise(v, lerp_noise(u, grad3d(perm(AA+1), x, y, z-1), grad3d(perm(BA+1), x-1, y, z-1)),
+                 lerp_noise(u, grad3d(perm(AB+1), x, y-1, z-1), grad3d(perm(BB+1), x-1, y-1, z-1))))
 end
 
 """
@@ -92,7 +92,7 @@ function worley3d(x, y, z; seed=0)
     for dz in -1:1, dy in -1:1, dx in -1:1
         # Hash to get feature point position within cell
         cx, cy, cz = xi + dx, yi + dy, zi + dz
-        h = _perm(_perm(_perm((cx + seed) & 255) + (cy & 255)) + (cz & 255))
+        h = perm(perm(perm((cx + seed) & 255) + (cy & 255)) + (cz & 255))
 
         # Feature point position (0-1 within cell)
         px = dx + (h & 63) / 64.0
@@ -188,11 +188,11 @@ function generate_cloud_density(resolution::Int;
                 # Density-modulated falloff: denser areas extend further (puffy protrusions)
                 t = dist / effective_radius
                 falloff_mod = 0.3 + 0.7 * base
-                edge_fade = clamp(1.0 - (t / falloff_mod)^edge_sharpness, 0.0, 1.0)
+                edgefade = clamp(1.0 - (t / falloff_mod)^edge_sharpness, 0.0, 1.0)
 
                 # Apply threshold and scale
                 val = clamp((base - threshold) / (1.0 - threshold), 0.0, 1.0)
-                density[ix, iy, iz] = Float32(val * edge_fade * density_scale)
+                density[ix, iy, iz] = Float32(val * edgefade * density_scale)
             else
                 density[ix, iy, iz] = 0f0
             end

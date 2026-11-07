@@ -3,5 +3,9 @@ settings.json
 package-lock.json
 node_modules
 docs/build
+docs/src/comparison.md
+docs/src/public/
+test/pbrt/recorded/
+test/pbrt/display/
 
 Manifest*.toml

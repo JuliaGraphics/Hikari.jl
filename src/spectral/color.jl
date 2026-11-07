@@ -20,30 +20,27 @@ const D65_PHOTOMETRIC = 10567.0f0
 # =============================================================================
 
 """
-    CIEXYZTable{V <: AbstractVector{Float32}}
+    CIEXYZTable{X,Y,Z}
 
 GPU-compatible table for CIE XYZ color matching functions.
-Use `to_gpu(ArrayType, table)` to convert to GPU arrays.
+Use `to_gpu(mem, table)` to put it on the device.
 """
-struct CIEXYZTable{V <: AbstractVector{Float32}}
-    cie_x::V
-    cie_y::V
-    cie_z::V
+struct CIEXYZTable{X <: AbstractVector{Float32},Y <: AbstractVector{Float32},Z <: AbstractVector{Float32}}
+    # Access inference can independently wrap each curve as read-only.
+    cie_x::X
+    cie_y::Y
+    cie_z::Z
 end
 
 """
-    to_gpu(backend, table::CIEXYZTable) -> CIEXYZTable
+    to_gpu(mem, table::CIEXYZTable) -> CIEXYZTable
 
-Convert CIEXYZTable to use GPU-compatible arrays.
-Uses KernelAbstractions backend for allocation.
+The response curves on the device, in memory the render state owns.
 """
-function to_gpu(backend, table::CIEXYZTable)
-    CIEXYZTable(
-        adapt(backend, table.cie_x),
-        adapt(backend, table.cie_y),
-        adapt(backend, table.cie_z)
-    )
-end
+to_gpu(mem::DeviceMemory, table::CIEXYZTable) =
+    CIEXYZTable(upload!(mem, table.cie_x),
+                upload!(mem, table.cie_y),
+                upload!(mem, table.cie_z))
 
 # =============================================================================
 # CIE XYZ Color Matching Function Data (from pbrt-v4)
@@ -345,7 +342,7 @@ const CIE_Z = Float32[
 ]
 
 """
-    CIEXYZTable() -> CIEXYZTable{Vector{Float32}}
+    CIEXYZTable() -> CIEXYZTable{Vector{Float32},Vector{Float32},Vector{Float32}}
 
 Create the default CPU CIE XYZ table from built-in data.
 """
@@ -637,27 +634,6 @@ Remove sRGB gamma curve from an sRGB value to get linear RGB.
     else
         return ((c + 0.055f0) / 1.055f0)^2.4f0
     end
-end
-
-"""
-    spectral_to_srgb(table::CIEXYZTable, L::SpectralRadiance, lambda::Wavelengths) -> Vec3f
-
-Convert spectral radiance to sRGB:
-1. Convert to XYZ using color matching functions
-2. Transform XYZ to linear sRGB using standard matrix (D65 white point)
-3. Apply sRGB gamma curve
-
-This matches pbrt-v4's RGBFilm pipeline. Light sources use `uplift_rgb_illuminant`
-which multiplies by D65 illuminant spectrum, so no chromatic adaptation is needed.
-"""
-@propagate_inbounds function spectral_to_srgb(table::CIEXYZTable, L::SpectralRadiance, lambda::Wavelengths)
-    xyz = spectral_to_xyz(table, L, lambda)
-    rgb = max(0f0, xyz_to_linear_srgb(xyz))
-    return Vec3f(
-        linear_to_srgb_gamma(rgb[1]),
-        linear_to_srgb_gamma(rgb[2]),
-        linear_to_srgb_gamma(rgb[3])
-    )
 end
 
 """

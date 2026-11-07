@@ -1,0 +1,31 @@
+# Minimal pbrt reference: `coateddiffuse` with a *texture* roughness.
+# Crown's `border_bott_inlay` material has `"texture roughness" "..."`. If
+# the parser only reads `"float roughness"` the texture is silently dropped
+# to 0 (mirror-smooth coating) — half the rendered surface comes out shiny
+# where pbrt shows it as matte.
+#
+# Expected: flat quad lit from a side point light. The roughness mask is
+# horizontal stripes (1 = rough = matte half-Lambertian; 0 = smooth =
+# specular highlight visible). A uniform render means the texture was
+# silently coerced to a scalar.
+
+LookAt 0 0 2   0 0 0   0 1 0
+Camera "perspective" "float fov" 60
+Film "rgb" "integer xresolution" 128 "integer yresolution" 128
+    "float maxcomponentvalue" 10
+Integrator "volpath" "integer maxdepth" 4 "bool regularize" true
+
+WorldBegin
+
+LightSource "point" "rgb I" [40 40 40] "point3 from" [2 0 1]
+
+Texture "rough_mask" "float" "imagemap"
+    "string filename" "textures/test_stripes.png"
+
+Material "coateddiffuse"
+    "rgb reflectance" [ 0.6 0.6 0.6 ]
+    "texture roughness" "rough_mask"
+Shape "trianglemesh"
+    "point3 P"   [ -1 -1 0   1 -1 0   1 1 0   -1 1 0 ]
+    "point2 uv"  [  0  0     1  0    1 1    0 1    ]
+    "integer indices" [ 0 1 2  0 2 3 ]

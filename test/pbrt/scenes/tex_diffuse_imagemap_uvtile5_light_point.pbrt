@@ -1,0 +1,25 @@
+# Minimal pbrt reference: imagemap with UV range 0–5 (texture should tile 5×).
+# Same flat quad as tex_diffuse_imagemap_light_point.pbrt, but UVs go up to
+# (5, 5) — replicating Killeroo's floor mesh which has uv [0 0  5 0  5 5  0 5].
+# The expected render is the diagonal-stripe pattern repeated 5 times along
+# each axis. A flat-grey render would mean Hikari's texture sampling clamps
+# uv∈[0,1] instead of wrapping.
+
+LookAt 0 0 2   0 0 0   0 1 0
+Camera "perspective" "float fov" 60
+Film "rgb" "integer xresolution" 128 "integer yresolution" 128
+    "float maxcomponentvalue" 10
+Integrator "volpath" "integer maxdepth" 4 "bool regularize" true
+
+WorldBegin
+
+LightSource "point" "rgb I" [20 20 20] "point3 from" [0 0 3]
+
+Texture "stripes" "spectrum" "imagemap"
+    "string filename" "textures/test_stripes.png"
+
+Material "diffuse" "texture reflectance" "stripes"
+Shape "trianglemesh"
+    "point3 P"   [ -1 -1 0   1 -1 0   1 1 0   -1 1 0 ]
+    "point2 uv"  [  0  0     5  0    5 5    0 5    ]
+    "integer indices" [ 0 1 2  0 2 3 ]

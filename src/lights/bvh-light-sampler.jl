@@ -95,6 +95,15 @@ end
 # ============================================================================
 
 """
+    infinite_light_pmf(num_infinite, num_bvh) -> Float32
+
+The chance [`bvh_sample_light`](@ref) picks any one infinite light: the infinite ones
+share with the BVH as one more, evenly.
+"""
+@inline infinite_light_pmf(num_infinite::Int32, num_bvh::Int32) =
+    1f0 / Float32(num_infinite + (num_bvh > Int32(0) ? Int32(1) : Int32(0)))
+
+"""
     bvh_sample_light(nodes, infinite_indices, num_infinite, num_bvh, p, n, u) -> (Int32, Float32)
 
 Sample a light from the BVH using importance-weighted traversal.
@@ -113,7 +122,7 @@ Following pbrt-v4's BVHLightSampler::Sample (lightsamplers.h:266-320).
 
     # Probability split: infinite vs BVH
     has_bvh = num_bvh > Int32(0)
-    p_infinite = Float32(num_infinite) / Float32(num_infinite + (has_bvh ? Int32(1) : Int32(0)))
+    p_infinite = Float32(num_infinite) * infinite_light_pmf(num_infinite, num_bvh)
 
     if num_infinite > Int32(0) && u < p_infinite
         # Sample infinite light uniformly
@@ -239,7 +248,7 @@ const BVH_NUM_BUCKETS = 12
 
 """SAH cost for splitting a LightBounds along dimension `dim`.
 Following pbrt-v4 EvaluateCost (lightsamplers.h:383-396)."""
-function _evaluate_cost(lb::LightBounds, bounds::Raycore.Bounds3, dim::Int)
+function evaluate_cost(lb::LightBounds, bounds::Raycore.Bounds3, dim::Int)
     θ_o = acos(clamp(lb.cosθ_o, -1f0, 1f0))
     θ_e = acos(clamp(lb.cosθ_e, -1f0, 1f0))
     θ_w = min(θ_o + θ_e, Float32(π))
@@ -300,7 +309,7 @@ function BVHLightSampler(lights::Raycore.MultiTypeSet; scene_radius::Float32=10f
 
     for flat_idx in 1:n
         light_key = flat_to_light_index(cpu_lights, Int32(flat_idx))
-        lb = Raycore.with_index(_get_light_bounds, cpu_lights, light_key, scene_radius)
+        lb = Raycore.with_index(light_bounds, cpu_lights, light_key, scene_radius)
         if isnothing(lb)
             push!(infinite_indices, Int32(flat_idx))
         elseif lb.phi > 0f0
@@ -319,7 +328,7 @@ function BVHLightSampler(lights::Raycore.MultiTypeSet; scene_radius::Float32=10f
 
     # Build BVH
     nodes = LightBVHNode[]
-    _build_bvh!(nodes, light_to_bit_trail, bvh_lights, 1, length(bvh_lights), UInt32(0), 0)
+    build_bvh!(nodes, light_to_bit_trail, bvh_lights, 1, length(bvh_lights), UInt32(0), 0)
 
     return BVHLightSampler(
         nodes, light_to_bit_trail, infinite_indices,
@@ -327,14 +336,9 @@ function BVHLightSampler(lights::Raycore.MultiTypeSet; scene_radius::Float32=10f
     )
 end
 
-# Helper for with_index dispatch to get light bounds
-@inline function _get_light_bounds(light, scene_radius::Float32)
-    light_bounds(light)
-end
-
 """Recursive BVH construction with SAH splitting.
 Following pbrt-v4 buildBVH (lightsamplers.cpp:135-238)."""
-function _build_bvh!(
+function build_bvh!(
     nodes::Vector{LightBVHNode},
     light_to_bit_trail::Vector{UInt32},
     bvh_lights::Vector{Tuple{Int32, LightBounds}},
@@ -400,8 +404,8 @@ function _build_bvh!(
             # Skip degenerate splits
             (count_below == 0 || count_above == 0) && continue
 
-            cost = _evaluate_cost(lb_below, overall_lb.bounds, dim) +
-                   _evaluate_cost(lb_above, overall_lb.bounds, dim)
+            cost = evaluate_cost(lb_below, overall_lb.bounds, dim) +
+                   evaluate_cost(lb_above, overall_lb.bounds, dim)
 
             if cost < best_cost
                 best_cost = cost
@@ -448,12 +452,12 @@ function _build_bvh!(
     ))
 
     # Build left child (child0 = next node = node_idx + 1)
-    _, lb0 = _build_bvh!(nodes, light_to_bit_trail, bvh_lights,
+    _, lb0 = build_bvh!(nodes, light_to_bit_trail, bvh_lights,
                           start, mid, bit_trail, depth + 1)
 
     # Build right child (child1 = current position)
     child1_idx = length(nodes) + 1
-    _, lb1 = _build_bvh!(nodes, light_to_bit_trail, bvh_lights,
+    _, lb1 = build_bvh!(nodes, light_to_bit_trail, bvh_lights,
                           mid + 1, stop, bit_trail | (UInt32(1) << depth), depth + 1)
 
     # Update interior node with correct child1 index and merged bounds
@@ -470,34 +474,18 @@ end
 # ============================================================================
 
 """
-    to_gpu(backend, sampler::BVHLightSampler) -> NamedTuple
+    bvh_to_gpu(mem, sampler::BVHLightSampler) -> NamedTuple
 
-Upload BVH light sampler data to GPU. Returns a NamedTuple with GPU arrays.
+Upload BVH light sampler data into memory the render state owns. Returns a
+NamedTuple with GPU arrays; `free!(mem)` releases them.
 """
-function bvh_to_gpu(backend, sampler::BVHLightSampler)
-    # Upload nodes - KA.allocate for struct arrays
-    if !isempty(sampler.nodes)
-        nodes_gpu = KA.allocate(backend, LightBVHNode, length(sampler.nodes))
-        copyto!(nodes_gpu, sampler.nodes)
-    else
-        nodes_gpu = KA.allocate(backend, LightBVHNode, 1)
-    end
-
-    # Upload bit trail array
-    if !isempty(sampler.light_to_bit_trail)
-        bit_trail_gpu = KA.allocate(backend, UInt32, length(sampler.light_to_bit_trail))
-        copyto!(bit_trail_gpu, sampler.light_to_bit_trail)
-    else
-        bit_trail_gpu = KA.allocate(backend, UInt32, 1)
-    end
-
-    # Upload infinite light indices
-    if !isempty(sampler.infinite_light_indices)
-        inf_indices_gpu = KA.allocate(backend, Int32, length(sampler.infinite_light_indices))
-        copyto!(inf_indices_gpu, sampler.infinite_light_indices)
-    else
-        inf_indices_gpu = KA.allocate(backend, Int32, 1)
-    end
+function bvh_to_gpu(mem, sampler::BVHLightSampler)
+    # `upload!` handles the empty case by allocating one element, so no branch
+    # here has to: a kernel indexes these unconditionally and a zero-length
+    # array has no address to give it.
+    nodes_gpu = upload!(mem, sampler.nodes)
+    bit_trail_gpu = upload!(mem, sampler.light_to_bit_trail)
+    inf_indices_gpu = upload!(mem, sampler.infinite_light_indices)
 
     return (
         nodes = nodes_gpu,

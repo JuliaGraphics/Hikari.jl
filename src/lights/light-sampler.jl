@@ -246,7 +246,7 @@ function PowerLightSampler(lights::Raycore.MultiTypeSet; scene_radius::Float32=1
     backend = lights.backend
 
     # Allocate GPU array for powers
-    powers_gpu = KA.allocate(backend, Float32, n)
+    powers_gpu = Mantle.devicearray(backend, Float32, n)
 
     # Get the GPU-ready StaticMultiTypeSet
     lights_static = Raycore.get_static(lights)
@@ -254,7 +254,7 @@ function PowerLightSampler(lights::Raycore.MultiTypeSet; scene_radius::Float32=1
     # Launch kernel to compute powers
     kernel = estimate_powers_kernel!(backend)
     kernel(powers_gpu, lights_static, scene_radius; ndrange=n)
-    KA.synchronize(backend)
+    Mantle.waitidle(mantle_device(backend))
 
     # Copy back to CPU for alias table construction (sequential algorithm)
     powers = Array(powers_gpu)
@@ -329,19 +329,60 @@ The flat index counts across all typed arrays in order.
 end
 
 # ============================================================================
+# Area-light ids: how an emissive triangle names its light
+# ============================================================================
+#
+# A triangle names its light by `SetKey`, packed into the one UInt32 its
+# `TriangleMeta` has for it: type slot in the top byte, index within the slot
+# below. Not by flat index: the flat order is by type slot, so a light appended
+# to an earlier slot (a constant emitter after a textured one) renumbers every
+# light behind it, and the triangles that stored the old numbers then shine
+# with their neighbour's light. A `SetKey` never moves. 0 means "no light".
+
+const AREALIGHT_VEC_BITS = 24
+
+function pack_arealight(k::SetKey)
+    k.vec_idx < (UInt32(1) << AREALIGHT_VEC_BITS) ||
+        error("more than $(2^AREALIGHT_VEC_BITS - 1) area lights of one type")
+    k.type_idx < (UInt32(1) << (32 - AREALIGHT_VEC_BITS)) || error("too many light types")
+    return (k.type_idx << AREALIGHT_VEC_BITS) | k.vec_idx
+end
+
+@propagate_inbounds arealight_key(id::UInt32) =
+    SetKey(id >> AREALIGHT_VEC_BITS, id & ((UInt32(1) << AREALIGHT_VEC_BITS) - UInt32(1)))
+
+"""
+    light_flat_index(lights, key) -> Int32
+
+The flat index of `key` in the set as it is now: the lengths of the type slots
+before it plus its place in its own. The inverse of `flat_to_light_index`, for
+the flat-indexed light BVH tables.
+"""
+@propagate_inbounds @generated function light_flat_index(
+    lights::Raycore.StaticMultiTypeSet{Data, Textures}, key::SetKey
+) where {Data<:Tuple, Textures}
+    N = length(Data.parameters)
+    branches = [quote
+        if key.type_idx == UInt32($i)
+            return $(foldl((a, j) -> :(Int32(length(lights.data[$j])) + $a), 1:(i-1); init = :(Int32(0)))) +
+                   Int32(key.vec_idx)
+        end
+    end for i in 1:N]
+    return quote
+        $(branches...)
+        return Int32(0)
+    end
+end
+
+# ============================================================================
 # Kernel to estimate light powers in parallel
 # ============================================================================
 
 @kernel function estimate_powers_kernel!(powers, @Const(lights), @Const(scene_radius::Float32))
     idx = @index(Global)
     light_idx = flat_to_light_index(lights, Int32(idx))
-    power = Raycore.with_index(_estimate_power_impl, lights, light_idx, scene_radius)
+    power = Raycore.with_index(estimate_light_power, lights, light_idx, scene_radius)
     @inbounds powers[idx] = power
-end
-
-# Implementation function for with_index dispatch
-@inline function _estimate_power_impl(light, scene_radius::Float32)::Float32
-    estimate_light_power(light, scene_radius)
 end
 
 """
@@ -539,30 +580,3 @@ GPU-compatible light sampling using pre-computed alias table arrays.
     end
 end
 
-# ============================================================================
-# Light Sampler Factory
-# ============================================================================
-
-"""
-    create_light_sampler(lights::MultiTypeSet; method::Symbol=:power, scene_radius::Float32=10f0) -> LightSampler
-
-Create a light sampler for the given lights.
-
-# Arguments
-- `lights::MultiTypeSet`: Collection of light sources
-- `method::Symbol`: Sampling method (`:uniform` or `:power`)
-- `scene_radius::Float32`: Scene bounding sphere radius (for power-weighted sampling of infinite lights)
-
-# Methods
-- `:uniform`: Uniform random selection (baseline)
-- `:power`: Power-weighted selection (recommended for varying light intensities)
-"""
-function create_light_sampler(lights::Raycore.MultiTypeSet; method::Symbol=:power, scene_radius::Float32=10f0)
-    if method == :uniform
-        return UniformLightSampler(lights)
-    elseif method == :power
-        return PowerLightSampler(lights; scene_radius=scene_radius)
-    else
-        error("Unknown light sampler method: $method")
-    end
-end

@@ -1,0 +1,33 @@
+# Auto-generated reference test scene — FLAT bump control.
+# dndu = dndv = 0 here and the shading frame needs no projection,
+# so a curvature-coupled bump bug matches on this and misses on the
+# sphere. Keep the two together: the PAIR is what localises the bug.
+LookAt 0 -1.2 0.6   0 0 0.5   0 0 1
+Camera "perspective" "float fov" 40
+Film "rgb" "integer xresolution" 128 "integer yresolution" 128 "float maxcomponentvalue" 10
+Integrator "volpath" "integer maxdepth" 8 "bool regularize" true
+
+WorldBegin
+LightSource "point" "rgb I" [40 40 40] "point3 from" [2 -1.5 3]
+
+Texture "bump-raw" "float" "imagemap"
+    "string filename" "textures/test_bump_rgba.png"
+Texture "bump-sc" "float" "scale"
+    "float scale" 0.25
+    "texture tex" "bump-raw"
+Texture "rough-raw" "float" "imagemap"
+    "string filename" "textures/test_midgrey_stripes.png"
+Texture "rough-sc" "float" "scale"
+    "float scale" 0.1
+    "texture tex" "rough-raw"
+
+Material "conductor"
+"spectrum eta" "metal-Au-eta"
+"spectrum k" "metal-Au-k"
+"float roughness" 0.05
+"texture displacement" "bump-raw"
+Shape "trianglemesh"
+"point3 P" [ -0.5 0 0.0   0.5 0 0.0   0.5 0 1.0   -0.5 0 1.0 ]
+"normal N" [ 0 -1 0  0 -1 0  0 -1 0  0 -1 0 ]
+"point2 uv" [ 0 0  1 0  1 1  0 1 ]
+"integer indices" [ 0 1 2  0 2 3 ]

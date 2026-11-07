@@ -27,7 +27,7 @@ struct DirectionalLight{S<:Spectrum} <: Light
 end
 
 # Directional lights are delta lights (emit along a single direction)
-is_δ_light(::DirectionalLight) = true
+is_δ_light(::Type{<:DirectionalLight}) = true
 # Directional lights are infinite (at infinity)
 is_infinite_light(::DirectionalLight) = true
 is_infinite_light(::Type{<:DirectionalLight}) = true
@@ -85,11 +85,3 @@ end
     d.scale * d.i, wi, 1f0, tester
 end
 
-"""
-The total power emitted by the directional light is related to the
-spatial extent of the scene and equals the amount of power arriving at the
-inscribed by bounding sphere disk: `scale * I * π * r^2`.
-"""
-@propagate_inbounds function power(d::DirectionalLight{S}, scene::AbstractScene)::S where S<:Spectrum
-    d.scale * d.i * π * world_radius(scene)^2
-end

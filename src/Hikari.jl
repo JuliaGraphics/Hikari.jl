@@ -14,9 +14,16 @@ using KernelAbstractions
 using Raycore
 using Zlib_jll
 using Adapt
+using LazyArtifacts
 using KernelAbstractions: @kernel, @index, @Const
 import KernelAbstractions as KA
 using GPUArraysCore: @allowscalar
+# Mantle is a hard dependency: `hw-rt.jl` below imports it unconditionally.
+import Mantle
+
+# Unexported but API: RayMakie's pbrt bridge calls it, so it is not free to
+# change shape. `public` says that without putting it in every `using`'s scope.
+public attach_bump
 
 # Re-export Raycore types and functions that Trace uses
 import Raycore: AbstractRay, Ray, RayDifferentials, apply, check_direction, scale_differentials
@@ -25,8 +32,8 @@ import Raycore: distance, distance_squared, bounding_sphere
 # Note: lerp is defined in spectrum.jl for Spectrum, Float32, and Point3f
 import Raycore: Transformation, translate, scale, rotate, rotate_x, rotate_y, rotate_z, look_at, perspective
 import Raycore: swaps_handedness, has_scale
-import Raycore: Triangle, TriangleMesh
-import Raycore: AccelPrimitive, BVH, TLAS, StaticTLAS, TraversableTLAS, TLASHandle, Instance, world_bound, closest_hit, any_hit, sync!
+import Raycore: Triangle
+import Raycore: TLAS, StaticTLAS, TraversableTLAS, TLASHandle, world_bound, closest_hit, any_hit, sync!
 
 # Legacy alias - InstanceHandle was renamed to TLASHandle
 const InstanceHandle = TLASHandle
@@ -35,22 +42,85 @@ import Raycore: is_dir_negative, increase_hit, intersect_p!
 import Raycore: to_gpu
 import Raycore: sum_unrolled, reduce_unrolled, for_unrolled, map_unrolled, getindex_unrolled
 import Raycore: SetKey, MultiTypeSet, StaticMultiTypeSet, with_index, is_invalid, n_slots
+"""A set as device code reads it: the whole `StaticMultiTypeSet`, or a view of some of its slots (`shade_set`)."""
+const DeviceSet = Union{StaticMultiTypeSet, Raycore.SetView}
 
 abstract type Spectrum end
 abstract type Light end
 abstract type Material end
-abstract type BxDF end
 abstract type Integrator end
 abstract type Medium end
 
-# Default no-op close for integrators without cached state
+include("synchrotron.jl")
+public radiative_volume, native_radiative_volume, EmissionParams, MagneticEtaNe, RhoNe,
+    synchrotron_jν, synchrotron_αν
+
+"""
+    abstract type GeneratedGeometry <: Material
+
+A material that carries its own geometry.
+
+A plot normally hands a renderer triangles. Some things are not triangles: a
+finite element is a polynomial patch, a subdivision surface is a limit, an
+implicit surface is a root. What those share is that the TRIANGLES ARE A CHOICE
+— how many, and how close — and the code that knows how to make them belongs to
+whoever owns the data.
+
+Subtype this and implement [`tessellate`](@ref). That is the whole interface:
+`mesh!(scene, anything; material = yours)` then draws it, rasterised and path
+traced, from the same triangles. The `anything` is what a backend that has never
+heard of your material falls back to.
+
+```julia
+struct MyElements <: Hikari.GeneratedGeometry
+    nodes::Matrix{Float64}
+    tolerance::Float64
+end
+
+Hikari.tessellate(m::MyElements) = GeometryBasics.Mesh(positions, faces)
+```
+
+**If you can solve a ray against your surface**, add a `push!` method and the
+tracer stops approximating — one box per primitive goes into the acceleration
+structure and the hit is exact at any zoom, while the rasteriser goes on using
+`tessellate`. Dispatch picks it; nothing branches on a flag:
+
+```julia
+Base.push!(scene::Hikari.Scene, ::Any, m::MyElements; transform) = ...
+```
+
+`FEMMaterial` in `fem.jl` is a worked example of both halves.
+"""
+abstract type GeneratedGeometry <: Material end
+
+"""
+    tessellate(material::GeneratedGeometry) -> GeometryBasics.Mesh
+
+The triangles `material` wants drawn, at whatever fidelity it carries.
+
+Called once per change of the material, by every renderer. The material is the
+only argument on purpose: how finely to approximate is a property of the thing
+being drawn, so it belongs beside the data rather than in a renderer's settings.
+A tolerance knob is then a field of your material, and moving it is
+`plot.material[] = rebuilt`.
+"""
+function tessellate end
+
+"""
+    shadingmaterial(m::GeneratedGeometry) -> Material
+
+The BSDF a generated geometry's triangles are shaded with. `Diffuse()` unless
+you say otherwise.
+
+Separate from the geometry because a `GeneratedGeometry` IS a material, and
+pushing its own triangles into a scene with itself as the material would be a
+loop. This is where that loop ends.
+"""
+shadingmaterial(::GeneratedGeometry) = Diffuse()
+
+# Default no-op close/clear for integrators without cached state
 Base.close(::Integrator) = nothing
-
-const Radiance = UInt8(1)
-const Importance = UInt8(2)
-
-struct Reflect end
-struct Transmit end
+clear!(::Integrator) = nothing
 
 const DO_ASSERTS = false
 macro real_assert(expr, msg="")
@@ -61,12 +131,18 @@ macro real_assert(expr, msg="")
     end
 end
 
+# Where a render state's device memory comes from. First, because everything
+# below that allocates on the device takes a `DeviceMemory` in its signature —
+# the spectral tables, the light BVH, the Sobol matrices, the work queues.
+include("device-memory.jl")
+
 include("spectrum.jl")
 # PiecewiseLinearSpectrum needs SampledSpectrum/Wavelengths from spectral.jl,
 # and must be available before texture-ref.jl and uber-material.jl
 include("spectral/spectral.jl")
 include("spectral/piecewise-linear.jl")
 include("spectral/metal-spectra.jl")
+include("spectral/ior-spectra.jl")
 
 include("random.jl")
 include("surface_interaction.jl")
@@ -78,30 +154,45 @@ include("film.jl")
 
 include("camera/camera.jl")
 include("sampler/sampling.jl")
-include("sampler/sampler.jl")
 include("textures/mapping.jl")
 include("textures/basic.jl")
 include("textures/texture-ref.jl")
+include("textures/tex-handle.jl")
+include("textures/nodes/nodes.jl")
 include("textures/environment_map.jl")
-include("materials/uber-material.jl")
-include("reflection/Reflection.jl")
-include("materials/bsdf.jl")
-include("materials/material.jl")
-include("materials/volume.jl")
-include("materials/coated-diffuse.jl")
-include("materials/mix-material.jl")
-include("materials/thin-dielectric.jl")
-include("materials/diffuse-transmission.jl")
-include("materials/coated-conductor.jl")
-include("materials/coated-diffuse-transmission.jl")
-include("materials/emissive.jl")
 
-# Spectral rendering support (for PhysicalWavefront)
-# spectral.jl, piecewise-linear.jl, metal-spectra.jl included above (before textures)
+# Spectral rendering support
 include("spectral/color.jl")
 include("spectral/uplift.jl")
-include("materials/spectral-eval.jl")
-# Sobol sampler (needs mix_bits from spectral-eval.jl)
+include("spectral/sensor.jl")
+include("spectral/sensor_data.jl")
+
+# Materials: shared math first, then each material, then dispatch
+include("materials/common.jl")
+include("materials/material.jl")
+include("materials/diffuse.jl")
+include("materials/dielectric.jl")
+include("materials/conductor.jl")
+include("materials/coated-diffuse.jl")
+include("materials/mix-material.jl")
+include("materials/coated-conductor.jl")
+include("materials/coated-diffuse-transmission.jl")
+include("materials/diffuse-transmission.jl")
+include("materials/emission.jl")
+include("materials/beckmann.jl")
+include("materials/lobes.jl")
+include("materials/layered.jl")
+include("materials/bsdf-nodes.jl")
+include("materials/packed-inputs.jl")
+include("materials/shader-material.jl")
+include("materials/descriptions.jl")
+include("materials/pbrt-nodes.jl")
+include("materials/standards.jl")
+include("materials/bump-mapped.jl")
+include("materials/merge-color.jl")
+include("materials/dispatch.jl")
+
+# Sobol sampler (needs mix_bits from materials/common.jl)
 include("sampler/sobol_matrices.jl")
 include("sampler/sobol.jl")
 # Stratified sampler (needs murmur_hash_64a from spectral-eval.jl, sobol functions from sobol.jl)
@@ -123,38 +214,106 @@ include("lights/light-sampler.jl")
 include("lights/bvh-light-sampler.jl")
 # GB.Mesh push! API (needs materials, lights, and DiffuseAreaLight)
 include("scene-mesh.jl")
-include("integrators/sampler.jl")
-include("integrators/sppm.jl")
-include("integrators/fast-wavefront.jl")
 # Unified work queue for wavefront integrators
 include("integrators/workqueue.jl")
-# PhysicalWavefront spectral path tracer
-include("integrators/physical-wavefront/workitems.jl")
-include("integrators/physical-wavefront/material-dispatch.jl")
-include("integrators/physical-wavefront/lights.jl")
-include("integrators/physical-wavefront/camera.jl")
-include("integrators/physical-wavefront/intersection.jl")
-include("integrators/physical-wavefront/material-eval.jl")
-include("integrators/physical-wavefront/film-update.jl")
+# Spectral light sampling (used by VolPath for direct lighting, environment evaluation)
+include("lights/spectral-sampling.jl")
 # VolPath volumetric path tracer
 include("integrators/volpath/media.jl")
 include("integrators/volpath/nanovdb.jl")
+include("nanotree.jl")
+include("nanofield.jl")
+include("frame-data.jl")
+include("sparse-majorant.jl")
+include("tiled-majorant.jl")
+include("packed-majorant.jl")
+include("nanomedium.jl")
 include("integrators/volpath/medium-dispatch.jl")
 include("integrators/volpath/workitems.jl")
+include("materials/subsurface.jl")
+include("materials/bsdf-storage.jl")
+include("materials/bsdf-program.jl")
+include("integrators/volpath/per_material_queues.jl")
 include("integrators/volpath/volpath-state.jl")
 include("integrators/volpath/delta-tracking.jl")
 include("integrators/volpath/medium-scatter.jl")
 include("integrators/volpath/intersection.jl")
+# After `intersection.jl`: `fem.jl` adds methods to the `vp_compute_*` helpers
+# defined there, which is how an FEM element becomes a surface the integrator
+# can shade without a second code path.
+include("fem.jl")
+include("metaballs.jl")
+include("levelset.jl")
+include("water.jl")
 include("integrators/volpath/surface-eval.jl")
-include("integrators/volpath/multi-material-eval.jl")
+include("integrators/volpath/shader-values.jl")
+# The sample as Mantle graphs — needs every stage's kernel to exist
+include("integrators/volpath/graph.jl")
 include("integrators/volpath/volpath.jl")
+# Hardware RT dispatch (uses Raycore's backend-agnostic HWTLAS/AdaptedAccel interface)
+include("integrators/volpath/hw-rt.jl")
+include("guides.jl")
 include("kernel-abstractions.jl")
 # Postprocessing pipeline
 include("postprocess.jl")
 
 # Denoising
 include("denoise.jl")
+include("oidn.jl")
+
+# PBRT file parser
+include("pbrt/tokenizer.jl")
+include("pbrt/parser.jl")
+include("pbrt/scene_builder.jl")
 
 # include("model_loader.jl")
+
+# ── Precompile workload ─────────────────────────────────────────────────────
+#
+# Hikari had no workload at all, so the first scene built in a session paid to
+# JIT the parser and the whole scene builder. Measured on a 128x128 pbrt scene:
+# 12.8 s for the first `load_pbrt`, 0.04 s for the second, i.e. essentially all
+# of it was first-call latency rather than work.
+#
+# DEVICE-FREE: the workload never touches the Vulkan driver — precompilation
+# must not, and a device crash here has poisoned pkgimages before (see Lava's
+# `__init__`). So it parses and infers, and builds nothing on a device.
+#
+# `Mantle.@setup_workload`/`@compile_workload`: PrecompileTools' macros
+# re-exported by Mantle, which is why Hikari needs no direct PrecompileTools
+# dependency.
+const PRECOMPILE_SCENE = """
+Film "rgb" "integer xresolution" 16 "integer yresolution" 16
+LookAt 0 -1.2 0.6   0 0 0.5   0 0 1
+Camera "perspective" "float fov" 40
+Integrator "volpath" "integer maxdepth" 3
+WorldBegin
+LightSource "point" "rgb I" [40 40 40] "point3 from" [2 -1.5 3]
+Material "diffuse" "rgb reflectance" [0.5 0.5 0.5]
+Shape "trianglemesh"
+  "point3 P" [ -1 0 -1  1 0 -1  1 0 1  -1 0 1 ]
+  "normal N" [ 0 -1 0  0 -1 0  0 -1 0  0 -1 0 ]
+  "point2 uv" [ 0 0  1 0  1 1  0 1 ]
+  "integer indices" [ 0 1 2  0 2 3 ]
+"""
+
+include("precompile_statements.jl")
+
+Mantle.@setup_workload begin
+    Mantle.@compile_workload begin
+        # Parsing is backend-independent and on every path. There is no CPU
+        # build to run here any more: Mantle has no host device, so a scene can
+        # only be built on a GPU backend, and the workload stays device-free.
+        # (Measured when the CPU build was still here: it was worth 0.96 s of
+        # load_pbrt time.)
+        parse_pbrt_string(PRECOMPILE_SCENE)
+        # Scene insertion and synchronization need concrete device types. Infer
+        # those types and precompile their host methods without running them.
+        precompile_statements()
+        for device in precompile_device_types()
+            precompile_shader_workload(device)
+        end
+    end
+end
 
 end

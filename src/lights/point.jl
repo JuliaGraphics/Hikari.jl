@@ -21,7 +21,7 @@ struct PointLight{S<:Spectrum} <: Light
 end
 
 # Point lights are delta lights (emit from a single point)
-is_δ_light(::PointLight) = true
+is_δ_light(::Type{<:PointLight}) = true
 
 function PointLight(position, i::S, scale::Float32=1f0) where S<:Spectrum
     PointLight(translate(Vec3f(position)), i, scale)
@@ -68,8 +68,12 @@ function PointLight(rgb::RGB, position; kwargs...)
     PointLight(RGB{Float32}(rgb.r, rgb.g, rgb.b), position; kwargs...)
 end
 
-# Legacy: RGBSpectrum constructor (for direct spectral specification without conversion)
+# RGBSpectrum constructors: apply photometric normalization (matching pbrt-v4)
 function PointLight(i::RGBSpectrum, position)
+    scale = 1f0 / D65_PHOTOMETRIC
+    PointLight(translate(Vec3f(position)), i, scale)
+end
+function PointLight(position, i::RGBSpectrum)
     scale = 1f0 / D65_PHOTOMETRIC
     PointLight(translate(Vec3f(position)), i, scale)
 end
@@ -105,22 +109,4 @@ function sample_li(p::PointLight, i::Interaction, ::Point2f, ::AbstractScene)
     )
     radiance = p.scale * p.i / distance_squared(p.position, i.p)
     radiance, wi, pdf, visibility
-end
-
-function sample_le(
-    p::PointLight, u1::Point2f, ::Point2f, ::Float32,
-)::Tuple{RGBSpectrum,Ray,Normal3f,Float32,Float32}
-    ray = Ray(o=p.position, d=uniform_sample_sphere(u1))
-    @real_assert norm(ray.d) ≈ 1f0
-    light_normal = Normal3f(ray.d)
-    pdf_pos = 1f0
-    pdf_dir = uniform_sphere_pdf()
-    return p.scale * p.i, ray, light_normal, pdf_pos, pdf_dir
-end
-
-"""
-Total power emitted by the light source over the entire sphere of directions.
-"""
-@propagate_inbounds function power(p::PointLight)
-    4f0 * π * p.scale * p.i
 end
