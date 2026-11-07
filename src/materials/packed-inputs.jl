@@ -64,11 +64,21 @@ function pack_principled_inputs(instructions)
     return result
 end
 
+# The packed record is read in bytes of instruction `i`, through the pointer kind the
+# program array has: a `Ptr` on Lava, an address-space `LLVMPtr` on Metal, which has
+# no conversion to `Ptr` (a `MethodError` left in every Principled shading kernel).
+@inline recordbytes(prog, i) = bytepointer(pointer(prog, i))
+@inline bytepointer(p::Ptr) = Ptr{UInt8}(p)
+@inline bytepointer(p::Core.LLVMPtr{T, A}) where {T, A} = reinterpret(Core.LLVMPtr{UInt8, A}, p)
+@inline loadat(::Type{T}, p::Ptr{UInt8}, offset) where {T} = unsafe_load(Ptr{T}(p + offset))
+@inline loadat(::Type{T}, p::Core.LLVMPtr{UInt8, A}, offset) where {T, A} =
+    unsafe_load(reinterpret(Core.LLVMPtr{T, A}, p + offset))
+
 @inline function packed_principled_code(prog, i, ::Val{J}) where {J}
     if J <= NODE_ARGS
         return @inbounds prog[i].arg[J]
     end
-    return unsafe_load(Ptr{UInt8}(pointer(prog, i)) + PRINCIPLED_PACKED_CODES + J - NODE_ARGS - 1)
+    return loadat(UInt8, recordbytes(prog, i), PRINCIPLED_PACKED_CODES + J - NODE_ARGS - 1)
 end
 
 @inline function packed_principled_value(::Type{Float32}, constant, s, prog, i, sc, j::Val, widths)
@@ -112,13 +122,13 @@ end
 
 @inline function packed_principled_inputs(s, prog, i::Int32, sc::ShaderContext)
     @inbounds ins = prog[i]
-    ptr = Ptr{UInt8}(pointer(prog, i))
-    p = unsafe_load(Ptr{PrincipledInputs}(ptr + PRINCIPLED_PACKED_PAYLOAD))
-    strength = unsafe_load(Ptr{Float32}(ptr + PRINCIPLED_PACKED_STRENGTH))
+    bytes = recordbytes(prog, i)
+    p = loadat(PrincipledInputs, bytes, PRINCIPLED_PACKED_PAYLOAD)
+    strength = loadat(Float32, bytes, PRINCIPLED_PACKED_STRENGTH)
     if ins.out[3] != 0x00
         widths = UInt64(ins.wide)
         for k in 0:2
-            widths |= UInt64(unsafe_load(ptr + PRINCIPLED_PACKED_WIDTHS + k)) << (16 + 8k)
+            widths |= UInt64(loadat(UInt8, bytes, PRINCIPLED_PACKED_WIDTHS + k)) << (16 + 8k)
         end
         p = packed_principled_dynamic(p, s, prog, i, sc, widths)
         strength = packed_principled_value(Float32, strength, s, prog, i, sc, Val(31), widths)

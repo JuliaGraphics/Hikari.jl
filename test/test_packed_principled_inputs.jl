@@ -32,6 +32,16 @@ function check_device_principled(expected, inputs, packed, start, sc)
     return nothing
 end
 
+# A program whose `pointer` is an address-space `LLVMPtr`, as a Metal device array's is.
+# The packed record was read through `Ptr{UInt8}(pointer(prog, i))`, which has no
+# method for one, so every Principled shading kernel kept a `MethodError` on Metal.
+struct LLVMPtrProgram{T, V <: AbstractVector{T}} <: AbstractVector{T}
+    data::V
+end
+Base.size(p::LLVMPtrProgram) = size(p.data)
+Base.getindex(p::LLVMPtrProgram, i::Integer) = p.data[i]
+Base.pointer(p::LLVMPtrProgram{T}, i::Integer) where {T} = reinterpret(Core.LLVMPtr{T, 0}, pointer(p.data, i))
+
 @testset "packed Principled inputs preserve constants, gathered values and geometry" begin
     signal = noise(xyz())
     descriptions = (
@@ -71,8 +81,10 @@ end
                 @test packed[packed_i].out[1] == Hikari.PACKED_PRINCIPLED_INPUTS
                 expected = Hikari.principled_inputs(values, original, original_i, sc)
                 actual = @inferred Hikari.principled_inputs(gathered, packed, packed_i, sc)
+                through_llvmptr = GC.@preserve packed Hikari.principled_inputs(gathered, LLVMPtrProgram(packed), packed_i, sc)
                 for name in fieldnames(Hikari.PrincipledInputs)
                     @test isequal(getfield(actual, name), getfield(expected, name))
+                    @test isequal(getfield(through_llvmptr, name), getfield(expected, name))
                 end
                 check_device_principled(expected, inputs, packed, packed_i, sc)
             end
