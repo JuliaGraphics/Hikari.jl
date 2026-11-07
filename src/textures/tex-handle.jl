@@ -76,9 +76,11 @@ const _TH_ZERO = RGBSpectrum(0f0, 0f0, 0f0)
 # a constant has no business occupying a texture slot.
 @inline TexHandle(t::Texture{T, 0}) where {T} = TexHandle(constant_value(t))
 
-# The slot lives in the TextureRef's TYPE; capture it as data.
-@inline TexHandle(t::Raycore.TextureRef{A, T, N, TIdx}) where {A, T, N, TIdx} =
-    TexHandle(TexKind.IMAGE, 0f0, _TH_ZERO, Int32(TIdx), Int32(t.idx))
+# The slot lives in the TextureRef's TYPE; capture it as data. An image's `f` is 1
+# when every pixel of it is opaque and 0 when that is not known: the handle cannot
+# read its pixels, and `cutout` asks it whether a material's alpha needs a program.
+@inline TexHandle(t::Raycore.TextureRef{A, T, N, TIdx}, opaque::Bool = false) where {A, T, N, TIdx} =
+    TexHandle(TexKind.IMAGE, opaque ? 1f0 : 0f0, _TH_ZERO, Int32(TIdx), Int32(t.idx))
 
 # Lets Raycore's push-time struct rebuild (`convert_to_texturerefs` calls
 # `BaseT(new_fields...)`) drop a freshly-stored `TextureRef` into a
@@ -276,7 +278,7 @@ device_param(dhv, img::AbstractMatrix{<:Union{Colorant, Real, RGBSpectrum}}) = d
 device_param(dhv, s::PiecewiseLinearSpectrum) = s   # lives inline on the device
 device_param(dhv, t::Texture{T, 0}) where {T} = TexHandle(t)
 device_param(dhv, t::Texture{T, N}) where {T, N} =
-    TexHandle(Raycore.store_texture(dhv, t.data))
+    TexHandle(Raycore.store_texture(dhv, t.data), !cutout(t))
 device_param(dhv, r::Raycore.TextureRef) = TexHandle(r)
 device_param(dhv, v::Union{Real, RGBSpectrum, Colorant, Tuple{Real,Real,Real}}) = TexHandle(v)
 device_param(dhv, pair::Tuple{Any, Any}) = map(x -> device_param(dhv, x), pair)
@@ -345,7 +347,8 @@ of kind `IMAGE` carries exactly what is needed to avoid that: `slot` is the
 index into `texture_order` (the GPU array TYPE) and `idx` is the element within
 it, which together are the contents of a `TextureRef`. Rebuilding that ref lets
 this take the same `copyto_texture!` path `TextureRef` fields already use, so
-the data lands in the existing array and the handle is returned unchanged.
+the data lands in the existing array and the returned handle names the same
+slot, with the new pixels' opacity.
 
 The error this replaces was not a small inconvenience. It fired whenever a plot
 carrying a textured material was re-resolved — setting `pose` on a skinned mesh
@@ -363,7 +366,8 @@ function Raycore.update_item(dhv::Raycore.MultiTypeSet, old::TexHandle, new::Tex
     AT = dhv.texture_order[old.slot]
     ref = Raycore.TextureRef{AT, eltype(AT), ndims(AT), Int(old.slot)}(Int(old.idx))
     Raycore.copyto_texture!(dhv, ref, new.data)
-    return old
+    # The pixels changed, and with them whether all of them are opaque.
+    return TexHandle(ref, !cutout(new))
 end
 
 # An image given as a matrix of colours, as `device_param` stores one.

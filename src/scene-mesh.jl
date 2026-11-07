@@ -25,8 +25,9 @@ opaque(mi::MediumInterface) = !(mi.material isa NullMaterial) && mi.shadows == 0
 """
     cutout(material) -> Bool
 
-Whether the material lets light through anywhere (`surface_transparency`). A handle to
-a stored texture cannot be looked into and counts as a cutout.
+Whether the material lets light through anywhere (`surface_transparency`). A stored
+image's handle says whether all of its pixels are opaque; any other stored texture
+cannot be looked into and counts as a cutout.
 """
 cutout(::Material) = false
 cutout(m::Diffuse) = cutout(m.color)
@@ -35,7 +36,8 @@ cutout(m::ShaderMaterial) = m.alpha !== nothing
 cutout(m::Mix) = cutout(m.a) || cutout(m.b)
 
 cutout(h::TexHandle) = h.kind == TexKind.CONST_SPECTRUM ? get_alpha(h.rgb) < 1f0 :
-    h.kind in (TexKind.IMAGE, TexKind.CHECKER, TexKind.VERTEX_COLOR, TexKind.FEM_FIELD)
+    h.kind == TexKind.IMAGE ? h.f < 1f0 :
+    h.kind in (TexKind.CHECKER, TexKind.VERTEX_COLOR, TexKind.FEM_FIELD)
 cutout(t::Texture{<:RGBSpectrum}) = t.isconst ? get_alpha(t.constval) < 1f0 : any(x -> get_alpha(x) < 1f0, t.data)
 cutout(::Texture) = false
 cutout(t::CheckerboardTexture) = cutout(t.tex1) || cutout(t.tex2)

@@ -22,6 +22,7 @@ const TEST_FILES = [
     "test_empty_scene.jl",
     "test_primary_ray_fusion.jl",
     "materials.jl",
+    "test_image_handle_opacity.jl",
     "test_spectrum_equality.jl",
     "test_curved_transport.jl",
     "test_step_integral.jl",
