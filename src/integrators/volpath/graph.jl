@@ -179,7 +179,7 @@ function medium_sample_pass!(g, state::VolPathState, @nospecialize(refs), nxt::W
                      group = volume_workgroupsize(), name = "medium-sample")
 end
 
-"""Direct lighting at a real scatter event. The only producer of shadow rays."""
+"""Direct lighting at a real scatter event; its shadow rays join the surfaces' (`shadow_pass!`)."""
 function medium_dl_pass!(g, state::VolPathState, @nospecialize(refs))
     Mantle.dispatch!(g, workqueue_map_kernel!,
                          (vp_medium_direct_lighting_kernel!,
@@ -282,7 +282,7 @@ function shade_pass!(g, state::VolPathState, @nospecialize(refs), cur::WorkQueue
         for shade_queue in partitioned_shade_queues!(g, state, refs, q)
             Mantle.dispatch!(g, vp_shade_kernel!,
                              (shade_queue, state.surface_hits, cur, state.arrivals,
-                              nxt, state.pixel_L, state.pdf_per_pixel,
+                              nxt, state.pixel_L, state.shadow_queue, state.pdf_per_pixel,
                               refs.accel, refs.media_interfaces, refs.media,
                               view, refs.lights, state.rgb2spec_table,
                               state.bvh_nodes, state.infinite_light_indices,
@@ -305,7 +305,9 @@ shader_values_workgroupsize(group) = min(group, 128)
 # launch shape everywhere; no subgroup-width requirement enters the pipeline.
 shader_bsdf_workgroupsize(group) = min(group, 32)
 
-"""Transmittance along the shadow rays the medium direct lighting queued."""
+"""Transmittance along the round's shadow rays that pass a transparent surface or a medium, queued
+by the surfaces' direct lighting and the media's. One kernel holds that trace: inlined into each
+material's shading kernel it was half of every one of them."""
 function shadow_pass!(g, state::VolPathState, @nospecialize(refs))
     Mantle.dispatch!(g, workqueue_map_kernel!,
                          (vp_trace_shadow_rays_kernel!, state.shadow_queue,
@@ -326,7 +328,7 @@ One bounce, appended to `g`.
 Which stages exist is a property of the scene, not a runtime branch: a scene
 without media never fills the medium queues. A stage that could only ever
 dispatch over an empty queue is left out rather than run for nothing — which is
-also why the shadow pass is gated: medium direct lighting is its only producer.
+also why the shadow pass is gated: direct lighting, its only producer, needs lights.
 The shading follows the medium passes, which deliver surface hits too.
 """
 function round_passes!(g, state::VolPathState, @nospecialize(refs), cur::WorkQueue, nxt::WorkQueue;
@@ -345,7 +347,7 @@ function finish_round_passes!(g, state::VolPathState, @nospecialize(refs), cur::
     end
     has_media && state.num_infinite_lights > 0 && escaped_pass!(g, state, refs)
     shade_pass!(g, state, refs, cur, nxt; group = has_media ? volume_workgroupsize() : DEFAULT_WORKGROUPSIZE)
-    has_media && has_lights && shadow_pass!(g, state, refs)
+    has_lights && shadow_pass!(g, state, refs)
     return g
 end
 

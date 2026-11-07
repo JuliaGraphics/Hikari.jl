@@ -36,7 +36,10 @@ function rendered_batches(backend, scene, batches)
     end
     Mantle.waitidle(Hikari.mantle_device(backend))
     lanes = vp.state.sobol_rng.lanes
-    @test vp.state.shadow_queue.capacity == 1
+    # A scene without media keeps placeholder medium queues; its surfaces still
+    # queue the shadow rays that pass a see-through surface, one per path.
+    @test vp.state.medium_sample_queue.capacity == 1
+    @test vp.state.shadow_queue.capacity == vp.state.ray_queue_a.capacity
     image = Array(film.framebuffer)
     close(vp)
     @test Hikari.nallocations(accumulators[1]) == 0
@@ -75,14 +78,17 @@ end
     end
 end
 
-@testset "medium shadow capacity follows the medium work capacity" begin
+@testset "a shadow ray per path fits the shadow queue, with media or without" begin
+    # Surface direct lighting queues a shadow ray that passes a see-through
+    # surface, so the queue is not a medium queue any more: sized like those
+    # only, it held one ray in a scene without media and dropped the rest.
     backend = Mantle.defaultbackend()
     lights = Hikari.Scene(; backend).lights
     for has_media in (false, true)
         state = Hikari.VolPathState(backend, 2, 2, lights; has_media)
         try
-            @test state.shadow_queue.capacity == (has_media ? 4 : 1)
-            @test state.shadow_queue.capacity == state.medium_sample_queue.capacity
+            @test state.shadow_queue.capacity == 4
+            @test state.medium_sample_queue.capacity == (has_media ? 4 : 1)
         finally
             Hikari.free!(state)
         end

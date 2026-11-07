@@ -326,7 +326,8 @@ end
 #   * `surface_direct_lighting_inner!` / `evaluate_material_inner!` — take the
 #     BxDF carrier `get_bxdf` built for this hit and call
 #     `evaluate_bsdf_spectral` / `sample_bsdf_spectral` on it directly. Sobol
-#     inlined, shadow trace inlined.
+#     inlined; a shadow ray that passes a transparent surface or a medium goes to the
+#     shadow pass.
 #   * `vp_shade_kernel!` — reads a `TypedHitRef{T}` from its `SlotQueue{T}`, loads the `VPSurfaceHit`
 #     from the shared `surface_hits` store and its path, expands the surface,
 #     looks up the concrete instance via `material_of_type(materials, T,
@@ -337,7 +338,26 @@ end
 #     determine ordering around writes to `next_ray_queue` and atomic `pixel_L`.
 
 """Direct lighting for one surface hit: BVH light sample, BSDF evaluation on
-the already-resolved `bxdf` carrier, MIS weight, shadow ray pushed inline.
+the already-resolved `bxdf` carrier, MIS weight, and the shadow ray.
+
+Most shadow rays settle with one query here: an opaque surface blocks them, or
+they reach the light past nothing. The rest pass a surface that lets light
+through, or start in a medium; they go to the round's shadow pass
+(`vp_trace_shadow_rays_kernel!`), which holds the whole transmittance trace.
+
+That trace was inlined here (since 2026-06-03, when shading was one kernel). With a
+shading kernel per material each carried it: on RADV ~25k instructions at 256 VGPRs
+of a ~47k-instruction kernel. Measured 2026-11-07 (RayDemo, s per render, 7900 XTX /
+RTX 4000 Ada), inlined, every shadow ray queued, and as here:
+
+    crown          2.56 / 2.37    2.05 / 2.27    2.49 / 2.25
+    materials      0.59 / 0.78    0.55 / 0.80    0.57 / 0.76
+    killeroo-gold  0.32 / 0.78    0.32 / 0.86    0.32 / 0.77
+    bunny-cloud    1.97 / 3.10    1.70 / 2.85    1.69 / 2.82
+
+Queuing every ray costs the Ada's bandwidth where nothing but opaque surfaces stand
+between a hit and its light; the query left here costs RADV registers in the
+heaviest shading kernels.
 
 Sobol samples are generated inline from `(px, py, sample_idx, base_dim+dim)`
 rather than read from a pre-populated per-pixel buffer. That eliminates the
@@ -346,9 +366,9 @@ write/read of two `pixel_samples_direct_*` arrays per bounce — measured as
 58 % of GPU time on killeroo before the change."""
 @propagate_inbounds function surface_direct_lighting_inner!(
     bxdf::B,
+    shadow_queue,
     pixel_L,
     accel,
-    media_interfaces,
     media,
     work::VPMaterialEvalWorkItem,
     materials,
@@ -451,18 +471,21 @@ write/read of two `pixel_samples_direct_*` arrays per bounce — measured as
         origin, dir, t_max, refract = result.ray_origin, result.ray_direction, result.t_max, false
     end
 
-    # Inline shadow trace + accumulate (opt4 pattern).
-    T_ray, tr_r_u, tr_r_l, visible, out = trace_shadow_transmittance(
-        accel, media_interfaces, media, materials, rgb2spec_table,
-        origin, dir, t_max, work.lambda, medium, refract,
-    )
-    (visible && !is_black(T_ray)) || return
-    mis_denom = average(r_u * tr_r_u + r_l * tr_r_l)
-    mis_denom > 1f-10 || return
-    # Through Snell's window the sky is where the shadow ray left (see `snells_window`).
-    sky = refract ? evaluate_escaped_ray_spectral(rgb2spec_table, lights, out, work.lambda) : SpectralRadiance(1f0)
-    final_L = Ld * sky * T_ray / mis_denom
-    is_black(final_L) || accumulate_spectrum!(pixel_L, (work.pixel_index - Int32(1)) * Int32(4), final_L)
+    ray = Raycore.Ray(o = origin, d = dir, t_min = 0f0, t_max = t_max)
+    if !has_medium(medium) && !refract
+        # Whether anything lies on the way: one kept, on every structure.
+        th = Raycore.transparent_hits(accel, ray, 0xff, Val(1), typemax(UInt32))
+        th.blocked && return
+        if th.count == UInt32(0)
+            # Nothing on the way: unit transmittance, as the trace returns it.
+            mis_denom = average(r_u + r_l)
+            mis_denom > 1f-10 || return
+            final_L = Ld / mis_denom
+            is_black(final_L) || accumulate_spectrum!(pixel_L, (work.pixel_index - Int32(1)) * Int32(4), final_L)
+            return
+        end
+    end
+    push!(shadow_queue, VPShadowRayWorkItem(ray, t_max, work.lambda, Ld, r_u, r_l, work.pixel_index, medium, refract))
     return
 end
 
@@ -585,7 +608,7 @@ a `MixMaterial`'s, its components').
 """
 @kernel inbounds = true function vp_shade_kernel!(
     q, surface_hits, cur, arrivals,
-    next_ray_queue, pixel_L, film_pdf, accel, media_interfaces, media, materials, lights,
+    next_ray_queue, pixel_L, shadow_queue, film_pdf, accel, media_interfaces, media, materials, lights,
     rgb2spec_table, bvh_nodes, infinite_light_indices, light_to_bit_trail,
     num_infinite_lights::Int32, num_bvh_lights::Int32, num_lights::Int32,
     max_depth::Int32, do_regularize::Bool, emitters_reachable::Bool, sobol_rng, sample_idx_ref, camera_ref,
@@ -594,7 +617,7 @@ a `MixMaterial`'s, its components').
     j = @index(Global)
     if j <= queuelength(q)
         vp_shade_surface_hit!(q[j], surface_hits, cur, arrivals,
-            next_ray_queue, pixel_L, film_pdf, accel, media_interfaces, media, materials, lights,
+            next_ray_queue, pixel_L, shadow_queue, film_pdf, accel, media_interfaces, media, materials, lights,
             rgb2spec_table, bvh_nodes, infinite_light_indices, light_to_bit_trail,
             num_infinite_lights, num_bvh_lights, num_lights,
             max_depth, do_regularize, emitters_reachable, sobol_rng, sample_idx_ref, camera_ref,
@@ -631,7 +654,7 @@ hit record, the bump-perturbed shading frame, the emission of an area light it l
 """
 @propagate_inbounds function vp_shade_surface_hit!(
     ref::CapacityRef{M, C, S}, surface_hits, cur, arrivals,
-    next_ray_queue, pixel_L, film_pdf, accel, media_interfaces, media, materials, lights,
+    next_ray_queue, pixel_L, shadow_queue, film_pdf, accel, media_interfaces, media, materials, lights,
     rgb2spec_table, bvh_nodes, infinite_light_indices, light_to_bit_trail,
     num_infinite_lights::Int32, num_bvh_lights::Int32, num_lights::Int32,
     max_depth::Int32, do_regularize::Bool, emitters_reachable::Bool, sobol_rng, sample_idx_ref, camera_ref,
@@ -648,7 +671,7 @@ hit record, the bump-perturbed shading frame, the emission of an area light it l
     hit = GatheredRef{M, S}(ref.idx, ref.inputs, ref.program_offset)
     return vp_shade_surface_hit!(
         hit, surface_hits, cur, arrivals, next_ray_queue,
-        pixel_L, film_pdf, accel, media_interfaces, media,
+        pixel_L, shadow_queue, film_pdf, accel, media_interfaces, media,
         materials, lights, rgb2spec_table, bvh_nodes, infinite_light_indices,
         light_to_bit_trail, num_infinite_lights, num_bvh_lights, num_lights, max_depth,
         do_regularize, emitters_reachable, sobol_rng, sample_idx_ref, camera_ref,
@@ -658,7 +681,7 @@ end
 
 @propagate_inbounds function vp_shade_surface_hit!(
     ref, surface_hits, cur, arrivals,
-    next_ray_queue, pixel_L, film_pdf, accel, media_interfaces, media, materials, lights,
+    next_ray_queue, pixel_L, shadow_queue, film_pdf, accel, media_interfaces, media, materials, lights,
     rgb2spec_table, bvh_nodes, infinite_light_indices, light_to_bit_trail,
     num_infinite_lights::Int32, num_bvh_lights::Int32, num_lights::Int32,
     max_depth::Int32, do_regularize::Bool, emitters_reachable::Bool, sobol_rng, sample_idx_ref, camera_ref,
@@ -719,7 +742,7 @@ end
     if T <: MixMaterial
         Raycore.with_index(vp_shade_resolved_hit!, materials, resolved,
             hit_work, wo, resolved,
-            next_ray_queue, pixel_L, film_pdf, accel, media_interfaces, media,
+            next_ray_queue, pixel_L, shadow_queue, film_pdf, accel, media_interfaces, media,
             materials, lights, rgb2spec_table,
             bvh_nodes, infinite_light_indices,
             num_infinite_lights, num_bvh_lights, num_lights,
@@ -729,7 +752,7 @@ end
         mat = shaded_instance(ref, materials, resolved)
         vp_shade_resolved_hit!(mat,
             hit_work, wo, resolved,
-            next_ray_queue, pixel_L, film_pdf, accel, media_interfaces, media,
+            next_ray_queue, pixel_L, shadow_queue, film_pdf, accel, media_interfaces, media,
             materials, lights, rgb2spec_table,
             bvh_nodes, infinite_light_indices,
             num_infinite_lights, num_bvh_lights, num_lights,
@@ -772,12 +795,12 @@ end
 
 # Shade one surface hit with the RESOLVED concrete material instance: build
 # the typed BxDF, BSDF sample + RR + continuation push, then direct lighting
-# (inline shadow trace). Called by the per-material shading kernel, directly or,
+# (its shadow ray settled or queued). Called by the per-material shading kernel, directly or,
 # for a mix's component, through `with_index`.
 @propagate_inbounds function vp_shade_resolved_hit!(
     mat,
     hit_work, wo::Vec3f, resolved_mat_idx::SetKey,
-    next_ray_queue, pixel_L, film_pdf, accel, media_interfaces, media,
+    next_ray_queue, pixel_L, shadow_queue, film_pdf, accel, media_interfaces, media,
     materials, lights, rgb2spec_table,
     bvh_nodes, infinite_light_indices,
     num_infinite_lights::Int32, num_bvh_lights::Int32, num_lights::Int32,
@@ -801,11 +824,7 @@ end
     mat_work = end_dispersion(bxdf, mat_work, film_pdf)
     bxdf, mat_work = subsurface_scatter(bxdf, mat_work, accel, sample_idx)
 
-    # BSDF sample + RR + push continuation, before the direct lighting: the
-    # shadow ray is traced inside it, and anything live across that trace is
-    # held through the whole traversal. Sampled after it, the BSDF was: its
-    # lobes spilled around the traversal loop, and on the 7900 XTX that made
-    # the hardware path twice the cost of the software one.
+    # BSDF sample + RR + push continuation, then the direct lighting.
     evaluate_material_inner!(
         bxdf,
         next_ray_queue, film_pdf,
@@ -816,10 +835,10 @@ end
         rr_depth,
     )
 
-    # Direct lighting + inline shadow trace + accumulate (typed BSDF eval).
+    # Direct lighting (typed BSDF eval) and its shadow ray.
     surface_direct_lighting_inner!(
         bxdf,
-        pixel_L, accel, media_interfaces, media,
+        shadow_queue, pixel_L, accel, media,
         mat_work, materials, lights, rgb2spec_table,
         bvh_nodes, infinite_light_indices,
         num_infinite_lights, num_bvh_lights, num_lights,

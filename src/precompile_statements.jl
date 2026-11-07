@@ -17,6 +17,8 @@ function precompile_shader_signatures(device::Type{<:Mantle.Device}; hw_accel::B
     read_rays = StructArray{VPRayWorkItem,1,read_fields,Int}
     read_queue = WorkQueue{VPRayWorkItem,read_rays,C(Int32)}
     hit_queue = WorkQueue{VPSurfaceHit,C(VPSurfaceHit),C(Int32)}
+    shadow_fields = NamedTuple{fieldnames(VPShadowRayWorkItem),Tuple{map(A,fieldtypes(VPShadowRayWorkItem))...}}
+    shadow_queue = WorkQueue{VPShadowRayWorkItem,StructArray{VPShadowRayWorkItem,1,shadow_fields,Int},A(Int32)}
     inputs = ShaderInputs{C(Float32),C(Int32)}
     nodes = SurfaceProgramNodes{16,true,SURFACE_PRINCIPLED_MASK | SURFACE_ONE_PRINCIPLED,false}
     queue = ClosureQueue{nodes,C(Int32),inputs}
@@ -33,7 +35,7 @@ function precompile_shader_signatures(device::Type{<:Mantle.Device}; hw_accel::B
     materials = Raycore.SetView{(),(1,3),Tuple{},textures}
     lights = StaticMultiTypeSet{Tuple{C(PointLight{RGBSpectrum})},Tuple{}}
     rgb = RGBToSpectrumTable{C(Float32),C(Float32,5),C(Float32)}
-    tail = (hit_queue,read_queue,read_queue,ray_queue,A(Float32),A(Float32),
+    tail = (hit_queue,read_queue,read_queue,ray_queue,A(Float32),shadow_queue,A(Float32),
         accel,C(MediumInterfaceIdx),media,materials,lights,rgb,C(LightBVHNode),
         C(Int32),A(UInt32),Int32,Int32,Int32,Int32,Bool,Bool,
         SobolRNG{C(UInt32)},C(Int32),C(PerspectiveCamera),Int32,Int32)

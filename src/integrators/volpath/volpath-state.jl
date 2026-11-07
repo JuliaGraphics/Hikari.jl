@@ -207,8 +207,8 @@ function VolPathState(
     medium_scatter_queue = WorkQueue{VPMediumScatterWorkItem}(mem, medium_capacity)
     surface_hits = WorkQueue{VPSurfaceHit}(mem, queue_capacity)
     arrivals = WorkQueue{VPRayWorkItem}(mem, medium_capacity)
-    # Surface direct lighting traces inline; only medium scattering queues shadows.
-    shadow_queue = WorkQueue{VPShadowRayWorkItem}(mem, medium_capacity)
+    # One shadow ray per path and round at most: a path's surface or its scatter event.
+    shadow_queue = WorkQueue{VPShadowRayWorkItem}(mem, queue_capacity)
     escaped_queue = WorkQueue{VPEscapedRayWorkItem}(mem, medium_capacity)
 
     n_paths = n_pixels * lanes
