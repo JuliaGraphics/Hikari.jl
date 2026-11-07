@@ -86,6 +86,32 @@ end
     end
 end
 
+# A guide fill runs once per offscreen frame. It built and uploaded the film
+# filter's sampling tables on every call, four device arrays only the GC could
+# free; past the pool's soft cap each one started a full collection, which cost
+# crown every other render 0.25-0.45 s. The film uploads them once now.
+livecount(pool) = sum(b -> length(b.live), Iterators.flatten(values(pool.blocks)); init = 0)
+
+@testset "A guide fill allocates no device memory" begin
+    backend = Mantle.defaultbackend()
+    pool = Mantle.pool(Hikari.mantle_device(backend))
+    for hw_accel in (Mantle.supports_hwtlas(backend) ? (false, true) : (false,))
+        scene = Hikari.Scene(; backend, hw_accel)
+        push!(scene, normal_mesh(GeometryBasics.Tessellation(Sphere(Point3f(0), 0.6f0), 16)),
+              Hikari.Diffuse(color = (0.5, 0.5, 0.5)))
+        Hikari.sync!(scene)
+        film = Hikari.Film(Point2f(16, 16); filter = Hikari.GaussianFilter())
+        camera = Hikari.PerspectiveCamera(Point3f(0, 0, 3), Point3f(0), film; fov = 45f0)
+        film = Hikari.Film(backend, film)
+        # Adapted per fill, as RayMakie's `refresh_guides!` does.
+        Hikari.fill_aux_buffers!(film, Adapt.adapt(backend, scene), camera; grid = 1)
+        before = livecount(pool)
+        Hikari.fill_aux_buffers!(film, Adapt.adapt(backend, scene), camera; grid = 1)
+        @test livecount(pool) == before
+        Hikari.free!(film)
+    end
+end
+
 @testset "One guide ray per pixel with grid = 1" begin
     backend = Mantle.defaultbackend()
     for hw_accel in (Mantle.supports_hwtlas(backend) ? (false, true) : (false,))

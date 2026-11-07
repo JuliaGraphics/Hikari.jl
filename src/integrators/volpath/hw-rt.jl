@@ -60,8 +60,7 @@ end
 
 function fill_aux_buffers!(film::Film, scene::Scene{<:AdaptedAccel}, camera;
                            has_infinite_lights::Bool=false,
-                           cull_mask::UInt32=UInt32(0xFF),
-                           filter::GPUFilterParams=film.filter_params, grid::Integer=GUIDE_GRID)
+                           cull_mask::UInt32=UInt32(0xFF), grid::Integer=GUIDE_GRID)
     hwtlas = scene.accel.hwtlas
     hwtlas === nothing && return nothing  # Adapt has not run; nothing to trace
     Raycore.n_instances(hwtlas) == 0 && return nothing
@@ -75,7 +74,7 @@ function fill_aux_buffers!(film::Film, scene::Scene{<:AdaptedAccel}, camera;
                                            # will strip hwtlas at kernel-arg time
     hw_fill_aux_kernel!(backend)(
         film.depth, film.normal, film.albedo,
-        camera, filter, Adapt.adapt(backend, GPUFilterSamplerData(filter)),
+        camera, film.filter_params, film.filter_sampler,
         miss_depth, Int32(grid), Int32(w), Int32(h),
         accel,scene.materials,scene.media_interfaces; ndrange=n)
     Mantle.waitidle(mantle_device(backend))

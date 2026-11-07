@@ -29,6 +29,7 @@ struct Film{
     AB<:AbstractMatrix{RGB{Float32}},
     NB<:AbstractMatrix{Vec3f},
     DB<:AbstractMatrix{Float32},
+    FS<:Union{Nothing, GPUFilterSamplerData},
 }
     resolution::Point2f
     crop_bounds::Bounds2
@@ -39,6 +40,10 @@ struct Film{
     filter_table_width::Int32
     filter_radius::Point2f
     filter_params::GPUFilterParams
+    # `filter_params`' importance-sampling tables, which the guide rays draw
+    # their positions from. Uploaded once with the film: built per guide fill,
+    # they were a device allocation every frame.
+    filter_sampler::FS
     scale::Float32
 
     # Sensor-calibrated linear HDR output (written by integrator)
@@ -117,6 +122,7 @@ function Film(
         Int32(filter_table_width),
         filter.radius,
         GPUFilterParams(filter),
+        GPUFilterSamplerData(filter),
         scale,
         framebuffer,
         albedo,
@@ -153,6 +159,7 @@ function Film(backend, film::Film)
         film.filter_table_width,
         film.filter_radius,
         film.filter_params,
+        upload!(mem, film.filter_sampler),
         film.scale,
         upload!(mem, film.framebuffer),
         upload!(mem, film.albedo),
@@ -166,6 +173,12 @@ function Film(backend, film::Film)
         mem,
     )
 end
+
+upload!(mem::DeviceMemory, ::Nothing) = nothing
+upload!(mem::DeviceMemory, data::GPUFilterSamplerData) = GPUFilterSamplerData(
+    upload!(mem, data.func), upload!(mem, data.marginal_cdf), upload!(mem, data.marginal_func),
+    upload!(mem, data.conditional_cdf), data.domain_min, data.domain_max, data.nx, data.ny,
+    data.func_integral)
 
 function clear!(film::Film)
     film.iteration_index[] = Int32(0)
@@ -198,15 +211,15 @@ const MISS_DEPTH = 1.0f30
 missed(depth::Real) = depth >= MISS_DEPTH
 
 """
-    fill_aux_buffers!(film, scene, camera; has_infinite_lights=false, filter=film.filter_params, grid=GUIDE_GRID)
+    fill_aux_buffers!(film, scene, camera; has_infinite_lights=false, grid=GUIDE_GRID)
 
 Fill auxiliary buffers (albedo, normal, depth) by tracing primary rays.
-These are used by `denoise!` for edge-aware filtering. `filter` is the pixel filter the image
-was rendered with (the integrator's), which the albedo and normal are filtered with too, over
-`grid`² rays per pixel. `grid = 1` is one ray per pixel, for a camera that is still moving.
+These are used by `denoise!` for edge-aware filtering. The albedo and normal are filtered with
+the film's pixel filter, over `grid`² rays per pixel. `grid = 1` is one ray per pixel, for a
+camera that is still moving.
 """
 function fill_aux_buffers!(film::Film, scene, camera; has_infinite_lights::Bool=false,
-                           filter::GPUFilterParams=film.filter_params, grid::Integer=GUIDE_GRID)
+                           grid::Integer=GUIDE_GRID)
     albedo = film.albedo
     normal = film.normal
     depth = film.depth
@@ -215,11 +228,10 @@ function fill_aux_buffers!(film::Film, scene, camera; has_infinite_lights::Bool=
     backend = KA.get_backend(albedo)
     # Adapt the acceleration structure for kernel dispatch (TLAS -> StaticTLAS)
     accel = Adapt.adapt(backend, scene.accel)
-    filter_data = Adapt.adapt(backend, GPUFilterSamplerData(filter))
     kernel! = aux_buffer_kernel!(backend)
     kernel!(
         albedo, normal, depth,
-        accel, camera, filter, filter_data, miss_depth, Int32(grid), Adapt.adapt(backend,scene.materials), Adapt.adapt(backend,scene.media_interfaces);
+        accel, camera, film.filter_params, film.filter_sampler, miss_depth, Int32(grid), Adapt.adapt(backend,scene.materials), Adapt.adapt(backend,scene.media_interfaces);
         ndrange = length(albedo)
     )
     Mantle.waitidle(mantle_device(backend))
