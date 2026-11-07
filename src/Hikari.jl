@@ -282,7 +282,7 @@ include("pbrt/scene_builder.jl")
 # `Mantle.@setup_workload`/`@compile_workload`: PrecompileTools' macros
 # re-exported by Mantle, which is why Hikari needs no direct PrecompileTools
 # dependency.
-const _PRECOMPILE_SCENE = """
+const PRECOMPILE_SCENE = """
 Film "rgb" "integer xresolution" 16 "integer yresolution" 16
 LookAt 0 -1.2 0.6   0 0 0.5   0 0 1
 Camera "perspective" "float fov" 40
@@ -306,12 +306,12 @@ Mantle.@setup_workload begin
         # only be built on a GPU backend, and the workload stays device-free.
         # (Measured when the CPU build was still here: it was worth 0.96 s of
         # load_pbrt time.)
-        parse_pbrt_string(_PRECOMPILE_SCENE)
+        parse_pbrt_string(PRECOMPILE_SCENE)
         # Scene insertion and synchronization need concrete device types. Infer
         # those types and precompile their host methods without running them.
-        _precompile_statements()
-        for device in _precompile_device_types()
-            _precompile_shader_workload(device)
+        precompile_statements()
+        for device in precompile_device_types()
+            precompile_shader_workload(device)
         end
     end
 end

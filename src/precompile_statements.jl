@@ -1,11 +1,11 @@
-_precompile_device_types() = Mantle._precompile_device_types()
+precompile_device_types() = Mantle.precompile_device_types()
 
 # Describe the common opaque triangle/point-light dispatch without allocating
 # arrays or initializing a device. Keep this in sync with shade_pass!; a test
 # compares these signatures with those of real recorded shading dispatches.
-function _precompile_shader_signatures(device::Type{<:Mantle.Device}; hw_accel::Bool = true,
+function precompile_shader_signatures(device::Type{<:Mantle.Device}; hw_accel::Bool = true,
                                       readonly::Bool = true)
-    abi = Mantle._kernel_precompile_abi(device, 32)
+    abi = Mantle.kernel_precompile_abi(device, 32)
     abi === nothing && return ()
     A(T, N = 1) = abi.array(T, N)
     C(T, N = 1) = readonly ? abi.readonly(T, N) : abi.array(T, N)
@@ -40,20 +40,20 @@ function _precompile_shader_signatures(device::Type{<:Mantle.Device}; hw_accel::
     return [Tuple{typeof(gpu_vp_shade_kernel!),context,Q,tail...} for Q in queues.parameters]
 end
 
-function _precompile_shader_workload(device::Type{<:Mantle.Device})
+function precompile_shader_workload(device::Type{<:Mantle.Device})
     cache = Mantle.AccessCache()
     # Access analysis runs before readonly adaptation, while code generation
     # sees the adapted signature. Both inference roots must reach the image.
     for readonly in (false, true), hw_accel in (true, false),
-        sig in _precompile_shader_signatures(device; hw_accel, readonly)
+        sig in precompile_shader_signatures(device; hw_accel, readonly)
         args = Tuple(sig.parameters[2:end])
-        interp = Mantle._precompile_kernelinterpreter(device, gpu_vp_shade_kernel!, Tuple{args...}, 32)
+        interp = Mantle.precompile_kernelinterpreter(device, gpu_vp_shade_kernel!, Tuple{args...}, 32)
         Mantle.accessof(interp, gpu_vp_shade_kernel!, args; cache)
     end
     return nothing
 end
 
-function _precompile_statements()
+function precompile_statements()
     mesh = normal_mesh(Tesselation(Sphere(Point3f(0), 1f0), 8))
     metadata = fill(TriangleMeta(0, 0, 0), length(faces(mesh)))
     traced_mesh = GeometryBasics.mesh(mesh; face_meta = GeometryBasics.per_face(metadata, mesh))
@@ -66,7 +66,7 @@ function _precompile_statements()
                                 :sampler_seed, :accumulation_eltype, :accumulators, :sensor, :has_media),
                                Tuple{Int32, Int32, Int, Float32, Int, UInt32, DataType, Nothing, PixelSensor, Bool}}
     render_kwargs = NamedTuple{(:samples, :finalize_framebuffer), Tuple{Int, Bool}}
-    for device in _precompile_device_types()
+    for device in precompile_device_types()
         films = Base.uniontypes(Core.Compiler.return_type(Film, Tuple{device, typeof(film)}))
         flags = NamedTuple{(:has_media, :has_lights, :emitters_reachable, :crossings), Tuple{Bool, Bool, Bool, Bool}}
         for gpu_film in films

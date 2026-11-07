@@ -15,15 +15,15 @@ end
 # The workload infers concrete device and scene types. It must not initialize
 # a device: precompiling a renderer cannot depend on working GPU hardware.
 @testset "precompile statements all resolve" begin
-    @test PrecompileDeviceProbe.Device in Hikari._precompile_device_types()
+    @test PrecompileDeviceProbe.Device in Hikari.precompile_device_types()
     @test PrecompileDeviceProbe.constructions[] == 0
-    ok, total = Hikari._precompile_statements()
+    ok, total = Hikari.precompile_statements()
     @test total > 0
     @test ok == total
     @test PrecompileDeviceProbe.constructions[] == 0
-    @test Hikari._precompile_shader_signatures(PrecompileDeviceProbe.Device) === ()
-    for device in Hikari._precompile_device_types()
-        Hikari._precompile_shader_workload(device)
+    @test Hikari.precompile_shader_signatures(PrecompileDeviceProbe.Device) === ()
+    for device in Hikari.precompile_device_types()
+        Hikari.precompile_shader_workload(device)
     end
     @test PrecompileDeviceProbe.constructions[] == 0
 end

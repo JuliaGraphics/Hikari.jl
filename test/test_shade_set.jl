@@ -98,7 +98,7 @@ end
     @test !isempty(trace)
     @test !isempty(primary)
     @test length(shade) == 4
-    precompiled = Hikari._precompile_shader_signatures(typeof(dev))
+    precompiled = Hikari.precompile_shader_signatures(typeof(dev))
     if !isempty(precompiled)
         actual = Type[]
         raw_signatures = Type[]
@@ -117,11 +117,11 @@ end
                                     map(Core.Typeof, args)...})
             end
         end
-        append!(precompiled, Hikari._precompile_shader_signatures(typeof(dev); hw_accel = false))
+        append!(precompiled, Hikari.precompile_shader_signatures(typeof(dev); hw_accel = false))
         @test length(unique(actual)) == 4
         @test Set(actual) ⊆ Set(precompiled)
-        precompiled_raw = vcat(Hikari._precompile_shader_signatures(typeof(dev); readonly = false),
-            Hikari._precompile_shader_signatures(typeof(dev); hw_accel = false, readonly = false))
+        precompiled_raw = vcat(Hikari.precompile_shader_signatures(typeof(dev); readonly = false),
+            Hikari.precompile_shader_signatures(typeof(dev); hw_accel = false, readonly = false))
         @test length(unique(raw_signatures)) == 4
         @test Set(raw_signatures) ⊆ Set(precompiled_raw)
     end
