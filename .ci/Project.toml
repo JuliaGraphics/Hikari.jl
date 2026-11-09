@@ -16,8 +16,6 @@ Raycore = "afc56b53-c9a9-482a-a956-d1d800e05559"
 # transitive [sources] do not supply the matrix vocabulary in KernelInterface.
 [sources]
 CompilerCaching = {url = "https://github.com/maleadt/CompilerCaching.jl", rev = "bae1df4d098a62905496ee7afd95ce00d937ec6b"}
-Vulkan = {url = "https://github.com/JuliaGPU/Vulkan.jl", rev = "sd/vk1.4"}
-VulkanCore = {url = "https://github.com/JuliaGPU/VulkanCore.jl", rev = "sd/vk1.4"}
 Hikari = {path = ".."}
 KernelAbstractions = {url = "https://github.com/SimonDanisch/KernelAbstractions.jl", rev = "sd/lava-refactor"}
 KernelInterface = {url = "https://github.com/SimonDanisch/KernelAbstractions.jl", rev = "sd/lava-refactor", subdir = "lib/KernelInterface"}
