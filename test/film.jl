@@ -76,3 +76,20 @@ end
         @test ray_differential.d ≈ Point3f(ray1.d)
     end
 end
+
+# The look-at constructor used a [-1, 1]² screen window for every film, so a wide
+# image was stretched sideways by its aspect ratio (spheres rendered as ellipses).
+@testset "Perspective Camera: square pixels on a non-square film" begin
+    for (w, h) in ((200, 100), (100, 200))
+        film = Hikari.Film(Point2f(w, h))
+        camera = Hikari.PerspectiveCamera(Point3f(0, 0, 5), Point3f(0), film; fov = 40)
+        direction(x, y) = Hikari.generate_ray(camera, Hikari.CameraSample(Point2f(x, y), Point2f(0.5), 0f0))[1].d
+        centre = direction(w / 2, h / 2)
+        step_x = acos(clamp(dot(centre, direction(w / 2 + 1, h / 2)), -1, 1))
+        step_y = acos(clamp(dot(centre, direction(w / 2, h / 2 + 1)), -1, 1))
+        @test step_x ≈ step_y rtol = 1e-3
+        # `fov` spans the shorter side: its edges are 20° off the axis.
+        short_edge = w >= h ? direction(w / 2, 0) : direction(0, h / 2)
+        @test rad2deg(acos(dot(centre, short_edge))) ≈ 20 rtol = 1e-2
+    end
+end

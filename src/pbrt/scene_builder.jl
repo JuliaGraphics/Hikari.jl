@@ -142,15 +142,8 @@ function build_hikari_scene(pbrt::PBRTScene;
     wtc_mat = pbrt.camera_transform
     ctw_mat = inv(wtc_mat)
     wtc_tf = Transformation(wtc_mat, ctw_mat)
-    # pbrt-v4 cameras.cpp: screen-window aspect = width/height. For tall images
-    # the screen is [-1,1] × [-1/frame, 1/frame]; for wide it's [-frame, frame]
-    # × [-1, 1]. Matches RayMakie's to_trace_camera convention.
-    frame = Float32(xres) / Float32(yres)
-    screen = if frame >= 1f0
-        Bounds2(Point2f(-frame, -1f0), Point2f(frame, 1f0))
-    else
-        Bounds2(Point2f(-1f0, -1f0/frame), Point2f(1f0, 1f0/frame))
-    end
+    # Matches RayMakie's to_trace_camera convention.
+    screen = screen_window((xres, yres))
     camera = PerspectiveCamera(
         wtc_tf, screen, 0f0, 1f0, lens_radius, focal_distance, Float32(fov), film
     )

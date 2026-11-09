@@ -88,8 +88,23 @@ struct PerspectiveCamera <: Camera
 end
 
 
+# pbrt-v4's screen window of an image of `resolution` (width, height): `[-a, a] × [-1, 1]` for a
+# wide image of aspect `a`, `[-1, 1] × [-1/a, 1/a]` for a tall one. The field of view is then that
+# of the shorter side, and pixels are square.
+function screen_window(resolution)
+    frame = Float32(resolution[1]) / Float32(resolution[2])
+    return frame >= 1f0 ? Bounds2(Point2f(-frame, -1f0), Point2f(frame, 1f0)) :
+                          Bounds2(Point2f(-1f0, -1f0 / frame), Point2f(1f0, 1f0 / frame))
+end
+
+"""
+    PerspectiveCamera(eye, lookat, film; up = Vec3f(0, 1, 0), fov = 55)
+
+A pinhole camera at `eye` looking at `lookat`, for `film`. `fov` is in degrees, across the
+shorter side of the image, as in pbrt.
+"""
 function PerspectiveCamera(eyepos, lookat, film; up=Vec3f(0, 1, 0), fov=55)
-    screen = Hikari.Bounds2(Point2f(-1f0), Point2f(1f0))
+    screen = screen_window(film.resolution)
     # An `up` along the view leaves the camera's frame undefined: the image came out black.
     dir = Vec3f(lookat) - Vec3f(eyepos)
     norm(cross(normalize(dir), normalize(Vec3f(up)))) > 1f-6 || throw(ArgumentError(
