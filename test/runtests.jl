@@ -66,7 +66,8 @@ include("test_files.jl")
 include(joinpath(@__DIR__, "pbrt", "test_pbrt_all_materials.jl"))
 
 const PBRT_SPP = parse(Int, get(ENV, "HIKARI_PBRT_SPP", "256"))
-const PBRT_GROUP = Symbol(get(ENV, "HIKARI_PBRT_GROUP", "all"))
+# A comma-separated subset of materials, textures and other, so CI can split the suite.
+const PBRT_CATEGORIES = Tuple(Symbol.(split(get(ENV, "HIKARI_PBRT_CATEGORIES", "materials,textures,other"), ",")))
 
 # Pkg.test("Hikari"; test_args = ["gpu_compat.jl", ...]) supports focused
 # compiler/device checks. With no arguments every file and reference runs.
@@ -90,10 +91,10 @@ const RUN_PBRT = isempty(REQUESTED_TESTS) || "pbrt" in REQUESTED_TESTS
     end
 
     if RUN_PBRT && get(ENV, "HIKARI_SKIP_PBRT_SW", "false") != "true"
-        run_pbrt_suite(; samples = PBRT_SPP, hw_accel = false, group = PBRT_GROUP)
+        run_pbrt_suite(; samples = PBRT_SPP, hw_accel = false, categories = PBRT_CATEGORIES)
     end
 
     if RUN_PBRT && get(ENV, "HIKARI_SKIP_PBRT_HW", "false") != "true" && hw_rt_available()
-        run_pbrt_suite(; samples = PBRT_SPP, hw_accel = true, group = PBRT_GROUP)
+        run_pbrt_suite(; samples = PBRT_SPP, hw_accel = true, categories = PBRT_CATEGORIES)
     end
 end

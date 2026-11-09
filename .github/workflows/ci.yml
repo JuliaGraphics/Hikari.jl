@@ -3,8 +3,9 @@ on:
   push:
     branches:
       - master
-      - sd/lava-refactor
     tags: ['*']
+  # A branch with a pull request is tested through it; also triggering on the branch's pushes
+  # ran every job twice per commit.
   pull_request:
   workflow_dispatch:
 
@@ -12,13 +13,60 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
 
+env:
+  # The setup job's precompiled depot is loaded on other runners with other CPUs. A pkgimage
+  # built for `native` is rejected on a CPU that lacks one of its features, and then compiled
+  # again in every job, so build for a target every runner has. The cache path hashes this
+  # string too: every job has to see the same one.
+  JULIA_CPU_TARGET: "haswell,-rdrnd"
+
 jobs:
+  # Resolves the one environment of every job below and precompiles it, once. The other jobs
+  # restore its depot and project (.github/actions/ci-environment) and never run Pkg.
+  setup:
+    name: Resolve and precompile
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      depot-key: ${{ steps.key.outputs.depot-key }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.12'
+      # One key per setup run: a rerun after the backend branches moved must not hand the
+      # other jobs a depot that does not match its manifest. Bump `v1` with JULIA_CPU_TARGET.
+      - id: key
+        run: echo "depot-key=hikari-depot-v1-${{ runner.os }}-julia-1.12-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
+      # Start from the newest depot of an earlier run, so Pkg fetches and precompiles only
+      # what changed since.
+      - uses: actions/cache/restore@v4
+        with:
+          path: ~/.julia
+          key: ${{ steps.key.outputs.depot-key }}
+          restore-keys: hikari-depot-v1-${{ runner.os }}-julia-1.12-
+      - name: Resolve and precompile
+        run: julia --project=.ci .ci/setup.jl
+      - uses: actions/cache/save@v4
+        with:
+          path: ~/.julia
+          key: ${{ steps.key.outputs.depot-key }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ci-environment
+          path: |
+            .ci/Project.toml
+            .ci/Manifest.toml
+
   test-group:
     name: Tests / ${{ matrix.group }}
+    needs: setup
     strategy:
       fail-fast: false
       matrix:
-        group: ["1", "2", "3", "4", "pbrt-materials", "pbrt-textures", "pbrt-other"]
+        # Three round-robin unit groups and the pbrt reference suite in two. Nov 5's per-file
+        # times add up to 40, 62 and 31 min for three unit groups; four ran 28, 36, 64 and 6.
+        group: ["1", "2", "3", "pbrt-materials", "pbrt-textures-other"]
     runs-on: ubuntu-latest
     # Isolated groups release compiler and driver state between test processes.
     # The reference groups retain the complete 256-spp pbrt comparison.
@@ -29,12 +77,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb
-      - uses: julia-actions/setup-julia@v2
+      - uses: ./.github/actions/ci-environment
         with:
-          version: '1.12'
-      - uses: julia-actions/cache@v2
-      - name: Resolve published backend dependencies
-        run: julia --project=.ci .ci/setup.jl
+          depot-key: ${{ needs.setup.outputs.depot-key }}
       - name: Run tests with Lavapipe_jll
         run: xvfb-run -a julia --project=.ci .ci/run_tests.jl "${{ matrix.group }}"
         env:
@@ -90,6 +135,7 @@ jobs:
 
   pbrt-comparison:
     name: pbrt-v4 Comparison
+    needs: setup
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -98,12 +144,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb
-      - uses: julia-actions/setup-julia@v2
+      - uses: ./.github/actions/ci-environment
         with:
-          version: '1.12'
-      - uses: julia-actions/cache@v2
-      - name: Install comparison dependencies
-        run: julia --project=.ci .ci/setup.jl test/pbrt
+          depot-key: ${{ needs.setup.outputs.depot-key }}
       # Two steps, because rendering and presenting are separate now: the suite
       # renders, checks and records, and run_comparison.jl only turns that
       # record into a page. It used to do both, with its own thresholds, and
@@ -128,9 +171,9 @@ jobs:
 
   docs-build:
     name: Build Docs
+    needs: setup
     runs-on: ubuntu-latest
-    # The last green build took 46 min (10 install, 36 build), before the material,
-    # texture and recipe galleries were added.
+    # The build took 36 min on Nov 5, before the material, texture and recipe galleries.
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -138,12 +181,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb
-      - uses: julia-actions/setup-julia@v2
+      - uses: ./.github/actions/ci-environment
         with:
-          version: '1.12'
-      - uses: julia-actions/cache@v2
-      - name: Install dependencies
-        run: julia --project=.ci .ci/setup.jl docs
+          depot-key: ${{ needs.setup.outputs.depot-key }}
       - name: Build (without comparison gallery)
         env:
           HIKARI_TEST_LAVAPIPE: "true"
@@ -158,7 +198,7 @@ jobs:
   deploy-docs:
     name: Deploy Docs
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/')
-    needs: [pbrt-comparison, docs-build]
+    needs: [setup, pbrt-comparison, docs-build]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -166,10 +206,9 @@ jobs:
       statuses: write
     steps:
       - uses: actions/checkout@v4
-      - uses: julia-actions/setup-julia@v2
+      - uses: ./.github/actions/ci-environment
         with:
-          version: '1.12'
-      - uses: julia-actions/cache@v2
+          depot-key: ${{ needs.setup.outputs.depot-key }}
       - name: Download docs build
         uses: actions/download-artifact@v4
         with:
@@ -180,8 +219,6 @@ jobs:
         with:
           name: pbrt-comparison
           path: docs/build/1/pbrt-comparison/
-      - name: Install dependencies
-        run: julia --project=.ci .ci/setup.jl docs
       - name: Deploy
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

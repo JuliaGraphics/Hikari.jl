@@ -9,8 +9,16 @@ From the Hikari checkout:
 ```sh
 julia --project=.ci .ci/setup.jl
 HIKARI_TEST_LAVAPIPE=true HIKARI_PBRT_SPP=256 HIKARI_SKIP_PBRT_HW=true \
-    xvfb-run -a julia --project=.ci -e 'using Pkg; Pkg.test("Hikari"; allow_reresolve=false, julia_args=`--check-bounds=auto`)'
+    xvfb-run -a julia --project=.ci .ci/run_tests.jl 1
 ```
+
+`setup.jl` makes `.ci` the one environment of every CI job: it adds Hikari's
+dependencies and test target, the docs' and the pbrt comparison's dependencies,
+installs Hikari's lazy artifacts and precompiles everything once. In CI a setup
+job does this and saves the depot; the test, comparison and docs jobs restore it
+with the resolved project, check that nothing is stale for their runner, and
+never run Pkg. All jobs build for the same `JULIA_CPU_TARGET`, so a depot
+precompiled on one runner loads on the others.
 
 `Lavapipe_jll` supplies the Vulkan driver. The test entry point loads it before
 Hikari, restricts the Vulkan loader to its ICD, and asserts that the selected
@@ -27,9 +35,10 @@ after resolving dependencies before collecting compilation or runtime results.
 On a hardware worker, leave `HIKARI_TEST_LAVAPIPE` unset. Hardware validation is
 separate from the deterministic software-driver CI job.
 
-GPU tests use ``Pkg.test("Hikari"; julia_args = `--check-bounds=auto`)``.
-Forced bounds checks inject device exception paths unsupported by the GPU stack;
-the normal policy retains checks where Julia cannot prove them unnecessary.
+`run_tests.jl` runs `test/runtests.jl` in this environment rather than through
+`Pkg.test`, whose sandbox is another environment and would precompile again. It
+keeps Julia's default bounds checking (`auto`): forced bounds checks, the
+`Pkg.test` default, inject device exception paths unsupported by the GPU stack.
 All test files, including subsurface rendering, run under this policy.
 
 CompilerCaching is pinned to the published revision providing `ObjCache`.
@@ -48,10 +57,11 @@ object cache is bounded and shared by concurrent Julia processes; a large test
 suite can evict freshly compiled probe shaders. Isolating this small working set
 tests persistence without depending on unrelated cache traffic.
 
-CI runs the shared test registry in four disjoint groups plus three pbrt
+CI runs the shared test registry in three disjoint groups plus two pbrt
 reference groups, each in a fresh process. This releases compiler and driver state
 between groups; a complete single-process GPU run can exceed 10 GiB of resident
-memory. `.ci/run_tests.jl 1` through `4` select the unit groups. `pbrt-materials`,
-`pbrt-textures` and `pbrt-other` divide the complete 256-spp reference gate;
-`pbrt` selects all three together for local use. The aggregate `Tests` check
-requires every group to succeed. `Pkg.test("Hikari")` still runs everything by default.
+memory. `.ci/run_tests.jl 1` through `3` select the unit groups. `pbrt-materials`
+and `pbrt-textures-other` divide the complete 256-spp reference gate; any
+`pbrt-<category>[-<category>]` works, and `pbrt` selects all three categories
+for local use. The aggregate `Tests` check requires every group to succeed.
+`Pkg.test("Hikari")` still runs everything by default.

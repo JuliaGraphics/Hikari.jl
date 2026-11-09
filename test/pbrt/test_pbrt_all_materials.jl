@@ -71,22 +71,22 @@ end
 
 """
     run_pbrt_suite(; backend=Mantle.defaultbackend(), samples=DEFAULT_SPP,
-                     hw_accel=false, group=:all)
+                     hw_accel=false, categories=(:materials, :textures, :other))
 
 Run the full pbrt reference comparison under `@testset`s. All parameters are
 explicit — callers (runtests.jl, standalone invocation) pick the backend and
 hw_accel flag. Skips scenes whose `.pbrt` is missing.
-`group` selects `:materials`, `:textures` or `:other` for isolated CI processes;
-the default `:all` runs every category with the same image thresholds.
+`categories` selects which of `:materials`, `:textures` and `:other` run, so CI can
+split the suite over processes; every category uses the same image thresholds.
 """
 function run_pbrt_suite(;
         backend = Mantle.defaultbackend(),
         samples::Int = DEFAULT_SPP,
         hw_accel::Bool = false,
-        group::Symbol = :all
+        categories = (:materials, :textures, :other)
     )
-    group in (:all, :materials, :textures, :other) ||
-        throw(ArgumentError("unknown pbrt test group: $group"))
+    all(in((:materials, :textures, :other)), categories) ||
+        throw(ArgumentError("unknown pbrt test category in $categories"))
     label = hw_accel ? "HW RT" : "SW BVH"
     if samples != REFERENCE_SPP
         @warn """Rendering at $samples spp against references rendered at $REFERENCE_SPP spp.
@@ -95,7 +95,7 @@ function run_pbrt_suite(;
     end
     begin_record!(hw_accel)
     return @testset "pbrt reference ($label, $samples spp)" begin
-        if group in (:all, :materials)
+        if :materials in categories
             @testset "Materials × Lights" begin
                 for mat in BASE_MATERIALS
                     @testset "$mat" begin
@@ -121,7 +121,7 @@ function run_pbrt_suite(;
                 ("Light variants", "light_", :other), ("Filters", "filter_", :other),
                 ("Sensors", "sensor_", :other), ("Media", "medium_", :other),
             )
-            group in (:all, category) || continue
+            category in categories || continue
             @testset "$name" test_scenes_matching(prefix; backend, samples, hw_accel)
         end
 
