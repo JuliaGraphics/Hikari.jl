@@ -1,5 +1,5 @@
-using Test, Hikari, Mantle, KernelInterface
-import KernelInterface as KI
+using Test, Hikari, Mantle, KernelAbstractions
+import KernelAbstractions.KernelInterface as KI
 
 function subsurface_storage_transitions!(out, source, lambda)
     i = KI.get_global_id().x

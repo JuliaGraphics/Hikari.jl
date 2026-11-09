@@ -1,6 +1,6 @@
 using Test, Hikari, Raycore, KernelAbstractions, GeometryBasics, LinearAlgebra
 using Hikari.TextureNodes
-using Mantle, KernelInterface
+using Mantle
 
 function read_packed_principled!(out, values, program, start, sc, capacity, hit)
     KernelInterface.get_global_id().x == 1 || return nothing

@@ -129,7 +129,9 @@ jobs:
   docs-build:
     name: Build Docs
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # The last green build took 46 min (10 install, 36 build), before the material,
+    # texture and recipe galleries were added.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - name: Install virtual display
