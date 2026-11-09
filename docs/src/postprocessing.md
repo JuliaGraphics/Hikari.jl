@@ -1,133 +1,149 @@
 ## Postprocessing and Denoising
 
-Hikari separates rendering from display mapping. The integrator writes sensor-calibrated linear HDR values to the framebuffer. Postprocessing converts those to a display-ready image without re-rendering.
+The integrator writes linear HDR radiance into the film, already through the camera's sensor. What
+follows works on that film without tracing a path again: an optional denoiser, then `postprocess!`,
+which maps the radiance to a displayable image.
+
+```julia
+integrator(scene, film, camera)                  # render
+Hikari.fill_aux_buffers!(film, scene, camera)    # guides for the denoiser
+Hikari.denoise!(film; config = Hikari.OIDN())    # optional, in place
+img = Hikari.postprocess!(film; exposure = 1, tonemap = :aces, gamma = 2.2)
+```
 
 ```@setup postprocessing
-using GeometryBasics, Hikari, Mantle, ImageShow, Adapt
+using GeometryBasics, LinearAlgebra, Hikari, Mantle
+using Hikari.TextureNodes
 backend = Mantle.defaultbackend()
-to_mesh(prim) = normal_mesh(prim isa Sphere ? Tessellation(prim, 64) : prim)
+sphere(center, r) = normal_mesh(Tessellation(Sphere(center, r), 96))
 
-function make_scene()
-    scene = Hikari.Scene(; backend)
-    push!(scene, to_mesh(Sphere(Point3f(-0.6f0, 0.4f0, 0f0), 0.4f0)),
-          Hikari.Gold(roughness=0.03f0))
-    push!(scene, to_mesh(Sphere(Point3f(0.5f0, 0.3f0, 0.2f0), 0.3f0)),
-          Hikari.Glass(ior = 1.5f0))
-    push!(scene, to_mesh(Rect3f(Vec3f(-3, 0, -3), Vec3f(6, 0.01, 6))),
-          Hikari.Diffuse(color = Hikari.RGBSpectrum(0.85f0)))
-    push!(scene, Hikari.PointLight(Point3f(2f0, 3f0, -2f0), Hikari.RGBSpectrum(40f0)))
-    push!(scene, Hikari.AmbientLight(Hikari.RGBSpectrum(0.5f0)))
-    Hikari.sync!(scene)
-    return scene
+scene = Hikari.Scene(; backend)
+push!(scene, sphere(Point3f(-0.55, 0, 0.42), 0.42f0), Hikari.Gold(roughness = 0.15))
+squares = checker(xyz(); scale = 8, color1 = (0.8, 0.2, 0.1), color2 = (0.9, 0.85, 0.7))
+push!(scene, sphere(Point3f(0.45, 0.1, 0.42), 0.42f0), Hikari.Principled(base_color = squares.color, roughness = 0.5))
+push!(scene, sphere(Point3f(0.0, 0.9, 0.25), 0.25f0), Hikari.Emission(color = (1, 0.6, 0.3), strength = 8))
+tiles = checker(xyz(); scale = 1, color1 = (0.5, 0.5, 0.5), color2 = (0.38, 0.38, 0.38))
+push!(scene, normal_mesh(Rect3f(Vec3f(-50, -50, -0.01), Vec3f(100, 100, 0.01))), Hikari.Diffuse(color = tiles.color))
+sky, sun = Hikari.sunsky_to_envlight(; direction = normalize(Vec3f(-0.6, -1, 0.9)), turbidity = 3f0)
+push!(scene, sky)
+push!(scene, sun)
+Hikari.sync!(scene)
+
+film = Hikari.Film(backend, Hikari.Film(Point2f(400, 300)))
+camera = Hikari.PerspectiveCamera(Point3f(0.3, -3.6, 1.45), Point3f(0, 0.2, 0.35), film; up = Vec3f(0, 0, 1), fov = 28)
+function render!(film, samples)
+    Hikari.clear!(film)
+    integrator = Hikari.VolPath(; samples, max_depth = 8)
+    integrator(scene, film, camera)
+    Mantle.waitidle(backend)
+    close(integrator)
+    return film
 end
 ```
 
-### Pipeline
+### Tone mapping and exposure
 
-The rendering pipeline has three stages:
+`postprocess!(film; exposure, tonemap, gamma, white_point, background, sky)` returns the film's
+display image and can run as often as you like on one render.
 
-1. **Render** (sensor simulation baked in, needs re-render to change)
-   - ISO, exposure time, white balance, sensor response curves
-2. **Denoise** (optional, modifies framebuffer in-place)
-   - Edge-aware filtering using normal/depth auxiliary buffers
-3. **Postprocess** (display mapping, instant to re-run)
-   - Exposure multiplier, tonemapping, gamma correction
-
-```julia
-# Full pipeline
-integrator(scene, film, camera)           # step 1: render
-fill_aux_buffers!(film, scene, camera)    # populate denoiser inputs
-denoise!(film)                            # step 2: denoise (optional)
-postprocess!(film; exposure=1.0, tonemap=:aces, gamma=2.2)  # step 3: display
-```
-
-### Tonemapping
-
-`postprocess!` supports several tonemapping curves. Call it multiple times with different settings without re-rendering:
+| Keyword | Default | |
+|---------|---------|---|
+| `exposure` | `1.0` | linear factor before tone mapping |
+| `tonemap` | `:aces` | `:aces`, `:reinhard`, `:reinhard_extended`, `:uncharted2`, `:filmic`, or `nothing` to clamp |
+| `gamma` | `2.2` | display gamma, or `nothing` for linear output |
+| `white_point` | `4.0` | the radiance that maps to white with `:reinhard_extended` |
+| `background` | `nothing` | an `RGB{Float32}` or `RGBA{Float32}` for pixels whose camera ray hit nothing; its alpha is the output's alpha there |
+| `sky` | `false` | whether an environment, sky or ambient light already painted those pixels; they then keep the sky's colour and take only the background's alpha |
 
 ```@example postprocessing
-scene = make_scene()
-film = Hikari.Film(backend, Hikari.Film(Point2f(512, 512)))
-camera = Hikari.PerspectiveCamera(
-    Point3f(2f0, 1.5f0, -2.5f0), Point3f(0f0, 0.3f0, 0f0), film; fov=45f0)
-Hikari.clear!(film)
-Hikari.VolPath(samples=64, max_depth=8)(scene, film, camera)
-
-# Try different tonemappers on the same render
-Array(Hikari.postprocess!(film; tonemap=:aces, exposure=1.0f0, gamma=2.2f0))
+render!(film, 64)
+hcat([Array(Hikari.postprocess!(film; tonemap)) for tonemap in (:aces, :reinhard, :uncharted2, :filmic, nothing)]...)
 ```
 
-Available tonemapping curves:
+From left to right: `:aces`, `:reinhard`, `:uncharted2`, `:filmic` and no tone mapping.
 
-| Curve | Description |
-|-------|-------------|
-| `:aces` | ACES filmic (default). Industry standard, good highlight rolloff |
-| `:reinhard` | Simple Reinhard L/(1+L). Soft, natural look |
-| `:reinhard_extended` | Reinhard with configurable white point |
-| `:uncharted2` | Uncharted 2 filmic. Good shadow detail |
-| `:filmic` | Hejl-Dawson filmic. Punchy contrast |
-| `nothing` | No tonemapping (linear clamp to [0,1]) |
+### Sensor and pixel filter
 
-### Exposure
-
-The `exposure` parameter is a linear multiplier applied before tonemapping. Adjust it to control overall brightness:
+The camera's sensor and pixel filter are part of the render, so changing them means rendering
+again. Both are keywords of the integrator:
 
 ```julia
-postprocess!(film; exposure=0.5)   # darker
-postprocess!(film; exposure=1.0)   # default
-postprocess!(film; exposure=2.0)   # brighter
+Hikari.VolPath(; samples = 64,
+               sensor = Hikari.PixelSensor(; iso = 200, exposure_time = 1, whitebalance = 5000),
+               filter = Hikari.GaussianFilter(; radius = Point2f(1.5), sigma = 0.5f0))
 ```
+
+`PixelSensor` is pbrt-v4's: `iso` and `exposure_time` scale the image by `iso * exposure_time / 100`,
+`whitebalance` adapts a colour temperature in kelvin to white (0 does nothing), and `sensor` names a
+camera response (`"cie1931"` by default). Hikari's defaults reproduce pbrt's images, and a pbrt
+scene's own `Film` settings are applied when it is loaded. The pixel filters are `BoxFilter`,
+`TriangleFilter`, `GaussianFilter` (the default), `MitchellFilter` and `LanczosSincFilter`.
 
 ### Denoising
 
-Hikari includes an edge-aware A-trous wavelet denoiser that operates on the HDR framebuffer. It uses normal and depth auxiliary buffers to preserve edges.
+A denoiser turns a render at a few samples per pixel into a clean image. Each one runs in place on
+`film.framebuffer`, before `postprocess!`, and reads guides: the albedo, normal and depth of what
+each pixel sees first. `fill_aux_buffers!` traces them without noise:
+
+```julia
+Hikari.fill_aux_buffers!(film, scene, camera; has_infinite_lights = false, grid = 9)
+```
+
+Pass `has_infinite_lights = true` when an environment, sky or ambient light paints the background.
+`grid` is the number of guide rays per pixel along each side (9 by default), filtered like the image;
+use 1 while the camera moves. `clear!` resets the guides with the image, so fill them after it.
+
+| Denoiser | Runs on | |
+|----------|---------|---|
+| `Hikari.DenoiseConfig(; iterations = 4, sigma_color = 1, sigma_normal = 64, sigma_depth = 0.1)` | the GPU | an edge-avoiding à-trous wavelet filter; fast enough for every frame of an interactive view |
+| `Hikari.OIDN(; quality = :high, guides = true)` | the CPU | Intel Open Image Denoise's ray tracing network |
+| `OIDNRunner.OIDNDenoiser` | the GPU | the same network, ported to Julia and Mantle in JuliaVision |
 
 ```@example postprocessing
-# Render with low spp (noisy)
-Hikari.clear!(film)
-Hikari.VolPath(samples=4, max_depth=8)(scene, film, camera)
+render!(film, 4)
+noisy = Array(Hikari.postprocess!(film))
 
-# Fill auxiliary buffers for edge detection
-Hikari.fill_aux_buffers!(film, Adapt.adapt(backend, scene), camera)
+Hikari.fill_aux_buffers!(film, scene, camera; has_infinite_lights = true)
+Hikari.denoise!(film; config = Hikari.DenoiseConfig())
+atrous = Array(Hikari.postprocess!(film))
 
-# Denoise the framebuffer
-Hikari.denoise!(film)
+render!(film, 4)
+Hikari.fill_aux_buffers!(film, scene, camera; has_infinite_lights = true)
+Hikari.denoise!(film; config = Hikari.OIDN())
+oidn = Array(Hikari.postprocess!(film))
 
-# Then postprocess as usual
-Array(Hikari.postprocess!(film; tonemap=:aces, gamma=2.2f0))
+render!(film, 1024)
+hcat(noisy, atrous, oidn, Array(Hikari.postprocess!(film)))
 ```
 
-`DenoiseConfig` controls the filter parameters:
+From left to right: 4 samples per pixel, the à-trous filter, OIDN, and 1024 samples per pixel.
+
+**The à-trous filter** keeps edges where the normal or depth changes, so silhouettes stay sharp,
+but it smooths texture detail. `iterations` doubles its radius each time. `sigma_color` is the
+brightness difference in stops it still blends across, `sigma_normal` the exponent on the normals'
+agreement (higher keeps more edges) and `sigma_depth` the relative depth difference it tolerates.
+
+**OIDN** reconstructs textures and edges from the guides and gives the best images. `quality` is
+`:fast`, `:balanced` or `:high`. With `guides = false` it needs only the noisy image. The library
+is Intel's official Linux x86-64 build, downloaded as an artifact the first time a film is
+denoised. Each call copies the frame to the host and back.
+
+**OIDNRunner** runs the OIDN network on the GPU from the film's device arrays, with no host copy.
+It lives in JuliaVision, outside Hikari. Its images are width by height, the transpose of a
+film's:
 
 ```julia
-config = Hikari.DenoiseConfig(
-    iterations = 5,       # filter passes (more = smoother)
-    sigma_color = 4.0,    # color edge threshold
-    sigma_normal = 128.0, # normal edge threshold
-    sigma_depth = 1.0,    # depth edge threshold
-    use_variance = true,  # variance-guided filtering
-)
-Hikari.denoise!(film; config=config)
+using OIDNRunner
+denoiser = OIDNDenoiser(; backend)
+Hikari.fill_aux_buffers!(film, scene, camera)
+color, albedo, normal = permutedims(film.framebuffer), permutedims(film.albedo), permutedims(film.normal)
+denoised = similar(color)
+OIDNRunner.denoise!(denoiser, denoised, color, albedo, normal)
+permutedims!(film.framebuffer, denoised, (2, 1))
 ```
 
-### Sensor Simulation
-
-Sensor parameters (ISO, exposure time, white balance) are configured before rendering and baked into the framebuffer. They match pbrt-v4's `PixelSensor`.
-
-When loading pbrt scenes, sensor settings from the scene file are applied automatically:
+In RayMakie, the screen options `denoise` and `denoise_config` select a denoiser for every frame:
 
 ```julia
-# pbrt scene with Film "rgb" "float iso" 200 "float whitebalance" 5000
-fb = Hikari.render_pbrt("scene.pbrt")
-# fb already contains sensor-calibrated linear sRGB
-```
-
-For the Julia API, the default sensor (ISO=100, exposure_time=1.0) produces physically correct output matching pbrt-v4. Sensor configuration for custom setups is done via `configure_sensor!` on the integrator state before rendering.
-
-### Background Compositing
-
-For scenes without full environment coverage, escaped rays produce black pixels. Use the `background` parameter to composite them:
-
-```julia
-postprocess!(film; background=RGB{Float32}(0.1, 0.1, 0.15))  # dark blue sky
+RayMakie.activate!(denoise = true, denoise_config = Hikari.OIDN())
 ```

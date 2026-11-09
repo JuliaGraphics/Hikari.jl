@@ -9,7 +9,7 @@ using GeometryBasics, LinearAlgebra, Hikari, Mantle, ImageShow
 backend = Mantle.defaultbackend()
 to_mesh(prim) = normal_mesh(prim isa Sphere ? Tessellation(prim, 64) : prim)
 
-function render_light(lights; res=512, spp=48, eye=Point3f(0f0, 1.5f0, -3f0), lookat=Point3f(0f0, 0.4f0, 0f0))
+function render_light(lights; res=512, spp=16, eye=Point3f(0f0, 1.5f0, -3f0), lookat=Point3f(0f0, 0.4f0, 0f0))
     scene = Hikari.Scene(; backend)
     # Three spheres: matte, mirror, glass
     push!(scene, to_mesh(Sphere(Point3f(-0.8f0, 0.3f0, 0.2f0), 0.3f0)),
@@ -32,8 +32,13 @@ function render_light(lights; res=512, spp=48, eye=Point3f(0f0, 1.5f0, -3f0), lo
     film   = Hikari.Film(backend, Hikari.Film(Point2f(res, res)))
     camera = Hikari.PerspectiveCamera(eye, lookat, film; fov=50f0)
     Hikari.clear!(film)
-    Hikari.VolPath(samples=spp, max_depth=10)(scene, film, camera)
-    return Array(Hikari.postprocess!(film; tonemap=:aces, exposure=1.0f0, gamma=2.2f0))
+    integrator = Hikari.VolPath(samples=spp, max_depth=10)
+    integrator(scene, film, camera)
+    Hikari.fill_aux_buffers!(film, scene, camera)
+    Hikari.denoise!(film; config = Hikari.OIDN())
+    image = Array(Hikari.postprocess!(film; tonemap=:aces, exposure=1.0f0, gamma=2.2f0))
+    close(integrator)
+    return image
 end
 ```
 
@@ -55,7 +60,7 @@ render_light([
 
 ### DirectionalLight
 
-A parallel light source at infinity — simulates the sun or any distant light. Intensity does not fall off with distance.
+A parallel light source at infinity, for the sun or any distant light. Intensity does not fall off with distance.
 
 ```julia
 Hikari.DirectionalLight(intensity, direction)
@@ -71,7 +76,7 @@ render_light([
 
 ### SpotLight
 
-A point source with a cone-shaped beam. `total_width` is the full cone angle; `falloff_start` is where the soft falloff begins — both in degrees.
+A point source with a cone-shaped beam. `total_width` is the full cone angle and `falloff_start` is where the soft falloff begins, both in degrees.
 
 ```julia
 Hikari.SpotLight(position, target, intensity, total_width, falloff_start)
@@ -129,7 +134,9 @@ let
     camera = Hikari.PerspectiveCamera(
         Point3f(0f0, 1.5f0, -3f0), Point3f(0f0, 0.4f0, 0f0), film; fov=50f0)
     Hikari.clear!(film)
-    Hikari.VolPath(samples=64, max_depth=10)(scene, film, camera)
+    Hikari.VolPath(samples=16, max_depth=10)(scene, film, camera)
+    Hikari.fill_aux_buffers!(film, scene, camera)
+    Hikari.denoise!(film; config = Hikari.OIDN())
     Array(Hikari.postprocess!(film; tonemap=:aces, exposure=1.5f0, gamma=2.2f0))
 end
 ```
@@ -140,5 +147,53 @@ An HDR environment map loaded from an equirectangular `.exr` image. Provides rea
 
 ```julia
 Hikari.EnvironmentLight("path/to/environment.exr")
-Hikari.EnvironmentLight("sky.exr"; scale=Hikari.RGBSpectrum(2f0))
+Hikari.EnvironmentLight("sky.exr"; scale = Hikari.RGBSpectrum(2f0), rotation = Mat3f(I))
 ```
+
+`rotation` turns the map: a `Mat3f`, applied to the directions it is looked up by.
+
+### Sun and sky
+
+`Hikari.sunsky_to_envlight` evaluates the Hosek-Wilkie model of a clear sky, as pbrt-v4's
+`makesky` does, and returns the sky as an `EnvironmentLight` together with a `SunLight` for the
+sun's disk. Push both. The model's up direction is +Z.
+
+```julia
+sky, sun = Hikari.sunsky_to_envlight(; direction = normalize(Vec3f(-0.6, -1, 0.9)),
+                                     intensity = 1f0, turbidity = 2.5f0,
+                                     ground_albedo = Hikari.RGBSpectrum(0.3f0), ground_enabled = true)
+push!(scene, sky)
+push!(scene, sun)
+```
+
+`direction` points towards the sun. `turbidity` runs from 1 (very clear) to 10 (hazy), and
+`ground_enabled = false` leaves the lower half of the sky black, for scenes that model their own ground.
+
+```@example lights
+function render_sky(direction; turbidity = 3f0)
+    scene = Hikari.Scene(; backend)
+    for (i, material) in enumerate((Hikari.Diffuse(color = (0.8, 0.8, 0.8)), Hikari.Gold(roughness = 0.1),
+                                    Hikari.Glass()))
+        push!(scene, normal_mesh(Tessellation(Sphere(Point3f(i - 2, 0, 0.42), 0.42f0), 64)), material)
+    end
+    push!(scene, normal_mesh(Rect3f(Vec3f(-50, -50, -0.01), Vec3f(100, 100, 0.01))),
+          Hikari.Diffuse(color = (0.5, 0.5, 0.5)))
+    sky, sun = Hikari.sunsky_to_envlight(; direction = normalize(direction), turbidity)
+    push!(scene, sky)
+    push!(scene, sun)
+    Hikari.sync!(scene)
+    film = Hikari.Film(backend, Hikari.Film(Point2f(600, 300)))
+    camera = Hikari.PerspectiveCamera(Point3f(0, -4.5, 1.4), Point3f(0, 0, 0.6), film; up = Vec3f(0, 0, 1), fov = 30)
+    Hikari.clear!(film)
+    integrator = Hikari.VolPath(samples = 16, max_depth = 10)
+    integrator(scene, film, camera)
+    Hikari.fill_aux_buffers!(film, scene, camera; has_infinite_lights = true)
+    Hikari.denoise!(film; config = Hikari.OIDN())
+    image = Array(Hikari.postprocess!(film; tonemap = :aces, gamma = 2.2))
+    close(integrator)
+    return image
+end
+hcat(render_sky(Vec3f(-0.4, -0.6, 1.0)), render_sky(Vec3f(-1, 0.3, 0.3); turbidity = 5f0))
+```
+
+At noon on the left, and in the late afternoon, with a hazier sky, on the right.

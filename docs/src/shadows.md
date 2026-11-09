@@ -31,8 +31,8 @@ push!(scene, to_mesh(Sphere(Point3f(-0.8f0, 0.3f0, 0.3f0), 0.3f0)), gold)
 push!(scene, to_mesh(Rect3f(Vec3f(-2, 0, -2),      Vec3f(4, 0.01, 4))),   white)  # floor
 push!(scene, to_mesh(Rect3f(Vec3f(-2, 3-0.01, -2), Vec3f(4, 0.01, 4))),   white)  # ceiling
 push!(scene, to_mesh(Rect3f(Vec3f(-2, 0, 2-0.01),  Vec3f(4, 3, 0.01))),   white)  # back wall
-push!(scene, to_mesh(Rect3f(Vec3f(-2, 0, -2),      Vec3f(0.01, 3, 4))),   red)    # left wall
-push!(scene, to_mesh(Rect3f(Vec3f(2-0.01, 0, -2),  Vec3f(0.01, 3, 4))),   green)  # right wall
+push!(scene, to_mesh(Rect3f(Vec3f(-2, 0, -2),      Vec3f(0.01, 3, 4))),   green)  # right wall
+push!(scene, to_mesh(Rect3f(Vec3f(2-0.01, 0, -2),  Vec3f(0.01, 3, 4))),   red)    # left wall
 
 # Ceiling area light
 push!(scene, to_mesh(Rect3f(Vec3f(-0.4f0, 2.98f0, -0.4f0), Vec3f(0.8f0, 0.01f0, 0.8f0))),
@@ -45,9 +45,11 @@ film   = Hikari.Film(backend, Hikari.Film(Point2f(512, 512)))
 camera = Hikari.PerspectiveCamera(
     Point3f(0f0, 1.5f0, -3.2f0), Point3f(0f0, 1f0, 0f0), film; fov=48f0)
 
-# --- Render ---
+# --- Render, then denoise ---
 Hikari.clear!(film)
-Hikari.VolPath(samples=128, max_depth=12)(scene, film, camera)
+Hikari.VolPath(samples=16, max_depth=12)(scene, film, camera)
+Hikari.fill_aux_buffers!(film, scene, camera)
+Hikari.denoise!(film; config = Hikari.OIDN())
 
 Array(Hikari.postprocess!(film; tonemap=:aces, exposure=1.2f0, gamma=2.2f0))
 ```

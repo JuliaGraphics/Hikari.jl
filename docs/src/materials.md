@@ -1,268 +1,297 @@
 ## Materials
 
-```@setup materials
-using GeometryBasics, Hikari, Mantle, ImageShow
+A material describes how light scatters at a surface. Hikari's materials are Blender's shader
+nodes, with Blender's names, inputs and defaults, plus the material models of
+[pbrt-v4](https://pbrt.org) that its scenes use. Give one to every mesh you push:
+
+```julia
+handle = push!(scene, mesh, Hikari.Principled(base_color = (0.8, 0.1, 0.1), roughness = 0.3))
+```
+
+Every numeric or colour input of a material takes any of these:
+
+| Value | Meaning |
+|-------|---------|
+| `0.5` | a constant |
+| `(0.8, 0.2, 0.1)`, `RGB(0.8, 0.2, 0.1)`, `Hikari.RGBSpectrum(0.8f0, 0.2f0, 0.1f0)` | a constant linear RGB colour |
+| a matrix of colours or numbers, or a `Hikari.Texture` | an image, sampled at the mesh's uv coordinates |
+| a node graph from `Hikari.TextureNodes` | a procedural input, see [Textures and Node Graphs](@ref) |
+
+Settings that choose a different scattering model, such as `distribution`, `thin_wall` or
+`fresnel_type`, are constants.
+
+### The scene behind the pictures
+
+The renders on this page put materials on spheres under a sun and sky, at 16 samples per pixel,
+denoised with OIDN (see [Postprocessing and Denoising](@ref)):
+
+```@example materials
+using GeometryBasics, LinearAlgebra, Hikari, Mantle
+using Hikari.TextureNodes
 backend = Mantle.defaultbackend()
-to_mesh(prim) = normal_mesh(prim isa Sphere ? Tessellation(prim, 64) : prim)
-sphere(r, x, z) = to_mesh(Sphere(Point3f(x, r, z), r))
-floor_mat = Hikari.Diffuse(color = (0.82, 0.82, 0.82))
 
-function render_scene(materials; res=768, spp=32)
-    r = 0.38f0; sx = 1.0f0; sz = 1.1f0
+sphere(x, r) = normal_mesh(Tessellation(Sphere(Point3f(x, 0, r), r), 96))
+
+function showcase(materials; resolution = (1200, 360), samples = 16)
     scene = Hikari.Scene(; backend)
-    positions = [(-sx, sz), (0f0, sz), (sx, sz),
-                 (-sx, 0f0), (0f0, 0f0), (sx, 0f0),
-                 (-sx, -sz), (0f0, -sz), (sx, -sz)]
-    for (mat, (x, z)) in zip(materials, positions)
-        push!(scene, sphere(r, x, z), mat)
+    n = length(materials)
+    for (i, material) in enumerate(materials)
+        push!(scene, sphere(i - (n + 1) / 2, 0.42f0), material)
     end
-    push!(scene, to_mesh(Rect3f(Vec3f(-3, 0, -3), Vec3f(6, 0.01, 6))), floor_mat)
-    push!(scene, Hikari.PointLight(Point3f(3f0, 4f0, -3f0), Hikari.RGBSpectrum(40f0)))
-    push!(scene, Hikari.PointLight(Point3f(-3f0, 3f0, -2f0), Hikari.RGBSpectrum(20f0)))
-    push!(scene, Hikari.PointLight(Point3f(0f0, 3f0, 3f0), Hikari.RGBSpectrum(25f0)))
-    push!(scene, Hikari.AmbientLight(Hikari.RGBSpectrum(0.5f0)))
+    tiles = checker(xyz(); scale = 1, color1 = (0.5, 0.5, 0.5), color2 = (0.38, 0.38, 0.38))
+    ground = normal_mesh(Rect3f(Vec3f(-50, -50, -0.01), Vec3f(100, 100, 0.01)))
+    push!(scene, ground, Hikari.Diffuse(color = tiles.color))
+    sky, sun = Hikari.sunsky_to_envlight(; direction = normalize(Vec3f(-0.6, -1, 0.9)), turbidity = 3f0)
+    push!(scene, sky)
+    push!(scene, sun)
     Hikari.sync!(scene)
-    film   = Hikari.Film(backend, Hikari.Film(Point2f(res, res)))
-    camera = Hikari.PerspectiveCamera(
-        Point3f(0f0, 3.5f0, -5f0), Point3f(0f0, 0.2f0, 0f0), film; fov=40f0)
+
+    film = Hikari.Film(backend, Hikari.Film(Point2f(resolution...)))
+    camera = Hikari.PerspectiveCamera(Point3f(0, -1.15n, 0.32n), Point3f(0, 0, 0.34), film;
+                                      up = Vec3f(0, 0, 1), fov = 16)
     Hikari.clear!(film)
-    Hikari.VolPath(samples=spp, max_depth=8)(scene, film, camera)
-    return Array(Hikari.postprocess!(film; tonemap=:aces, exposure=1.0f0, gamma=2.2f0))
+    integrator = Hikari.VolPath(; samples, max_depth = 16)
+    integrator(scene, film, camera)
+    Hikari.fill_aux_buffers!(film, scene, camera; has_infinite_lights = true)
+    Hikari.denoise!(film; config = Hikari.OIDN())
+    image = Array(Hikari.postprocess!(film; tonemap = :aces, gamma = 2.2))
+    close(integrator)   # its render state takes gigabytes; free it now, not at the next GC
+    return image
 end
+nothing # hide
 ```
 
-Materials are Blender's BSDFs, with Blender's inputs and defaults, plus the pbrt-v4 models Hikari
-needs to match pbrt's renders. Numeric and colour inputs take a number, a colour, an image
-(`Hikari.Texture`) or a node graph from [`Hikari.TextureNodes`](@ref). Distribution and component
-choices are constants. The BSDFs nest into one another as a Blender shader graph does.
+The first render with a new kind of BSDF or node compiles a shading kernel for it, which can take a
+minute. Rendering it again, or with other values, compiles nothing.
 
-| Blender's BSDFs | pbrt-v4's models |
-|-----------------|------------------|
-| `Principled`, `Diffuse`, `Glossy`, `Metallic`, `Glass`, `Refraction`, `Translucent`, `Sheen`, `Toon`, `SubsurfaceScattering`, `Transparent`, `Emission` | `Dielectric`, `ThinDielectric`, `Conductor` (and `Gold()`, `Silver()`, `Copper()`, `Aluminum()`, `Brass()`), `CoatedDiffuse` (`Plastic()`), `CoatedConductor`, `CoatedDiffuseTransmission`, `DiffuseTransmission` |
-| `Mix(a, b; factor)`, `Add(a, b)` combine them | the same graph combines these with any Cycles BSDF |
+### Principled BSDF
 
-### Principled
+`Principled` is the material to start from. One shader covers plastic, metal, glass, skin, cloth,
+paint and anything layered from them, arranged as in Cycles: sheen and coat over the metal, and
+transmission and the specular layer over the diffuse base.
 
-Blender's Principled BSDF with all its inputs: `base_color`, `metallic`, `roughness`, `ior`,
-`alpha`, the `subsurface_*`, `specular_*`, `transmission_*`, `coat_*` and `sheen_*` groups,
-`emission_color`/`emission_strength`, the thin film and `thin_wall`.
+| Group | Inputs | For |
+|-------|--------|-----|
+| Base | `base_color`, `metallic`, `roughness`, `ior`, `alpha`, `normal`, `diffuse_roughness` | every material; `metallic = 1` is a metal |
+| Specular | `specular_ior_level`, `specular_tint`, `anisotropic`, `anisotropic_rotation`, `tangent` | the strength of reflections, brushed metal |
+| Subsurface | `subsurface_weight`, `subsurface_radius`, `subsurface_scale`, `subsurface_ior`, `subsurface_anisotropy` | skin, wax, marble, soap |
+| Transmission | `transmission_weight`, `transmission_dispersion_scale`, `transmission_dispersion_abbe_number` | glass, water, gems |
+| Coat | `coat_weight`, `coat_roughness`, `coat_ior`, `coat_tint`, `coat_normal` | car paint, varnish, lacquer |
+| Sheen | `sheen_weight`, `sheen_roughness`, `sheen_tint` | velvet, cloth, dust |
+| Emission | `emission_color`, `emission_strength` | screens, LEDs, glowing paint |
+| Thin film | `thin_film_thickness` (nm), `thin_film_ior` | soap bubbles, oil slicks, anodised metal |
 
-```julia
-Hikari.Principled(base_color = (0.8, 0.1, 0.1), roughness = 0.3, coat_weight = 1)     # car paint
-Hikari.Principled(base_color = (0.9, 0.6, 0.2), metallic = 1, roughness = 0.2)        # gold
-Hikari.Glass()                                                                      # Principled glass preset
+`distribution` is `:multi_ggx` (Blender's default), `:ggx` or `:beckmann`; the latter two scatter
+once and lose energy on rough surfaces. `thin_wall = true` makes transmission and subsurface those of
+a surface with no inside, such as a soap bubble or a leaf.
+
+```@example materials
+showcase([
+    Hikari.Principled(base_color = (0.8, 0.08, 0.05), roughness = 0.25),                    # plastic
+    Hikari.Principled(base_color = (0.9, 0.9, 0.9), metallic = 1, roughness = 0.3,
+                      anisotropic = 0.8),                                                    # brushed steel
+    Hikari.Principled(base_color = (0.02, 0.1, 0.45), metallic = 0.6, roughness = 0.4,
+                      coat_weight = 1, coat_roughness = 0.02),                               # car paint
+    Hikari.Principled(base_color = (0.25, 0.01, 0.08), roughness = 1, sheen_weight = 1,
+                      sheen_roughness = 0.3, sheen_tint = (1, 0.6, 0.8)),                    # velvet
+    Hikari.Principled(base_color = (0.9, 0.7, 0.55), roughness = 0.4, subsurface_weight = 1,
+                      subsurface_radius = (1, 0.4, 0.2), subsurface_scale = 0.15),           # wax
+])
 ```
 
-The `distribution` setting is `:multi_ggx` by default, as in Blender. Use `:ggx` for
-single scattering in the metal, solid transmission and specular layers. The coat and
-thin-wall glass retain their energy compensation in both modes. This setting is constant in a material description. GGX single and multiple
-scattering share a shading class; colour and roughness edits update data.
-
-### Diffuse
-
-Lambertian reflection, or with `roughness` (0 to 1) the energy-preserving Oren-Nayar lobe.
-
-```julia
-Hikari.Diffuse(color = (0.8, 0.2, 0.1))                 # red
-Hikari.Diffuse(color = (0.9, 0.9, 0.9), roughness = 0.5) # rough, like chalk
-```
-
-### Glossy and Metallic
-
-`Glossy` is a GGX reflection tinted by `color` at every angle, a mirror at `roughness = 0`.
-`Metallic` is Blender's artist-friendly metal: `base_color` at normal incidence, `edge_tint` at
-grazing angles.
-
-For the complex index of a physical conductor, set `fresnel_type = :physical_conductor` and
-provide `ior` and `extinction` (the real and imaginary components). These inputs accept numbers,
-RGB triples, images and node graphs. The default `fresnel_type = :f82` uses `base_color` and
-`edge_tint`. The chosen Fresnel model is constant for a shader; its numeric inputs remain editable.
-The complex IOR uses the same spectral conversion as `Conductor`. Strongly coloured RGB IORs
-can differ from Cycles' RGB Fresnel result (about 3% in red in the comparison scene).
-
-```julia
-Hikari.Metallic(fresnel_type = :physical_conductor, ior = (0.2, 0.2, 0.2),
-               extinction = (3.9, 3.9, 3.9), roughness = 0.3)
-```
-
-`Glossy`, `Metallic` and `Glass` use `distribution = :multi_ggx` by default, as Blender does.
-Set `distribution = :ggx` or `:beckmann` for single scattering, which loses energy on rough
-surfaces. Distribution choices are fixed in the description. GGX single and multiple
-scattering share a shading class; Beckmann adds a capability to that class.
-Edits to roughness and colour reuse its compiled shading kernel.
-
-`Metallic` and `Glass` also take `thin_film_thickness` in nanometres and
-`thin_film_ior`, as their Blender nodes do. Film parameters use the same shared scattering record. Hikari evaluates interference at the path's wavelengths; Cycles
-integrates it separately for each RGB channel. Strongly coloured film-coated
-metals can consequently differ substantially (about 15% in red in the coloured
-metal regression scene), even when the interface equations agree.
-
-```julia
-Hikari.Glossy(color = (0.95, 0.95, 0.95), roughness = 0)                    # mirror
-Hikari.Metallic(base_color = (0.9, 0.64, 0.54), roughness = 0.2)            # copper
-Hikari.Glossy(distribution = :beckmann, roughness = 0.4, anisotropy = 0.5)
-```
+Without a `tangent`, anisotropic reflections run around the world's Z axis, as Blender's do around
+the object's.
 
 ### Glass
 
-`Glass(...)` returns a `Principled` with `transmission_weight = 1`, white `base_color`,
-`roughness = 0` and `ior = 1.5`. It has exactly the same description, graph and shader path
-as that Principled configuration. Use `base_color` for colour and nested updates; the old
-`color` constructor keyword remains an input alias. Reflection and transmission follow
-Principled's tinting, including the square root of the base colour for solid transmission.
-There is no separate Glass BSDF implementation.
+`Hikari.Glass(...)` is `Principled(transmission_weight = 1, ...)`: the same material, with Principled's
+`base_color`, `roughness`, `ior`, thin film, dispersion and `thin_wall`.
 
-The preset accepts thin film, thin walls and dispersion. In addition to Blender's Principled
-`:multi_ggx` and `:ggx` distributions, Hikari supports `:beckmann` through the same Principled
-path. Coat and thin-wall transmission retain their existing GGX behavior.
-
-```julia
-Hikari.Glass(ior = 1.5)                    # clear glass
-Hikari.Glass(ior = 1.33)                   # water
-Hikari.Glass(ior = 2.42)                   # diamond
-Hikari.Glass(roughness = 0.3, ior = 1.5)   # frosted glass
+```@example materials
+showcase([
+    Hikari.Glass(),                                                    # clear
+    Hikari.Glass(roughness = 0.25),                                    # frosted
+    Hikari.Glass(base_color = (0.35, 0.75, 0.5)),                      # tinted
+    Hikari.Glass(ior = 2.4, transmission_dispersion_scale = 1),        # diamond, with dispersion
+    Hikari.Glass(ior = 1.33, thin_wall = true,
+                 thin_film_thickness = 450, thin_film_ior = 1.33),     # soap bubble
+])
 ```
 
-### Refraction
+Common indices of refraction are 1.33 for water, 1.5 for window glass and 2.42 for diamond.
+`base_color` tints both reflection and transmission, as in Blender. For colour that deepens with
+the distance light travels inside, fill the glass with an absorbing medium (see [Volumes](@ref)).
 
-`Refraction` bends transmitted light without Fresnel reflection. It uses Blender's
-Beckmann distribution by default; set `distribution = :ggx` for GGX. Both use
-single scattering, so rough surfaces can lose energy. Total internal reflection
-absorbs the path. `color`, `roughness`, `ior` and `normal` can be node graphs or images.
+### Blender's other BSDFs
 
-```julia
-Hikari.Refraction(roughness = 0.3, ior = 1.45)
-Hikari.Refraction(distribution = :ggx, roughness = 0.3)
+| Material | Scattering | Main inputs |
+|----------|------------|-------------|
+| `Diffuse` | Lambert, or Oren-Nayar with `roughness` | `color`, `roughness`, `normal` |
+| `Glossy` | microfacet reflection, a mirror at `roughness = 0` | `color`, `roughness`, `anisotropy`, `rotation` |
+| `Metallic` | a metal by its colour at normal and grazing incidence (F82), or by complex index | `base_color`, `edge_tint`, `roughness`, `fresnel_type`, `ior`, `extinction`, thin film |
+| `Refraction` | transmission without reflection | `color`, `roughness`, `ior` |
+| `Translucent` | diffuse transmission | `color` |
+| `Sheen` | the microfiber reflection of cloth, bright at grazing angles | `color`, `roughness` |
+| `Toon` | Blender's cel shading | `color`, `size`, `smooth`, `component` |
+| `SubsurfaceScattering` | random-walk subsurface scattering | `color`, `scale`, `radius`, `ior`, `anisotropy` |
+| `Transparent` | light passing straight through, tinted | `color` |
+| `Emission` | light emitted by the surface | `color`, `strength`, `two_sided` |
+
+```@example materials
+showcase([
+    Hikari.Diffuse(color = (0.75, 0.75, 0.72), roughness = 1),                       # chalk
+    Hikari.Glossy(color = (0.9, 0.9, 0.9), roughness = 0.1),                         # polished chrome
+    Hikari.Metallic(base_color = (0.95, 0.64, 0.54), edge_tint = (0.99, 0.82, 0.75),
+                    roughness = 0.25),                                                # copper
+    Hikari.Metallic(base_color = (0.6, 0.6, 0.62), roughness = 0.15,
+                    thin_film_thickness = 380, thin_film_ior = 2.0),                  # anodised titanium
+    Hikari.Refraction(color = (0.8, 0.9, 1.0), roughness = 0.05, ior = 1.45),
+])
 ```
 
-### Toon
-
-`Toon(; color, size, smooth)` uses Blender's diffuse toon response. Set
-`component = :glossy` for its glossy response. The component is constant for a
-shader; `color`, `size`, `smooth` and `normal` can be node graphs or images.
-
-```julia
-Hikari.Toon(color = (0.2, 0.5, 0.8), size = 0.3, smooth = 0.2)
-Hikari.Toon(component = :glossy, size = 0.15)
+```@example materials
+showcase([
+    Hikari.Translucent(color = (0.5, 0.8, 0.3)),                                      # leaf
+    Hikari.Add(Hikari.Diffuse(color = (0.12, 0.01, 0.04)),
+               Hikari.Sheen(color = (1, 0.55, 0.75), roughness = 0.3)),              # velvet
+    Hikari.Toon(color = (0.2, 0.5, 0.9), size = 0.4, smooth = 0.05),
+    Hikari.SubsurfaceScattering(color = (0.9, 0.55, 0.4), scale = 0.2),               # skin
+    Hikari.Mix(Hikari.Diffuse(color = (0.9, 0.3, 0.1)), Hikari.Transparent();
+               factor = 0.6),                                                         # ghost
+])
 ```
 
-### Subsurface Scattering
+`Metallic` with `fresnel_type = :physical_conductor` takes the complex index of refraction
+`ior` + i`extinction` of a real metal instead of colours. `Toon(component = :glossy)` is Blender's
+glossy toon shader. Sheen on its own is dark except at grazing angles, so it is added to a diffuse
+base for velvet; `Principled`'s `sheen_weight` does the same in one material.
 
-`SubsurfaceScattering` implements Blender's standalone node with its default
-Random Walk model. `radius * scale` gives the scattering distance in scene
-units. Channels with zero scattering distance use Lambert diffuse reflection.
-`color`, `scale`, `radius`, `ior`, `roughness`, `anisotropy` and `normal` can be
-node graphs or images. Other Blender subsurface models are not implemented.
+### Mixing and adding shaders
 
-```julia
-Hikari.SubsurfaceScattering(color = (0.8, 0.6, 0.4), scale = 0.05)
-```
+`Hikari.Mix(a, b; factor)` blends two materials: `factor = 0` is `a`, `1` is `b`, and the factor can
+be a node graph, which gives each point of the surface its own blend. `Hikari.Add(a, b)` sums them,
+for emission over a surface or sheen over a diffuse base. Both nest, so any shader graph Blender
+builds from these nodes can be written down.
 
-### Transparent
-
-Light passes straight through, tinted by `color`, along a path and in the shadows the surface
-casts. A Principled `alpha` below 1 lets light through the same way, untinted.
-
-```julia
-Hikari.Mix(Hikari.Diffuse(color = (0.2, 0.6, 0.2)), Hikari.Transparent(color = (1, 1, 1)); factor = 0.5)  # half see-through
-Hikari.Transparent(color = (0.9, 0.3, 0.3))                                                          # red filter
+```@example materials
+patina = color_ramp(noise(xyz(); scale = 3, detail = 6).fac, 0.45 => (0, 0, 0), 0.6 => (1, 1, 1))
+showcase([
+    Hikari.Mix(Hikari.Diffuse(color = (0.8, 0.5, 0.1)), Hikari.Glossy(roughness = 0.05);
+               factor = 0.1),                                                         # glazed clay
+    Hikari.Mix(Hikari.Metallic(base_color = (0.95, 0.64, 0.54), roughness = 0.2),
+               Hikari.Diffuse(color = (0.15, 0.45, 0.35)); factor = patina),         # copper with patina
+    Hikari.Mix(Hikari.Glass(), Hikari.Diffuse(color = (0.9, 0.9, 0.9));
+               factor = checker(xyz(); scale = 6).fac),                              # glass and plaster
+    Hikari.Add(Hikari.Diffuse(color = (0.05, 0.05, 0.05)),
+               Hikari.Emission(color = (1, 0.35, 0.05), strength = 0.8)),            # ember
+    Hikari.Principled(base_color = (0.1, 0.1, 0.1), roughness = 0.4,
+                      emission_color = (0.2, 0.6, 1), emission_strength = 0.8),      # glowing paint
+])
 ```
 
 ### Emission
 
-A surface that emits `strength` times `color`. A mesh of it is an area light. As a
-`MediumInterface`'s `emission` it makes any material glow, and inside a `Mix` or `Add` it is
-Blender's Emission shader.
+A mesh pushed with `Hikari.Emission(; color, strength, two_sided)` is an area light: Hikari samples
+it like any other light, so even a small emitter lights the scene with little noise. `two_sided`
+makes both faces emit. Emission inside a `Mix` or `Add`, and `Principled`'s `emission_strength`,
+make the surface glow but are only found by the paths that hit it, so they light the scene noisily.
+For lamps, use `Emission` (see [Lights](@ref)).
 
-```julia
-Hikari.Emission(color = (1, 0.9, 0.8), strength = 10, two_sided = true)
+### Volumes
+
+`Hikari.MediumInterface(surface; inside, outside, shadows)` puts a participating medium behind a
+surface: `inside` fills the mesh, `outside` surrounds it, and either is `nothing` for vacuum.
+
+| Medium | |
+|--------|---|
+| `Hikari.HomogeneousMedium(; σ_a, σ_s, Le, g)` | constant absorption `σ_a`, scattering `σ_s` and emission `Le` per scene unit (`RGBSpectrum`), and the anisotropy `g` of its phase function |
+| `Hikari.Milk(; scale, g)`, `Hikari.Coffee(; scale, g)` | measured liquids; `scale` dilutes them |
+| `Hikari.Smoke(; density, albedo, g)` | grey smoke |
+| `Hikari.GridMedium(density; σ_a, σ_s, g, bounds)` | a medium whose density varies, from a 3D array over a box |
+
+A medium seen through glass is lit by sunlight only along paths that refract into it, which
+are found by chance and leave the medium noisy. `shadows = ior` lets the sun's shadow rays through the
+surface, weighted by the transmittance of a dielectric of that index: the caustics are lost, as in
+most production renderers, and the noise goes. A medium with no visible surface uses
+`Hikari.NullMaterial()`.
+
+```@example materials
+showcase([
+    Hikari.MediumInterface(Hikari.Glass(); inside = Hikari.Milk(), shadows = 1.5),
+    Hikari.MediumInterface(Hikari.Glass(); inside = Hikari.Coffee(scale = 0.5), shadows = 1.5),
+    Hikari.MediumInterface(Hikari.Glass(ior = 1.33);                                   # whisky
+        inside = Hikari.HomogeneousMedium(σ_a = Hikari.RGBSpectrum(0.2f0, 1.5f0, 3f0),
+                                          σ_s = Hikari.RGBSpectrum(0f0)), shadows = 1.33),
+    Hikari.MediumInterface(Hikari.Glass(ior = 1.6, roughness = 0.1);                   # jade
+        inside = Hikari.HomogeneousMedium(σ_a = Hikari.RGBSpectrum(2f0, 0.3f0, 1.2f0),
+                                          σ_s = Hikari.RGBSpectrum(8f0)), shadows = 1.6),
+    Hikari.MediumInterface(Hikari.NullMaterial(); inside = Hikari.Smoke(density = 4, albedo = 0.9, g = 0.3)),
+])
 ```
 
-### Mixing BSDFs and node graphs
+A heterogeneous medium is a density grid over a box, for example a procedural cloud:
 
 ```julia
-using Hikari.TextureNodes
-rust = noise(xyz(); scale = 4).fac
-Hikari.Mix(Hikari.Metallic(roughness = 0.2), Hikari.Diffuse(color = (0.4, 0.15, 0.05)); factor = rust)
-Hikari.Principled(base_color = image_texture(img), normal = bump(noise(xyz()).fac; distance = 0.01))
+density = Hikari.generate_cloud_density(128; scale = 2.5, threshold = 0.15)
+cloud = Hikari.GridMedium(density; σ_a = Hikari.RGBSpectrum(0.5f0), σ_s = Hikari.RGBSpectrum(15f0),
+                          bounds = Hikari.Bounds3(Point3f(-1, -1, 0), Point3f(1, 1, 2)))
+push!(scene, normal_mesh(Rect3f(Vec3f(-1, -1, 0), Vec3f(2))),
+      Hikari.MediumInterface(Hikari.NullMaterial(); inside = cloud))
 ```
 
-All these models compile through `ShaderMaterial`. Constant inputs live in the
-BSDF program. Computed inputs run in a values pass, or in the same kernel for a
-single pbrt node using elementary arithmetic and texture reads. A pbrt `displacement` is
-a graph node using its original bump formula, and measured IOR curves remain
-spectral. Graphs containing layered or dispersive pbrt models select a complete
-BSDF at the vertex, preserving its random-walk PDF and wavelength termination.
+### glTF and OpenPBR materials
+
+`Hikari.GLTF` and `Hikari.OpenPBR` take the parameters of those standards by their own names and
+render as the `Principled` BSDF Blender's importers make of them:
+
+```julia
+Hikari.GLTF(base_color_factor = (0.8, 0.1, 0.1, 1), metallic_factor = 0, roughness_factor = 0.4,
+            clearcoat_factor = 1, clearcoat_roughness_factor = 0.05)
+Hikari.OpenPBR(base_color = (0.9, 0.6, 0.2), base_metalness = 1, specular_roughness = 0.2)
+```
 
 ### pbrt-v4's models
 
-`Conductor` is a metal of complex index of refraction `ior` + i`extinction` (or a `reflectance`
-instead), the coated models are pbrt's layered BSDFs, and `DiffuseTransmission` is Lambert
-reflection and transmission. They render as pbrt renders them.
+These keep pbrt's parameters and conventions, so a pbrt scene renders as pbrt renders it. They mix
+with Blender's BSDFs like any other material.
 
-```julia
-Hikari.Conductor(ior = (0.156, 0.424, 1.383), extinction = (3.602, 2.472, 1.916), roughness = 0.05)
-Hikari.Gold(roughness = 0.05)
-Hikari.Plastic(color = (0.8, 0.1, 0.1), roughness = 0.02)
-Hikari.CoatedDiffuse(reflectance = (0.6, 0.1, 0.1), roughness = 0.05, ior = 1.5, thickness = 0.01)
-Hikari.DiffuseTransmission(reflectance = (0.2, 0.4, 0.1), transmittance = (0.1, 0.3, 0.05))
+| Material | |
+|----------|---|
+| `Conductor(; ior, extinction, roughness)` or `Conductor(; reflectance, roughness)` | a metal; `Gold()`, `Silver()`, `Copper()`, `Aluminum()` and `Brass()` use measured spectra |
+| `Dielectric(; ior, roughness)`, `ThinDielectric(; ior)` | glass, and glass with no thickness |
+| `CoatedDiffuse(; reflectance, roughness, thickness, ior)` | a diffuse base under a dielectric coat; `Plastic(; color, roughness)` |
+| `CoatedConductor(; interface_roughness, reflectance, conductor_roughness)` | a metal under a coat |
+| `DiffuseTransmission(; reflectance, transmittance)`, `CoatedDiffuseTransmission` | paper, leaves, lamp shades |
+
+`roughness` is a number or a `(u, v)` pair, and `displacement` takes a height image or graph as pbrt's
+bump mapping does.
+
+```@example materials
+showcase([
+    Hikari.Gold(roughness = 0.05),
+    Hikari.Conductor(ior = (0.2, 0.92, 1.1), extinction = (3.9, 2.45, 2.14), roughness = 0.2),
+    Hikari.CoatedConductor(interface_roughness = 0.05, reflectance = (0.8, 0.1, 0.1),
+                           conductor_roughness = 0.3),
+    Hikari.CoatedDiffuse(reflectance = (0.1, 0.25, 0.7), roughness = 0.05),
+    Hikari.DiffuseTransmission(reflectance = (0.6, 0.6, 0.55), transmittance = (0.5, 0.45, 0.3)),
+])
 ```
-
-For pbrt models, the stored description uses the same names as the constructor:
-`roughness` is a scalar or `(u, v)` pair. `CoatedConductor` uses
-`interface_roughness`, `conductor_roughness`, and `reflectance`. These are actual
-fields, so nested updates such as `plot.material.roughness = 0.2` work directly.
-`DiffuseTransmission.scale` also accepts a texture or value graph.
 
 ### Changing a material
 
-`Hikari.update_material!(scene, handle, material)` with a material of the same kind (other values,
-images or node parameters) writes it where the old one is: the next frame renders it without
-compiling anything. Changing node families or BSDFs can require a new values program or BSDF
-kernel. Other materials retain their compiled kernels.
+`push!` returns a handle. `Hikari.update_material!(scene, handle, material)` gives the mesh another
+material, and the next render shows it:
 
-Cycles nodes, including individual materials, use one shared local BSDF storage and
-program evaluator. `Glass(...)` returns a Principled transmission preset and uses
-that same implementation. Kernel classes depend on scattering capabilities,
-emission and a bounded storage capacity: one slot for a single lobe, otherwise
-a power of two starting at four slots, rather than
-exact BSDF node order. Larger graphs select a larger capacity instead of switching
-to another implementation. Setup and spectral conversion happen once per hit;
-there is no additional global BSDF buffer.
+```julia
+handle = push!(scene, mesh, Hikari.Principled(base_color = (0.8, 0.1, 0.1)))
+Hikari.sync!(scene)
+integrator(scene, film, camera)
 
-Reordering or combining nodes within an existing class reuses its BSDF pipeline.
-Other renderer passes can still compile when value-node families change. The
-pbrt importer uses the same material graph infrastructure, with its own component
-and layered scattering estimators; those schemas still specialize their kernels.
-
-The shared Cycles path currently inlines scattering evaluation to avoid a
-reproduced GPU fault at the outlined function boundary. A measured layered
-Principled case on RTX has approximately 4% frame overhead against the typed
-reference. Final paired simple-model measurements are about 1–2%, Glass about
-1%, and Metallic about 6% (6–9% across two runs). These are measured fixtures,
-not bounds for arbitrary scenes. Further optimization and the function-boundary investigation are
-tracked in Mantle's `docs/material-compilation-reuse-plan.md`.
-
-### Materials Showcase
-
-Nine spheres demonstrating the available materials:
-
-```@example materials
-mats = [
-    Hikari.Diffuse(color = (0.8, 0.4, 0.3)),                                   # terracotta
-    Hikari.Diffuse(color = (0.85, 0.85, 0.85), roughness = 0.7),               # chalk
-    Hikari.Glass(ior = 1.5),                                                   # glass
-    Hikari.Glossy(color = (0.95, 0.93, 0.88), roughness = 0),                  # mirror
-    Hikari.Gold(roughness = 0.02),                                             # gold
-    Hikari.Principled(base_color = (0.8, 0.1, 0.1), roughness = 0.4, coat_weight = 1, coat_roughness = 0.02),  # car paint
-    Hikari.Glass(roughness = 0.3, ior = 1.5),                                  # frosted glass
-    Hikari.Plastic(color = (0.1, 0.3, 0.8), roughness = 0.02),                 # plastic
-    Hikari.DiffuseTransmission(reflectance = (0.4, 0.4, 0.4), transmittance = (0.4, 0.4, 0.4)),  # paper
-]
-
-render_scene(mats; spp=64)
+Hikari.update_material!(scene, handle, Hikari.Principled(base_color = (0.1, 0.1, 0.8), roughness = 0.2))
+Hikari.clear!(film)
+integrator(scene, film, camera)
 ```
 
-Row 1 (back): Lambertian · Oren-Nayar · Glass
-Row 2 (middle): Mirror · Gold · Car paint
-Row 3 (front): Frosted glass · Plastic · DiffuseTransmission
+A material of the same kind with other values, images or node parameters is written where the old
+one was and compiles nothing. Another BSDF, or other kinds of nodes, compiles their kernels the first
+time they render.

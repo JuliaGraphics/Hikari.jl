@@ -34,10 +34,11 @@ gold  = Hikari.Gold(roughness=0.05f0)
 
 # 2. Build the scene
 scene = Hikari.Scene(; backend)
-push!(scene, to_mesh(Sphere(Point3f(0, 0.5, 0), 0.5f0)), gold)
+push!(scene, to_mesh(Sphere(Point3f(-0.3, 0.5, 0), 0.5f0)), gold)
+push!(scene, to_mesh(Sphere(Point3f(0.7, 0.3, -0.5), 0.3f0)), red)
 push!(scene, to_mesh(Rect3f(Vec3f(-3, 0, -3), Vec3f(6, 0.01, 6))), white)
 push!(scene, Hikari.PointLight(Point3f(2f0, 3f0, -2f0), Hikari.RGBSpectrum(40f0)))
-push!(scene, Hikari.AmbientLight(Hikari.RGBSpectrum(0.5f0)))
+push!(scene, Hikari.AmbientLight(Hikari.RGBSpectrum(0.15f0)))
 Hikari.sync!(scene)  # builds the BVH acceleration structure
 
 # 3. Camera and film
@@ -82,14 +83,16 @@ Hikari.sync!(scene)            # required before rendering
 
 ```julia
 film   = Hikari.Film(backend, Hikari.Film(Point2f(width, height)))
-camera = Hikari.PerspectiveCamera(eye, lookat, film; fov=55f0)
+camera = Hikari.PerspectiveCamera(eye, lookat, film; up = Vec3f(0, 1, 0), fov = 55f0)
 ```
+
+`fov` is in degrees, across the shorter side of the image, as in pbrt.
 
 Call `Hikari.clear!(film)` before each new render to reset the sample accumulator.
 
 #### Integrator
 
-`VolPath` is the main integrator — a wavefront volumetric path tracer with MIS and spectral hero wavelength sampling.
+`VolPath` is the main integrator: a wavefront volumetric path tracer with multiple importance sampling and spectral hero wavelength sampling.
 
 ```julia
 integrator = Hikari.VolPath(samples=64, max_depth=8)
@@ -102,12 +105,26 @@ Key parameters:
 |-----------|---------|-------------|
 | `samples` | 64 | Samples per pixel |
 | `max_depth` | 8 | Maximum path bounces |
+| `russian_roulette_depth` | 3 | Bounce from which paths may end at random |
 | `regularize` | `true` | BSDF regularisation after first non-specular bounce (reduces fireflies) |
 | `max_component_value` | 10.0 | Per-sample clamp for firefly suppression |
+| `filter` | `GaussianFilter()` | Pixel reconstruction filter |
+| `sensor` | `PixelSensor()` | Camera sensor: ISO, exposure time, white balance |
+| `accumulation_eltype` | `Float32` | `Float64` accumulates more precisely where the device supports it |
+
+pbrt-v4's defaults are `regularize = false` and `max_component_value = Inf`; pass those to compare
+a render with pbrt's.
+
+#### Material system
+
+Materials are Blender's shader nodes plus pbrt-v4's models; every input can be a number, a colour,
+an image or a procedural node graph. See [Materials](@ref), [Textures and Node Graphs](@ref) and
+[Material Recipes](@ref).
 
 #### Postprocessing
 
-`postprocess!` converts the HDR film buffer to a displayable image.
+`postprocess!` converts the HDR film buffer to a displayable image. A denoiser can clean a render
+at a few samples per pixel first; see [Postprocessing and Denoising](@ref).
 
 ```julia
 img = Hikari.postprocess!(film;
