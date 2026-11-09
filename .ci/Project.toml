@@ -26,3 +26,5 @@ Raycore = {url = "https://github.com/JuliaGeometry/Raycore.jl", rev = "sd/with-t
 
 [compat]
 julia = "1.12"
+Vulkan = "0.7"
+VulkanCore = "2"
