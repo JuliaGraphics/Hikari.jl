@@ -57,4 +57,14 @@ end
         end
     end
 end
+
+# A conductor given by its complex IOR has no reflectance to read, and its guide was black: OIDN
+# took gold for a surface that absorbs everything. White is the guide of the other specular BSDFs.
+@testset "a conductor given by its IOR guides as white" begin
+    for material in (Hikari.Conductor(), Hikari.Gold(roughness = 0.1f0))
+        @test reference(material) ≈ Vec3f(1, 1, 1)
+        check(material, Vec3f(1, 1, 1); hardware = false)
+    end
+    @test reference(Hikari.Conductor(reflectance = (0.2, 0.4, 0.7))) ≈ Vec3f(0.2, 0.4, 0.7)
+end
 end

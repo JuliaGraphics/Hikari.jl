@@ -9,9 +9,16 @@ end
 @inline guide_material(mat::Material, materials, tfc, ::Val{D}) where {D} = RGB{Float32}(1, 1, 1)
 @inline guide_material(mat::Diffuse, materials, tfc, ::Val{D}) where {D} =
     guide_rgb(eval_handle_spectrum(materials, mat.color, tfc))
-@inline guide_material(mat::Union{Conductor, CoatedDiffuse, DiffuseTransmission, CoatedDiffuseTransmission},
+@inline guide_material(mat::Union{CoatedDiffuse, DiffuseTransmission, CoatedDiffuseTransmission},
                        materials, tfc, ::Val{D}) where {D} =
     guide_rgb(eval_handle_spectrum(materials, mat.reflectance, tfc))
+# A conductor given by its complex IOR has no reflectance to read: white, as the other specular BSDFs.
+@inline guide_material(mat::Conductor, materials, tfc, ::Val{D}) where {D} =
+    conductor_guide(materials, mat.reflectance, tfc)
+@inline conductor_guide(materials, ::Nothing, tfc) = RGB{Float32}(1, 1, 1)
+@inline conductor_guide(materials, reflectance::TexHandle, tfc) =
+    is_none(reflectance) ? RGB{Float32}(1, 1, 1) : guide_rgb(eval_handle_spectrum(materials, reflectance, tfc))
+@inline conductor_guide(materials, reflectance, tfc) = guide_rgb(eval_handle_spectrum(materials, reflectance, tfc))
 @inline function guide_material(mat::MixMaterial, materials, tfc, ::Val{D}) where {D}
     D == 0 && return RGB{Float32}(1, 1, 1)
     amount = clamp(eval_handle(materials, mat.amount, tfc), 0.0f0, 1.0f0)
