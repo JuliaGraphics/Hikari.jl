@@ -18,15 +18,13 @@ using FileIO, Statistics, Colors, DelimitedFiles, Bonito, ImageFiltering
 import KernelAbstractions as KA
 import Bonito: DOM
 
+include(joinpath(@__DIR__, "references.jl"))
+
 const PBRT_DIR     = @__DIR__
-const SCENES_DIR   = joinpath(PBRT_DIR, "scenes")
-const REFS_DIR     = joinpath(PBRT_DIR, "references")
 const RECORDED_DIR = joinpath(PBRT_DIR, "recorded")
 const DISPLAY_DIR  = joinpath(PBRT_DIR, "display")
-const PBRT_BIN     = "/sim/Programmieren/VulkanDev/pbrt-v4/build/pbrt"
 const SPP          = 256
 
-mkpath(REFS_DIR)
 mkpath(RECORDED_DIR)
 mkpath(DISPLAY_DIR)
 
@@ -81,19 +79,11 @@ end
 # Step 1: Ensure all pbrt references exist
 # ============================================================================
 
-function ensure_pbrt_references(; spp=SPP)
-    scene_files = sort(filter(f -> endswith(f, ".pbrt"), readdir(SCENES_DIR)))
-    n_generated = 0
-    for fname in scene_files
-        name = replace(fname, ".pbrt" => "")
-        ref_exr = joinpath(REFS_DIR, "$(name).exr")
-        isfile(ref_exr) && continue
-        scene_file = joinpath(SCENES_DIR, fname)
-        println("  Generating pbrt reference: $name ($spp spp)")
-        run(`$PBRT_BIN $scene_file --outfile $ref_exr --spp $spp`)
-        n_generated += 1
-    end
-    n_generated > 0 && println("  Generated $n_generated new pbrt references")
+function ensure_pbrt_references()
+    names = [replace(f, ".pbrt" => "") for f in sort(filter(f -> endswith(f, ".pbrt"), readdir(SCENES_DIR)))]
+    missing_refs = filter(name -> !isfile(reference_file(name)), names)
+    foreach(generate_reference, missing_refs)
+    isempty(missing_refs) || println("  Generated $(length(missing_refs)) new pbrt references")
 end
 
 # ============================================================================
@@ -111,8 +101,7 @@ function render_missing_hikari(; spp=SPP)
         isfile(rec_exr) && continue
 
         scene_file = joinpath(SCENES_DIR, fname)
-        ref_exr = joinpath(REFS_DIR, "$(name).exr")
-        isfile(ref_exr) || continue
+        isfile(reference_file(name)) || continue
 
         try
             fb = Array(Hikari.render_pbrt(scene_file; backend=backend, samples=spp))
@@ -149,7 +138,7 @@ function compute_scores_and_pngs()
 
     for fname in scene_files
         name = replace(fname, ".pbrt" => "")
-        ref_exr = joinpath(REFS_DIR, "$(name).exr")
+        ref_exr = reference_file(name)
         rec_exr = joinpath(RECORDED_DIR, "$(name).exr")
         (isfile(ref_exr) && isfile(rec_exr)) || continue
 
@@ -220,7 +209,7 @@ end
 # ============================================================================
 
 println("Step 1: Checking pbrt references...")
-ensure_pbrt_references(; spp=SPP)
+ensure_pbrt_references()
 
 println("Step 2: Rendering missing Hikari scenes...")
 render_missing_hikari(; spp=SPP)

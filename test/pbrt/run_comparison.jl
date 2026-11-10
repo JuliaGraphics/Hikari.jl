@@ -39,7 +39,6 @@ using FileIO, Colors
 
 include(joinpath(@__DIR__, "suite.jl"))
 
-const REFS_DIR    = joinpath(@__DIR__, "references")
 const DISPLAY_DIR = joinpath(@__DIR__, "display")
 
 struct SceneRow
@@ -96,7 +95,7 @@ function build_gallery(rows::Vector{SceneRow}, hw_accel::Bool)
 
     entries = String[]
     for s in sorted
-        ref_exr = joinpath(REFS_DIR, "$(s.name).exr")
+        ref_exr = reference_file(s.name)
         rec_exr = joinpath(dir, "$(s.name).exr")
         if !(isfile(ref_exr) && isfile(rec_exr))
             println("  skipping $(s.name): missing $(isfile(ref_exr) ? "render" : "reference")")

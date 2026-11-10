@@ -10,8 +10,9 @@
 
 using Bonito, DelimitedFiles, FileIO, Statistics, Colors
 
+include(joinpath(@__DIR__, "references.jl"))
+
 const PBRT_DIR     = @__DIR__
-const REFS_DIR     = joinpath(PBRT_DIR, "references")
 const RECORDED_DIR = joinpath(PBRT_DIR, "recorded")
 const DISPLAY_DIR  = joinpath(PBRT_DIR, "display")
 const BUILD_DIR    = joinpath(PBRT_DIR, "build")
@@ -79,7 +80,7 @@ scores = Float64[]
 
 for fname in scene_files
     name = replace(fname, ".pbrt" => "")
-    ref_exr = joinpath(REFS_DIR, "$(name).exr")
+    ref_exr = reference_file(name)
     rec_exr = joinpath(RECORDED_DIR, "$(name).exr")
     (isfile(ref_exr) && isfile(rec_exr)) || continue
     ref_img = FileIO.load(ref_exr)

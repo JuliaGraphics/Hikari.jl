@@ -9,3 +9,5 @@ test/pbrt/recorded/
 test/pbrt/display/
 
 Manifest*.toml
+test/pbrt/build/
+test/pbrt/references/

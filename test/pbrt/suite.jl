@@ -23,39 +23,12 @@ using Colors
 using ImageFiltering
 import KernelAbstractions as KA
 
-const SCENES_DIR = joinpath(@__DIR__, "scenes")
-const REFS_DIR   = joinpath(@__DIR__, "references")
-# Beside the `dev/` checkouts by default: `VulkanDev/pbrt-v4/build/pbrt`.
-const PBRT_BIN   = get(ENV, "PBRT_BIN",
-                       normpath(joinpath(@__DIR__, "..", "..", "..", "..", "pbrt-v4", "build", "pbrt")))
+include(joinpath(@__DIR__, "references.jl"))
 
 """Does the default device trace in hardware?"""
 hw_rt_available() = Mantle.supports_hwtlas(Mantle.defaultbackend())
 
 # ── Reference management ────────────────────────────────────────────────────
-
-"""
-    ensure_reference(scene_name; spp) -> Matrix{RGB{Float32}}
-
-Load the pbrt-v4 reference EXR for `scene_name`. If missing, fall back to
-running the pbrt binary at `PBRT_BIN` to generate it. Throws if neither is
-available.
-"""
-# Every committed reference is rendered at this sample count, and the suite
-# verifies it rather than trusting it.
-#
-# It is deliberately a constant and not the caller's `samples`, because the
-# references drift apart otherwise: of 167, eight sit at 64 spp, two at 512 and
-# one at 1024 while Hikari renders all of them at 256. For the 64-spp eight that
-# means
-# pbrt carried 4x fewer samples, so the reference was roughly 2x noisier than
-# the image under test — and since the tile score is a p95 of per-pixel
-# difference, that noise was scored as Hikari error. Those eight average tile
-# 0.0169 against 0.0097 across the whole set.
-#
-# Keying it to `samples` instead would be worse than the bug: a CI run at 32 spp
-# would quietly rewrite all 167 committed references at 32.
-const REFERENCE_SPP = 256
 
 """
     exr_samples_per_pixel(path) -> Int or nothing
@@ -76,21 +49,16 @@ function exr_samples_per_pixel(path::AbstractString)
     return Int(only(reinterpret(Int32, bytes[p:p+3])))
 end
 
-"""Render `scene_name`'s pbrt-v4 reference at `REFERENCE_SPP`, overwriting."""
-function generate_reference(scene_name::AbstractString)
-    isfile(PBRT_BIN) || error("pbrt binary not found at $PBRT_BIN (set PBRT_BIN)")
-    scene_file = joinpath(SCENES_DIR, "$(scene_name).pbrt")
-    ref_file   = joinpath(REFS_DIR, "$(scene_name).exr")
-    @info "Generating reference: $scene_name at $(REFERENCE_SPP) spp"
-    # `--spp` overrides whatever `Sampler` the scene asks for, which matters:
-    # six scenes pin `pixelsamples 64` in their own .pbrt.
-    run(`$PBRT_BIN $scene_file --outfile $ref_file --spp $REFERENCE_SPP`)
-    return nothing
-end
+"""
+    ensure_reference(scene_name) -> Matrix{RGB{Float32}}
 
+Load the pbrt-v4 reference for `scene_name` (see `reference_file`), rendering it
+with the pbrt binary at `PBRT_BIN` when there is none. Throws if neither is
+available, or if the reference was not rendered at `REFERENCE_SPP`.
+"""
 function ensure_reference(scene_name::AbstractString)
-    ref_file = joinpath(REFS_DIR, "$(scene_name).exr")
-    isfile(ref_file) || generate_reference(scene_name)
+    ref_file = reference_file(scene_name)
+    isfile(ref_file) || (ref_file = generate_reference(scene_name))
 
     got = exr_samples_per_pixel(ref_file)
     if got !== nothing && got != REFERENCE_SPP

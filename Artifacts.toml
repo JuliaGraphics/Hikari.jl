@@ -6,6 +6,14 @@ lazy = true
     sha256 = "743c3e2aff8c220d5d70fe6cb970fb3d36f2702d2693c61d1d148e404cf37cd6"
     url = "https://github.com/RenderKit/oidn/releases/download/v2.5.1/oidn-2.5.1.x86_64.linux.tar.gz"
 
+[pbrt_references]
+git-tree-sha1 = "4ef58e5cd6d0055a1ee3ada90ea089c2d1089632"
+lazy = true
+
+    [[pbrt_references.download]]
+    sha256 = "c8f8015796c541aa97a59a0dbfebcbf14cdb72abafaa771d0bc48caa45b182d3"
+    url = "https://github.com/JuliaGraphics/Hikari.jl/releases/download/assets/pbrt_references-4ef58e5cd6d0055a1ee3ada90ea089c2d1089632.tar.gz"
+
 [srgb_spectrum_table]
 git-tree-sha1 = "cf631c24837681138d48c9e53adc6f4798c0c25f"
 
