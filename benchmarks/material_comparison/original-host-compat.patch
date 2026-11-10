@@ -1,0 +1,12 @@
+diff --git a/src/scene-mesh.jl b/src/scene-mesh.jl
+index de238c5..faa8925 100644
+--- a/src/scene-mesh.jl
++++ b/src/scene-mesh.jl
+@@ -34,6 +34,6 @@ function Base.push!(scene::Scene, mesh::GeometryBasics.Mesh, material::Material;
+     face_meta = build_face_meta(scene, mesh, mat_idx, material)
+     mesh_with_meta = GeometryBasics.mesh(mesh; face_meta=GeometryBasics.per_face(face_meta, mesh))
+     sbt_offset = _last_pushed_sbt_offset()
+-    handle = push!(scene.accel, mesh_with_meta, transform; sbt_offset=sbt_offset)
++    handle = push!(scene.accel, mesh_with_meta, transform)
+     return SceneHandle(scene, mat_idx, handle, mesh_area_lights(face_meta))
+ end
