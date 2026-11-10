@@ -231,7 +231,8 @@ jobs:
           julia --project=.ci -e '
             using DocumenterVitepress
             DocumenterVitepress.deploydocs(;
-              root = "docs",
+              # Absolute: Documenter changes into `root`, then resolves it again.
+              root = abspath("docs"),
               repo = "github.com/JuliaGraphics/Hikari.jl",
               target = "build",
               branch = "gh-pages",
