@@ -186,6 +186,10 @@ jobs:
           depot-key: ${{ needs.setup.outputs.depot-key }}
       - name: Build (without comparison gallery)
         env:
+          # makedocs decides where Deploy Docs pushes (`bases.txt`), and a pull request's
+          # preview needs a token to check that the PR is from this repository. Without
+          # one the decision is "nowhere" and Deploy Docs succeeds having pushed nothing.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HIKARI_TEST_LAVAPIPE: "true"
           GKSwstype: "100"
           DATADEPS_ALWAYS_ACCEPT: true
