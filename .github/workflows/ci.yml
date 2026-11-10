@@ -110,6 +110,13 @@ jobs:
           # through the JIT-emulated RT pipeline; full HW pbrt is still
           # expected to run on real-HW (RADV / NVIDIA) developer machines.
           HIKARI_SKIP_PBRT_HW: "true"
+      # Every render and score the pbrt groups checked, for the comparison gallery that
+      # Deploy Docs builds. Kept when a scene fails: that is the one worth looking at.
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && startsWith(matrix.group, 'pbrt') }}
+        with:
+          name: pbrt-record-${{ matrix.group }}
+          path: test/pbrt/recorded/
 
       - name: Verify material shader cache across Julia sessions
         if: matrix.group == '1'
@@ -132,42 +139,6 @@ jobs:
         env:
           GROUP_RESULT: ${{ needs['test-group'].result }}
         run: test "$GROUP_RESULT" = success
-
-  pbrt-comparison:
-    name: pbrt-v4 Comparison
-    needs: setup
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install virtual display
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y xvfb
-      - uses: ./.github/actions/ci-environment
-        with:
-          depot-key: ${{ needs.setup.outputs.depot-key }}
-      # Two steps, because rendering and presenting are separate now: the suite
-      # renders, checks and records, and run_comparison.jl only turns that
-      # record into a page. It used to do both, with its own thresholds, and
-      # those had drifted looser than the suite's.
-      - name: Render and compare
-        env:
-          # 256 spp on lavapipe across the scene set blows past the 120-min job
-          # budget; 32 spp populates a representative gallery. That is BELOW the
-          # noise floor the ±5 % band assumes, so scenes will show as failing
-          # here that pass at 256 spp on real hardware — this job builds a
-          # report, the normal test job is what decides pass/fail.
-          HIKARI_TEST_LAVAPIPE: "true"
-          HIKARI_PBRT_SPP: "32"
-        continue-on-error: true
-        run: xvfb-run -a julia --project=.ci -e 'include("test/lavapipe.jl"); include("test/pbrt/test_pbrt_all_materials.jl"); run_pbrt_suite(; samples = parse(Int, ENV["HIKARI_PBRT_SPP"]), hw_accel = false)'
-      - name: Build gallery
-        run: julia --project=.ci test/pbrt/run_comparison.jl
-      - uses: actions/upload-artifact@v4
-        with:
-          name: pbrt-comparison
-          path: test/pbrt/display/
 
   docs-build:
     name: Build Docs
@@ -201,8 +172,9 @@ jobs:
 
   deploy-docs:
     name: Deploy Docs
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/')
-    needs: [setup, pbrt-comparison, docs-build]
+    # After the test groups as well, for the pbrt records, but also when a test failed.
+    if: ${{ !cancelled() && needs.docs-build.result == 'success' && (github.event_name == 'pull_request' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/')) }}
+    needs: [setup, test-group, docs-build]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -218,11 +190,18 @@ jobs:
         with:
           name: docs-build
           path: docs/build/
-      - name: Download comparison gallery
+      # One directory per pbrt group, each holding its part of the suite's record.
+      - name: Download pbrt records
         uses: actions/download-artifact@v4
         with:
-          name: pbrt-comparison
-          path: docs/build/1/pbrt-comparison/
+          pattern: pbrt-record-*
+          path: pbrt-records/
+      # The gallery shows what the suite checked, at the suite's samples per pixel.
+      - name: Build comparison gallery
+        run: |
+          julia --project=.ci test/pbrt/run_comparison.jl pbrt-records/*
+          mkdir -p docs/build/1/pbrt-comparison
+          cp test/pbrt/display/* docs/build/1/pbrt-comparison/
       - name: Deploy
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

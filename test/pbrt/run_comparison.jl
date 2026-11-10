@@ -25,6 +25,8 @@
 #   recorded/<name>.exr           - SW renders
 #   recorded/hw/<name>.exr        - HW RT renders
 #   recorded/scores_{sw,hw}.csv   - the metrics the suite asserted on
+# or several records in that layout, one per directory argument: CI runs the
+# suite in two groups and presents both records as one gallery.
 #
 # Outputs (all under test/pbrt/display/):
 #   ref_<name>.png                - tonemapped pbrt-v4 reference
@@ -32,7 +34,7 @@
 #   gallery.html / gallery_hw.html
 #   scores_{sw,hw}.csv            - copied alongside, so display/ is self-contained
 #
-# Usage:  julia --project=test/pbrt test/pbrt/run_comparison.jl
+# Usage:  julia --project=test/pbrt test/pbrt/run_comparison.jl [record_dir...]
 # Exit code is 0 whenever a record could be presented; the suite reports failures.
 
 using FileIO, Colors
@@ -46,12 +48,13 @@ struct SceneRow
     samples::Int
     tile::Float64
     energy::Float64
+    record::String      # the record's root, which holds the render
 end
 
 # ── Reading the record ──────────────────────────────────────────────────────
 
-function read_record(hw_accel::Bool)
-    path = record_scores(hw_accel)
+function read_record(hw_accel::Bool, root::String)
+    path = record_scores(hw_accel, root)
     isfile(path) || return SceneRow[]
     rows = SceneRow[]
     for (i, line) in enumerate(eachline(path))
@@ -59,9 +62,19 @@ function read_record(hw_accel::Bool)
         isempty(strip(line)) && continue
         f = split(line, ',')
         length(f) >= 4 || error("$(path):$(i): expected at least 4 fields, got $(length(f))")
-        push!(rows, SceneRow(f[1], parse(Int, f[2]), parse(Float64, f[3]), parse(Float64, f[4])))
+        push!(rows, SceneRow(f[1], parse(Int, f[2]), parse(Float64, f[3]), parse(Float64, f[4]), root))
     end
     return rows
+end
+
+"""Write the score files of the records `roots` as one file under one header."""
+function merge_scores(destination::String, hw_accel::Bool, roots)
+    open(destination, "w") do io
+        for (i, root) in enumerate(roots), (j, line) in enumerate(eachline(record_scores(hw_accel, root)))
+            (i == 1 || j > 1) && println(io, line)
+        end
+    end
+    return destination
 end
 
 # ── Tonemapping ─────────────────────────────────────────────────────────────
@@ -88,7 +101,6 @@ function build_gallery(rows::Vector{SceneRow}, hw_accel::Bool)
     label     = hw_accel ? "HW RT" : "SW BVH"
     rec_pfx   = hw_accel ? "rec_hw_" : "rec_"
     html_name = hw_accel ? "gallery_hw.html" : "gallery.html"
-    dir       = record_dir(hw_accel)
 
     # Worst first: the scenes worth looking at are the ones nearest the limits.
     sorted = sort(rows; by = s -> (-abs(s.energy - 1.0), -s.tile))
@@ -96,7 +108,7 @@ function build_gallery(rows::Vector{SceneRow}, hw_accel::Bool)
     entries = String[]
     for s in sorted
         ref_exr = reference_file(s.name)
-        rec_exr = joinpath(dir, "$(s.name).exr")
+        rec_exr = joinpath(record_dir(hw_accel, s.record), "$(s.name).exr")
         if !(isfile(ref_exr) && isfile(rec_exr))
             println("  skipping $(s.name): missing $(isfile(ref_exr) ? "render" : "reference")")
             continue
@@ -208,8 +220,8 @@ for (var i = 0; i < scenes.length; i++) {
 </html>
 """
     write(joinpath(DISPLAY_DIR, html_name), html)
-    cp(record_scores(hw_accel),
-       joinpath(DISPLAY_DIR, basename(record_scores(hw_accel))); force = true)
+    merge_scores(joinpath(DISPLAY_DIR, basename(record_scores(hw_accel))), hw_accel,
+                 unique(s.record for s in rows))
     println("  $(label): $(length(entries)) scenes, $(n_pass) within tolerance -> $(html_name)")
     return length(entries)
 end
@@ -229,11 +241,18 @@ for f in readdir(DISPLAY_DIR)
     end
 end
 
+records = isempty(ARGS) ? [RECORD_DIR] : abspath.(ARGS)
 total = 0
 for hw_accel in (false, true)
-    rows = read_record(hw_accel)
+    rows = reduce(vcat, [read_record(hw_accel, root) for root in records])
+    # A scene in two records would give two renders one PNG name, and both cards the last one.
+    record_of = Dict{String, String}()
+    for s in rows
+        first_record = get!(record_of, s.name, s.record)
+        first_record == s.record || error("$(s.name) is in two records: $(first_record) and $(s.record)")
+    end
     if isempty(rows)
-        println("No $(hw_accel ? "HW RT" : "SW BVH") record at $(record_scores(hw_accel)) — skipping.")
+        println("No $(hw_accel ? "HW RT" : "SW BVH") record in $(join(records, ", ")) — skipping.")
         continue
     end
     global total += build_gallery(rows, hw_accel)

@@ -214,9 +214,10 @@ const RECORD_DIR = joinpath(@__DIR__, "recorded")
 
 # SW keeps the flat `recorded/<name>.exr` layout that `comparison_app.jl` and
 # `export_static.jl` already read; HW goes in a subdirectory so a run of both
-# backends does not have one overwrite the other.
-record_dir(hw_accel::Bool)    = hw_accel ? joinpath(RECORD_DIR, "hw") : RECORD_DIR
-record_scores(hw_accel::Bool) = joinpath(RECORD_DIR, hw_accel ? "scores_hw.csv" : "scores_sw.csv")
+# backends does not have one overwrite the other. A record from elsewhere, such
+# as one of CI's pbrt groups, has the same layout under its own `root`.
+record_dir(hw_accel::Bool, root = RECORD_DIR)    = hw_accel ? joinpath(root, "hw") : root
+record_scores(hw_accel::Bool, root = RECORD_DIR) = joinpath(root, hw_accel ? "scores_hw.csv" : "scores_sw.csv")
 
 # ── Recording ───────────────────────────────────────────────────────────────
 # The test run is what the gallery reports on. It writes every render and every
