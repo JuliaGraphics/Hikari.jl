@@ -87,6 +87,7 @@ const TEST_FILES = [
     "test_precompile_statements.jl",
     "test_pbrt_camera_lookat_distance.jl",
     "test_pbrt_shape_import.jl",
+    "test_pbrt_include.jl",
     "test_ambient_light_pbrt.jl",
     "test_pbrt_material_import.jl",
     "test_conductor_reflectance.jl",

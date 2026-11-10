@@ -446,14 +446,10 @@ function parse_pbrt_string(text::AbstractString;
         elseif word == "Include"
             inc_path = expect!(ts, TOK_STRING).value
             full_path = isabspath(inc_path) ? inc_path : joinpath(base_dir, inc_path)
-            if isfile(full_path)
-                inc_text = read(full_path, String)
-                inc_tokens = tokenize(inc_text)
-                # Insert included tokens into the stream
-                splice!(ts.tokens, ts.pos:ts.pos-1, inc_tokens)
-            else
-                @warn "pbrt Include file not found: $full_path"
-            end
+            # pbrt-v4 stops on a missing file: going on parses a scene without that geometry.
+            isfile(full_path) || error("pbrt Include file not found: $full_path")
+            # Insert included tokens into the stream
+            splice!(ts.tokens, ts.pos:ts.pos-1, tokenize(read(full_path, String)))
 
         # ---- Ignored / no-op ----
         elseif word == "PixelFilter"

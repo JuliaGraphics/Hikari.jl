@@ -106,6 +106,15 @@ end
 const SPHERE = generate_uv_sphere((0.0, 0.0, 0.5), 0.5; n_lat=32, n_lon=64)
 const GROUND = generate_ground_disk(2.0, 64)
 
+# Every scene `Include`s the two meshes rather than carrying its own 200 KB copy.
+# pbrt-v4 and Hikari's parser resolve the path against the scene file's directory.
+function write_geometry(dir=joinpath(SCENES_DIR, "geometry"))
+    mkpath(dir)
+    open(io -> write_mesh(io, GROUND...), joinpath(dir, "ground.pbrt"), "w")
+    open(io -> write_mesh(io, SPHERE...), joinpath(dir, "sphere.pbrt"), "w")
+    return dir
+end
+
 # ============================================================================
 # Light definitions
 # ============================================================================
@@ -330,7 +339,7 @@ function write_scene(filepath; camera=CAMERA, film=FILM_BASE, integrator=INTEGRA
         # Ground
         println(io, "# Ground")
         println(io, ground_mat)
-        write_mesh(io, GROUND...)
+        println(io, "Include \"geometry/ground.pbrt\"")
         println(io)
 
         # Medium interface (if any)
@@ -341,7 +350,7 @@ function write_scene(filepath; camera=CAMERA, film=FILM_BASE, integrator=INTEGRA
         for line in split(sphere_mat, '\n')
             isempty(strip(line)) || println(io, line)
         end
-        write_mesh(io, SPHERE...)
+        println(io, "Include \"geometry/sphere.pbrt\"")
     end
     return filepath
 end
@@ -756,6 +765,7 @@ function generate_all_scenes()
     for f in readdir(SCENES_DIR)
         endswith(f, ".pbrt") && rm(joinpath(SCENES_DIR, f))
     end
+    write_geometry()
 
     total = 0
     total += generate_material_light_scenes()
