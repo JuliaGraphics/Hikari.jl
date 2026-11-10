@@ -81,6 +81,13 @@ function denoise_plan!(film::Film, config::OIDN)
                     Matrix{RGB{Float32}}(undef, height, width),
                     Matrix{RGB{Float32}}(undef, width, height), Matrix{RGB{Float32}}(undef, width, height),
                     Matrix{Vec3f}(undef, width, height), Matrix{RGB{Float32}}(undef, width, height))
+    # The device and filter hold OIDN's weights and scratch, about 250 MB for a
+    # 1200x360 film, in memory the library allocates and Julia's GC never sees. A
+    # film dropped without `free!` kept them for the rest of the session: the
+    # docs build denoises about twenty films and grew by 5 GB. They are host
+    # handles of a C library, owned by this plan together with the images they
+    # share, so the plan gives them back when it dies; `free!` is idempotent.
+    finalizer(free!, plan)
     ccall(oidnfunction(lib, :oidnCommitDevice), Cvoid, (Ptr{Cvoid},), device)
     oidncheck(plan)
     plan.filter = ccall(oidnfunction(lib, :oidnNewFilter), Ptr{Cvoid}, (Ptr{Cvoid}, Cstring), device, "RT")
