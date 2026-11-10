@@ -1,4 +1,4 @@
-## Textures and Node Graphs
+# Textures and Node Graphs
 
 Any input of a material can vary over the surface. An image gives it a value at each uv coordinate.
 A node graph computes it at every shading point, built from the same nodes as a Blender shader with
@@ -42,7 +42,7 @@ end
 
 The renders on this page use the scene of the [Materials](@ref) page, with uv-mapped spheres.
 
-### Images
+## Images
 
 A matrix of colours or numbers is an image: pass it as an input and it is sampled at the mesh's
 uv coordinates, wrapping around. `image_texture(img, coords)` samples it at other coordinates, for
@@ -71,7 +71,7 @@ showcase([
 
 A mesh needs uv coordinates for this, for example from `GeometryBasics.uv_normal_mesh`.
 
-### Node graphs
+## Node graphs
 
 Each node is a function. Its inputs take numbers, colours or other nodes' outputs. Nodes with several
 outputs return their first, and name the others: `noise(p).color`, `voronoi(p).position`,
@@ -87,7 +87,7 @@ Hikari.Principled(base_color = wood, roughness = 0.5 + 0.3 * rings)
 ```
 
 | Kind | Nodes |
-|------|-------|
+|:-----|:------|
 | Coordinates | `uv()`, `xyz()` (world position), `normal()`, `texture_coordinate()` (`.generated`, `.object`, `.uv`, `.normal`, `.camera`, `.window`, `.reflection`), `attribute(name)` (a vertex attribute of the mesh) |
 | Textures | `noise`, `voronoi`, `wave`, `magic`, `checker`, `brick`, `gradient`, `white_noise`, `image_texture` |
 | Colour | `color_ramp`, `mix` (with Blender's blend modes), `hsv`, `gamma`, `bright_contrast`, `invert`, `rgb_to_bw`, `separate_color`, `combine_color` |
@@ -119,7 +119,7 @@ showcase([
 it. `texture_coordinate().object` is the position in the mesh's own frame and moves with the mesh;
 `texture_coordinate().generated` spans its bounding box from 0 to 1.
 
-### Bump and normal maps
+## Bump and normal maps
 
 `bump(height; strength, distance)` turns a height graph into a shading normal for a material's
 `normal` input; `distance` is the height of 1 in scene units. `normal_map(color; space, strength)`
@@ -145,7 +145,7 @@ showcase([
 `Principled`'s `coat_normal` takes its own bump, so a smooth varnish can sit over a rough base. The
 pbrt models take a height as `displacement` instead, which they apply as pbrt does.
 
-### Updating a graph
+## Updating a graph
 
 The values in a graph, such as a `scale` or a ramp's colours, are data: a material with the same
 graph and other values, given to a mesh with `Hikari.update_material!`, renders without compiling

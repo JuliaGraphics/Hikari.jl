@@ -1,4 +1,4 @@
-## Postprocessing and Denoising
+# Postprocessing and Denoising
 
 The integrator writes linear HDR radiance into the film, already through the camera's sensor. What
 follows works on that film without tracing a path again: an optional denoiser, then `postprocess!`,
@@ -42,13 +42,13 @@ function render!(film, samples)
 end
 ```
 
-### Tone mapping and exposure
+## Tone mapping and exposure
 
 `postprocess!(film; exposure, tonemap, gamma, white_point, background, sky)` returns the film's
 display image and can run as often as you like on one render.
 
 | Keyword | Default | |
-|---------|---------|---|
+|:--------|:--------|:--|
 | `exposure` | `1.0` | linear factor before tone mapping |
 | `tonemap` | `:aces` | `:aces`, `:reinhard`, `:reinhard_extended`, `:uncharted2`, `:filmic`, or `nothing` to clamp |
 | `gamma` | `2.2` | display gamma, or `nothing` for linear output |
@@ -65,7 +65,7 @@ hcat([Array(Hikari.postprocess!(film; tonemap)) for tonemap in (:aces, :reinhard
 
 From left to right: `:aces`, `:reinhard`, `:uncharted2`, `:filmic` and no tone mapping.
 
-### Sensor and pixel filter
+## Sensor and pixel filter
 
 The camera's sensor and pixel filter are part of the render, so changing them means rendering
 again. Both are keywords of the integrator:
@@ -82,7 +82,7 @@ camera response (`"cie1931"` by default). Hikari's defaults reproduce pbrt's ima
 scene's own `Film` settings are applied when it is loaded. The pixel filters are `BoxFilter`,
 `TriangleFilter`, `GaussianFilter` (the default), `MitchellFilter` and `LanczosSincFilter`.
 
-### Denoising
+## Denoising
 
 A denoiser turns a render at a few samples per pixel into a clean image. Each one runs in place on
 `film.framebuffer`, before `postprocess!`, and reads guides: the albedo, normal and depth of what
@@ -97,7 +97,7 @@ Pass `has_infinite_lights = true` when an environment, sky or ambient light pain
 use 1 while the camera moves. `clear!` resets the guides with the image, so fill them after it.
 
 | Denoiser | Runs on | |
-|----------|---------|---|
+|:---------|:--------|:--|
 | `Hikari.DenoiseConfig(; iterations = 4, sigma_color = 1, sigma_normal = 64, sigma_depth = 0.1)` | the GPU | an edge-avoiding à-trous wavelet filter; fast enough for every frame of an interactive view |
 | `Hikari.OIDN(; quality = :high, guides = true)` | the CPU | Intel Open Image Denoise's ray tracing network |
 | `OIDNRunner.OIDNDenoiser` | the GPU | the same network, ported to Julia and Mantle in JuliaVision |

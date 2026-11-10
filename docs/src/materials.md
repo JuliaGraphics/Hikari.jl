@@ -1,4 +1,4 @@
-## Materials
+# Materials
 
 A material describes how light scatters at a surface. Hikari's materials are Blender's shader
 nodes, with Blender's names, inputs and defaults, plus the material models of
@@ -11,7 +11,7 @@ handle = push!(scene, mesh, Hikari.Principled(base_color = (0.8, 0.1, 0.1), roug
 Every numeric or colour input of a material takes any of these:
 
 | Value | Meaning |
-|-------|---------|
+|:------|:--------|
 | `0.5` | a constant |
 | `(0.8, 0.2, 0.1)`, `RGB(0.8, 0.2, 0.1)`, `Hikari.RGBSpectrum(0.8f0, 0.2f0, 0.1f0)` | a constant linear RGB colour |
 | a matrix of colours or numbers, or a `Hikari.Texture` | an image, sampled at the mesh's uv coordinates |
@@ -20,7 +20,7 @@ Every numeric or colour input of a material takes any of these:
 Settings that choose a different scattering model, such as `distribution`, `thin_wall` or
 `fresnel_type`, are constants.
 
-### The scene behind the pictures
+## The scene behind the pictures
 
 The renders on this page put materials on spheres under a sun and sky, at 256 samples per pixel,
 denoised with OIDN (see [Postprocessing and Denoising](@ref)):
@@ -66,14 +66,14 @@ nothing # hide
 The first render with a new kind of BSDF or node compiles a shading kernel for it, which can take a
 minute. Rendering it again, or with other values, compiles nothing.
 
-### Principled BSDF
+## Principled BSDF
 
 `Principled` is the material to start from. One shader covers plastic, metal, glass, skin, cloth,
 paint and anything layered from them, arranged as in Cycles: sheen and coat over the metal, and
 transmission and the specular layer over the diffuse base.
 
 | Group | Inputs | For |
-|-------|--------|-----|
+|:------|:-------|:----|
 | Base | `base_color`, `metallic`, `roughness`, `ior`, `alpha`, `normal`, `diffuse_roughness` | every material; `metallic = 1` is a metal |
 | Specular | `specular_ior_level`, `specular_tint`, `anisotropic`, `anisotropic_rotation`, `tangent` | the strength of reflections, brushed metal |
 | Subsurface | `subsurface_weight`, `subsurface_radius`, `subsurface_scale`, `subsurface_ior`, `subsurface_anisotropy` | skin, wax, marble, soap |
@@ -106,7 +106,7 @@ showcase([
 Without a `tangent`, anisotropic reflections run around the world's Z axis, as Blender's do around
 the object's.
 
-### Glass
+## Glass
 
 `Hikari.Glass(...)` is `Principled(transmission_weight = 1, ...)`: the same material, with Principled's
 `base_color`, `roughness`, `ior`, thin film, dispersion and `thin_wall`.
@@ -128,10 +128,10 @@ Common indices of refraction are 1.33 for water, 1.5 for window glass and 2.42 f
 `base_color` tints both reflection and transmission, as in Blender. For colour that deepens with
 the distance light travels inside, fill the glass with an absorbing medium (see [Volumes](@ref)).
 
-### Blender's other BSDFs
+## Blender's other BSDFs
 
 | Material | Scattering | Main inputs |
-|----------|------------|-------------|
+|:---------|:-----------|:------------|
 | `Diffuse` | Lambert, or Oren-Nayar with `roughness` | `color`, `roughness`, `normal` |
 | `Glossy` | microfacet reflection, a mirror at `roughness = 0` | `color`, `roughness`, `anisotropy`, `rotation` |
 | `Metallic` | a metal by its colour at normal and grazing incidence (F82), or by complex index | `base_color`, `edge_tint`, `roughness`, `fresnel_type`, `ior`, `extinction`, thin film |
@@ -176,7 +176,7 @@ showcase([
 glossy toon shader. Sheen on its own is dark except at grazing angles, so it is added to a diffuse
 base for velvet; `Principled`'s `sheen_weight` does the same in one material.
 
-### Mixing and adding shaders
+## Mixing and adding shaders
 
 `Hikari.Mix(a, b; factor)` blends two materials: `factor = 0` is `a`, `1` is `b`, and the factor can
 be a node graph, which gives each point of the surface its own blend. `Hikari.Add(a, b)` sums them,
@@ -201,7 +201,7 @@ showcase([
 ) # hide
 ```
 
-### Emission
+## Emission
 
 A mesh pushed with `Hikari.Emission(; color, strength, two_sided)` is an area light: Hikari samples
 it like any other light, so even a small emitter lights the scene with little noise. `two_sided`
@@ -209,13 +209,13 @@ makes both faces emit. Emission inside a `Mix` or `Add`, and `Principled`'s `emi
 make the surface glow but are only found by the paths that hit it, so they light the scene noisily.
 For lamps, use `Emission` (see [Lights](@ref)).
 
-### Volumes
+## Volumes
 
 `Hikari.MediumInterface(surface; inside, outside, shadows)` puts a participating medium behind a
 surface: `inside` fills the mesh, `outside` surrounds it, and either is `nothing` for vacuum.
 
 | Medium | |
-|--------|---|
+|:-------|:--|
 | `Hikari.HomogeneousMedium(; σ_a, σ_s, Le, g)` | constant absorption `σ_a`, scattering `σ_s` and emission `Le` per scene unit (`RGBSpectrum`), and the anisotropy `g` of its phase function |
 | `Hikari.Milk(; scale, g)`, `Hikari.Coffee(; scale, g)` | measured liquids; `scale` dilutes them |
 | `Hikari.Smoke(; density, albedo, g)` | grey smoke |
@@ -253,7 +253,7 @@ push!(scene, normal_mesh(Rect3f(Vec3f(-1, -1, 0), Vec3f(2))),
       Hikari.MediumInterface(Hikari.NullMaterial(); inside = cloud))
 ```
 
-### glTF and OpenPBR materials
+## glTF and OpenPBR materials
 
 `Hikari.GLTF` and `Hikari.OpenPBR` take the parameters of those standards by their own names and
 render as the `Principled` BSDF Blender's importers make of them:
@@ -264,13 +264,13 @@ Hikari.GLTF(base_color_factor = (0.8, 0.1, 0.1, 1), metallic_factor = 0, roughne
 Hikari.OpenPBR(base_color = (0.9, 0.6, 0.2), base_metalness = 1, specular_roughness = 0.2)
 ```
 
-### pbrt-v4's models
+## pbrt-v4's models
 
 These keep pbrt's parameters and conventions, so a pbrt scene renders as pbrt renders it. They mix
 with Blender's BSDFs like any other material.
 
 | Material | |
-|----------|---|
+|:---------|:--|
 | `Conductor(; ior, extinction, roughness)` or `Conductor(; reflectance, roughness)` | a metal; `Gold()`, `Silver()`, `Copper()`, `Aluminum()` and `Brass()` use measured spectra |
 | `Dielectric(; ior, roughness)`, `ThinDielectric(; ior)` | glass, and glass with no thickness |
 | `CoatedDiffuse(; reflectance, roughness, thickness, ior)` | a diffuse base under a dielectric coat; `Plastic(; color, roughness)` |
@@ -293,7 +293,7 @@ showcase([
 ) # hide
 ```
 
-### Changing a material
+## Changing a material
 
 `push!` returns a handle. `Hikari.update_material!(scene, handle, material)` gives the mesh another
 material, and the next render shows it:

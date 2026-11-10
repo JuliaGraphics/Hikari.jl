@@ -1,8 +1,8 @@
-## Get Started
+# Get Started
 
 Hikari is a physically-based, spectrally-aware wavefront path tracer. It uses Vulkan and Metal through Mantle, with Lavapipe for CPU validation, and implements the volumetric path tracing algorithm from [pbrt-v4](https://pbrt.org).
 
-### Installation
+## Installation
 
 The development branch uses backend packages that are not all registered yet.
 Its `.ci` project records their published sources:
@@ -16,7 +16,7 @@ julia --project=.ci
 
 Use the same project when running examples.
 
-### Your First Scene
+## Your First Scene
 
 Every Hikari render follows the same five steps: build a scene, set up a camera and film, run the integrator, postprocess, and display.
 
@@ -59,9 +59,9 @@ Array(Hikari.postprocess!(film; tonemap=:aces, exposure=1.0f0, gamma=2.2f0))
 ) # hide
 ```
 
-### Core Concepts
+## Core Concepts
 
-#### RGBSpectrum
+### RGBSpectrum
 
 All colors in Hikari are represented as `RGBSpectrum`. Internally the renderer works spectrally; `RGBSpectrum` values are uplifted to full spectral representations during rendering.
 
@@ -71,7 +71,7 @@ Hikari.RGBSpectrum(0.8f0, 0.2f0, 0.1f0)     # red
 Hikari.RGBSpectrum(1f0, 0.84f0, 0f0)        # gold-ish
 ```
 
-#### Scene
+### Scene
 
 A `Scene` is a collection of meshes with materials, plus light sources. Use `push!` to add objects and lights, then call `sync!` to build the acceleration structure before rendering.
 
@@ -82,7 +82,7 @@ push!(scene, light)            # add a light
 Hikari.sync!(scene)            # required before rendering
 ```
 
-#### Film and Camera
+### Film and Camera
 
 `Film` holds the image buffer. `PerspectiveCamera` describes the viewpoint.
 
@@ -95,7 +95,7 @@ camera = Hikari.PerspectiveCamera(eye, lookat, film; up = Vec3f(0, 1, 0), fov = 
 
 Call `Hikari.clear!(film)` before each new render to reset the sample accumulator.
 
-#### Integrator
+### Integrator
 
 `VolPath` is the main integrator: a wavefront volumetric path tracer with multiple importance sampling and spectral hero wavelength sampling.
 
@@ -107,7 +107,7 @@ integrator(scene, film, camera)   # renders into film
 Key parameters:
 
 | Parameter | Default | Description |
-|-----------|---------|-------------|
+|:----------|:--------|:------------|
 | `samples` | 64 | Samples per pixel |
 | `max_depth` | 8 | Maximum path bounces |
 | `russian_roulette_depth` | 3 | Bounce from which paths may end at random |
@@ -120,13 +120,13 @@ Key parameters:
 pbrt-v4's defaults are `regularize = false` and `max_component_value = Inf`; pass those to compare
 a render with pbrt's.
 
-#### Material system
+### Material system
 
 Materials are Blender's shader nodes plus pbrt-v4's models; every input can be a number, a colour,
 an image or a procedural node graph. See [Materials](@ref), [Textures and Node Graphs](@ref) and
 [Material Recipes](@ref).
 
-#### Postprocessing
+### Postprocessing
 
 `postprocess!` converts the HDR film buffer to a displayable image. A denoiser can clean a render
 at a few samples per pixel first; see [Postprocessing and Denoising](@ref).

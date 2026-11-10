@@ -1,4 +1,4 @@
-## Lights
+# Lights
 
 Hikari supports delta lights (point, directional, spot), area lights created from emissive geometry, and infinite lights (ambient, environment map).
 
@@ -43,7 +43,7 @@ function render_light(lights; res=512, spp=256, eye=Point3f(0f0, 1.5f0, -3f0), l
 end
 ```
 
-### PointLight
+## PointLight
 
 An omnidirectional point source. Intensity falls off as 1/r².
 
@@ -61,7 +61,7 @@ render_light([
 ) # hide
 ```
 
-### DirectionalLight
+## DirectionalLight
 
 A parallel light source at infinity, for the sun or any distant light. Intensity does not fall off with distance.
 
@@ -79,7 +79,7 @@ render_light([
 ) # hide
 ```
 
-### SpotLight
+## SpotLight
 
 A point source with a cone-shaped beam. `total_width` is the full cone angle and `falloff_start` is where the soft falloff begins, both in degrees.
 
@@ -99,7 +99,7 @@ render_light([
 ) # hide
 ```
 
-### AmbientLight
+## AmbientLight
 
 A uniform infinite light that adds a constant radiance from all directions. Useful as a cheap fill light or sky approximation.
 
@@ -107,7 +107,7 @@ A uniform infinite light that adds a constant radiance from all directions. Usef
 Hikari.AmbientLight(Hikari.RGBSpectrum(0.5f0))
 ```
 
-### Area Lights
+## Area Lights
 
 Area lights are created by marking a mesh as emissive using the `Hikari.Emission` material. The BVH light sampler automatically handles multi-triangle emitters.
 
@@ -152,7 +152,7 @@ end
 ) # hide
 ```
 
-### EnvironmentLight
+## EnvironmentLight
 
 An HDR environment map loaded from an equirectangular `.exr` image. Provides realistic image-based lighting with importance sampling.
 
@@ -163,7 +163,7 @@ Hikari.EnvironmentLight("sky.exr"; scale = Hikari.RGBSpectrum(2f0), rotation = M
 
 `rotation` turns the map: a `Mat3f`, applied to the directions it is looked up by.
 
-### Sun and sky
+## Sun and sky
 
 `Hikari.sunsky_to_envlight` evaluates the Hosek-Wilkie model of a clear sky, as pbrt-v4's
 `makesky` does, and returns the sky as an `EnvironmentLight` together with a `SunLight` for the

@@ -4,6 +4,8 @@ outline: deep
 ---
 ```
 
+# API
+
 ## Public API
 ```@meta
 DocTestSetup= quote

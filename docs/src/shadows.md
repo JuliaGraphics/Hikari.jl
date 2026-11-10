@@ -1,4 +1,4 @@
-## Rendering
+# Rendering
 
 A complete walkthrough of a Cornell box scene, demonstrating shadows, inter-reflections, caustics through glass, and multiple material types.
 
@@ -9,7 +9,7 @@ backend = Mantle.defaultbackend()
 to_mesh(prim) = normal_mesh(prim isa Sphere ? Tessellation(prim, 64) : prim)
 ```
 
-### Cornell Box
+## Cornell Box
 
 ```@example rendering
 # --- Materials ---
@@ -59,7 +59,7 @@ Array(Hikari.postprocess!(film; tonemap=:aces, exposure=1.2f0, gamma=2.2f0))
 ) # hide
 ```
 
-### GPU Rendering
+## GPU Rendering
 
 Mantle selects Vulkan on Linux and Windows, and Metal on Apple GPUs. Use that
 same backend for the scene and the film:
@@ -78,7 +78,7 @@ Hikari.VolPath(samples=512, max_depth=12)(scene, film, camera)
 Lavapipe provides software Vulkan for CPU validation. It executes the same
 material graph and rendering kernels as the Vulkan GPU backend.
 
-### Loading pbrt Scenes
+## Loading pbrt Scenes
 
 Hikari can load and render scenes in the [pbrt-v4 scene format](https://pbrt.org/fileformat-v4):
 

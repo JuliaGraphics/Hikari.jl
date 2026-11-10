@@ -1,4 +1,4 @@
-## Material Recipes
+# Material Recipes
 
 Realistic materials are rarely one BSDF with constant inputs. They layer a clear coat over a
 base, blend two surfaces by a mask, and break up colour, roughness and normal with noise at a few
@@ -44,7 +44,7 @@ p = xyz()
 
 All recipes use the world position `p = xyz()` as texture coordinate.
 
-### Varnished wood
+## Varnished wood
 
 Distorted bands give the growth rings, and noise stretched along one axis gives fibres. The fibres
 also roughen the base through a faint bump. A clear coat with its own smooth normal is the varnish.
@@ -60,7 +60,7 @@ varnished_wood = Hikari.Principled(base_color = wood, roughness = 0.5,
 nothing # hide
 ```
 
-### Rusty iron
+## Rusty iron
 
 A low-frequency noise, cut sharply by `smoothstep`, decides where the rust is. The rust is a rough
 Principled with its own colour noise and bump, mixed over a metal.
@@ -76,7 +76,7 @@ rusty_iron = Hikari.Mix(iron, rust; factor = rust_mask)
 nothing # hide
 ```
 
-### Metallic car paint
+## Metallic car paint
 
 Each cell of a fine Voronoi texture is a metal flake. Its random colour tilts the flake's normal,
 so flakes catch the sun one by one. The coat keeps the true normal and stays smooth.
@@ -89,7 +89,7 @@ car_paint = Hikari.Principled(base_color = (0.5, 0.02, 0.03), metallic = 0.8, ro
 nothing # hide
 ```
 
-### Polished marble
+## Polished marble
 
 Strongly distorted bands make the veins. Some subsurface scattering lets light into the stone, and
 a low roughness polishes it.
@@ -105,7 +105,7 @@ showcase([varnished_wood, rusty_iron, car_paint, marble])
 ) # hide
 ```
 
-### Heat-tinted steel
+## Heat-tinted steel
 
 A thin oxide film colours steel by its thickness, which grows where the metal was hotter. Here it
 grows with height, plus some noise.
@@ -117,7 +117,7 @@ heat_tinted = Hikari.Metallic(base_color = (0.6, 0.6, 0.62), edge_tint = (0.7, 0
 nothing # hide
 ```
 
-### Cracked lava
+## Cracked lava
 
 The distance to the nearest Voronoi edge finds the cracks, and an emission strength that is only
 non-zero near them makes them glow. The emission lights the ground, but only along the paths that
@@ -132,7 +132,7 @@ lava = Hikari.Principled(base_color = (0.04, 0.035, 0.03), roughness = 0.8,
 nothing # hide
 ```
 
-### Worn gold
+## Worn gold
 
 Real metal is never equally rough everywhere. Noise mapped into a range of roughness gives smudges
 and polished spots.
@@ -144,7 +144,7 @@ worn_gold = Hikari.Metallic(base_color = (1.0, 0.77, 0.34), edge_tint = (1.0, 0.
 nothing # hide
 ```
 
-### Etched glass
+## Etched glass
 
 The roughness of glass follows a pattern: clear where the checker is 1, frosted elsewhere.
 
