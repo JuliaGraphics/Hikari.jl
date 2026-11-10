@@ -1,4 +1,7 @@
-# Shared registry for the default test runner and isolated CI groups.
+# Shared registry for the default test runner and isolated CI groups. CI deals this
+# list round-robin into its groups (`.ci/run_tests.jl`), so add new files at the end:
+# one inserted in the middle moves every later file to another group, and on
+# 2026-11-10 that moved the Cycles comparison and took one group from 48 to 98 min.
 const TEST_FILES = [
     # Source-only, no GPU: put it first so the architecture ledger is reported
     # before anything that can take a device down with it.
@@ -38,7 +41,6 @@ const TEST_FILES = [
     "denoise.jl",
     "test_aux_alignment.jl",
     "test_shader_guides.jl",
-    "test_oidn.jl",
     "test_scene_mesh_reuse.jl",
     "test_mesh_emission_update.jl",
     "test_caching_gc_correctness.jl",
@@ -104,4 +106,5 @@ const TEST_FILES = [
     "test_sample_is_one_run.jl",
     "test_volpath_state_show.jl",
     "test_volpath_waves.jl",
+    "test_oidn.jl",
 ]
