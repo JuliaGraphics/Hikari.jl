@@ -14,6 +14,7 @@ img = Hikari.postprocess!(film; exposure = 1, tonemap = :aces, gamma = 2.2)
 ```@setup postprocessing
 using GeometryBasics, LinearAlgebra, Hikari, Mantle
 using Hikari.TextureNodes
+using Main: docs_image, docs_samples
 backend = Mantle.defaultbackend()
 sphere(center, r) = normal_mesh(Tessellation(Sphere(center, r), 96))
 
@@ -33,7 +34,7 @@ film = Hikari.Film(backend, Hikari.Film(Point2f(400, 300)))
 camera = Hikari.PerspectiveCamera(Point3f(0.3, -3.6, 1.45), Point3f(0, 0.2, 0.35), film; up = Vec3f(0, 0, 1), fov = 28)
 function render!(film, samples)
     Hikari.clear!(film)
-    integrator = Hikari.VolPath(; samples, max_depth = 8)
+    integrator = Hikari.VolPath(; samples = docs_samples(samples), max_depth = 8)
     integrator(scene, film, camera)
     Mantle.waitidle(backend)
     close(integrator)
@@ -56,8 +57,10 @@ display image and can run as often as you like on one render.
 | `sky` | `false` | whether an environment, sky or ambient light already painted those pixels; they then keep the sky's colour and take only the background's alpha |
 
 ```@example postprocessing
-render!(film, 64)
+render!(film, 256)
+docs_image("postprocessing-tonemaps", # hide
 hcat([Array(Hikari.postprocess!(film; tonemap)) for tonemap in (:aces, :reinhard, :uncharted2, :filmic, nothing)]...)
+) # hide
 ```
 
 From left to right: `:aces`, `:reinhard`, `:uncharted2`, `:filmic` and no tone mapping.
@@ -113,7 +116,9 @@ Hikari.denoise!(film; config = Hikari.OIDN())
 oidn = Array(Hikari.postprocess!(film))
 
 render!(film, 1024)
+docs_image("postprocessing-denoisers", # hide
 hcat(noisy, atrous, oidn, Array(Hikari.postprocess!(film)))
+) # hide
 ```
 
 From left to right: 4 samples per pixel, the à-trous filter, OIDN, and 1024 samples per pixel.

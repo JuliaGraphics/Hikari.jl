@@ -22,17 +22,19 @@ Settings that choose a different scattering model, such as `distribution`, `thin
 
 ### The scene behind the pictures
 
-The renders on this page put materials on spheres under a sun and sky, at 16 samples per pixel,
+The renders on this page put materials on spheres under a sun and sky, at 256 samples per pixel,
 denoised with OIDN (see [Postprocessing and Denoising](@ref)):
 
 ```@example materials
+using Main: docs_image, docs_samples # hide
 using GeometryBasics, LinearAlgebra, Hikari, Mantle
 using Hikari.TextureNodes
 backend = Mantle.defaultbackend()
 
 sphere(x, r) = normal_mesh(Tessellation(Sphere(Point3f(x, 0, r), r), 96))
 
-function showcase(materials; resolution = (1200, 360), samples = 16)
+function showcase(materials; resolution = (1200, 360), samples = 256)
+    samples = docs_samples(samples) # hide
     scene = Hikari.Scene(; backend)
     n = length(materials)
     for (i, material) in enumerate(materials)
@@ -86,6 +88,7 @@ once and lose energy on rough surfaces. `thin_wall = true` makes transmission an
 a surface with no inside, such as a soap bubble or a leaf.
 
 ```@example materials
+docs_image("materials-principled-bsdf", # hide
 showcase([
     Hikari.Principled(base_color = (0.8, 0.08, 0.05), roughness = 0.25),                    # plastic
     Hikari.Principled(base_color = (0.9, 0.9, 0.9), metallic = 1, roughness = 0.3,
@@ -97,6 +100,7 @@ showcase([
     Hikari.Principled(base_color = (0.9, 0.7, 0.55), roughness = 0.4, subsurface_weight = 1,
                       subsurface_radius = (1, 0.4, 0.2), subsurface_scale = 0.15),           # wax
 ])
+) # hide
 ```
 
 Without a `tangent`, anisotropic reflections run around the world's Z axis, as Blender's do around
@@ -108,6 +112,7 @@ the object's.
 `base_color`, `roughness`, `ior`, thin film, dispersion and `thin_wall`.
 
 ```@example materials
+docs_image("materials-glass", # hide
 showcase([
     Hikari.Glass(),                                                    # clear
     Hikari.Glass(roughness = 0.25),                                    # frosted
@@ -116,6 +121,7 @@ showcase([
     Hikari.Glass(ior = 1.33, thin_wall = true,
                  thin_film_thickness = 450, thin_film_ior = 1.33),     # soap bubble
 ])
+) # hide
 ```
 
 Common indices of refraction are 1.33 for water, 1.5 for window glass and 2.42 for diamond.
@@ -138,6 +144,7 @@ the distance light travels inside, fill the glass with an absorbing medium (see 
 | `Emission` | light emitted by the surface | `color`, `strength`, `two_sided` |
 
 ```@example materials
+docs_image("materials-blender-s-other-bsdfs", # hide
 showcase([
     Hikari.Diffuse(color = (0.75, 0.75, 0.72), roughness = 1),                       # chalk
     Hikari.Glossy(color = (0.9, 0.9, 0.9), roughness = 0.1),                         # polished chrome
@@ -147,9 +154,11 @@ showcase([
                     thin_film_thickness = 380, thin_film_ior = 2.0),                  # anodised titanium
     Hikari.Refraction(color = (0.8, 0.9, 1.0), roughness = 0.05, ior = 1.45),
 ])
+) # hide
 ```
 
 ```@example materials
+docs_image("materials-blender-s-other-bsdfs-2", # hide
 showcase([
     Hikari.Translucent(color = (0.5, 0.8, 0.3)),                                      # leaf
     Hikari.Add(Hikari.Diffuse(color = (0.12, 0.01, 0.04)),
@@ -159,6 +168,7 @@ showcase([
     Hikari.Mix(Hikari.Diffuse(color = (0.9, 0.3, 0.1)), Hikari.Transparent();
                factor = 0.6),                                                         # ghost
 ])
+) # hide
 ```
 
 `Metallic` with `fresnel_type = :physical_conductor` takes the complex index of refraction
@@ -175,6 +185,7 @@ builds from these nodes can be written down.
 
 ```@example materials
 patina = color_ramp(noise(xyz(); scale = 3, detail = 6).fac, 0.45 => (0, 0, 0), 0.6 => (1, 1, 1))
+docs_image("materials-mixing-and-adding-shaders", # hide
 showcase([
     Hikari.Mix(Hikari.Diffuse(color = (0.8, 0.5, 0.1)), Hikari.Glossy(roughness = 0.05);
                factor = 0.1),                                                         # glazed clay
@@ -187,6 +198,7 @@ showcase([
     Hikari.Principled(base_color = (0.1, 0.1, 0.1), roughness = 0.4,
                       emission_color = (0.2, 0.6, 1), emission_strength = 0.8),      # glowing paint
 ])
+) # hide
 ```
 
 ### Emission
@@ -216,6 +228,7 @@ most production renderers, and the noise goes. A medium with no visible surface 
 `Hikari.NullMaterial()`.
 
 ```@example materials
+docs_image("materials-volumes", # hide
 showcase([
     Hikari.MediumInterface(Hikari.Glass(); inside = Hikari.Milk(), shadows = 1.5),
     Hikari.MediumInterface(Hikari.Glass(); inside = Hikari.Coffee(scale = 0.5), shadows = 1.5),
@@ -227,6 +240,7 @@ showcase([
                                           σ_s = Hikari.RGBSpectrum(8f0)), shadows = 1.6),
     Hikari.MediumInterface(Hikari.NullMaterial(); inside = Hikari.Smoke(density = 4, albedo = 0.9, g = 0.3)),
 ])
+) # hide
 ```
 
 A heterogeneous medium is a density grid over a box, for example a procedural cloud:
@@ -267,6 +281,7 @@ with Blender's BSDFs like any other material.
 bump mapping does.
 
 ```@example materials
+docs_image("materials-pbrt-v4-s-models", # hide
 showcase([
     Hikari.Gold(roughness = 0.05),
     Hikari.Conductor(ior = (0.2, 0.92, 1.1), extinction = (3.9, 2.45, 2.14), roughness = 0.2),
@@ -275,6 +290,7 @@ showcase([
     Hikari.CoatedDiffuse(reflectance = (0.1, 0.25, 0.7), roughness = 0.05),
     Hikari.DiffuseTransmission(reflectance = (0.6, 0.6, 0.55), transmittance = (0.5, 0.45, 0.3)),
 ])
+) # hide
 ```
 
 ### Changing a material

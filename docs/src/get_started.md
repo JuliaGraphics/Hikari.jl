@@ -22,6 +22,7 @@ Every Hikari render follows the same five steps: build a scene, set up a camera 
 
 ```@setup getstarted
 using GeometryBasics, Hikari, Mantle, ImageShow
+using Main: docs_image, docs_samples
 backend = Mantle.defaultbackend()
 to_mesh(prim) = normal_mesh(prim isa Sphere ? Tessellation(prim, 64) : prim)
 ```
@@ -48,10 +49,14 @@ camera = Hikari.PerspectiveCamera(
 
 # 4. Render
 Hikari.clear!(film)
-Hikari.VolPath(samples=32, max_depth=8)(scene, film, camera)
+samples = 256
+samples = docs_samples(samples) # hide
+Hikari.VolPath(; samples, max_depth=8)(scene, film, camera)
 
 # 5. Postprocess and display
+docs_image("get-started", # hide
 Array(Hikari.postprocess!(film; tonemap=:aces, exposure=1.0f0, gamma=2.2f0))
+) # hide
 ```
 
 ### Core Concepts

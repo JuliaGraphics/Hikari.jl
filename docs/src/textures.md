@@ -5,13 +5,15 @@ A node graph computes it at every shading point, built from the same nodes as a 
 the same names, settings and defaults. `using Hikari.TextureNodes` brings them in scope.
 
 ```@setup textures
+using Main: docs_image, docs_samples
 using GeometryBasics, LinearAlgebra, Hikari, Mantle
 using Hikari.TextureNodes
 backend = Mantle.defaultbackend()
 
 sphere(x, r) = uv_normal_mesh(Tessellation(Sphere(Point3f(x, 0, r), r), 96))
 
-function showcase(materials; resolution = (1200, 360), samples = 16)
+function showcase(materials; resolution = (1200, 360), samples = 256)
+    samples = docs_samples(samples) # hide
     scene = Hikari.Scene(; backend)
     n = length(materials)
     for (i, material) in enumerate(materials)
@@ -57,12 +59,14 @@ Hikari.Principled(base_color = img, roughness = 0.4)
 pattern = [Hikari.RGBSpectrum(0.1f0 + 0.7f0 * (mod(y, 0.25f0) < 0.06f0), 0.15f0 + 0.5f0 * (mod(x, 0.5f0) < 0.1f0), 0.45f0)
            for y in range(0f0, 1f0; length = 256), x in range(0f0, 1f0; length = 128)]   # a tartan
 stripes = [sinpi(8y) > 0 ? 0.55f0 : 0.05f0 for y in range(0f0, 1f0; length = 256), x in 1:4]
+docs_image("textures-images", # hide
 showcase([
     Hikari.Diffuse(color = pattern),                                                        # an image
     Hikari.Principled(base_color = image_texture(pattern, mapping(uv(); scale = (4, 2, 1))),
                       roughness = 0.3),                                                     # tiled
     Hikari.Glossy(color = (0.9, 0.9, 0.9), roughness = stripes),                           # roughness map
 ])
+) # hide
 ```
 
 A mesh needs uv coordinates for this, for example from `GeometryBasics.uv_normal_mesh`.
@@ -100,6 +104,7 @@ marble = color_ramp(wave(xyz(); scale = 2, distortion = 10, detail = 6).fac,
                     0.0 => (0.92, 0.92, 0.9), 0.8 => (0.85, 0.85, 0.83), 1.0 => (0.3, 0.3, 0.33))
 wall = brick(mapping(xyz(); rotation = (π / 2, 0, 0)); scale = 4, mortar = (0.8, 0.8, 0.75),
              color1 = (0.6, 0.2, 0.1), color2 = (0.45, 0.16, 0.08))
+docs_image("textures-node-graphs", # hide
 showcase([
     Hikari.Diffuse(color = noise(xyz(); scale = 4, detail = 8).color),
     Hikari.Diffuse(color = voronoi(xyz(); scale = 6).color),
@@ -107,6 +112,7 @@ showcase([
     Hikari.Diffuse(color = wall.color),
     Hikari.Diffuse(color = marble),
 ])
+) # hide
 ```
 
 `xyz()` is the world position, so a texture built on it stays in place when an object moves through
@@ -120,6 +126,7 @@ it. `texture_coordinate().object` is the position in the mesh's own frame and mo
 reads a tangent-space or world-space normal map. Neither moves the geometry: silhouettes stay smooth.
 
 ```@example textures
+docs_image("textures-bump-and-normal-maps", # hide
 showcase([
     Hikari.Diffuse(color = (0.8, 0.8, 0.78),
                    normal = bump(noise(xyz(); scale = 20, detail = 4).fac; distance = 0.02)),  # plaster
@@ -132,6 +139,7 @@ showcase([
                       normal = bump(voronoi(xyz(); scale = 40, feature = :distance_to_edge);
                                     distance = 0.005)),                                       # leather
 ])
+) # hide
 ```
 
 `Principled`'s `coat_normal` takes its own bump, so a smooth varnish can sit over a rough base. The

@@ -4,6 +4,7 @@ A complete walkthrough of a Cornell box scene, demonstrating shadows, inter-refl
 
 ```@setup rendering
 using GeometryBasics, Hikari, Mantle, ImageShow
+using Main: docs_image, docs_samples
 backend = Mantle.defaultbackend()
 to_mesh(prim) = normal_mesh(prim isa Sphere ? Tessellation(prim, 64) : prim)
 ```
@@ -47,11 +48,15 @@ camera = Hikari.PerspectiveCamera(
 
 # --- Render, then denoise ---
 Hikari.clear!(film)
-Hikari.VolPath(samples=16, max_depth=12)(scene, film, camera)
+samples = 256
+samples = docs_samples(samples) # hide
+Hikari.VolPath(; samples, max_depth=12)(scene, film, camera)
 Hikari.fill_aux_buffers!(film, scene, camera)
 Hikari.denoise!(film; config = Hikari.OIDN())
 
+docs_image("cornell-box", # hide
 Array(Hikari.postprocess!(film; tonemap=:aces, exposure=1.2f0, gamma=2.2f0))
+) # hide
 ```
 
 ### GPU Rendering

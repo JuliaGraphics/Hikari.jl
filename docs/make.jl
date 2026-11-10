@@ -2,6 +2,9 @@ using Documenter
 using DocumenterVitepress
 using Hikari
 
+# `docs_image` and `docs_samples` for the pages, and the check that no image is stale.
+include(joinpath(@__DIR__, "renders.jl"))
+
 # ============================================================================
 # Generate comparison.md (gallery injected by CI or from local build)
 # ============================================================================
@@ -45,6 +48,8 @@ end
 # ============================================================================
 # Build docs
 # ============================================================================
+
+check_images(joinpath(DOCS_DIR, "src"))
 
 makedocs(; sitename = "Hikari", authors = "Anton Smirnov, Simon Danisch and contributors",
     modules = [Hikari],

@@ -6,10 +6,11 @@ All lights are added to the scene with `push!(scene, light)`.
 
 ```@setup lights
 using GeometryBasics, LinearAlgebra, Hikari, Mantle, ImageShow
+using Main: docs_image, docs_samples
 backend = Mantle.defaultbackend()
 to_mesh(prim) = normal_mesh(prim isa Sphere ? Tessellation(prim, 64) : prim)
 
-function render_light(lights; res=512, spp=16, eye=Point3f(0f0, 1.5f0, -3f0), lookat=Point3f(0f0, 0.4f0, 0f0))
+function render_light(lights; res=512, spp=256, eye=Point3f(0f0, 1.5f0, -3f0), lookat=Point3f(0f0, 0.4f0, 0f0))
     scene = Hikari.Scene(; backend)
     # Three spheres: matte, mirror, glass
     push!(scene, to_mesh(Sphere(Point3f(-0.8f0, 0.3f0, 0.2f0), 0.3f0)),
@@ -32,7 +33,7 @@ function render_light(lights; res=512, spp=16, eye=Point3f(0f0, 1.5f0, -3f0), lo
     film   = Hikari.Film(backend, Hikari.Film(Point2f(res, res)))
     camera = Hikari.PerspectiveCamera(eye, lookat, film; fov=50f0)
     Hikari.clear!(film)
-    integrator = Hikari.VolPath(samples=spp, max_depth=10)
+    integrator = Hikari.VolPath(samples=docs_samples(spp), max_depth=10)
     integrator(scene, film, camera)
     Hikari.fill_aux_buffers!(film, scene, camera)
     Hikari.denoise!(film; config = Hikari.OIDN())
@@ -52,10 +53,12 @@ Hikari.PointLight(Point3f(0f0, 2.5f0, 0f0), Hikari.RGBSpectrum(40f0))
 ```
 
 ```@example lights
+docs_image("lights-point", # hide
 render_light([
     Hikari.PointLight(Point3f(0f0, 2.4f0, 0f0), Hikari.RGBSpectrum(40f0)),
     Hikari.PointLight(Point3f(-1f0, 1.5f0, -1.5f0), Hikari.RGBSpectrum(15f0)),
 ])
+) # hide
 ```
 
 ### DirectionalLight
@@ -68,10 +71,12 @@ Hikari.DirectionalLight(Hikari.RGBSpectrum(3f0), Vec3f(0.5f0, -1f0, 0.3f0))
 ```
 
 ```@example lights
+docs_image("lights-directional", # hide
 render_light([
     Hikari.DirectionalLight(Hikari.RGBSpectrum(3f0), normalize(Vec3f(1f0, -1f0, 0.5f0))),
     Hikari.AmbientLight(Hikari.RGBSpectrum(0.5f0)),
 ])
+) # hide
 ```
 
 ### SpotLight
@@ -85,11 +90,13 @@ Hikari.SpotLight(Point3f(0f0, 3f0, 0f0), Point3f(0f0, 0f0, 0f0),
 ```
 
 ```@example lights
+docs_image("lights-spot", # hide
 render_light([
     Hikari.SpotLight(Point3f(0f0, 3f0, -0.5f0), Point3f(0f0, 0f0, 0f0),
                      Hikari.RGBSpectrum(80f0), 30f0, 20f0),
     Hikari.AmbientLight(Hikari.RGBSpectrum(0.5f0)),
 ])
+) # hide
 ```
 
 ### AmbientLight
@@ -110,6 +117,7 @@ push!(scene, panel_mesh, emissive_panel)
 ```
 
 ```@example lights
+docs_image("lights-area", # hide
 let
     scene = Hikari.Scene(; backend)
     push!(scene, to_mesh(Sphere(Point3f(-0.8f0, 0.3f0, 0.2f0), 0.3f0)),
@@ -134,11 +142,14 @@ let
     camera = Hikari.PerspectiveCamera(
         Point3f(0f0, 1.5f0, -3f0), Point3f(0f0, 0.4f0, 0f0), film; fov=50f0)
     Hikari.clear!(film)
-    Hikari.VolPath(samples=16, max_depth=10)(scene, film, camera)
+    samples = 256
+    samples = docs_samples(samples) # hide
+    Hikari.VolPath(; samples, max_depth=10)(scene, film, camera)
     Hikari.fill_aux_buffers!(film, scene, camera)
     Hikari.denoise!(film; config = Hikari.OIDN())
     Array(Hikari.postprocess!(film; tonemap=:aces, exposure=1.5f0, gamma=2.2f0))
 end
+) # hide
 ```
 
 ### EnvironmentLight
@@ -170,7 +181,8 @@ push!(scene, sun)
 `ground_enabled = false` leaves the lower half of the sky black, for scenes that model their own ground.
 
 ```@example lights
-function render_sky(direction; turbidity = 3f0)
+function render_sky(direction; turbidity = 3f0, samples = 256)
+    samples = docs_samples(samples) # hide
     scene = Hikari.Scene(; backend)
     for (i, material) in enumerate((Hikari.Diffuse(color = (0.8, 0.8, 0.8)), Hikari.Gold(roughness = 0.1),
                                     Hikari.Glass()))
@@ -185,7 +197,7 @@ function render_sky(direction; turbidity = 3f0)
     film = Hikari.Film(backend, Hikari.Film(Point2f(600, 300)))
     camera = Hikari.PerspectiveCamera(Point3f(0, -4.5, 1.4), Point3f(0, 0, 0.6), film; up = Vec3f(0, 0, 1), fov = 30)
     Hikari.clear!(film)
-    integrator = Hikari.VolPath(samples = 16, max_depth = 10)
+    integrator = Hikari.VolPath(; samples, max_depth = 10)
     integrator(scene, film, camera)
     Hikari.fill_aux_buffers!(film, scene, camera; has_infinite_lights = true)
     Hikari.denoise!(film; config = Hikari.OIDN())
@@ -193,7 +205,9 @@ function render_sky(direction; turbidity = 3f0)
     close(integrator)
     return image
 end
+docs_image("lights-sun-and-sky", # hide
 hcat(render_sky(Vec3f(-0.4, -0.6, 1.0)), render_sky(Vec3f(-1, 0.3, 0.3); turbidity = 5f0))
+) # hide
 ```
 
 At noon on the left, and in the late afternoon, with a hazier sky, on the right.

@@ -11,3 +11,4 @@ test/pbrt/display/
 Manifest*.toml
 test/pbrt/build/
 test/pbrt/references/
+docs/renders/

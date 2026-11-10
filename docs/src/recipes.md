@@ -6,13 +6,15 @@ scales. The recipes below build eight such materials from the nodes of
 [Textures and Node Graphs](@ref) and the BSDFs of [Materials](@ref).
 
 ```@setup recipes
+using Main: docs_image, docs_samples
 using GeometryBasics, LinearAlgebra, Hikari, Mantle
 using Hikari.TextureNodes
 backend = Mantle.defaultbackend()
 
 sphere(x, r) = normal_mesh(Tessellation(Sphere(Point3f(x, 0, r), r), 96))
 
-function showcase(materials; resolution = (1200, 360), samples = 16)
+function showcase(materials; resolution = (1200, 360), samples = 256)
+    samples = docs_samples(samples) # hide
     scene = Hikari.Scene(; backend)
     n = length(materials)
     for (i, material) in enumerate(materials)
@@ -98,7 +100,9 @@ marble = Hikari.Principled(base_color = color_ramp(veins, 0.0 => (0.92, 0.91, 0.
                                                    0.8 => (0.85, 0.84, 0.82), 1.0 => (0.25, 0.25, 0.3)),
                            roughness = 0.08, subsurface_weight = 0.5,
                            subsurface_radius = (1, 0.9, 0.8), subsurface_scale = 0.05)
+docs_image("recipes-wood-rust-paint-marble", # hide
 showcase([varnished_wood, rusty_iron, car_paint, marble])
+) # hide
 ```
 
 ### Heat-tinted steel
@@ -146,5 +150,7 @@ The roughness of glass follows a pattern: clear where the checker is 1, frosted 
 
 ```@example recipes
 etched = Hikari.Glass(roughness = 0.35 * (1 - checker(mapping(p; rotation = (π / 2, 0, 0)); scale = 6).fac))
+docs_image("recipes-steel-lava-gold-glass", # hide
 showcase([heat_tinted, lava, worn_gold, etched])
+) # hide
 ```

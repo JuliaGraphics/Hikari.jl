@@ -1,3 +1,11 @@
+[docs_renders]
+git-tree-sha1 = "287a496116a627bd25f41311a833781d5ccee705"
+lazy = true
+
+    [[docs_renders.download]]
+    sha256 = "c4efdcd4952f6e3f351a4318051c89f8b671a3d074e92f7b6b66f8f2049b4209"
+    url = "https://github.com/JuliaGraphics/Hikari.jl/releases/download/assets/docs_renders-287a496116a627bd25f41311a833781d5ccee705.tar.gz"
+
 [oidn]
 git-tree-sha1 = "142512dd114af71ad79f80a27a21f45a79bf8276"
 lazy = true
