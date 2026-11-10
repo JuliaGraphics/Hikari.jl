@@ -333,22 +333,13 @@ function save_srgb_table_binary(path::String, table::RGBToSpectrumTable)
     end
 end
 
-"""Load the sRGB spectrum table (generates if not cached)"""
+# The table is the `srgb_spectrum_table` artifact. To regenerate it, run
+# `RGB2SpecGen.generate_rgb2spec_table(64)` from `rgb2spec_gen.jl`, write it with
+# `save_srgb_table_binary` and publish the folder with `assets/publish.jl`.
+"""Load the sRGB spectrum table."""
 function get_srgb_table()::RGBToSpectrumTableCPU
     if SRGB_TABLE[] === nothing
-        bin_path = joinpath(@__DIR__, "srgb_spectrum_table.dat")
-        if isfile(bin_path)
-            # Load from binary cache
-            SRGB_TABLE[] = load_srgb_table_binary(bin_path)
-        else
-            # Generate and save
-            println("Generating sRGB spectrum table (this may take a minute)...")
-            include(joinpath(@__DIR__, "rgb2spec_gen.jl"))
-            table_data = RGB2SpecGen.generate_rgb2spec_table(64; verbose=true)
-            table = RGBToSpectrumTable(Int32(table_data.res), table_data.scale, table_data.coeffs, d65_cpu_values())
-            save_srgb_table_binary(bin_path, table)
-            SRGB_TABLE[] = table
-        end
+        SRGB_TABLE[] = load_srgb_table_binary(joinpath(artifact"srgb_spectrum_table", "srgb_spectrum_table.dat"))
     end
     return SRGB_TABLE[]
 end

@@ -1,4 +1,3 @@
-# Intel Open Image Denoise, the official Linux build (see `src/oidn.jl`).
 [oidn]
 git-tree-sha1 = "142512dd114af71ad79f80a27a21f45a79bf8276"
 lazy = true
@@ -6,3 +5,10 @@ lazy = true
     [[oidn.download]]
     sha256 = "743c3e2aff8c220d5d70fe6cb970fb3d36f2702d2693c61d1d148e404cf37cd6"
     url = "https://github.com/RenderKit/oidn/releases/download/v2.5.1/oidn-2.5.1.x86_64.linux.tar.gz"
+
+[srgb_spectrum_table]
+git-tree-sha1 = "cf631c24837681138d48c9e53adc6f4798c0c25f"
+
+    [[srgb_spectrum_table.download]]
+    sha256 = "f545502e68f54f1f4fa5302bbab38be2209ef65c5c34a1970a8b96c610b5b6f1"
+    url = "https://github.com/JuliaGraphics/Hikari.jl/releases/download/assets/srgb_spectrum_table-cf631c24837681138d48c9e53adc6f4798c0c25f.tar.gz"
