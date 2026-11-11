@@ -2,29 +2,6 @@
 using Test
 using GeometryBasics
 
-# Test Distribution1D
-@testset "Distribution1D" begin
-    # Uniform distribution
-    func = Float32[1, 1, 1, 1]
-    d = Hikari.Distribution1D(func)
-    @test d.func_int ≈ 1.0f0
-    @test d.cdf[end] ≈ 1.0f0
-
-    # Test sampling - should be roughly uniform
-    sampled, pdf, _ = Hikari.sample_continuous(d, 0.5f0)
-    @test 0 ≤ sampled ≤ 1
-    @test pdf ≈ 1.0f0  # uniform, so pdf = func_int
-
-    # Non-uniform distribution - heavily weighted to first element
-    func2 = Float32[10, 1, 1, 1]
-    d2 = Hikari.Distribution1D(func2)
-    @test d2.func_int ≈ 13/4  # (10+1+1+1)/4
-
-    # Low u values should sample first element more
-    sampled_low, pdf_low, offset = Hikari.sample_continuous(d2, 0.1f0)
-    @test offset == 1  # should be in first bin
-end
-
 # Test Distribution2D
 @testset "Distribution2D" begin
     # 2x2 with one bright pixel

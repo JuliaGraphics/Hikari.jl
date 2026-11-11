@@ -7,7 +7,7 @@
 GPU-accelerated physically-based spectral path tracer for Julia, built on [KernelAbstractions.jl](https://github.com/JuliaGPU/KernelAbstractions.jl). Used as the ray tracing backend for [Makie.jl](https://github.com/MakieOrg/Makie.jl) via [RayMakie](https://github.com/MakieOrg/Makie.jl).
 
 <p align="center">
-  <img src="./images/cloud_bomex.png" width="600">
+  <img src="https://github.com/JuliaGraphics/Hikari.jl/releases/download/assets/cloud_bomex.png" width="600">
   <br>
   <em>BOMEX LES cloud field with volumetric path tracing</em>
 </p>
@@ -18,13 +18,13 @@ All renders produced with Hikari via RayMakie. Demo source code at [SimonDanisch
 
 |   |   |
 |:-:|:-:|
-| <img src="./images/terrain.png" width="400"> | <img src="./images/black_hole.png" width="400"> |
+| <img src="https://github.com/JuliaGraphics/Hikari.jl/releases/download/assets/terrain.png" width="400"> | <img src="https://github.com/JuliaGraphics/Hikari.jl/releases/download/assets/black_hole.png" width="400"> |
 | Terrain with volumetric clouds | Black hole with gravitational lensing |
-| <img src="./images/protein_glass.png" width="400"> | <img src="./images/protein_gold.png" width="400"> |
+| <img src="https://github.com/JuliaGraphics/Hikari.jl/releases/download/assets/protein_glass.png" width="400"> | <img src="https://github.com/JuliaGraphics/Hikari.jl/releases/download/assets/protein_gold.png" width="400"> |
 | Protein structure (glass) | Protein structure (gold conductor) |
-| <img src="./images/cms_detector.png" width="400"> | <img src="./images/spacecraft.png" width="400"> |
+| <img src="https://github.com/JuliaGraphics/Hikari.jl/releases/download/assets/cms_detector.png" width="400"> | <img src="https://github.com/JuliaGraphics/Hikari.jl/releases/download/assets/spacecraft.png" width="400"> |
 | CMS particle detector ([Geant4.jl](https://github.com/JuliaHEP/Geant4.jl)) | HL-20 spacecraft with volumetric exhaust |
-| <img src="./images/plants.png" width="400"> | <img src="./images/bunny_cloud.png" width="400"> |
+| <img src="https://github.com/JuliaGraphics/Hikari.jl/releases/download/assets/plants.png" width="400"> | <img src="https://github.com/JuliaGraphics/Hikari.jl/releases/download/assets/bunny_cloud.png" width="400"> |
 | Oil palm ([PlantGeom.jl](https://github.com/VEZY/PlantGeom.jl)) | Stanford bunny cloud (NanoVDB) |
 
 ## Features

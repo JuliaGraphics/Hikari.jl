@@ -229,6 +229,8 @@ end
 Compute LightBounds for a light. Returns `nothing` for infinite lights.
 """
 light_bounds(::Light) = nothing  # Default: infinite lights have no bounds
+# 2-arg form for with_index dispatch (scene_radius unused by light_bounds)
+light_bounds(light, ::Float32) = light_bounds(light)
 
 # PointLight: isotropic point emitter
 function light_bounds(light::PointLight)

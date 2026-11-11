@@ -1,0 +1,46 @@
+## Cast-shadow regression test:
+## A small sphere sits above a large diffuse plane; an area light overhead
+## must produce a clear circular shadow on the plane. Hikari was producing
+## visibly weaker / softer occlusion than pbrt on Crown's pearl-on-velvet
+## geometry — this scene strips Crown down to the bare casting-geometry,
+## diffuse-receiver, area-light triplet so any future regression in the
+## shadow path (offset direction, BVH coverage, t_max cropping, MIS denom
+## blowup) is pinned by a 256×256 8-spp render that converges in ~1 s.
+##
+## Pin: pbrt reference must show a crisp dark disk under the sphere on
+## white plane; Hikari must match within tolerance. If Hikari shows
+## uniform brightness or a faint shadow only, the shadow path regressed.
+
+LookAt 0 1.4 2.5   0 0 0   0 1 0
+Camera "perspective" "float fov" 35
+Film "rgb" "integer xresolution" 256 "integer yresolution" 256
+    "float maxcomponentvalue" 10
+Sampler "halton" "integer pixelsamples" 64
+Integrator "volpath" "integer maxdepth" 6 "bool regularize" false
+
+WorldBegin
+
+# Area light directly overhead — y = 1.5, facing down (-y).
+# Square aperture spanning x,z = [-0.4, 0.4] gives a tight enough source
+# that the sphere casts a near-hard shadow at 64 spp.
+AttributeBegin
+    AreaLightSource "diffuse" "rgb L" [25 25 25] "bool twosided" true
+    Shape "trianglemesh"
+        "point3 P"   [ -0.4 1.5 -0.4   0.4 1.5 -0.4   0.4 1.5 0.4   -0.4 1.5 0.4 ]
+        "integer indices" [ 0 1 2  0 2 3 ]
+AttributeEnd
+
+# Receiver: large diffuse white plane at y = 0.
+AttributeBegin
+    Material "diffuse" "rgb reflectance" [0.8 0.8 0.8]
+    Shape "trianglemesh"
+        "point3 P"   [ -3 0 -3   3 0 -3   3 0 3   -3 0 3 ]
+        "integer indices" [ 0 1 2  0 2 3 ]
+AttributeEnd
+
+# Caster: diffuse sphere centered at (0, 0.5, 0), radius 0.3.
+AttributeBegin
+    Material "diffuse" "rgb reflectance" [0.8 0.5 0.3]
+    Translate 0 0.5 0
+    Shape "sphere" "float radius" 0.3
+AttributeEnd

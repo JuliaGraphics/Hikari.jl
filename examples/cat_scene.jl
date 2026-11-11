@@ -47,42 +47,34 @@ function create_scene(; glass_cat=false, backend=Raycore.KA.CPU())
     # === Add geometry with materials ===
     # Cat - warm diffuse or glass
     cat_material = if glass_cat
-        Hikari.GlassMaterial(
-            Kr=Hikari.RGBSpectrum(0.95f0, 1.0f0, 0.95f0),
-            Kt=Hikari.RGBSpectrum(0.95f0, 1.0f0, 0.95f0),
-            index=1.5f0
-        )
+        Hikari.Glass(ior = 1.5f0)
     else
-        Hikari.MatteMaterial(Kd=Hikari.RGBSpectrum(0.8f0, 0.6f0, 0.4f0), σ=0f0)
+        Hikari.Diffuse(color = Hikari.RGBSpectrum(0.8f0, 0.6f0, 0.4f0))
     end
     push!(scene, create_cat_mesh(), cat_material)
 
     # Floor - green diffuse
     push!(scene, to_mesh(Rect3f(Vec3f(-5, -1.5, -2), Vec3f(10, 0.01, 10))),
-          Hikari.MatteMaterial(Kd=Hikari.RGBSpectrum(0.3f0, 0.5f0, 0.3f0), σ=0f0))
+          Hikari.Diffuse(color = Hikari.RGBSpectrum(0.3f0, 0.5f0, 0.3f0)))
 
     # Back wall - metallic copper
     push!(scene, to_mesh(Rect3f(Vec3f(-5, -1.5, 8), Vec3f(10, 5, 0.01))),
-          Hikari.MetalMaterial(reflectance=Hikari.RGBSpectrum(0.8f0, 0.6f0, 0.5f0), roughness=0.05f0))
+          Hikari.Conductor(reflectance=Hikari.RGBSpectrum(0.8f0, 0.6f0, 0.5f0), roughness=0.05f0))
 
     # Left wall - diffuse gray-blue
     push!(scene, to_mesh(Rect3f(Vec3f(-5, -1.5, -2), Vec3f(0.01, 5, 10))),
-          Hikari.MatteMaterial(Kd=Hikari.RGBSpectrum(0.7f0, 0.7f0, 0.8f0), σ=0f0))
+          Hikari.Diffuse(color = Hikari.RGBSpectrum(0.7f0, 0.7f0, 0.8f0)))
 
     # Sphere1 - metallic silver (mirror-like)
     push!(scene, to_mesh(Sphere(Point3f(-2, -1.5 + 0.8, 2), 0.8f0)),
-          Hikari.MetalMaterial(reflectance=Hikari.RGBSpectrum(0.9f0, 0.9f0, 0.9f0), roughness=0.02f0))
+          Hikari.Conductor(reflectance=Hikari.RGBSpectrum(0.9f0, 0.9f0, 0.9f0), roughness=0.02f0))
 
     # Sphere2 - semi-metallic blue (rougher)
     push!(scene, to_mesh(Sphere(Point3f(2, -1.5 + 0.6, 1), 0.6f0)),
-          Hikari.MetalMaterial(reflectance=Hikari.RGBSpectrum(0.3f0, 0.6f0, 0.9f0), roughness=0.3f0))
+          Hikari.Conductor(reflectance=Hikari.RGBSpectrum(0.3f0, 0.6f0, 0.9f0), roughness=0.3f0))
 
     # Glass sphere - clear glass with slight green tint
-    glass_material = Hikari.GlassMaterial(
-        Kr=Hikari.RGBSpectrum(0.98f0, 1.0f0, 0.98f0),
-        Kt=Hikari.RGBSpectrum(0.98f0, 1.0f0, 0.98f0),
-        index=1.5f0
-    )
+    glass_material = Hikari.Glass(ior = 1.5f0)
     push!(scene, to_mesh(Sphere(Point3f(-0.8, -1.5 + 0.5, 0.5), 0.5f0)), glass_material)
 
     # Emissive sphere - use glass material (emissive handled via area lights)
@@ -140,12 +132,11 @@ begin
     backend = AMDGPU.ROCBackend()
     scene = create_scene(; glass_cat=false, backend=backend)
     film, camera = create_film_and_camera(; width=1820, height=720, use_pbrt_camera=true)
-    sensor = Hikari.FilmSensor(iso=100, white_balance=6500)
     integrator = Hikari.VolPath(samples=100, max_depth=8)
     # Film still needs GPU conversion, scene already on GPU
-    gpu_film = Adapt.adapt(backend, film)
+    gpu_film = Hikari.Film(backend, film)
     Hikari.clear!(gpu_film)
     @time integrator(scene, gpu_film, camera)
-    img = Hikari.postprocess!(gpu_film; sensor, exposure=0.5f0, tonemap=:aces, gamma=2.2f0)
+    img = Hikari.postprocess!(gpu_film; exposure=0.5f0, tonemap=:aces, gamma=2.2f0)
     Array(img)
 end

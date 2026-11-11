@@ -1,0 +1,28 @@
+# Minimal pbrt reference: diffuse with a height-field bump map.
+# A flat quad lit by a side point light (chosen so the bump-perturbed
+# shading normal produces visible self-shadowing along the ridge crests).
+# The bump texture (`test_ridges.png`) is a vertical sine heightfield with
+# an 8-px period, so the render should show bright/dark vertical bands
+# from local normal tilt — the very pattern Crown's gold filigree relies on.
+# A constant grey diffuse rendering would mean the displacement parameter
+# is not reaching the BSDF.
+
+LookAt 0 0 2   0 0 0   0 1 0
+Camera "perspective" "float fov" 60
+Film "rgb" "integer xresolution" 128 "integer yresolution" 128
+    "float maxcomponentvalue" 10
+Integrator "volpath" "integer maxdepth" 4 "bool regularize" true
+
+WorldBegin
+
+LightSource "point" "rgb I" [40 40 40] "point3 from" [2 0 1]
+
+Texture "bumps" "float" "imagemap"
+    "string filename" "textures/test_ridges.png"
+
+Material "diffuse" "rgb reflectance" [0.6 0.6 0.6]
+    "texture displacement" "bumps"
+Shape "trianglemesh"
+    "point3 P"   [ -1 -1 0   1 -1 0   1 1 0   -1 1 0 ]
+    "point2 uv"  [  0  0     1  0    1 1    0 1    ]
+    "integer indices" [ 0 1 2  0 2 3 ]

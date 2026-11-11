@@ -1,0 +1,25 @@
+# Minimal pbrt reference: textured-diffuse via spectrum imagemap.
+# A flat quad spanning (-1,-1)–(1,1) with UVs covering (0,0)–(1,1), viewed from
+# directly above. A point light overhead lights the surface uniformly so the
+# only thing the rendered framebuffer can show is the imagemap's pattern.
+# If Hikari renders this as a flat colour, the spectrum-imagemap texture
+# sampling path is broken (a constant fallback or wrong UV).
+
+LookAt 0 0 2   0 0 0   0 1 0
+Camera "perspective" "float fov" 60
+Film "rgb" "integer xresolution" 128 "integer yresolution" 128
+    "float maxcomponentvalue" 10
+Integrator "volpath" "integer maxdepth" 4 "bool regularize" true
+
+WorldBegin
+
+LightSource "point" "rgb I" [20 20 20] "point3 from" [0 0 3]
+
+Texture "stripes" "spectrum" "imagemap"
+    "string filename" "textures/test_stripes.png"
+
+Material "diffuse" "texture reflectance" "stripes"
+Shape "trianglemesh"
+    "point3 P"   [ -1 -1 0   1 -1 0   1 1 0   -1 1 0 ]
+    "point2 uv"  [  0  0     1  0    1 1    0 1    ]
+    "integer indices" [ 0 1 2  0 2 3 ]

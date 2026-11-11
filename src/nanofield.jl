@@ -1,0 +1,188 @@
+"""
+    load_frame_data(path)
+
+Load losslessly compressed Julia frame data for file-series nodes. Frame data contains
+geometry/optical parameters; GPU contexts, screens and integrators are never saved.
+Native volume fields can remain separate `.nvdb` inputs loaded by `load_nanotree`.
+"""
+function load_frame_data end
+
+"Write frame data as a losslessly compressed Julia stream."
+function save_frame_data end
+
+"A native file input decoded only when its consumer needs the field."
+mutable struct DeferredNanoTree
+    path::String
+    stamp::Tuple{Float64,Int}
+    tree::Union{Nothing,NanoTree}
+end
+
+"Keep a native input's address without decoding its voxels; `read` resolves it once."
+function defer_nanotree(path::AbstractString)
+    path=abspath(path)
+    isfile(path) || error("Missing NanoVDB input: $path")
+    return DeferredNanoTree(path,(mtime(path),filesize(path)),nothing)
+end
+
+function Base.read(input::DeferredNanoTree)
+    isfile(input.path) || error("Missing NanoVDB input: $(input.path)")
+    (mtime(input.path),filesize(input.path))==input.stamp ||
+        error("NanoVDB input changed; evaluate its file node again: $(input.path)")
+    if input.tree===nothing
+        tree=load_nanotree(input.path)
+        (mtime(input.path),filesize(input.path))==input.stamp ||
+            error("NanoVDB input changed while decoding: $(input.path)")
+        input.tree=tree
+    end
+    return input.tree::NanoTree
+end
+
+resolve_nanotree(tree::NanoTree)=tree
+resolve_nanotree(input::DeferredNanoTree)=read(input)
+
+"Release decoded host voxels after a consumer has finished copying them; keep the file revision."
+function release_nanotree!(input::DeferredNanoTree)
+    input.tree=nothing
+    return input
+end
+release_nanotree!(tree::NanoTree)=tree
+
+"Keep native words as an owning view of the decoded grid, without a full-grid copy."
+nanotree_words(buffer,first,last)=reinterpret(UInt32,view(buffer,first:last))
+
+const NativeNanoWords=Base.ReinterpretArray{UInt32,1,UInt8,
+    SubArray{UInt8,1,Vector{UInt8},Tuple{UnitRange{Int}},true},false}
+
+function Raycore.maybe_convert_field(set::Raycore.MultiTypeSet,words::NativeNanoWords)
+    # Texture tables require a dense device pointer, not an adapted host-view
+    # wrapper. The upload reads this contiguous host span without collecting it.
+    data=set.backend isa KA.CPU ? words : Mantle.devicearray(set.backend,words)
+    return Raycore.store_texture(set,data)
+end
+
+"""
+    load_nanotree(path; backend=nothing)
+
+Read a ZIP-compressed Float NanoVDB grid into a `NanoTree`. With `backend=nothing`
+the words stay on the host, so a file-series reader can cache neighbouring files
+without allocating GPU storage. A supplied backend uploads the words once.
+
+This representation requires a positive, uniform, axis-aligned voxel transform.
+Other transforms are rejected; use `NanoVDBMedium` for general affine grids.
+"""
+function load_nanotree(path::AbstractString; backend=nothing)
+    buffer, meta = parse_nanovdb_buffer(String(path))
+    meta.leaf_count > 0 || throw(ArgumentError("NanoTree requires at least one leaf"))
+    reinterpret(UInt32, buffer[637:640])[1] == 1 ||
+        throw(ArgumentError("NanoTree requires a Float NanoVDB grid"))
+    inv = meta.inv_mat
+    scale = inv[1]
+    isfinite(scale) && scale > 0 &&
+        all(i -> isapprox(inv[i], scale; rtol=1f-6), (5, 9)) &&
+        all(i -> iszero(inv[i]), (2, 3, 4, 6, 7, 8)) ||
+        throw(ArgumentError("NanoTree requires a positive uniform axis-aligned transform"))
+    offsets = (meta.upper_offset, meta.lower_offset, meta.leaf_offset)
+    all(o -> o >= meta.root_offset && (o-meta.root_offset) % 4 == 0, offsets) ||
+        throw(ArgumentError("Unsupported NanoVDB node layout"))
+    stop = meta.leaf_offset + Int(meta.leaf_count) * LEAFDATA_SIZE - 1
+    stop <= length(buffer) || throw(ArgumentError("Truncated NanoVDB leaves"))
+    words = nanotree_words(buffer,meta.root_offset,stop)
+    voxel = Float32(1 / scale)
+    lo = Point3f(meta.vec) .- Vec3f(0.5f0 * voxel)
+    background = wordfloat(words, Int32(ROOTDATA_BACKGROUND_OFFSET ÷ 4))
+    storage = backend === nothing ? words : Mantle.devicearray(backend, words)
+    return NanoTree(storage, Int32.((offsets .- meta.root_offset) .÷ 4)...,
+        meta.upper_count, meta.lower_count, meta.leaf_count, meta.root_table_size,
+        Point3f(lo), voxel, background, Vec{3,Int32}(meta.index_min), Vec{3,Int32}(meta.index_max))
+end
+
+"""
+    NanoBlend(a::NanoTree, b::NanoTree, weight)
+
+Two independently positioned NanoVDB fields, interpolated at the sampled world
+position. Missing voxels use each grid's own background. This descriptor retains
+the two input buffers and never constructs a third voxel array. `weight` must be
+finite and in `[0,1]`. A file-input consumer can pass its `a`, `b` and `weight`
+directly here without introducing a dependency on an editor package.
+"""
+struct NanoBlend{A<:NanoTree,B<:NanoTree}
+    a::A
+    b::B
+    weight::Float32
+    function NanoBlend(a::A, b::B, weight::Real) where {A<:NanoTree,B<:NanoTree}
+        isfinite(weight) && 0 <= weight <= 1 || throw(ArgumentError("Invalid NanoVDB blend weight"))
+        return new{A,B}(a, b, Float32(weight))
+    end
+end
+Adapt.@adapt_structure NanoBlend
+
+"""
+    NanoRegion(field, centre, inner, outer)
+
+`field` (a `NanoTree` or `NanoBlend`) only round a vertical axis through `centre`
+(x, y): in full out to `inner`, eased to nothing at `outer` (smoothstep in the
+distance from the axis), nothing beyond. For a field recorded over a box but drawn
+only where a round region of the scene is, such as a whirlpool's whitewater beside
+the water traced inside a cylinder. Majorants of `field` bound it.
+"""
+struct NanoRegion{F<:Union{NanoTree,NanoBlend}}
+    field::F
+    centre::Point2f
+    inner::Float32
+    outer::Float32
+    function NanoRegion(field::F, centre, inner::Real, outer::Real) where {F<:Union{NanoTree,NanoBlend}}
+        0 <= inner < outer || throw(ArgumentError("A NanoRegion needs 0 <= inner < outer"))
+        return new{F}(field, Point2f(centre[1], centre[2]), Float32(inner), Float32(outer))
+    end
+end
+Adapt.@adapt_structure NanoRegion
+const NanoField = Union{NanoTree,NanoBlend,NanoRegion}
+
+"The same two field buffers with a new interpolation weight."
+with_blend_weight(t::NanoBlend, weight::Real) = NanoBlend(t.a,t.b,weight)
+with_blend_weight(t::NanoTree, ::Real) = t
+with_blend_weight(t::NanoRegion, weight::Real) = NanoRegion(with_blend_weight(t.field, weight), t.centre, t.inner, t.outer)
+
+@inline nanofield_sample(t::NanoTree, media, p) = nanosample(t, Raycore.deref(media, t.words), p)
+@inline nanofield_sample(t::NanoTree, ::Nothing, p) = nanosample(t, t.words, p)
+@inline function nanofield_sample(t::NanoBlend, media, p)
+    # Exact endpoints also avoid touching a file that contributes no density.
+    t.weight == 0f0 && return nanofield_sample(t.a, media, p)
+    t.weight == 1f0 && return nanofield_sample(t.b, media, p)
+    return (1f0-t.weight)*nanofield_sample(t.a, media, p) + t.weight*nanofield_sample(t.b, media, p)
+end
+@inline function nanofield_sample(t::NanoRegion, media, p)
+    dx = p[1] - t.centre[1]; dy = p[2] - t.centre[2]
+    r2 = dx * dx + dy * dy
+    r2 >= t.outer * t.outer && return 0f0
+    r2 <= t.inner * t.inner && return nanofield_sample(t.field, media, p)
+    s = (t.outer - sqrt(r2)) / (t.outer - t.inner)
+    return s * s * (3f0 - 2f0 * s) * nanofield_sample(t.field, media, p)
+end
+
+function nanobounds(t::NanoTree)
+    return Bounds3(Point3f(t.lo + (Vec3f(t.imin) .- 0.5f0)*t.voxel),
+                   Point3f(t.lo + (Vec3f(t.imax) .+ 0.5f0)*t.voxel))
+end
+function nanobounds(t::NanoBlend)
+    a, b = nanobounds(t.a), nanobounds(t.b)
+    return Bounds3(Point3f(min.(a.p_min,b.p_min)), Point3f(max.(a.p_max,b.p_max)))
+end
+function nanobounds(t::NanoRegion)
+    f = nanobounds(t.field)
+    c = Point3f(t.centre[1], t.centre[2], 0f0); r = Vec3f(t.outer, t.outer, 0f0)
+    lo = max.(f.p_min, c - r); hi = min.(f.p_max, c + r)
+    return Bounds3(Point3f(lo[1], lo[2], f.p_min[3]), Point3f(hi[1], hi[2], f.p_max[3]))
+end
+
+function nanomajorant(t::NanoBlend, bounds::Bounds3, res::Vec{3,Int32}; tight::Bool=true,sparse::Bool=false)
+    a = nanomajorant(t.a, bounds, res; tight,sparse)
+    b = nanomajorant(t.b, bounds, res; tight,sparse)
+    # Bound every possible weight for this pair. The acceleration data can stay
+    # unchanged while a keyframed weight moves in either direction.
+    sparse && return maxmajorants(a,b)
+    a.voxels .= max.(a.voxels, b.voxels)
+    return a
+end
+"The region only lowers its field, so the field's majorants bound it."
+nanomajorant(t::NanoRegion, bounds::Bounds3, res::Vec{3,Int32}; kw...) = nanomajorant(t.field, bounds, res; kw...)

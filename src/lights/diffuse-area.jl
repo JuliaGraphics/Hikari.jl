@@ -32,8 +32,6 @@ struct DiffuseAreaLight{LeTex} <: Light
     two_sided::Bool
 end
 
-is_δ_light(::DiffuseAreaLight) = false
-
 # ============================================================================
 # Emission Evaluation (pbrt-v4 DiffuseAreaLight::L)
 # ============================================================================
@@ -60,7 +58,9 @@ Following pbrt-v4 DiffuseAreaLight::L().
         return SpectralRadiance()
     end
     Le_rgb = light.Le * light.scale
-    return uplift_rgb(table, Le_rgb, lambda)
+    # Area light emission uses illuminant spectrum (D65-weighted), matching pbrt-v4.
+    # The caller must apply photometric normalization to light.scale for pbrt compat.
+    return uplift_rgb_illuminant(table, Le_rgb, lambda)
 end
 
 # TextureRef version — evaluates texture at hit UV
@@ -73,7 +73,7 @@ end
         return SpectralRadiance()
     end
     Le_rgb = eval_tex(lights_ctx, light.Le, uv) * light.scale
-    return uplift_rgb(table, Le_rgb, lambda)
+    return uplift_rgb_illuminant(table, Le_rgb, lambda)
 end
 
 # Generic fallback for non-DiffuseAreaLight types (needed for GPU compilation:

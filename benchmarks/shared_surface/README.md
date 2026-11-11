@@ -1,0 +1,271 @@
+# Shared BSDF validation and optimization experiments
+
+The 108-byte counted tuple storage with inline evaluation is integrated in
+`src/materials/bsdf-storage.jl` and `bsdf-program.jl`. Normal Cycles rendering uses
+it for individual nodes and mixtures. The former separate Diffuse/Sheen/Glossy
+implementation has been removed. `Glass(...)` is a Principled preset. The native
+pbrt component/layered adapters still specialize their schemas.
+
+`load.jl` uses the production implementation. `renderer.jl` temporarily records
+the original typed scattering formulas only for the differential reference.
+`storage.jl`, `program.jl` and `counted_storage.jl` below are historical snapshots
+of the experiments; do not include them into the integrated package. Alternative
+layout/function-boundary experiments require isolated sessions and are not
+renderer configuration options. The remainder records historical measurements. The active implementation is
+the source under `src/materials/`; experiments below must not overwrite it in
+an ordinary package session.
+
+Current integration evidence (2026-10-31): 28,181 fresh-load checks pass for
+storage, direct evaluation, mixed native graphs and all 73 differential model
+configurations. All 17 Cycles reference batches pass (321 assertions), and
+all 93 current nested RayMakie material/image update checks pass. Four different
+Principled/Glass/Sheen/Glossy graphs reuse one native pipeline (28 checks), with
+pixel-identical reference images. Subsequent unseen graphs take 0.274–0.279 s
+including host setup and first rendering after that class is warm.
+GGX/Beckmann and Fresnel variants now share microfacet geometry. This fixes the
+isolated Glass/Beckmann native compile: a 1,921,576-byte shader compiled under a
+4-GiB data-segment limit and rendered through the same production path. The
+earlier per-distribution version could exceed 20 GB RSS during native compilation.
+The compiler's internal cause is not established by shader size alone.
+
+Final production measurements on NVIDIA RTX 4000 Ada, software tracing,
+512² pixels, eight samples, five warmups and 51 alternating frame pairs:
+
+| Material | Typed reference | Shared storage | Difference |
+| --- | ---: | ---: | ---: |
+| Layered Principled | 26.367 ms | 27.414 ms | +3.97% |
+| Diffuse | 21.662 ms | 21.911 ms | +1.15% |
+| Sheen | 21.853 ms | 22.248 ms | +1.81% |
+| Glossy | 22.565 ms | 22.881 ms | +1.40% |
+| Glass | 36.964 ms | 37.314 ms | +0.95% |
+| Metallic | 22.890 ms | 24.322 ms | +6.25% |
+
+These are full-frame medians, not isolated BSDF instruction timings. All six
+image comparisons pass; maximum component error is 3.83e-6 (Glass). The roughly
+4% accepted Principled result must not be generalized to every model.
+The current driver does not expose register/scratch statistics through this
+measurement, so these results do not establish a spill/register explanation.
+The same `SurfaceProgramGPUProbe.compare` call below reproduces the paired
+measurement with `resolution=512, samples=8, timing_samples=51`.
+
+Reducing capacity from four records to one, with the same interpreter and
+evaluation formulas, measured +3.54% for Diffuse, +3.62% for Sheen, +3.44% for
+Glossy, and +8.56% for Metallic in the same paired protocol. Images pass.
+The host now selects this one-slot class for one-lobe graphs; compositions use
+the existing power-of-two classes starting at four. This retains one rendering
+implementation. Moving from one to two lobes can select a new capacity class;
+different one-lobe Diffuse/Sheen/Glossy nodes still share their class. The fresh
+73-configuration CPU/model/canonical suite passes 28,377 checks. A fresh GPU run
+passes all 340 reference/image/update assertions after that capacity change.
+The final production repeat above measured +1.15–1.81% for Diffuse/Sheen/Glossy
+and +6.25% for Metallic. Diffuse/Sheen/Glossy reuse the exact same native
+pipeline, checked by native identity. Run-to-run differences do not establish
+the native register/local-memory mechanism; Metallic retains a measured cost.
+
+The current larger record stores 108 logical bytes per weighted lobe, in local storage
+(the first version used 124). The smaller layout restores Principled's known unit
+Schlick reflection tint instead of storing it; it retains coloured glass transmission.
+Setup reads the runtime program once; its argument type contains a capability
+mask and capacity instead of the exact ordered node tuple. This differs from
+merely packing the result of the old specialized setup.
+
+In an environment using these Hikari, Mantle and Lava checkouts:
+
+```julia
+include(joinpath(pkgdir(Hikari), "benchmarks", "shared_surface", "load.jl"))
+SurfaceProgramClassChecks.run()
+SurfaceProgramCPUCheck.run()
+SurfaceProgramKernelMWE.run()
+SurfaceProgramGPUProbe.compare(
+    Hikari.Principled(metallic=0.35, coat_weight=0.4, sheen_weight=0.25, roughness=0.3);
+    resolution=96, samples=8,
+)
+```
+
+Import Hikari before using `pkgdir(Hikari)`. The GPU tests require a working
+display on backends that initialize GLFW. Load the validation modules once per session. Run tests in a separate session
+from interactive work. `compare` restores kernel selection in `finally`.
+
+Validation so far: 25,192 differential CPU checks over 67 configurations; the
+standalone generic Principled GPU evaluation agrees with the original typed CPU
+reference. Earlier full-image tests of the larger record used specialized setup
+and passed for Principled, glass, metals and subsurface. They do not demonstrate
+reuse of generic setup. The full generic layered Principled renderer now executes
+and agrees with the typed renderer (maximum absolute pixel difference 1.42e-6 in
+the 512² test).
+The 124-byte looped Principled shader is 1.45 MB versus the typed shader's 0.85 MB;
+both report 255 registers. Paired 512², 8-sample frame measurements still show
+roughly 9–11% overhead. This was an earlier candidate; its measurements do not describe the integrated variant.
+The 108-byte counted variant reduced that measurement to 5.5% overhead. A
+less layered Principled case exposed a reproducible full-render device loss;
+broader native pipeline reuse and runtime acceptance are still open.
+
+`counted_storage.jl` is a historical prototype for an isolated checkout.
+It must not be included into the integrated package. It skips lifting zero-weight terms and carries the live count
+alongside bounded storage. It preserves dispersion metadata from inactive
+transmission terms. It still requires full-image and runtime acceptance.
+
+`counts.jl`, included into Main using the production storage, compares all stored GPU
+fields and sampling/evaluation with CPU references. `shared_reflection.jl`,
+included into Hikari, is a separate optional experiment sharing microfacet
+geometry between Fresnel models; 8,496 CPU comparisons passed, and its geometry-sharing idea is now incorporated in production with additional
+GGX/Beckmann sharing. Do not load the old snapshot over that implementation.
+Neither file is loaded by `load.jl`.
+
+The related plan and acceptance criteria are in Mantle's
+`docs/material-compilation-reuse-plan.md`.
+
+## Metal stage probes
+
+On Metal, load `renderer.jl`, then `metal_stages.jl` and `metal_prebuilt.jl`
+into Main. These diagnostics compare the production shared representation with
+the typed differential reference without changing renderer selection:
+
+```julia
+MetalBSDFStageProbe.run(; count=65536, pairs=31, result_path="/tmp/metal-stages.json")
+MetalBSDFPrebuiltProbe.run(; count=65536, pairs=31, result_path="/tmp/metal-prebuilt.json")
+```
+
+The first probe constructs BSDFs on the GPU. Stage zero observes only their
+total weight, emission and dispersion, so the compiler can remove unobserved
+scattering fields; this is not a measurement of complete setup in isolation.
+Stage one adds mixture evaluation, and stage two adds sampling. The second
+probe passes already constructed, immutable BSDFs as kernel arguments, varying
+the directions and sampling choices across lanes. It removes graph setup and
+RGB lifting from the measured kernel. Both check every output against the typed
+reference before measuring 31 alternating pairs after five warmups.
+
+Unlike full-frame indirect replay, these standalone dispatches are visible to
+`Metal.@profile`. Results keep both paired wall times and five separately
+profiled dispatches per variant. Do not mix the two measurements or subtract
+stages as if they were an additive pass decomposition: each stage is compiled
+independently, and dead-code elimination and register allocation can differ.
+
+The initial M5 run preserved all outputs exactly (20 assertions). Prebuilt
+mixture-only evaluation still cost 2.19 times the typed reference for Principled
+and 3.01 times for Glass; with sampling the ratios were 1.11 and 1.27. This
+demonstrates a residual evaluation cost without setup, not its native cause.
+The complete material and runtime report is in Mantle's
+`docs/metal-material-validation.md`.
+
+`metal_active_capacity.jl`, loaded after those two Metal modules, isolates the
+effect of unused capacity without GPU material setup. It passes the same typed,
+shared and CPU-trimmed BSDFs to the same kernel, checks all outputs, then records
+51 alternating wall-time triples and 30 GPU timestamps per implementation:
+
+```julia
+include(joinpath(pkgdir(Hikari), "benchmarks/shared_surface/metal_active_capacity.jl"))
+MetalActiveCapacityProbe.run(; result_path="/tmp/metal-active-capacity.json");
+```
+
+On M5, trimming the five-active-term Principled fixture from eight slots to five
+reduces mixture-only device time from 670.6 to 325.5 microseconds. Trimming the
+one-active-term Glass fixture from eight slots to one reduces it from 655.2 to
+132.9 microseconds. With sampling added, the reductions are 663.8 to 346.3 and
+654.3 to 198.7 microseconds. All 16 comparisons pass. These are standalone
+dispatches over 65,536 lanes, not full-frame speedups. The experiment changes
+the capacity specialization as well as storage size, so it does not isolate a
+register/spill mechanism. Value-dependent capacity is not adopted: it would
+change the kernel class when a numeric material edit activates another term.
+
+`metal_single_lobe.jl`, loaded after `metal_stages.jl`, isolates one further
+experiment for positive, single-lobe Diffuse/Sheen/Glossy programs:
+
+```julia
+MetalSingleLobeProbe.run(; count=65536, pairs=51, result_path="/tmp/metal-single-lobe.json")
+```
+
+It compares the stored record with decoding its runtime tag once before
+evaluation and sampling. Both variants receive the same runtime program; no
+material type enters the kernel signature. The second and third models must
+produce zero compiler misses after the first model. Concrete BSDF construction
+stays inside each tag branch to retain inference. Output comparisons precede
+51 alternating pairs and six alternating groups of five GPU timestamp samples.
+The packaged M5 check passes eight output/reuse assertions. This diagnostic
+does not change production rendering or establish correctness for larger graphs.
+
+Latest follow-up results (2026-10-31): inlining the shared evaluator avoids the
+sparse-graph GPU fault and passes standalone setup/evaluation/sampling. Four
+Principled/Glass/Sheen/Glossy graph combinations reuse the same native BSDF
+pipeline (28 checks, maximum pixel error 5.96e-8). Sparse Principled also renders
+pixel-identically with hardware ray tracing. Paired software frame measurements
+still show 4–5% overhead. `inline_evaluation.jl` and
+`inline_shared_reflection.jl` reproduce these optional variants; the latter
+requires `shared_reflection.jl` to have been loaded first. These files do not fix
+the underlying non-inlined function-boundary failure.
+
+`mutable_storage.jl` is a rejected alternative: it rendered correctly but took
+680.00 ms versus 31.57 ms for the typed reference at 512²/8 samples (51 paired
+frames). Its mutable BSDF also fails the immutable storage contract. It remains
+only as a reproducible diagnostic, not an integration candidate.
+
+`deferred_padding.jl` tests a smaller change to counted tuple storage: every
+live slot is written during setup, then only unused slots are initialized before
+constructing the tuple. It passes 5,376 CPU checks and complete-render checks,
+but measured 29.96 ms versus 28.01 ms typed (+6.95%), so it is not an improvement
+over the prior inline tuple candidate.
+
+`native_compile.c` is a compile-only Vulkan diagnostic for captured software-
+tracing compute shaders. It requires Vulkan 1.3 headers and a Vulkan loader;
+no GPU dispatch is submitted. Always bound its native compiler, for example:
+
+```sh
+prlimit --data=4294967296 timeout --kill-after=5s 60s ./native_compile RTX captured.spv
+```
+
+The independent compile checks compiler resource use only. Render correctness
+still needs the Hikari image/reference tests. Hardware-ray-query shaders require
+a matching device feature/layout setup and are outside this small probe's scope.
+
+### Validation follow-up, 2026-11-01
+
+The material acceptance group passes 28,803 checks on both Radeon 8060S
+(RADV STRIX_HALO) and `Lavapipe_jll` (Mesa 26.2.2, LLVM 22.1.8). It covers
+canonical Glass, storage classes, direct evaluation and inference, native
+compositions, render parity, structural updates, shade-kernel sharing,
+white-furnace checks and the Cycles reference batches. The same 28,803 checks
+also pass on the M5 through Metal, including the updated direct shader path.
+
+An idle RTX 4000 Ada comparison uses 512² pixels, eight samples, software
+traversal, five warmups and 51 alternating pairs. These are full-frame medians:
+
+| Material | Typed reference | Shared storage | Change |
+|---|---:|---:|---:|
+| Layered Principled | 26.759 ms | 27.977 ms | +4.55% |
+| Diffuse | 21.041 ms | 21.786 ms | +3.54% |
+| Sheen | 21.817 ms | 22.385 ms | +2.60% |
+| Glossy | 21.962 ms | 22.796 ms | +3.80% |
+| Glass, roughness 0.25 | 37.745 ms | 38.320 ms | +1.53% |
+| Metallic | 22.440 ms | 24.497 ms | +9.17% |
+
+Maximum component errors are below 9e-7. Diffuse/Sheen/Glossy use the same
+native pipeline; Principled/Glass use the same native pipeline. The default
+zero-roughness Glass scene is black with this point light and background, so it
+is rejected by the benchmark's nonblack assertion and is not a valid timing
+fixture. The rough Glass row above replaces that attempt. These results still
+contain runtime regressions, especially Metallic, and do not establish Metal
+performance parity; see Mantle's Metal material validation report.
+
+The CI cache probe renders a nonblack Principled scene before and after a Julia
+restart. The second run reports 27 shader hits, zero shader misses and zero
+LLVM optimization misses. Its measured render-call startup was 28.4 seconds
+while other compiler tests were running; this is cache correctness evidence,
+not an idle-host startup benchmark or a claim that host compilation is solved.
+
+`inline_single_setup.jl` isolates the setup function boundary for one-record
+classes while preserving the shared runtime interpreter. With Metallic and 51
+alternating triples, the typed/shared/inline medians are 22.404/24.566/24.445 ms.
+The candidate preserves the image within 4.77e-7, reduces native code from
+487,424 to 465,536 bytes, and leaves registers (255), local memory (16 bytes)
+and shared memory (25,344 bytes) unchanged. The typed reference uses 22,784
+shared bytes. Inlining therefore gives no substantial recovery of the roughly
+9% runtime gap; it is retained as a diagnostic, and production setup is unchanged.
+
+The follow-up workgroup probe (`workgroup_size.jl`) keeps the typed reference
+and 64-thread shared pipeline alive while compiling a 128-thread shared pipeline.
+At 512², 8 spp and 51 alternating triples on the idle RTX, Metallic measured
+22.543 ms typed, 24.581 ms shared/64 and 24.683 ms shared/128. Images agreed to
+5.96e-8. Register use remained 255, code size remained 487,424 bytes, and the
+reported shared memory increased from 25,344 to 48,640 bytes per workgroup.
+Increasing the group therefore did not recover the regression; this diagnostic
+does not change the renderer's default group size.

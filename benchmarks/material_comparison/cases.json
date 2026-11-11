@@ -1,0 +1,18 @@
+{
+  "resolution": 512,
+  "samples": 64,
+  "max_depth": 4,
+  "distribution": "multi_ggx",
+  "warmups": 5,
+  "repeats": 31,
+  "sphere_radius": 0.7,
+  "camera": {"position": [0, -3, 1], "lookat": [0, 0, 0], "fov": 40},
+  "point_light": {"position": [-2, -2, 3], "intensity": 40},
+  "cases": [
+    {"name": "matte", "principled": {"base_color": [0.6, 0.6, 0.6], "roughness": 0.5, "specular_ior_level": 0}, "original": "diffuse"},
+    {"name": "rough_glass", "principled": {"base_color": [1, 1, 1], "roughness": 0.2, "ior": 1.5, "transmission_weight": 1}, "original": "dielectric"},
+    {"name": "rough_metal", "principled": {"base_color": [0.95195195195, 0.95195195195, 0.95195195195], "roughness": 0.2, "metallic": 1}, "original": "conductor"},
+    {"name": "plastic", "principled": {"base_color": [0.5, 0.5, 0.5], "roughness": 0.2, "ior": 1.5}, "original": "coated_diffuse"},
+    {"name": "layered_principled", "principled": {"base_color": [0.8, 0.8, 0.8], "roughness": 0.3, "metallic": 0.35, "coat_weight": 0.4, "sheen_weight": 0.25}, "original": null}
+  ]
+}

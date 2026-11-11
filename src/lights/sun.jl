@@ -34,7 +34,7 @@ struct SunLight{S<:Spectrum} <: Light
 end
 
 # Sun lights are delta lights (emit along a single direction)
-is_δ_light(::SunLight) = true
+is_δ_light(::Type{<:SunLight}) = true
 # Sun lights are infinite (at infinity)
 is_infinite_light(::SunLight) = true
 is_infinite_light(::Type{<:SunLight}) = true
@@ -88,6 +88,3 @@ function sample_li(
     s.scale * s.i, wi, 1f0, tester
 end
 
-@propagate_inbounds function power(s::SunLight{S}, scene::AbstractScene)::S where S<:Spectrum
-    s.scale * s.i * π * world_radius(scene)^2
-end

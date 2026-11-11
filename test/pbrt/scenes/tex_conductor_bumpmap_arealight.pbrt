@@ -1,0 +1,54 @@
+# Reproduces Crown's gold-dome "glossy white square" regression: a gold
+# conductor (roughness 0) with a displacement bump map, lit by a large
+# rectangular area light positioned so the unbumped mirror would clearly
+# reflect a bright rectangle on the surface. With proper bump mapping the
+# perturbed normal scatters that reflection into a soft matte glow.
+#
+# Hikari was rendering this as the unbumped case (sharp bright rectangle
+# patch on the gold) because the ray-differential UV footprint at Crown's
+# tight UV mapping falls sub-texel, and Hikari's texture sampler is not
+# mipmap-filtered. pbrt-v4 dodges this via trilinear MIPMap sampling on
+# the displacement texture.
+#
+# Acceptance: tile p95 < 0.07, energy_ratio in [0.95, 1.05]. Anything
+# higher means the bumped conductor is still mirroring the area light.
+
+LookAt 0 0 4   0 0 0   0 1 0
+Camera "perspective" "float fov" 35
+Film "rgb" "integer xresolution" 256 "integer yresolution" 256
+    "float maxcomponentvalue" 10
+Integrator "volpath" "integer maxdepth" 6 "bool regularize" false
+
+WorldBegin
+
+# Large area light behind the camera at slight offset — its mirror image
+# in the unbumped panel lands clearly visible on the gold; with a bump
+# map the perturbed normal smears that image into a soft matte glow.
+AttributeBegin
+    AreaLightSource "diffuse" "rgb L" [50 50 50] "bool twosided" true
+    Shape "trianglemesh"
+        "point3 P"   [ -2 -1 4.5   0 -1 4.5   0 1 4.5   -2 1 4.5 ]
+        "integer indices" [ 0 1 2  0 2 3 ]
+AttributeEnd
+
+# Bumpmap texture (16-bit grayscale sine ridges, 8-px period), scaled to
+# Crown's mitra-bump amplitude (~0.1) so the conductor doesn't fully kill
+# the reflection — we want a SOFT MATTE glow in the reference, not zero.
+Texture "bumps-raw" "float" "imagemap"
+    "string filename" "textures/test_ridges.png"
+Texture "bumps" "float" "scale"
+    "float scale" 0.1
+    "texture tex" "bumps-raw"
+
+# Mirror gold conductor (roughness 0) with displacement.
+Material "conductor"
+    "spectrum eta" "metal-Au-eta"
+    "spectrum k"   "metal-Au-k"
+    "texture displacement" "bumps"
+
+# Tilted flat panel facing the camera. UVs run 0..1 over the
+# 2x2 quad — same scale order as Crown's mitra panels.
+Shape "trianglemesh"
+    "point3 P"   [ -1 -1 0   1 -1 0   1 1 0   -1 1 0 ]
+    "point2 uv"  [  0  0     1  0    1 1    0 1    ]
+    "integer indices" [ 0 1 2  0 2 3 ]

@@ -3,5 +3,13 @@ settings.json
 package-lock.json
 node_modules
 docs/build
+# Made by docs/make.jl; the rest of docs/src/public (the logo) is tracked.
+docs/src/public/gallery/
+docs/src/public/pbrt-comparison/
+test/pbrt/recorded/
+test/pbrt/display/
 
 Manifest*.toml
+test/pbrt/build/
+test/pbrt/references/
+docs/renders/

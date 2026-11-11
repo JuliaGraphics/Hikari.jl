@@ -1,0 +1,403 @@
+# ============================================================================
+# Blender's BSDFs, and what Hikari renders a material with
+# ============================================================================
+#
+# The BSDFs below are Blender's, with its inputs and defaults; with `Diffuse`, `Emission` and
+# `Mix` they nest into one another as a Blender shader graph does. A material a user writes is a
+# description: when it is pushed, `surface_material` turns it into what Hikari renders it with, one
+# shader compiled from its BSDF nodes, including the pbrt models.
+
+"""
+    Principled(; base_color = (0.8, 0.8, 0.8), metallic = 0, roughness = 0.5, ior = 1.5, alpha = 1,
+               normal = nothing, diffuse_roughness = 0, subsurface_weight = 0, subsurface_radius = (1, 0.2, 0.1),
+               subsurface_scale = 0.05, subsurface_ior = 1.4, subsurface_anisotropy = 0, specular_ior_level = 0.5,
+               specular_tint = (1, 1, 1), anisotropic = 0, anisotropic_rotation = 0, tangent = nothing,
+               transmission_weight = 0, transmission_dispersion_scale = 0, transmission_dispersion_abbe_number = 20,
+               coat_weight = 0, coat_roughness = 0.03, coat_ior = 1.5, coat_tint = (1, 1, 1), coat_normal = nothing,
+               sheen_weight = 0, sheen_roughness = 0.5, sheen_tint = (1, 1, 1), emission_color = (1, 1, 1),
+               emission_strength = 0, thin_film_thickness = 0, thin_film_ior = 1.33, thin_wall = false,
+               distribution = :multi_ggx)
+
+Blender's Principled BSDF with every input it has, laid out as Cycles does: transparency, sheen and
+coat over the metal, transmission and the specular layer over the diffuse base. Each input except
+`thin_wall` and `distribution` takes a number, a colour, an image or a node graph.
+`distribution` is the constant `:multi_ggx` (Blender's default), `:ggx` or `:beckmann` for single scattering.
+Beckmann extends Blender's Principled node so all Glass configurations use this same path.
+
+`normal = nothing` is the surface's shading normal and `coat_normal = nothing` is `normal`; the
+default `tangent` is Blender's, radial around the Z axis (here the world's, Blender's is the
+object's). With `thin_wall`, a constant, transmission and subsurface are those of a surface of no
+thickness. Emission is found by the paths that hit it; for a light, use [`Emission`](@ref).
+"""
+@description struct Principled <: Material
+    base_color = (0.8, 0.8, 0.8)
+    metallic = 0
+    roughness = 0.5
+    ior = 1.5
+    alpha = 1
+    normal = nothing
+    diffuse_roughness = 0
+    subsurface_weight = 0
+    subsurface_radius = (1, 0.2, 0.1)
+    subsurface_scale = 0.05
+    subsurface_ior = 1.4
+    subsurface_anisotropy = 0
+    specular_ior_level = 0.5
+    specular_tint = (1, 1, 1)
+    anisotropic = 0
+    anisotropic_rotation = 0
+    tangent = nothing
+    transmission_weight = 0
+    transmission_dispersion_scale = 0
+    transmission_dispersion_abbe_number = 20
+    coat_weight = 0
+    coat_roughness = 0.03
+    coat_ior = 1.5
+    coat_tint = (1, 1, 1)
+    coat_normal = nothing
+    sheen_weight = 0
+    sheen_roughness = 0.5
+    sheen_tint = (1, 1, 1)
+    emission_color = (1, 1, 1)
+    emission_strength = 0
+    thin_film_thickness = 0
+    thin_film_ior = 1.33
+    thin_wall = false
+    distribution = :multi_ggx
+end
+
+"""
+    Glass(; base_color = (1, 1, 1), roughness = 0, ior = 1.5, normal = nothing,
+          thin_film_thickness = 0, thin_film_ior = 1.33, distribution = :multi_ggx)
+
+Convenience constructor for `Principled(transmission_weight = 1, ...)`. The returned material
+is a `Principled`, with the same fields, graph and shading path as an explicitly configured
+Principled glass. `color` remains an input alias for `base_color`; subsequent edits use
+`base_color`. This adopts Principled's reflection/transmission tinting, rather than a separate
+Blender Glass BSDF. `distribution` accepts `:multi_ggx`, `:ggx` and `:beckmann`.
+"""
+function Glass(; color = (1, 1, 1), base_color = color, roughness = 0, ior = 1.5,
+                 normal = nothing, thin_film_thickness = 0, thin_film_ior = 1.33,
+                 distribution = :multi_ggx, thin_wall = false,
+                 transmission_dispersion_scale = 0, transmission_dispersion_abbe_number = 20)
+    return Principled(; base_color, roughness, ior, normal, transmission_weight = 1,
+                      thin_film_thickness, thin_film_ior, distribution, thin_wall,
+                      transmission_dispersion_scale, transmission_dispersion_abbe_number)
+end
+
+"""
+    Refraction(; color = (1, 1, 1), roughness = 0, ior = 1.45, normal = nothing,
+               distribution = :beckmann)
+
+Blender's Refraction BSDF: transmission without Fresnel reflection. `distribution`
+is the constant `:beckmann` (Blender's default) or `:ggx`; other inputs may be node graphs or images.
+Total internal reflection absorbs the path, as in Cycles. These are single-scattering distributions.
+"""
+@description struct Refraction <: Material
+    color = (1, 1, 1)
+    roughness = 0
+    ior = 1.45
+    normal = nothing
+    distribution = :beckmann
+end
+
+"""
+    Glossy(; color = (0.8, 0.8, 0.8), roughness = 0.5, anisotropy = 0, rotation = 0, normal = nothing,
+           tangent = nothing, distribution = :multi_ggx)
+
+Blender's Glossy BSDF with the multiscatter GGX distribution: a microfacet reflection tinted by
+`color` at every angle, a mirror at no `roughness`. `distribution` is the constant
+`:multi_ggx` (Blender's default), `:ggx` or `:beckmann`; the latter two use single scattering.
+"""
+@description struct Glossy <: Material
+    color = (0.8, 0.8, 0.8)
+    roughness = 0.5
+    anisotropy = 0
+    rotation = 0
+    normal = nothing
+    tangent = nothing
+    distribution = :multi_ggx
+end
+
+"""
+    Metallic(; base_color = (0.617, 0.577, 0.540), edge_tint = (0.695, 0.726, 0.770), roughness = 0.5,
+             anisotropy = 0, rotation = 0, normal = nothing, tangent = nothing,
+             thin_film_thickness = 0, thin_film_ior = 1.33, distribution = :multi_ggx,
+             fresnel_type = :f82, ior = (2.757, 2.513, 2.231), extinction = (3.867, 3.404, 3.009))
+
+Blender's Metallic BSDF with the F82 tint Fresnel: `base_color` at normal incidence, `edge_tint`
+towards grazing angles. Set `fresnel_type = :physical_conductor` to use the complex
+index `ior` + i `extinction` instead. All inputs except `fresnel_type` and `distribution`
+can be images or node graphs. For measured spectra and pbrt's roughness convention, use
+[`Conductor`](@ref). `distribution` is the constant `:multi_ggx` (Blender's default),
+`:ggx` or `:beckmann`; the latter two use single scattering.
+"""
+@description struct Metallic <: Material
+    base_color = (0.617, 0.577, 0.54)
+    edge_tint = (0.695, 0.726, 0.77)
+    roughness = 0.5
+    anisotropy = 0
+    rotation = 0
+    normal = nothing
+    tangent = nothing
+    thin_film_thickness = 0
+    thin_film_ior = 1.33
+    distribution = :multi_ggx
+    fresnel_type = :f82
+    ior = (2.757, 2.513, 2.231)
+    extinction = (3.867, 3.404, 3.009)
+end
+
+"""
+    Translucent(; color = (0.8, 0.8, 0.8), normal = nothing)
+
+Blender's Translucent BSDF: Lambert through the surface.
+"""
+@description struct Translucent <: Material
+    color = (0.8, 0.8, 0.8)
+    normal = nothing
+end
+
+"""
+    Sheen(; color = (0.8, 0.8, 0.8), roughness = 0.5, normal = nothing)
+
+Blender's Sheen BSDF with the microfiber distribution.
+"""
+@description struct Sheen <: Material
+    color = (0.8, 0.8, 0.8)
+    roughness = 0.5
+    normal = nothing
+end
+
+"""
+    Toon(; color = (0.8, 0.8, 0.8), size = 0.5, smooth = 0, normal = nothing,
+         component = :diffuse)
+
+Blender's Toon BSDF, with a constant `component` of `:diffuse` or `:glossy`.
+`size` sets the angular extent and `smooth` softens its edge; both range from 0 to 1.
+All inputs other than `component` can be texture nodes or images.
+"""
+@description struct Toon <: Material
+    color = (0.8, 0.8, 0.8)
+    size = 0.5
+    smooth = 0
+    normal = nothing
+    component = :diffuse
+end
+
+"""
+    SubsurfaceScattering(; color = (0.8, 0.8, 0.8), scale = 0.005, radius = (1, 0.2, 0.1),
+                         ior = 1.4, roughness = 1, anisotropy = 0, normal = nothing)
+
+Blender's standalone Subsurface Scattering node with its default Random Walk model.
+`radius * scale` is the scattering distance in scene units. The node's `roughness`
+is the entry microfacet alpha, as in Cycles; Principled squares its roughness instead.
+Every input can be a number, colour, image or texture-node graph.
+"""
+@description struct SubsurfaceScattering <: Material
+    color = (0.8, 0.8, 0.8)
+    scale = 0.005
+    radius = (1, 0.2, 0.1)
+    ior = 1.4
+    roughness = 1
+    anisotropy = 0
+    normal = nothing
+end
+
+"""
+    Transparent(; color = (1, 1, 1))
+
+Blender's Transparent BSDF: light passes through unrefracted, by `color`, averaged to a coverage.
+"""
+@description struct Transparent <: Material
+    color = (1, 1, 1)
+end
+
+"""
+    Add(a, b)
+
+Blender's Add Shader: the lobes of both, which is not energy conserving in general. Both must be
+BSDFs a shader graph holds (`Principled`, `Diffuse`, `Glass`, `Refraction`, `Glossy`, `Metallic`, `Translucent`,
+`Sheen`, `Toon`, `SubsurfaceScattering`, `Transparent`, `Emission`, and mixes and sums of them).
+"""
+struct Add{A <: Material, B <: Material} <: Material
+    a::A
+    b::B
+end
+
+# ── Into a shader graph ─────────────────────────────────────────────────────
+
+"""
+    nests(material) -> Bool
+
+Whether a material can be a node of a shader graph: the Cycles and pbrt BSDFs,
+`Emission`, and mixes and sums of them.
+"""
+nests(::Material) = false
+nests(::Union{Principled, Refraction, Glossy, Metallic, Translucent, Sheen, Toon, SubsurfaceScattering, Transparent, Emission}) = true
+nests(::Diffuse) = true
+nests(::NullMaterial) = true
+nests(m::Union{Mix, Add}) = nests(m.a) && nests(m.b)
+
+"""
+    node_input(x)
+
+A material field as a shader graph's input reads it: a number, a constant colour, a node's output
+as it is, and an image sampled at the uv.
+"""
+node_input(x::TexNode) = x
+node_input(x::Real) = Float32(x)
+node_input(x::Union{Tuple{Real, Real, Real}, Colorant, AbstractVector{<:Real}}) = TextureNodes.constant(x)
+node_input(x::RGBSpectrum) = TextureNodes.constant((x.c[1], x.c[2], x.c[3]))
+node_input(t::Texture{T, 0}) where {T} = node_input(constant_value(t))
+node_input(t::Texture) = TextureNodes.image_texture(t)
+node_input(img::AbstractMatrix) = TextureNodes.image_texture(img)
+function node_input(h::TexHandle)
+    h.kind == TexKind.IMAGE && return TextureNodes.image_texture(h)
+    h.kind == TexKind.CONST_FLOAT && return h.f
+    h.kind == TexKind.CONST_SPECTRUM && return node_input(h.rgb)
+    h.kind == TexKind.NONE && return 0.0f0
+    return parameter_node(h)
+end
+node_input(t::Union{CheckerboardTexture, VertexColorTexture}) = parameter_node(t)
+node_input(x) = throw(ArgumentError("a shader input takes a number, a colour, an image or a node graph, not a $(typeof(x))"))
+
+"""The shading normal, where a normal input is `nothing`."""
+normal_input(::Nothing) = TextureNodes.normal()
+normal_input(n) = node_input(n)
+"""Blender's radial tangent, where a tangent input is `nothing`."""
+tangent_input(::Nothing) = TextureNodes.radial_tangent()
+tangent_input(t) = node_input(t)
+
+closure(kind::UInt8, inputs...; distribution::UInt8 = 0x00) =
+    BSDFNode(NodeOp.CLOSURE, (kind, distribution, 0x00), Any[inputs...])
+
+function distribution_mode(m::Principled)
+    m.distribution === :multi_ggx && return 0x00
+    m.distribution === :ggx && return 0x01
+    m.distribution === :beckmann && return 0x02
+    throw(ArgumentError("a Principled's `distribution` must be :multi_ggx, :ggx or :beckmann, got $(repr(m.distribution))"))
+end
+
+function distribution_mode(m::Union{Glossy, Metallic})
+    m.distribution === :multi_ggx && return 0x00
+    m.distribution === :ggx && return 0x01
+    m.distribution === :beckmann && return 0x02
+    throw(ArgumentError("a $(nameof(typeof(m)))'s `distribution` must be :multi_ggx, :ggx or :beckmann, got $(repr(m.distribution))"))
+end
+
+"""
+    shader_node(material) -> ShaderNode
+
+The node a material is in a shader graph (`nests`).
+"""
+function shader_node end
+
+function shader_node(m::Diffuse)
+    normal = normal_input(m.normal)
+    if pbrt_isset(m.displacement)
+        return pbrt_shader_node(m)
+    end
+    color, coverage = graph_color_alpha(m.color)
+    return closure(ClosureKind.DIFFUSE, color, node_input(m.roughness), normal, coverage)
+end
+shader_node(::NullMaterial) = shader_node(Transparent(color = (1, 1, 1)))
+function shader_node(m::Refraction)
+    m.distribution in (:beckmann, :ggx) ||
+        throw(ArgumentError("a Refraction's `distribution` must be :beckmann or :ggx, got $(repr(m.distribution))"))
+    kind = m.distribution === :beckmann ? ClosureKind.REFRACTION_BECKMANN : ClosureKind.REFRACTION_GGX
+    return closure(kind, node_input(m.color), node_input(m.roughness), node_input(m.ior), normal_input(m.normal))
+end
+shader_node(m::Glossy) =
+    closure(
+    ClosureKind.GLOSSY, node_input(m.color), node_input(m.roughness), node_input(m.anisotropy),
+    node_input(m.rotation), normal_input(m.normal), tangent_input(m.tangent); distribution = distribution_mode(m)
+)
+function shader_node(m::Metallic)
+    distribution = distribution_mode(m)
+    if m.fresnel_type === :physical_conductor
+        inputs = (
+            node_input(m.ior), node_input(m.extinction), node_input(m.roughness),
+            node_input(m.anisotropy), node_input(m.rotation), normal_input(m.normal), tangent_input(m.tangent),
+        )
+        _constant(m.thin_film_thickness, 0) && return closure(ClosureKind.PHYSICAL_METALLIC, inputs...; distribution)
+        return closure(ClosureKind.PHYSICAL_METALLIC_FILM, inputs..., node_input(m.thin_film_thickness), node_input(m.thin_film_ior); distribution)
+    end
+    m.fresnel_type === :f82 || throw(ArgumentError("a Metallic's `fresnel_type` must be :f82 or :physical_conductor, got $(repr(m.fresnel_type))"))
+    inputs = (
+        node_input(m.base_color), node_input(m.edge_tint), node_input(m.roughness),
+        node_input(m.anisotropy), node_input(m.rotation), normal_input(m.normal), tangent_input(m.tangent),
+    )
+    _constant(m.thin_film_thickness, 0) && return closure(ClosureKind.METALLIC, inputs...; distribution)
+    return closure(ClosureKind.METALLIC_FILM, inputs..., node_input(m.thin_film_thickness), node_input(m.thin_film_ior); distribution)
+end
+shader_node(m::Translucent) = closure(ClosureKind.TRANSLUCENT, node_input(m.color), normal_input(m.normal))
+shader_node(m::Sheen) = closure(ClosureKind.SHEEN, node_input(m.color), node_input(m.roughness), normal_input(m.normal))
+function shader_node(m::Toon)
+    m.component in (:diffuse, :glossy) ||
+        throw(ArgumentError("a Toon's `component` must be :diffuse or :glossy, got $(repr(m.component))"))
+    kind = m.component === :glossy ? ClosureKind.TOON_GLOSSY : ClosureKind.TOON_DIFFUSE
+    return closure(kind, node_input(m.color), node_input(m.size), node_input(m.smooth), normal_input(m.normal))
+end
+shader_node(m::Transparent) = closure(ClosureKind.TRANSPARENT, node_input(m.color))
+function shader_node(m::SubsurfaceScattering)
+    if _constant(m.scale, 0)
+        # Only color and normal remain live; unused input graphs need no evaluation.
+        return closure(ClosureKind.SUBSURFACE, node_input(m.color), 0.0f0, 0.0f0, 1.4f0, 1.0f0, 0.0f0, normal_input(m.normal))
+    end
+    return closure(
+        ClosureKind.SUBSURFACE, node_input(m.color), node_input(m.scale), node_input(m.radius),
+        node_input(m.ior), node_input(m.roughness), node_input(m.anisotropy), normal_input(m.normal)
+    )
+end
+shader_node(m::Emission) = closure(ClosureKind.EMISSION, node_input(m.color), node_input(m.strength))
+shader_node(m::Mix) = MixShaderNode(node_input(m.factor), shader_node(m.a), shader_node(m.b))
+shader_node(m::Add) = AddShaderNode(shader_node(m.a), shader_node(m.b))
+shader_node(m::Material) =
+    throw(
+    ArgumentError(
+        "a $(nameof(typeof(m))) is not a BSDF of a shader graph: only Blender's BSDFs, Diffuse, Emission, " *
+            "and mixes and sums of them are"
+    )
+)
+
+function shader_node(p::Principled)
+    p.thin_wall isa Bool ||
+        throw(ArgumentError("a Principled's `thin_wall` is a constant, not a $(typeof(p.thin_wall)): it decides which lobes the material has"))
+    normal = normal_input(p.normal)
+    coat_normal = isnothing(p.coat_normal) ? normal : node_input(p.coat_normal)
+    inputs = Any[
+        node_input(p.base_color), node_input(p.metallic), node_input(p.roughness), node_input(p.ior),
+        node_input(p.alpha), normal, node_input(p.diffuse_roughness), node_input(p.subsurface_weight),
+        node_input(p.subsurface_radius), node_input(p.subsurface_scale), node_input(p.subsurface_ior),
+        node_input(p.subsurface_anisotropy), node_input(p.specular_ior_level), node_input(p.specular_tint),
+        node_input(p.anisotropic), node_input(p.anisotropic_rotation), tangent_input(p.tangent),
+        node_input(p.transmission_weight), node_input(p.transmission_dispersion_scale),
+        node_input(p.transmission_dispersion_abbe_number), node_input(p.coat_weight),
+        node_input(p.coat_roughness), node_input(p.coat_ior), node_input(p.coat_tint), coat_normal,
+        node_input(p.sheen_weight), node_input(p.sheen_roughness), node_input(p.sheen_tint),
+        node_input(p.emission_color), node_input(p.emission_strength), node_input(p.thin_film_thickness),
+        node_input(p.thin_film_ior), Float32(p.thin_wall),
+    ]
+    return BSDFNode(NodeOp.PRINCIPLED, (0x00, distribution_mode(p), 0x00), inputs)
+end
+
+# ── What Hikari renders a material with ─────────────────────────────────────
+
+"""
+    surface_material(material) -> material
+
+What Hikari renders `material` with: a shader compiled from its BSDF nodes and
+their mixes and sums. Cycles and pbrt models use the same graph. Standalone
+`Emission` describes an area light. `push!` and `update_material!` call this.
+"""
+surface_material(m::Material) = m
+surface_material(m::Union{Principled, Refraction, Glossy, Metallic, Translucent, Sheen, Toon, SubsurfaceScattering, Transparent, Add}) =
+    ShaderMaterial(shader_node(m))
+surface_material(m::Diffuse) = ShaderMaterial(shader_node(m))
+surface_material(m::Mix) = ShaderMaterial(shader_node(m))
+surface_material(m::MediumInterface) =
+    MediumInterface(
+    surface_material(m.material); inside = m.inside, outside = m.outside, emission = m.emission,
+    shadows = m.shadows
+)

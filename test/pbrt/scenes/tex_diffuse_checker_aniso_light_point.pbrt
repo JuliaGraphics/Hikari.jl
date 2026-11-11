@@ -1,0 +1,22 @@
+# Auto-generated reference test scene
+LookAt 0 -1.2 0.6   0 0 0.5   0 0 1
+Camera "perspective" "float fov" 40
+Film "rgb" "integer xresolution" 128 "integer yresolution" 128 "float maxcomponentvalue" 10
+Integrator "volpath" "integer maxdepth" 8 "bool regularize" true
+
+WorldBegin
+
+LightSource "point" "rgb I" [40 40 40] "point3 from" [2 -1.5 3]
+
+Texture "checker_tex" "spectrum" "checkerboard"
+"rgb tex1" [0.8 0.2 0.1]
+"rgb tex2" [0.1 0.2 0.8]
+"float uscale" 4 "float vscale" 12
+
+# Ground
+Material "diffuse" "rgb reflectance" [0.5 0.5 0.5]
+Include "geometry/ground.pbrt"
+
+# Sphere
+Material "diffuse" "texture reflectance" "checker_tex"
+Include "geometry/sphere.pbrt"

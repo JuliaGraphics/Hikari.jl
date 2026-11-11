@@ -1,0 +1,17 @@
+# Auto-generated reference test scene
+LookAt 0 -1.2 0.6   0 0 0.5   0 0 1
+Camera "perspective" "float fov" 40
+Film "rgb" "integer xresolution" 128 "integer yresolution" 128 "float maxcomponentvalue" 10
+Integrator "volpath" "integer maxdepth" 8 "bool regularize" true
+
+WorldBegin
+
+LightSource "spot" "rgb I" [120 120 120] "point3 from" [1.5 -1 2.5] "point3 to" [0 0 0.5] "float coneangle" 15 "float conedeltaangle" 2
+
+# Ground
+Material "diffuse" "rgb reflectance" [0.5 0.5 0.5]
+Include "geometry/ground.pbrt"
+
+# Sphere
+Material "diffuse" "rgb reflectance" [0.5 0.5 0.5]
+Include "geometry/sphere.pbrt"

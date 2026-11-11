@@ -6,6 +6,17 @@ struct CameraCore
     shutter_close::Float32
 end
 
+# Does this camera need a per-ray time sample?  Only motion-blur cameras do
+# (shutter_open != shutter_close).  Used by the volpath camera-ray kernel to
+# skip a Sobol dimension when not needed — see compute_pixel_sample's 6-arg
+# overload in sampler/sobol.jl.  Default true (conservative); concrete
+# camera types override.
+camera_uses_motion_blur(::Camera) = true
+
+# Does this camera need a per-ray lens sample?  Only depth-of-field cameras
+# do (lens_radius > 0).  Same skip-when-not-needed pattern as above.
+camera_uses_lens(::Camera) = true
+
 struct CameraSample
     """
     Point on the film the ray passes through.
@@ -49,31 +60,6 @@ function generate_ray(
     )::Tuple{Ray,Float32} where C<:Camera
 end
 
-"""
-Same as `generate_ray`, but also computes rays for pixels shifted one pixel
-in x & y directions on the film plane.
-Useful for anti-aliasing textures.
-"""
-@inline function generate_ray_differential(
-        camera::C, sample::CameraSample,
-    )::Tuple{RayDifferentials,Float32} where C<:Camera
-
-    ray, wt = generate_ray(camera, sample)
-    shifted_x = CameraSample(
-        sample.film + Point2f(1f0, 0f0), sample.lens, sample.time,
-    )
-    shifted_y = CameraSample(
-        sample.film + Point2f(0f0, 1f0), sample.lens, sample.time,
-    )
-    ray_x, wt_x = generate_ray(camera, shifted_x)
-    ray_y, wt_y = generate_ray(camera, shifted_y)
-    rayd = RayDifferentials(
-        ray.o, ray.d, ray.t_max, ray.time,
-        true, ray_x.o, ray_y.o, ray_x.d, ray_y.d
-    )
-    rayd, wt
-end
-
 include("perspective.jl")
 include("matrix.jl")
 
@@ -83,5 +69,29 @@ include("matrix.jl")
 get_camera_to_world(camera::PerspectiveCamera) = camera.core.core.camera_to_world
 get_camera_to_world(camera::MatrixCamera) = camera.core.camera_to_world
 
-get_camera_position(camera::PerspectiveCamera) = get_camera_to_world(camera)(Point3f(0f0))
-get_camera_position(camera::MatrixCamera) = get_camera_to_world(camera)(Point3f(0f0))
+camera_to_window(camera::PerspectiveCamera) = camera.core.camera_to_window
+camera_to_window(camera::MatrixCamera) = camera.camera_to_window
+
+"""
+`p` in the camera's space as Cycles' Camera texture coordinate has it (x right, y up, z along the
+view) and on the image's window, 0 to 1 from the bottom left.
+"""
+@inline function camera_coordinates(camera, p::Point3f)
+    pc = Raycore.transform_point(get_camera_to_world(camera).inv_m, p)
+    h = camera_to_window(camera) * Vec4f(pc[1], pc[2], pc[3], 1f0)
+    return Vec3f(pc[1], pc[2], -pc[3]), Point2f(h[1] / h[4], h[2] / h[4])
+end
+
+get_camera_position(camera::PerspectiveCamera) = Raycore.transform_point(get_camera_to_world(camera).m, Point3f(0f0))
+get_camera_position(camera::MatrixCamera) = Raycore.transform_point(get_camera_to_world(camera).m, Point3f(0f0))
+
+# The camera-space plane that `raster_to_camera` maps the film onto. This is
+# where `dx_camera`/`dy_camera` live, so anything combining them with a
+# reconstructed camera-space point has to use this plane.
+#
+# Ask for it here rather than deriving it from the camera's `near`: the
+# projection puts this plane at `2 * near`, and assuming otherwise made every
+# texture footprint and bump step in the renderer 2x too wide.
+get_raster_to_camera(camera::PerspectiveCamera) = camera.core.raster_to_camera
+get_raster_to_camera(camera::MatrixCamera) = camera.raster_to_camera
+raster_plane_z(camera) = get_raster_to_camera(camera)(Point3f(0f0))[3]

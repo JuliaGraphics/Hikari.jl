@@ -1,0 +1,26 @@
+# Auto-generated reference test scene
+LookAt 0 -1.2 0.6   0 0 0.5   0 0 1
+Camera "perspective" "float fov" 40
+Film "rgb" "integer xresolution" 128 "integer yresolution" 128 "float maxcomponentvalue" 10
+Integrator "volpath" "integer maxdepth" 8 "bool regularize" true
+
+WorldBegin
+
+MakeNamedMedium "cloud"
+"string type" "nanovdb"
+"string filename" "cloud_density.nvdb"
+"rgb sigma_a" [0.5 0.5 0.5]
+"rgb sigma_s" [15.0 15.0 15.0]
+"float g" 0.0
+
+LightSource "point" "rgb I" [40 40 40] "point3 from" [2 -1.5 3]
+LightSource "infinite" "rgb L" [0.5 0.5 0.5]
+
+# Ground
+Material "diffuse" "rgb reflectance" [0.5 0.5 0.5]
+Include "geometry/ground.pbrt"
+
+MediumInterface "cloud" ""
+# Sphere
+Material "dielectric" "float eta" 1.0
+Include "geometry/sphere.pbrt"

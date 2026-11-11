@@ -37,12 +37,12 @@ end
 function create_scene()
     cat_mesh = create_cat_mesh()
 
-    cat_material = Hikari.MatteMaterial(Kd=Hikari.RGBSpectrum(0.8f0, 0.6f0, 0.4f0), σ=0f0)
-    floor_material = Hikari.MatteMaterial(Kd=Hikari.RGBSpectrum(0.3f0, 0.5f0, 0.3f0), σ=0f0)
-    back_wall_material = Hikari.MetalMaterial(reflectance=Hikari.RGBSpectrum(0.8f0, 0.6f0, 0.5f0), roughness=0.05f0)
-    left_wall_material = Hikari.MatteMaterial(Kd=Hikari.RGBSpectrum(0.7f0, 0.7f0, 0.8f0), σ=0f0)
-    sphere1_material = Hikari.MetalMaterial(reflectance=Hikari.RGBSpectrum(0.9f0, 0.9f0, 0.9f0), roughness=0.02f0)
-    sphere2_material = Hikari.MetalMaterial(reflectance=Hikari.RGBSpectrum(0.3f0, 0.6f0, 0.9f0), roughness=0.3f0)
+    cat_material = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.8f0, 0.6f0, 0.4f0))
+    floor_material = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.3f0, 0.5f0, 0.3f0))
+    back_wall_material = Hikari.Conductor(reflectance=Hikari.RGBSpectrum(0.8f0, 0.6f0, 0.5f0), roughness=0.05f0)
+    left_wall_material = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.7f0, 0.7f0, 0.8f0))
+    sphere1_material = Hikari.Conductor(reflectance=Hikari.RGBSpectrum(0.9f0, 0.9f0, 0.9f0), roughness=0.02f0)
+    sphere2_material = Hikari.Conductor(reflectance=Hikari.RGBSpectrum(0.3f0, 0.6f0, 0.9f0), roughness=0.3f0)
 
     cat = Hikari.GeometricPrimitive(Raycore.TriangleMesh(cat_mesh), cat_material)
     floor = tmesh(Rect3f(Vec3f(-5, -1.5, -2), Vec3f(10, 0.01, 10)), floor_material)

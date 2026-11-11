@@ -1,0 +1,61 @@
+# Null-interface boundary regression test.
+# A homogeneous scattering medium inside a cube bounded by a `Material "interface"`
+# mesh. pbrt treats the interface as a null (nullptr) surface — rays pass through
+# transparently, only the medium swap fires. If Hikari incorrectly wraps the
+# interface in a transmissive Dielectric (Kr=0, Kt=1, index=1) instead of a null
+# material, shadow rays are blocked at the cube surface and the bounding box
+# renders as a hard-edged shadowed cube (see intersection.jl:351).
+#
+# GEOMETRY REQUIREMENTS (learned the hard way, 2026-06-10):
+#  * The cube must be wound OUTWARD. MediumInterface inside/outside assignment
+#    follows the geometric normal (pbrt interaction.h GetMedium: w·n > 0 →
+#    outside); an inward-wound cube silently swaps the two, putting the fog
+#    in the EXTERIOR half-space after the first crossing.
+#  * The cube bottom must NOT be coplanar with the ground plane. With
+#    coincident surfaces, which one a ray hits first is a BVH tie-break, and
+#    the medium state at the ground (fog vs vacuum) — and therefore the
+#    whole shadow attenuation — depends on it. pbrt and Hikari (and even
+#    different BVH builds of the same renderer) tie-break differently, so a
+#    reference rendered from the degenerate geometry pins traversal order,
+#    not physics. The cube floats 0.02 above the ground.
+LookAt 1.8 -2.5 1.2   0 0 0   0 0 1
+Camera "perspective" "float fov" 40
+Film "rgb" "integer xresolution" 128 "integer yresolution" 128 "float maxcomponentvalue" 10
+Integrator "volpath" "integer maxdepth" 12 "bool regularize" true
+Sampler "sobol" "integer pixelsamples" 64
+
+WorldBegin
+
+MakeNamedMedium "fog"
+  "string type" "homogeneous"
+  "rgb sigma_a" [ 0.1 0.1 0.4 ]
+  "rgb sigma_s" [ 0.0 0.2 6.0 ]
+  "float g" 0.0
+
+LightSource "point" "rgb I" [ 150 150 150 ] "point3 from" [ 3 -2 4 ]
+LightSource "infinite" "rgb L" [ 0.25 0.3 0.4 ]
+
+# Ground plane
+AttributeBegin
+Material "diffuse" "rgb reflectance" [ 0.5 0.5 0.5 ]
+Shape "trianglemesh"
+  "integer indices" [ 0 1 2  0 2 3 ]
+  "point3 P" [ -5 -5 -1  5 -5 -1  5 5 -1  -5 5 -1 ]
+  "normal N" [ 0 0 1  0 0 1  0 0 1  0 0 1 ]
+AttributeEnd
+
+# Fog volume — cube with null-interface boundary
+AttributeBegin
+Material "interface"
+MediumInterface "fog" ""
+Shape "trianglemesh"
+  "point3 P" [ -1 -1 -0.98  1 -1 -0.98  1 1 -0.98  -1 1 -0.98  -1 -1 1  1 -1 1  1 1 1  -1 1 1 ]
+  "integer indices" [
+    0 2 1  0 3 2
+    4 5 6  4 6 7
+    0 1 5  0 5 4
+    2 3 7  2 7 6
+    0 7 3  0 4 7
+    1 2 6  1 6 5
+  ]
+AttributeEnd

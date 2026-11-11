@@ -23,35 +23,50 @@ Emission is handled separately by DiffuseAreaLight (registered per-triangle
 in scene.lights, not on the material).
 
 # Fields
-- `material`: The underlying BSDF material (e.g., MatteMaterial, GlassMaterial)
+- `material`: The underlying BSDF material (e.g., Diffuse, Glass)
 - `inside`: Medium for inside the surface, or `nothing` for vacuum
 - `outside`: Medium for outside the surface, or `nothing` for vacuum
+- `shadows`: `0` (the default) and the surface blocks shadow rays, as a surface with a
+  BSDF does in pbrt-v4. An index of refraction and shadow rays pass through it, weighted
+  by the Fresnel transmittance of a dielectric of that index, and cross into the medium
+  on the other side. They go straight, except towards the sky from inside a medium with an
+  `ior` (see `refracting`): those are sampled through Snell's window and bend at the
+  surface. A water surface needs this: the sun is a delta light only
+  shadow rays reach, and with the surface opaque to them no sunlight ever lit the water
+  inside, which then glowed only from the few paths that happened to refract out to the
+  sky (dark, and very noisy). What is lost is the refraction of the light on its way in,
+  the caustics, as in most production renderers.
 
 # Usage
 ```julia
 # Glass with fog inside
-MediumInterface(GlassMaterial(...); inside=fog)
+MediumInterface(Glass(); inside=fog)
 
 # Simple material with no medium transition
-MediumInterface(MatteMaterial(Kd, σ))
+MediumInterface(Diffuse(color = (0.8, 0.2, 0.2)))
 ```
 """
 struct MediumInterface{M<:Material, I, O, E} <: Material
     material::M
     inside::I      # Medium or Nothing
     outside::O     # Medium or Nothing
-    emission::E    # NamedTuple (Le, scale, two_sided) or Nothing
+    emission::E    # an `Emission`, or nothing
+    shadows::Float32   # 0: blocks shadow rays; an index of refraction: passes them (see above)
 end
 
 # Convenience constructors
-function MediumInterface(material::M; inside=nothing, outside=nothing, emission=nothing) where {M<:Material}
-    MediumInterface{M, typeof(inside), typeof(outside), typeof(emission)}(material, inside, outside, emission)
+function MediumInterface(material::M; inside=nothing, outside=nothing, emission=nothing, shadows=0f0) where {M<:Material}
+    MediumInterface{M, typeof(inside), typeof(outside), typeof(emission)}(material, inside, outside, emission, Float32(shadows))
 end
 
 function MediumInterface(material::M, medium) where {M<:Material}
     # Same medium on both sides (e.g., object embedded in fog)
-    MediumInterface{M, typeof(medium), typeof(medium), Nothing}(material, medium, medium, nothing)
+    MediumInterface{M, typeof(medium), typeof(medium), Nothing}(material, medium, medium, nothing, 0f0)
 end
+
+# Forward the height field to the wrapped surface material, like every other
+# `MediumInterface` material-level trait.
+@propagate_inbounds displacement(mi::MediumInterface) = displacement(mi.material)
 
 """Check if this interface represents a medium transition"""
 @propagate_inbounds function is_medium_transition(mi::MediumInterface)
@@ -68,16 +83,19 @@ end
 Internal index wrapper with material and medium indices
 for GPU-compatible dispatch. Created during scene building from `MediumInterface`.
 
-# Fields (all SetKey indices)
+# Fields
 - `material`: SetKey into materials container (BSDF material)
 - `inside`: SetKey for inside medium (invalid = vacuum)
 - `outside`: SetKey for outside medium (invalid = vacuum)
+- `shadows`: how shadow rays treat the surface (see `MediumInterface`)
 """
 struct MediumInterfaceIdx
     material::SetKey
     inside::SetKey
     outside::SetKey
+    shadows::Float32
 end
+MediumInterfaceIdx(material::SetKey, inside::SetKey, outside::SetKey) = MediumInterfaceIdx(material, inside, outside, 0f0)
 
 """Check if this interface represents a medium transition"""
 @propagate_inbounds function is_medium_transition(mi::MediumInterfaceIdx)
@@ -107,3 +125,32 @@ end
 @propagate_inbounds function get_crossing_medium(mi::MediumInterfaceIdx, entering::Bool)
     entering ? mi.inside : mi.outside
 end
+
+# ============================================================================
+# NullMaterial — pbrt-v4 `Material "interface"` / `nullptr`
+# ============================================================================
+
+"""
+    NullMaterial
+
+Marker material for medium-boundary surfaces that have no BSDF. Pbrt-v4 sets
+the surface material to `nullptr`; rays cross the boundary transparently and
+only the medium swap fires. In Hikari we make `push!(scene.materials, ::NullMaterial)`
+return an invalid `SetKey()`, so the existing `!is_valid(mi.material)` checks in
+the primary- and shadow-ray paths identify the surface as a null interface and
+skip BSDF sampling.
+
+A null surface with `emission` is a see-through emitter: its emission is added
+where a ray crosses it, then the ray (and every shadow ray) passes on. pbrt-v4
+ignores area lights on `interface` materials; this is what a glowing sheet
+floating in a scene needs.
+
+Usage:
+```julia
+push!(scene, bounding_mesh, MediumInterface(NullMaterial(); inside=medium))
+glow = MediumInterface(NullMaterial(); emission=Emission(color=Texture(img), two_sided=true))
+```
+"""
+struct NullMaterial <: Material end
+
+Base.push!(set::Raycore.MultiTypeSet, ::NullMaterial; kwargs...) = SetKey()

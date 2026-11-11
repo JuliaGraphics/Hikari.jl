@@ -1,0 +1,79 @@
+## Crown-scale cast-shadow test. Pinned by user's report that Crown's pearls
+## fail to cast visible shadows on the red velvet behind them in Hikari while
+## pbrt-v4 shows them clearly.
+##
+## Reproduces Crown's actual geometry parameters at world scale ±50 units
+## with multiple tilted area lights at ~70 unit distance — exactly the
+## regime where the simpler `shadow_pearl_on_velvet_arealight` test (light
+## at 1 unit) passed but Crown fails.
+
+LookAt 0 25 50   0 0 0   0 1 0
+Camera "perspective" "float fov" 35
+Film "rgb" "integer xresolution" 256 "integer yresolution" 256
+    "float maxcomponentvalue" 10
+Sampler "halton" "integer pixelsamples" 64
+Integrator "volpath" "integer maxdepth" 100 "bool regularize" false
+
+WorldBegin
+
+# Three Crown-style tilted area lights. Same intensity, area, distance, and
+# angle ranges as the first three Crown lights.
+AttributeBegin
+    AreaLightSource "diffuse" "float scale" [10] "blackbody L" [5500] "bool twosided" true
+    Shape "trianglemesh"
+        "integer indices" [ 0 1 2  0 2 3 ]
+        "point3 P" [ 5 -13 -76   -14 -13 -75   -14 13 -66   5 13 -67 ]
+AttributeEnd
+
+AttributeBegin
+    AreaLightSource "diffuse" "float scale" [10] "blackbody L" [5500] "bool twosided" true
+    Shape "trianglemesh"
+        "integer indices" [ 0 1 2  0 2 3 ]
+        "point3 P" [ 41 14 -16   45 14 -2   40 28 -1   36 28 -15 ]
+AttributeEnd
+
+AttributeBegin
+    AreaLightSource "diffuse" "float scale" [10] "blackbody L" [5500] "bool twosided" true
+    Shape "trianglemesh"
+        "integer indices" [ 0 1 2  0 2 3 ]
+        "point3 P" [ -45 14 -2   -41 14 -16   -36 29 -15   -40 29 -1 ]
+AttributeEnd
+
+# Velvet receiver at the world centre (matches Crown's `dark_velvet`).
+AttributeBegin
+    Material "coateddiffuse"
+        "rgb reflectance" [ 0.15 0.0015 0.0015 ]
+        "float roughness" [ 0.2 ]
+    Shape "trianglemesh"
+        "point3 P"   [ -20 0 -20   20 0 -20   20 0 20   -20 0 20 ]
+        "integer indices" [ 0 1 2  0 2 3 ]
+AttributeEnd
+
+# A row of small pearls floating above the velvet. Crown's pearls are ~0.5
+# units in radius and sit 0.5-2 units above the velvet/ornament base.
+AttributeBegin
+    Material "coateddiffuse"
+        "rgb reflectance" [ 0.65 0.6 0.6 ]
+        "float uroughness" [ 0.001 ]
+        "float vroughness" [ 0.001 ]
+    Translate -3 1.0 0
+    Shape "sphere" "float radius" 0.5
+AttributeEnd
+
+AttributeBegin
+    Material "coateddiffuse"
+        "rgb reflectance" [ 0.65 0.6 0.6 ]
+        "float uroughness" [ 0.001 ]
+        "float vroughness" [ 0.001 ]
+    Translate 0 1.0 0
+    Shape "sphere" "float radius" 0.5
+AttributeEnd
+
+AttributeBegin
+    Material "coateddiffuse"
+        "rgb reflectance" [ 0.65 0.6 0.6 ]
+        "float uroughness" [ 0.001 ]
+        "float vroughness" [ 0.001 ]
+    Translate 3 1.0 0
+    Shape "sphere" "float radius" 0.5
+AttributeEnd

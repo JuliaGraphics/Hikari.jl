@@ -4,32 +4,242 @@ on:
     branches:
       - master
     tags: ['*']
+  # A branch with a pull request is tested through it; also triggering on the branch's pushes
+  # ran every job twice per commit.
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
 
+env:
+  # The setup job's precompiled depot is loaded on other runners with other CPUs. A pkgimage
+  # built for `native` is rejected on a CPU that lacks one of its features, and then compiled
+  # again in every job, so build for a target every runner has. The cache path hashes this
+  # string too: every job has to see the same one.
+  JULIA_CPU_TARGET: "haswell,-rdrnd"
+
 jobs:
-  test:
-    name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}
-    runs-on: ${{ matrix.os }}
+  # Resolves the one environment of every job below and precompiles it, once. The other jobs
+  # restore its depot and project (.github/actions/ci-environment) and never run Pkg.
+  setup:
+    name: Resolve and precompile
+    runs-on: ubuntu-latest
     timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        version:
-          - '1'
-        os:
-          - ubuntu-latest
-        arch:
-          - x64
+    outputs:
+      depot-key: ${{ steps.key.outputs.depot-key }}
     steps:
       - uses: actions/checkout@v4
       - uses: julia-actions/setup-julia@v2
         with:
-          version: ${{ matrix.version }}
-          arch: ${{ matrix.arch }}
-      - uses: julia-actions/cache@v2
-      - uses: julia-actions/julia-buildpkg@v1
-      - uses: julia-actions/julia-runtest@v1
+          version: '1.12'
+      # One key per setup run: a rerun after the backend branches moved must not hand the
+      # other jobs a depot that does not match its manifest. Bump `v1` with JULIA_CPU_TARGET.
+      - id: key
+        run: echo "depot-key=hikari-depot-v1-${{ runner.os }}-julia-1.12-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
+      # Start from the newest depot of an earlier run, so Pkg fetches and precompiles only
+      # what changed since.
+      - uses: actions/cache/restore@v4
+        with:
+          path: ~/.julia
+          key: ${{ steps.key.outputs.depot-key }}
+          restore-keys: hikari-depot-v1-${{ runner.os }}-julia-1.12-
+      - name: Resolve and precompile
+        run: julia --project=.ci .ci/setup.jl
+      - uses: actions/cache/save@v4
+        with:
+          path: ~/.julia
+          key: ${{ steps.key.outputs.depot-key }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ci-environment
+          path: |
+            .ci/Project.toml
+            .ci/Manifest.toml
+
+  test-group:
+    name: Tests / ${{ matrix.group }}
+    needs: setup
+    strategy:
+      fail-fast: false
+      matrix:
+        # Three round-robin unit groups and the pbrt reference suite in two. Nov 5's per-file
+        # times add up to 40, 62 and 31 min for three unit groups; four ran 28, 36, 64 and 6.
+        group: ["1", "2", "3", "pbrt-materials", "pbrt-textures-other"]
+    runs-on: ubuntu-latest
+    # Isolated groups release compiler and driver state between test processes.
+    # The reference groups retain the complete 256-spp pbrt comparison.
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install virtual display
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+      - uses: ./.github/actions/ci-environment
+        with:
+          depot-key: ${{ needs.setup.outputs.depot-key }}
+      - name: Run tests with Lavapipe_jll
+        run: xvfb-run -a julia --project=.ci .ci/run_tests.jl "${{ matrix.group }}"
+        env:
+          # pbrt reference suite renders at HIGH spp so the gate can stay
+          # TIGHT (tile<0.07, energy in [0.95,1.05]) with no per-scene or
+          # SPP-dependent relaxations — a scene that misses the band is a
+          # real bug, not a threshold to widen. The full SW suite (151
+          # scenes) clears the tight band at 256 spp; locally on lavapipe
+          # (LLVM 22, 12-core) that is ~19 min. The Azure CI runner is
+          # slower, hence the raised job timeout below.
+          HIKARI_TEST_LAVAPIPE: "true"
+          HIKARI_PBRT_SPP: "256"
+          # Skip the HW-RT pbrt run on CI. Modern Mesa lavapipe DOES report
+          # rt_pipeline_properties (so `hw_rt_available()` returns true and
+          # the suite tries the HW path), but lavapipe implements VK_KHR_
+          # ray_tracing_pipeline in software via its LLVM JIT — every shader
+          # in the suite has to be re-JIT'd before each scene renders, which
+          # is far too slow to get through 151 scenes at 256 spp inside any
+          # reasonable job budget. SW pbrt is the gate; HW pbrt runs on
+          # real-HW (RADV / NVIDIA) dev machines. The HW RT code path (the
+          # Lava SER fallback to OpTraceRayKHR on non-SER devices) is still
+          # exercised on lavapipe by the smaller HW-using tests earlier in
+          # runtests.jl:
+          #   - test_hw_sw_parity.jl    (1-shot HW vs SW image)
+          #   - test_multitypeset_updates.jl J4 (HW after update_material!)
+          #   - test_volpath_per_iter_lifecycle.jl (HW lifecycle, 24 tests)
+          # Skipping HW pbrt here means we don't re-render 450 scenes
+          # through the JIT-emulated RT pipeline; full HW pbrt is still
+          # expected to run on real-HW (RADV / NVIDIA) developer machines.
+          HIKARI_SKIP_PBRT_HW: "true"
+      # Every render and score the pbrt groups checked, for the comparison gallery that
+      # Deploy Docs builds. Kept when a scene fails: that is the one worth looking at.
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && startsWith(matrix.group, 'pbrt') }}
+        with:
+          name: pbrt-record-${{ matrix.group }}
+          path: test/pbrt/recorded/
+
+      - name: Verify material shader cache across Julia sessions
+        if: matrix.group == '1'
+        env:
+          HIKARI_TEST_LAVAPIPE: "true"
+          # Keep this working set independent of the preceding full test group.
+          JULIA_OBJCACHE_PATH: ${{ runner.temp }}/hikari-material-cache-probe
+          HIKARI_CACHE_PROBE_REFERENCE: ${{ runner.temp }}/hikari-material-cache-image.sha256
+        run: |
+          xvfb-run -a julia --project=.ci .ci/cache_probe.jl
+          xvfb-run -a julia --project=.ci .ci/cache_probe.jl --cached
+
+  test:
+    name: Tests
+    needs: test-group
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every test group
+        env:
+          GROUP_RESULT: ${{ needs['test-group'].result }}
+        run: test "$GROUP_RESULT" = success
+
+  docs-build:
+    name: Build Docs
+    needs: setup
+    runs-on: ubuntu-latest
+    # It runs no example (Docs Examples does), so a few minutes; running them took 34 min.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install virtual display
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+      - uses: ./.github/actions/ci-environment
+        with:
+          depot-key: ${{ needs.setup.outputs.depot-key }}
+      - name: Build (without comparison gallery)
+        env:
+          # makedocs decides where Deploy Docs pushes (`bases.txt`), and a pull request's
+          # preview needs a token to check that the PR is from this repository. Without
+          # one the decision is "nowhere" and Deploy Docs succeeds having pushed nothing.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HIKARI_TEST_LAVAPIPE: "true"
+          GKSwstype: "100"
+          DATADEPS_ALWAYS_ACCEPT: true
+        run: xvfb-run -a julia --project=.ci --color=yes -e 'include("test/lavapipe.jl"); include("docs/make.jl")'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docs-build
+          path: docs/build/
+
+  # Every example of the docs, at one sample per pixel, to prove the code they show still runs:
+  # the docs build shows the published images without running any.
+  docs-examples:
+    name: Docs Examples
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install virtual display
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+      - uses: ./.github/actions/ci-environment
+        with:
+          depot-key: ${{ needs.setup.outputs.depot-key }}
+      - name: Run the examples
+        env:
+          HIKARI_DOCS_EXAMPLES: "true"
+          HIKARI_TEST_LAVAPIPE: "true"
+          GKSwstype: "100"
+          DATADEPS_ALWAYS_ACCEPT: true
+        run: xvfb-run -a julia --project=.ci --color=yes -e 'include("test/lavapipe.jl"); include("docs/make.jl")'
+
+  deploy-docs:
+    name: Deploy Docs
+    # After the test groups as well, for the pbrt records, but also when a test failed.
+    if: ${{ !cancelled() && needs.docs-build.result == 'success' && (github.event_name == 'pull_request' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/')) }}
+    needs: [setup, test-group, docs-build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      statuses: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/ci-environment
+        with:
+          depot-key: ${{ needs.setup.outputs.depot-key }}
+      - name: Download docs build
+        uses: actions/download-artifact@v4
+        with:
+          name: docs-build
+          path: docs/build/
+      # One directory per pbrt group, each holding its part of the suite's record.
+      - name: Download pbrt records
+        uses: actions/download-artifact@v4
+        with:
+          pattern: pbrt-record-*
+          path: pbrt-records/
+      # The gallery shows what the suite checked, at the suite's samples per pixel.
+      - name: Build comparison gallery
+        run: |
+          julia --project=.ci test/pbrt/run_comparison.jl pbrt-records/*
+          mkdir -p docs/build/1/pbrt-comparison
+          cp test/pbrt/display/* docs/build/1/pbrt-comparison/
+      - name: Deploy
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY }}
+        run: |
+          julia --project=.ci -e '
+            using DocumenterVitepress
+            DocumenterVitepress.deploydocs(;
+              # Absolute: Documenter changes into `root`, then resolves it again.
+              root = abspath("docs"),
+              repo = "github.com/JuliaGraphics/Hikari.jl",
+              target = "build",
+              branch = "gh-pages",
+              devbranch = "master",
+              push_preview = true,
+            )
+          '

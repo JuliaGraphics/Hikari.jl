@@ -1,0 +1,42 @@
+# Auto-generated reference test scene — thin-lens depth of field.
+LookAt 0 -5 0   0 0 0   0 0 1
+Camera "perspective" "float fov" 50
+    "float lensradius" 0.0
+    "float focaldistance" 5.0
+Film "rgb" "integer xresolution" 128 "integer yresolution" 128 "float maxcomponentvalue" 10
+Integrator "volpath" "integer maxdepth" 8 "bool regularize" true
+
+WorldBegin
+LightSource "infinite" "rgb L" [1 1 1]
+
+Texture "checks1" "spectrum" "checkerboard" "float uscale" 6 "float vscale" 6 "rgb tex1" [0.9 0.15 0.1] "rgb tex2" [0.05 0.05 0.05]
+Texture "checks2" "spectrum" "checkerboard" "float uscale" 6 "float vscale" 6 "rgb tex1" [0.1 0.9 0.15] "rgb tex2" [0.05 0.05 0.05]
+Texture "checks3" "spectrum" "checkerboard" "float uscale" 6 "float vscale" 6 "rgb tex1" [0.15 0.2 0.9] "rgb tex2" [0.05 0.05 0.05]
+
+AttributeBegin
+Material "diffuse" "texture reflectance" "checks1"
+Translate -0.8 -2.0 0
+Shape "trianglemesh"
+  "point3 P" [ -0.45 0 -0.45  0.45 0 -0.45  0.45 0 0.45  -0.45 0 0.45 ]
+  "normal N" [ 0 -1 0  0 -1 0  0 -1 0  0 -1 0 ]
+  "point2 uv" [ 0 0  1 0  1 1  0 1 ]
+  "integer indices" [ 0 1 2  0 2 3 ]
+AttributeEnd
+AttributeBegin
+Material "diffuse" "texture reflectance" "checks2"
+Translate 0.0 0.0 0
+Shape "trianglemesh"
+  "point3 P" [ -0.45 0 -0.45  0.45 0 -0.45  0.45 0 0.45  -0.45 0 0.45 ]
+  "normal N" [ 0 -1 0  0 -1 0  0 -1 0  0 -1 0 ]
+  "point2 uv" [ 0 0  1 0  1 1  0 1 ]
+  "integer indices" [ 0 1 2  0 2 3 ]
+AttributeEnd
+AttributeBegin
+Material "diffuse" "texture reflectance" "checks3"
+Translate 0.8 2.0 0
+Shape "trianglemesh"
+  "point3 P" [ -0.45 0 -0.45  0.45 0 -0.45  0.45 0 0.45  -0.45 0 0.45 ]
+  "normal N" [ 0 -1 0  0 -1 0  0 -1 0  0 -1 0 ]
+  "point2 uv" [ 0 0  1 0  1 1  0 1 ]
+  "integer indices" [ 0 1 2  0 2 3 ]
+AttributeEnd

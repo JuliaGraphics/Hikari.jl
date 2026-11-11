@@ -11,28 +11,24 @@ using GeometryBasics: normal_mesh, Tesselation
     # =========================================================================
 
     # Materials
-    white = Hikari.MatteMaterial(Kd=Hikari.RGBSpectrum(0.73f0, 0.73f0, 0.73f0))
-    red = Hikari.MatteMaterial(Kd=Hikari.RGBSpectrum(0.65f0, 0.05f0, 0.05f0))
-    green = Hikari.MatteMaterial(Kd=Hikari.RGBSpectrum(0.12f0, 0.45f0, 0.15f0))
-    glass = Hikari.GlassMaterial(
-        Kr=Hikari.RGBSpectrum(1f0),
-        Kt=Hikari.RGBSpectrum(1f0),
-        index=1.5f0,
-    )
+    white = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.73f0, 0.73f0, 0.73f0))
+    red = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.65f0, 0.05f0, 0.05f0))
+    green = Hikari.Diffuse(color = Hikari.RGBSpectrum(0.12f0, 0.45f0, 0.15f0))
+    glass = Hikari.Glass(ior = 1.5f0)
 
     # Fog medium inside glass sphere
     fog = Hikari.HomogeneousMedium(
         σ_a=Hikari.RGBSpectrum(0.01f0),
         σ_s=Hikari.RGBSpectrum(0.3f0),
-        Le=Hikari.RGBSpectrum(0f0),
+        Le = Hikari.RGBSpectrum(0f0),
         g=0.3f0,
     )
     glass_with_fog = Hikari.MediumInterface(glass; inside=fog, outside=nothing)
 
     # Conductor sphere (gold)
-    gold = Hikari.ConductorMaterial(
-        eta=Hikari.RGBSpectrum(0.15557f0, 0.42415f0, 1.3831f0),
-        k=Hikari.RGBSpectrum(3.6024f0, 2.4721f0, 1.9155f0),
+    gold = Hikari.Conductor(
+        ior=Hikari.RGBSpectrum(0.15557f0, 0.42415f0, 1.3831f0),
+        extinction=Hikari.RGBSpectrum(3.6024f0, 2.4721f0, 1.9155f0),
     )
 
     # Box dimensions
@@ -85,6 +81,7 @@ using GeometryBasics: normal_mesh, Tesselation
     # Render
     # =========================================================================
 
+    film = Hikari.Film(Mantle.defaultbackend(), film)
     integrator = Hikari.VolPath(samples=4, max_depth=4)
     integrator(scene, film, camera)
     @test true  # render completed without error

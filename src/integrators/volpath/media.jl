@@ -24,11 +24,21 @@ HGPhaseFunction() = HGPhaseFunction(0f0)
 
 Evaluate Henyey-Greenstein phase function.
 p(cos θ) = (1 - g²) / [4π(1 + g² - 2g cos θ)^(3/2)]
+
+`θ` is the angle between the directions the light travels in before and after, so
+`cos θ = 1` scatters forward. With a path's `wo` pointing back along it, that is
+`dot(-wo, wi)`, not pbrt's `dot(wo, wi)` (pbrt's formula has `+ 2g cos θ`).
 """
 @propagate_inbounds function hg_p(g::Float32, cos_θ::Float32)::Float32
     g2 = g * g
     denom = 1f0 + g2 - 2f0 * g * cos_θ
-    return (1f0 - g2) / (4f0 * Float32(π) * denom * sqrt(denom))
+    # `max(1f-10, denom)` under the `sqrt`, matching `hg_phase_pdf` and
+    # `sample_hg_phase` in `materials/common.jl` — the same formula, which
+    # guarded it and this one did not. `denom` is `(1 ∓ g)²` at grazing
+    # cos θ, so it reaches zero for strongly forward- or back-scattering
+    # media and goes slightly negative in Float32; `sqrt` of that is a
+    # `DomainError`, which on a GPU is a device-side throw, not a NaN.
+    return (1f0 - g2) / (4f0 * Float32(π) * denom * sqrt(max(1f-10, denom)))
 end
 
 @propagate_inbounds hg_p(phase::HGPhaseFunction, cos_θ::Float32) = hg_p(phase.g, cos_θ)
@@ -100,6 +110,113 @@ MediumProperties() = MediumProperties(
 )
 
 @propagate_inbounds σ_t(mp::MediumProperties) = mp.σ_a + mp.σ_s
+
+"""
+    control(medium, media, table, λ) -> MediumProperties
+    controlmajorant(medium) -> Float32
+    residual(medium, media, table, p, λ) -> MediumProperties
+
+A medium split for decomposition tracking (Kutz et al. 2017, "Spectral and
+Decomposition Tracking"): a `control` part that is the same everywhere in the
+medium's bounds, and the `residual` at a point, the rest. The trackers take the
+control's events and its transmittance without looking the medium up, and look up
+the residual only where it can be: in a majorant cell whose bound is more than
+`controlmajorant`, the share of every cell's majorant the control accounts for. By
+default there is no control and the residual is the whole medium.
+"""
+@inline control(::Medium, media, table, λ) = MediumProperties()
+
+"""
+    refracting(medium) -> Float32
+
+The index of refraction of the surface a medium lies under, as water under its
+surface (see [`snells_window`](@ref)), or 0 for a medium light reaches in straight
+lines. Light sampling in a refracting medium samples the sky through Snell's window.
+"""
+@inline refracting(::Medium) = 0f0
+
+# A geometry-query horizon only: it neither changes extinction nor truncates a
+# path. A miss at a finite horizon resumes the same flight in delta-tracking.
+@inline medium_trace_distance(::Medium, media, p) = Inf32
+
+"""
+    snells_window(ω_air, η) -> (ω_in, jacobian)
+
+Light sampling under a refracting surface (see [`refracting`](@ref)). Light from the
+sky reaches a point under water through Snell's window: it enters bent towards the
+normal, all of the sky above into a cone round it. A sky direction `ω_air`, sampled
+as the sky is, is taken to the direction `ω_in` it would arrive along under a flat
+surface (normal +z) of index `η`; the shadow ray goes out along `ω_in`, bends where it
+really meets the surface (`trace_shadow_transmittance` with `refract`) and finds the
+sky in the direction it leaves in. `jacobian` is `dω_air / dω_in = η² cos θ_in / cos θ_air`,
+the density of `ω_in` over that of `ω_air`; 0 below the horizon.
+
+Paths that leave a non-specular vertex into the window, cross the surface and reach
+the sky are the other way to the same light, and the two are weighed by MIS: the light
+sampling with the vertex's own density for its direction, the path with this
+sampling's for its own (see [`window_sky`](@ref), [`WINDOWED`](@ref)).
+"""
+@inline function snells_window(ω::Vec3f, η::Float32)
+    ca = ω[3]
+    ca <= 1f-4 && return (Vec3f(0f0, 0f0, 1f0), 0f0)
+    sa = sqrt(max(0f0, 1f0 - ca * ca))
+    sw = sa / η
+    cw = sqrt(max(0f0, 1f0 - sw * sw))
+    h = sa > 1f-6 ? Vec3f(ω[1] / sa, ω[2] / sa, 0f0) : Vec3f(0f0)
+    return (Vec3f(h[1] * sw, h[2] * sw, cw), η * η * cw / ca)
+end
+
+"""
+    window_sky(ω_in, η) -> (ω_air, jacobian)
+
+The inverse of [`snells_window`](@ref): the sky direction a flat surface of index `η`
+bends `ω_in` (going up through it) into, and `dω_air / dω_in`; 0 outside the window.
+"""
+@inline function window_sky(ω::Vec3f, η::Float32)
+    cw = ω[3]
+    cw <= 0f0 && return (Vec3f(0f0, 0f0, 1f0), 0f0)
+    sw = sqrt(max(0f0, 1f0 - cw * cw))
+    sa = η * sw
+    sa >= 1f0 && return (Vec3f(0f0, 0f0, 1f0), 0f0)
+    ca = sqrt(1f0 - sa * sa)
+    ca <= 1f-4 && return (Vec3f(0f0, 0f0, 1f0), 0f0)
+    h = sw > 1f-6 ? Vec3f(ω[1] / sw, ω[2] / sw, 0f0) : Vec3f(0f0)
+    return (Vec3f(h[1] * sa, h[2] * sa, ca), η * η * cw / ca)
+end
+
+"""
+    WINDOWED
+
+The `prev_intr_n` of a path that left a non-specular vertex in Snell's window and
+crossed the surface (see [`snells_window`](@ref)). Light sampling at that vertex
+reaches the sky it goes to as well, and the crossing put that sampling's density for
+the path's direction into its `r_l`, so the escape handler weighs the sky by MIS with
+the `r_l` as it is. The next vertex sets its own `prev_intr_n`, so the mark lasts
+exactly until the path meets anything. A real one is never zero.
+"""
+const WINDOWED = Vec3f(0f0, 0f0, 0f0)
+"Whether a path's `prev_intr_n` says it is in Snell's window (see [`WINDOWED`](@ref))."
+@inline windowed(n::Vec3f) = n == WINDOWED
+
+"""
+    regularizes(work, media, regularize::Bool) -> Bool
+
+Whether the BSDF at surface hit `work` is regularized: roughened after the path's
+first non-specular bounce, against fireflies. Not a surface that passes shadow rays,
+met from inside a refracting medium: light sampling goes through it exactly (see
+[`snells_window`](@ref)), and roughened, it would let paths count what that counted.
+"""
+@propagate_inbounds function regularizes(work, media, regularize::Bool)
+    (regularize && work.any_non_specular_bounces) || return false
+    (work.interface.shadows > 0f0 && has_medium(work.current_medium)) || return true
+    return Raycore.with_index(refracting, media, work.current_medium) <= 0f0
+end
+@inline controlmajorant(::Medium) = 0f0
+@propagate_inbounds residual(medium::Medium, media, table, p, λ) = sample_point(medium, media, table, p, λ)
+# Seen along the physical direction `d` at `p`: without a control the residual is
+# the whole medium, which may depend on it (gas moving relative to the ray, a
+# curved chord). A medium with a control keeps its own residual.
+@propagate_inbounds residual(medium::Medium, media, table, p, λ, d) = sample_point(medium, media, table, p, λ, d)
 
 # ============================================================================
 # Ray Majorant Segment
@@ -194,7 +311,11 @@ end
 
 @propagate_inbounds function majorant_lookup(grid::MajorantGrid, media, x::Integer, y::Integer, z::Integer)::Float32
      # Use Int32 arithmetic for GPU compatibility
-     idx = Int32(x) + grid.res[1] * (Int32(y) + grid.res[2] * Int32(z)) + Int32(1)
+     # Clamp indices to prevent out-of-bounds access from floating point edge cases
+     cx = clamp(Int32(x), Int32(0), grid.res[1] - Int32(1))
+     cy = clamp(Int32(y), Int32(0), grid.res[2] - Int32(1))
+     cz = clamp(Int32(z), Int32(0), grid.res[3] - Int32(1))
+     idx = cx + grid.res[1] * (cy + grid.res[2] * cz) + Int32(1)
      # Deref voxels TextureRef to get actual array
      voxels = Raycore.deref(media, grid.voxels)
      voxels[idx]
@@ -209,7 +330,8 @@ end
 # ============================================================================
 
 # NOTE: get_template_grid and get_template_grid_from_tuple are defined after
-# HomogeneousMedium and GridMedium structs (see end of file)
+# the medium structs they dispatch on (HomogeneousMedium, GridMedium,
+# RGBGridMedium), further down this file
 
 # ============================================================================
 # DDA Majorant Iterator (for heterogeneous media)
@@ -401,7 +523,7 @@ The Bool indicates validity: true = has segment, false = exhausted.
 Since structs are immutable in Julia, this returns a new iterator with updated state.
 Following PBRT-v4's DDAMajorantIterator::Next().
 """
-@inline @propagate_inbounds function dda_next(iter::DDAMajorantIterator{M}, media) where M
+@inline @propagate_inbounds function dda_step(iter::DDAMajorantIterator{M}, media) where M
     t_min = iter.t_min
     t_max = iter.t_max
 
@@ -497,6 +619,20 @@ Following PBRT-v4's DDAMajorantIterator::Next().
     return (seg, new_iter, true)
 end
 
+"Merge adjacent equal majorants, preserving their exact interval and bound."
+@inline @propagate_inbounds function dda_next(iter::DDAMajorantIterator, media)
+    seg, next, valid = dda_step(iter, media)
+    valid || return (seg, next, false)
+    density = majorant_lookup(iter.grid, media, iter.voxel...)
+    while next.t_min < next.t_max
+        v = next.voxel
+        majorant_lookup(next.grid, media, v[1], v[2], v[3]) == density || break
+        following, next, _ = dda_step(next, media)
+        seg = RayMajorantSegment(seg.t_min, following.t_max, seg.σ_maj)
+    end
+    return (seg, next, true)
+end
+
 # ============================================================================
 # Unified Ray Majorant Iterator (GPU-compatible variant type)
 # ============================================================================
@@ -535,6 +671,10 @@ struct RayMajorantIterator{M<:MajorantGrid}
     voxel_limit::NTuple{3, Int32}
     voxel::NTuple{3, Int32}
 end
+
+"Enough segments to cross every grid plane, including ties on edges and corners."
+@inline majorant_segment_limit(iter::RayMajorantIterator) = iter.mode == Int32(2) ?
+    iter.grid_res[1] + iter.grid_res[2] + iter.grid_res[3] + Int32(1) : Int32(1)
 
 # GPU-compatible empty grid constructor for homogeneous media (type placeholder)
 # Uses SVector{1,Float32} which is stored inline (not a heap pointer), so it works on GPU.
@@ -647,12 +787,15 @@ Returns (segment, new_iter, valid) where valid=false means exhausted.
 
     else
         # DDA mode - voxel traversal
-        return _ray_majorant_next_dda(iter, media)
+        return ray_majorant_next_dda(iter, media)
     end
 end
 
 """DDA next implementation (separated for clarity)"""
-@inline @propagate_inbounds function _ray_majorant_next_dda(iter::RayMajorantIterator{M}, media) where {M}
+@inline ray_majorant_next_dda(iter::RayMajorantIterator,media) =
+    ray_majorant_next_dda_step(iter,media,majorant_lookup(iter.grid,media,iter.voxel...))
+
+@inline @propagate_inbounds function ray_majorant_next_dda_step(iter::RayMajorantIterator{M}, media, ρ::Float32) where {M}
     t_min = iter.t_min
     t_max = iter.t_max
 
@@ -686,7 +829,6 @@ end
     end
 
     # Get majorant for current voxel
-    ρ = majorant_lookup(iter.grid, media, voxel_x, voxel_y, voxel_z)
     σ_maj = iter.σ_t * ρ
     seg = RayMajorantSegment(t_min, seg_t_max, σ_maj)
 
@@ -754,26 +896,32 @@ MediumInteraction() = MediumInteraction(
 
 
 """
-    HomogeneousMedium
+    HomogeneousMedium(; σ_a, σ_s, Le, g = 0, ior = 0)
 
 A participating medium with constant properties throughout.
 Simplest medium type - majorant equals actual extinction everywhere.
+`ior`: the index of the surface it lies under, for light sampling through Snell's
+window (see [`refracting`](@ref)); 0 for a medium light reaches in straight lines.
 """
 struct HomogeneousMedium <: Medium
     σ_a::RGBSpectrum           # Absorption coefficient (RGB, uplifted at sample time)
     σ_s::RGBSpectrum           # Scattering coefficient (RGB)
     Le::RGBSpectrum            # Emission (RGB)
     g::Float32                 # HG asymmetry parameter
+    ior::Float32               # The index of the surface over it, or 0
 end
 
 function HomogeneousMedium(;
     σ_a::RGBSpectrum = RGBSpectrum(0.01f0),
     σ_s::RGBSpectrum = RGBSpectrum(1f0),
     Le::RGBSpectrum = RGBSpectrum(0f0),
-    g::Float32 = 0f0
+    g::Float32 = 0f0,
+    ior::Real = 0f0,
 )
-    HomogeneousMedium(σ_a, σ_s, Le, g)
+    HomogeneousMedium(σ_a, σ_s, Le, g, Float32(ior))
 end
+
+@inline refracting(medium::HomogeneousMedium) = medium.ior
 
 """Check if medium has emission"""
 @propagate_inbounds is_emissive(m::HomogeneousMedium) = !is_black(m.Le)
@@ -937,47 +1085,6 @@ end
 # Template grid extraction for GridMedium (defined here after GridMedium struct)
 @inline get_template_grid(medium::GridMedium) = medium.majorant_grid
 
-"""
-    get_template_grid_from_tuple(media::Tuple) -> MajorantGrid
-
-Extract a template grid from the first GridMedium or RGBGridMedium in the tuple, or EmptyMajorantGrid() if none.
-This is used to ensure all majorant iterators have consistent types for GPU compilation.
-"""
-@generated function get_template_grid_from_tuple(media::M) where {M <: Tuple}
-    N = length(M.parameters)
-
-    # Find first GridMedium or RGBGridMedium in the tuple
-    for i in 1:N
-        T = M.parameters[i]
-        if T <: GridMedium || T <: RGBGridMedium
-            return :(@inbounds get_template_grid(media[$i]))
-        end
-    end
-
-    # No GridMedium/RGBGridMedium found - return empty grid (all homogeneous)
-    # Use function call instead of global const to be GPU-compatible
-    return :(EmptyMajorantGrid())
-end
-
-# Single medium case
-@inline get_template_grid_from_tuple(medium::Medium) = get_template_grid(medium)
-
-# StaticMultiTypeSet case - inspect element types of data arrays
-@generated function get_template_grid_from_tuple(media::Raycore.StaticMultiTypeSet{Data, Textures}) where {Data<:Tuple, Textures}
-    N = length(Data.parameters)
-
-    # Find first array whose element type is GridMedium or RGBGridMedium
-    for i in 1:N
-        ArrayT = Data.parameters[i]
-        ElemT = eltype(ArrayT)
-        if ElemT <: GridMedium || ElemT <: RGBGridMedium
-            return :(@inbounds get_template_grid(media.data[$i][1]))
-        end
-    end
-
-    # No GridMedium/RGBGridMedium found - return empty grid
-    return :(EmptyMajorantGrid())
-end
 
 # ============================================================================
 # RGB Grid Medium (Heterogeneous with per-voxel RGB coefficients)
@@ -1242,6 +1349,52 @@ end
 # Template grid extraction for RGBGridMedium
 @inline get_template_grid(medium::RGBGridMedium) = medium.majorant_grid
 
+# After BOTH grid media: the generators below name `RGBGridMedium`, and under
+# Julia 1.12's binding rules a generator defined before the type cannot see it —
+# inference of every call then failed with an `UndefVarError`, which broke every
+# scene with a medium.
+"""
+    get_template_grid_from_tuple(media::Tuple) -> MajorantGrid
+
+Extract a template grid from the first GridMedium or RGBGridMedium in the tuple, or EmptyMajorantGrid() if none.
+This is used to ensure all majorant iterators have consistent types for GPU compilation.
+"""
+@generated function get_template_grid_from_tuple(media::M) where {M <: Tuple}
+    N = length(M.parameters)
+
+    # Find first GridMedium or RGBGridMedium in the tuple
+    for i in 1:N
+        T = M.parameters[i]
+        if hasfield(T, :majorant_grid)
+            return :(@inbounds get_template_grid(media[$i]))
+        end
+    end
+
+    # No GridMedium/RGBGridMedium found - return empty grid (all homogeneous)
+    # Use function call instead of global const to be GPU-compatible
+    return :(EmptyMajorantGrid())
+end
+
+# Single medium case
+@inline get_template_grid_from_tuple(medium::Medium) = get_template_grid(medium)
+
+# StaticMultiTypeSet case - inspect element types of data arrays
+@generated function get_template_grid_from_tuple(media::Raycore.StaticMultiTypeSet{Data, Textures}) where {Data<:Tuple, Textures}
+    N = length(Data.parameters)
+
+    # Find first array whose element type is GridMedium or RGBGridMedium
+    for i in 1:N
+        ArrayT = Data.parameters[i]
+        ElemT = eltype(ArrayT)
+        if hasfield(ElemT, :majorant_grid)
+            return :(@inbounds get_template_grid(media.data[$i][1]))
+        end
+    end
+
+    # No GridMedium/RGBGridMedium found - return empty grid
+    return :(EmptyMajorantGrid())
+end
+
 # Following pbrt-v4: bool IsEmissive() const { return LeGrid && LeScale > 0; }
 @propagate_inbounds is_emissive(medium::RGBGridMedium) = !isnothing(medium.Le_grid) && medium.Le_scale > 0f0
 
@@ -1251,7 +1404,7 @@ Returns default RGBSpectrum(1.0) if σ_a_grid is nothing.
 """
 @propagate_inbounds function sample_σ_a(σ_a_grid, medium::RGBGridMedium, p_norm::Point3f)::RGBSpectrum
     isnothing(σ_a_grid) && return RGBSpectrum(1f0)
-    return _sample_rgb_grid(σ_a_grid, medium.grid_res, p_norm)
+    return sample_rgb_grid(σ_a_grid, medium.grid_res, p_norm)
 end
 
 """
@@ -1260,7 +1413,7 @@ Returns default RGBSpectrum(1.0) if σ_s_grid is nothing.
 """
 @propagate_inbounds function sample_σ_s(σ_s_grid, medium::RGBGridMedium, p_norm::Point3f)::RGBSpectrum
     isnothing(σ_s_grid) && return RGBSpectrum(1f0)
-    return _sample_rgb_grid(σ_s_grid, medium.grid_res, p_norm)
+    return sample_rgb_grid(σ_s_grid, medium.grid_res, p_norm)
 end
 
 """
@@ -1269,14 +1422,14 @@ Returns RGBSpectrum(0.0) if Le_grid is nothing.
 """
 @propagate_inbounds function sample_Le(Le_grid, medium::RGBGridMedium, p_norm::Point3f)::RGBSpectrum
     isnothing(Le_grid) && return RGBSpectrum(0f0)
-    return _sample_rgb_grid(Le_grid, medium.grid_res, p_norm)
+    return sample_rgb_grid(Le_grid, medium.grid_res, p_norm)
 end
 
 """
 Trilinear interpolation for RGB grid.
 p_norm is in [0,1]³ normalized coordinates within bounds.
 """
-@propagate_inbounds function _sample_rgb_grid(
+@propagate_inbounds function sample_rgb_grid(
     grid::AbstractArray{RGBSpectrum,3},
     grid_res::Vec{3, Int32},
     p_norm::Point3f
@@ -1455,79 +1608,90 @@ end
     return RayMajorantSegment(t_min, t_max, σ_maj)
 end
 
-"""Build a coarse majorant grid from the density field"""
-function build_majorant_grid(density::AbstractArray{Float32,3}, res::Vec3i)
+"""Build a coarse majorant grid from the density field (CPU path)."""
+function build_majorant_grid(density::Array{Float32,3}, res::Vec3i)
     nx, ny, nz = size(density)
     grid = MajorantGrid(res, Vector{Float32})
-
-    # For each majorant voxel, find max density in corresponding region
-    # Use floating point mapping to handle cases where majorant res > density res
-    for iz in 0:res[3]-1
-        # Map majorant voxel [iz, iz+1)/res to density range [0, nz)
-        z_start_f = iz * nz / res[3]
-        z_end_f = (iz + 1) * nz / res[3]
-        z_start = max(1, floor(Int, z_start_f) + 1)
-        z_end = min(nz, ceil(Int, z_end_f))
-
-        for iy in 0:res[2]-1
-            y_start_f = iy * ny / res[2]
-            y_end_f = (iy + 1) * ny / res[2]
-            y_start = max(1, floor(Int, y_start_f) + 1)
-            y_end = min(ny, ceil(Int, y_end_f))
-
-            for ix in 0:res[1]-1
-                x_start_f = ix * nx / res[1]
-                x_end_f = (ix + 1) * nx / res[1]
-                x_start = max(1, floor(Int, x_start_f) + 1)
-                x_end = min(nx, ceil(Int, x_end_f))
-
-                # Find max in this region
-                max_val = 0f0
-                for z in z_start:z_end, y in y_start:y_end, x in x_start:x_end
-                     max_val = max(max_val, density[x, y, z])
-                end
-
-                majorant_set!(grid, ix, iy, iz, max_val)
-            end
-        end
-    end
-
+    build_majorant_grid_cpu!(grid, density, nx, ny, nz)
     return grid
 end
 
-"""In-place majorant grid rebuild for GridMedium density updates."""
-function build_majorant_grid!(grid::MajorantGrid, density::AbstractArray{Float32,3})
-    res = grid.res
+"""Build a coarse majorant grid from a GPU density field using a KA kernel."""
+function build_majorant_grid(density::AbstractArray{Float32,3}, res::Vec3i)
     nx, ny, nz = size(density)
+    backend = KA.get_backend(density)
+    n_voxels = Int(res[1]) * Int(res[2]) * Int(res[3])
+    voxels = Mantle.devicearray(backend, Float32, n_voxels)
+    fill!(voxels, 0f0)
+    grid = MajorantGrid(voxels, Vec{3,Int32}(Int32(res[1]), Int32(res[2]), Int32(res[3])))
+    build_majorant_kernel!(backend)(
+        grid.voxels, density, Int32(res[1]), Int32(res[2]), Int32(res[3]),
+        Int32(nx), Int32(ny), Int32(nz); ndrange=n_voxels)
+    Mantle.waitidle(mantle_device(backend))
+    return grid
+end
 
+@kernel function build_majorant_kernel!(voxels, @Const(density),
+        rx::Int32, ry::Int32, rz::Int32, nx::Int32, ny::Int32, nz::Int32)
+    linear = @index(Global)
+    idx = Int32(linear) - Int32(1)
+    ix = idx % rx
+    iy = (idx ÷ rx) % ry
+    iz = idx ÷ (rx * ry)
+
+    x_start = max(Int32(1), (ix * nx) ÷ rx + Int32(1))
+    x_end   = min(nx, ((ix + Int32(1)) * nx + rx - Int32(1)) ÷ rx)
+    y_start = max(Int32(1), (iy * ny) ÷ ry + Int32(1))
+    y_end   = min(ny, ((iy + Int32(1)) * ny + ry - Int32(1)) ÷ ry)
+    z_start = max(Int32(1), (iz * nz) ÷ rz + Int32(1))
+    z_end   = min(nz, ((iz + Int32(1)) * nz + rz - Int32(1)) ÷ rz)
+
+    max_val = 0f0
+    for z in z_start:z_end, y in y_start:y_end, x in x_start:x_end
+        @inbounds max_val = max(max_val, density[x, y, z])
+    end
+    @inbounds voxels[linear] = max_val
+end
+
+"""In-place majorant grid rebuild (CPU path)."""
+function build_majorant_grid!(grid::MajorantGrid{Vector{Float32}}, density::Array{Float32,3})
+    nx, ny, nz = size(density)
+    build_majorant_grid_cpu!(grid, density, nx, ny, nz)
+    return grid
+end
+
+"""In-place majorant grid rebuild (GPU path)."""
+function build_majorant_grid!(grid::MajorantGrid, density::AbstractArray{Float32,3})
+    nx, ny, nz = size(density)
+    res = grid.res
+    backend = KA.get_backend(density)
+    n_voxels = Int(res[1]) * Int(res[2]) * Int(res[3])
+    build_majorant_kernel!(backend)(
+        grid.voxels, density, Int32(res[1]), Int32(res[2]), Int32(res[3]),
+        Int32(nx), Int32(ny), Int32(nz); ndrange=n_voxels)
+    Mantle.waitidle(mantle_device(backend))
+    return grid
+end
+
+function build_majorant_grid_cpu!(grid::MajorantGrid, density, nx, ny, nz)
+    res = grid.res
     for iz in 0:res[3]-1
-        z_start_f = iz * nz / res[3]
-        z_end_f = (iz + 1) * nz / res[3]
-        z_start = max(1, floor(Int, z_start_f) + 1)
-        z_end = min(nz, ceil(Int, z_end_f))
-
+        z_start = max(1, floor(Int, iz * nz / res[3]) + 1)
+        z_end   = min(nz, ceil(Int, (iz + 1) * nz / res[3]))
         for iy in 0:res[2]-1
-            y_start_f = iy * ny / res[2]
-            y_end_f = (iy + 1) * ny / res[2]
-            y_start = max(1, floor(Int, y_start_f) + 1)
-            y_end = min(ny, ceil(Int, y_end_f))
-
+            y_start = max(1, floor(Int, iy * ny / res[2]) + 1)
+            y_end   = min(ny, ceil(Int, (iy + 1) * ny / res[2]))
             for ix in 0:res[1]-1
-                x_start_f = ix * nx / res[1]
-                x_end_f = (ix + 1) * nx / res[1]
-                x_start = max(1, floor(Int, x_start_f) + 1)
-                x_end = min(nx, ceil(Int, x_end_f))
-
+                x_start = max(1, floor(Int, ix * nx / res[1]) + 1)
+                x_end   = min(nx, ceil(Int, (ix + 1) * nx / res[1]))
                 max_val = 0f0
                 for z in z_start:z_end, y in y_start:y_end, x in x_start:x_end
-                    max_val = max(max_val, density[x, y, z])
+                    @inbounds max_val = max(max_val, density[x, y, z])
                 end
-
                 majorant_set!(grid, ix, iy, iz, max_val)
             end
         end
     end
-    return grid
 end
 
 @propagate_inbounds is_emissive(::GridMedium) = false
@@ -1766,7 +1930,7 @@ end
 # - "A Practical Model for Subsurface Light Transport" (Jensen et al., SIGGRAPH 2001)
 # - "Acquiring Scattering Properties of Participating Media by Dilution" (SIGGRAPH 2006)
 
-const _MEDIUM_PRESETS = Dict{String, NamedTuple{(:σ_s, :σ_a), Tuple{NTuple{3,Float32}, NTuple{3,Float32}}}}(
+const MEDIUM_PRESETS = Dict{String, NamedTuple{(:σ_s, :σ_a), Tuple{NTuple{3,Float32}, NTuple{3,Float32}}}}(
     # === Milk and dairy products ===
     "Wholemilk" => (σ_s=(2.55f0, 3.21f0, 3.77f0), σ_a=(0.0011f0, 0.0024f0, 0.014f0)),
     "Skimmilk" => (σ_s=(0.70f0, 1.22f0, 1.90f0), σ_a=(0.0014f0, 0.0025f0, 0.0142f0)),
@@ -1849,8 +2013,8 @@ Available presets include:
 - Water: "PacificOceanSurfaceWater"
 """
 function get_medium_preset(name::String)
-    haskey(_MEDIUM_PRESETS, name) || error("Unknown medium preset: $name. Available: $(keys(_MEDIUM_PRESETS))")
-    return _MEDIUM_PRESETS[name]
+    haskey(MEDIUM_PRESETS, name) || error("Unknown medium preset: $name. Available: $(keys(MEDIUM_PRESETS))")
+    return MEDIUM_PRESETS[name]
 end
 
 # ============================================================================
@@ -1871,7 +2035,7 @@ Milk(g=0.8)              # Forward-scattering milk
 ```
 """
 function Milk(; scale::Real=1f0, g::Real=0f0)
-    props = _MEDIUM_PRESETS["Wholemilk"]
+    props = MEDIUM_PRESETS["Wholemilk"]
     σ_s = RGBSpectrum(props.σ_s...) * Float32(scale)
     σ_a = RGBSpectrum(props.σ_a...) * Float32(scale)
     HomogeneousMedium(σ_a=σ_a, σ_s=σ_s, g=Float32(g))
@@ -1955,7 +2119,7 @@ function Juice(name::Symbol; scale::Real=1f0, g::Real=0f0)
     else
         error("Unknown juice type: $name. Available: :apple, :cranberry, :grape, :grapefruit")
     end
-    props = _MEDIUM_PRESETS[preset_name]
+    props = MEDIUM_PRESETS[preset_name]
     σ_s = RGBSpectrum(props.σ_s...) * Float32(scale)
     σ_a = RGBSpectrum(props.σ_a...) * Float32(scale)
     HomogeneousMedium(σ_a=σ_a, σ_s=σ_s, g=Float32(g))
@@ -1985,7 +2149,7 @@ function Wine(name::Symbol; scale::Real=1f0, g::Real=0f0)
     else
         error("Unknown wine type: $name. Available: :chardonnay, :zinfandel, :merlot")
     end
-    props = _MEDIUM_PRESETS[preset_name]
+    props = MEDIUM_PRESETS[preset_name]
     σ_s = RGBSpectrum(props.σ_s...) * Float32(scale)
     σ_a = RGBSpectrum(props.σ_a...) * Float32(scale)
     HomogeneousMedium(σ_a=σ_a, σ_s=σ_s, g=Float32(g))
@@ -2003,7 +2167,7 @@ Coffee(scale=0.3)         # Diluted coffee (americano-like)
 ```
 """
 function Coffee(; scale::Real=1f0, g::Real=0f0)
-    props = _MEDIUM_PRESETS["Espresso"]
+    props = MEDIUM_PRESETS["Espresso"]
     σ_s = RGBSpectrum(props.σ_s...) * Float32(scale)
     σ_a = RGBSpectrum(props.σ_a...) * Float32(scale)
     HomogeneousMedium(σ_a=σ_a, σ_s=σ_s, g=Float32(g))
@@ -2037,3 +2201,47 @@ end
 # Default: no deflection. Media that bend light (e.g. SpacetimeMedium)
 # should override this method.
 @propagate_inbounds apply_deflection(medium, p::Point3f, ray_d::Vec3f, dt::Float32) = ray_d
+
+"""
+    integrates_emission(medium) -> Bool
+
+Whether the medium only absorbs and emits, never scatters, and is integrated
+along rays rather than tracked (see [`medium_quadrature_step`](@ref)). A trait of
+the medium's type, so the choice compiles away.
+"""
+@inline integrates_emission(medium) = false
+
+"""
+    medium_quadrature_step(medium, p, ray_d) -> Float32
+
+The step at which a medium that [`integrates_emission`](@ref) is integrated
+from `p`. Along a ray it adds its emission `∫ T(s) σ_a(s) Le(s) ds` and
+multiplies the throughput by its transmittance `exp(-∫ σ_a ds)`, both
+deterministic: the expectation delta tracking estimates with its absorption
+events, without their variance. The step should resolve the medium's own
+structure.
+"""
+function medium_quadrature_step end
+
+"""Maximum straight transport segment before re-intersecting a curved ray.
+
+Ordinary media return infinity and keep the existing delta-tracking fast path.
+Deflecting media provide a finite, geometry-scale-dependent step length.
+"""
+@propagate_inbounds medium_step_limit(medium, p::Point3f, ray_d::Vec3f) = Inf32
+
+# Curved transport may use a staggered direction: prepare the chord BEFORE
+# intersecting geometry, then recover the physical direction at each sample
+# and endpoint. Ordinary media keep the original direction and fast path.
+@propagate_inbounds medium_start_direction(medium, p, d, step) = d
+@propagate_inbounds medium_point_direction(medium, p, d, step, traveled) = d
+@propagate_inbounds medium_end_direction(medium, p, d, step, traveled) =
+    apply_deflection(medium, p, d, traveled)
+
+"""Directional medium query; the fallback preserves existing medium methods.
+
+`ray_d` is the current backwards-traced propagation direction at `p`.
+Moving emitters can specialize this method for their frequency/angle response.
+"""
+@propagate_inbounds sample_point(medium, media, table, p::Point3f, λ::Wavelengths, ray_d::Vec3f) =
+    sample_point(medium, media, table, p, λ)

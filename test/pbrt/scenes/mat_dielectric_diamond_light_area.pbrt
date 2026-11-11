@@ -1,0 +1,24 @@
+# Auto-generated reference test scene
+LookAt 0 -1.2 0.6   0 0 0.5   0 0 1
+Camera "perspective" "float fov" 40
+Film "rgb" "integer xresolution" 128 "integer yresolution" 128 "float maxcomponentvalue" 10
+Integrator "volpath" "integer maxdepth" 8 "bool regularize" true
+
+WorldBegin
+
+AttributeBegin
+AreaLightSource "diffuse" "rgb L" [8 8 8] "bool twosided" true
+Material "diffuse" "rgb reflectance" [1 1 1]
+Translate 0.8 -0.4 1.5
+Shape "trianglemesh"
+  "point3 P" [ -0.4 -0.4 0  0.4 -0.4 0  0.4 0.4 0  -0.4 0.4 0 ]
+  "integer indices" [ 0 1 2  0 2 3 ]
+AttributeEnd
+
+# Ground
+Material "diffuse" "rgb reflectance" [0.5 0.5 0.5]
+Include "geometry/ground.pbrt"
+
+# Sphere
+Material "dielectric" "float eta" 2.4
+Include "geometry/sphere.pbrt"

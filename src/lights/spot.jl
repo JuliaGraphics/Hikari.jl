@@ -25,7 +25,7 @@ struct SpotLight{S<:Spectrum} <: Light
 end
 
 # Spot lights are delta lights (emit from a single point)
-is_δ_light(::SpotLight) = true
+is_δ_light(::Type{<:SpotLight}) = true
 
 """
     SpotLight(position, target, intensity, cone_angle, falloff_angle; scale=1f0)
@@ -36,8 +36,8 @@ Convenience constructor for SpotLight that takes position and target points.
 - `position::Point3f`: World-space position of the spotlight
 - `target::Point3f`: Point the spotlight is aimed at
 - `i::Spectrum`: Light intensity/color
-- `total_width::Float32`: Total cone angle in degrees
-- `falloff_start::Float32`: Angle where intensity falloff begins (degrees)
+- `total_width::Float32`: Angle from the axis to the edge of the cone, in degrees (half its opening angle)
+- `falloff_start::Float32`: Angle from the axis where the falloff begins, in degrees
 - `scale::Float32`: Photometric scale factor (default 1.0)
 
 # Example
@@ -51,7 +51,17 @@ function SpotLight(
     total_width::Float32, falloff_start::Float32,
     scale::Float32=1f0,
 ) where S<:Spectrum
-    light_to_world = _spotlight_transform(position, target)
+    light_to_world = spotlight_transform(position, target)
+    SpotLight(light_to_world, i, total_width, falloff_start, scale)
+end
+
+# RGBSpectrum: apply photometric normalization (matching pbrt-v4)
+function SpotLight(
+    position::Point3f, target::Point3f, i::RGBSpectrum,
+    total_width::Float32, falloff_start::Float32,
+)
+    scale = 1f0 / D65_PHOTOMETRIC
+    light_to_world = spotlight_transform(position, target)
     SpotLight(light_to_world, i, total_width, falloff_start, scale)
 end
 
@@ -65,8 +75,8 @@ normalization, matching pbrt-v4's light creation pattern.
 - `rgb`: RGB color (intensity encoded in color values)
 - `position::Point3f`: World-space position of the spotlight
 - `target::Point3f`: Point the spotlight is aimed at
-- `total_width::Float32`: Total cone angle in degrees
-- `falloff_start::Float32`: Angle where intensity falloff begins (degrees)
+- `total_width::Float32`: Angle from the axis to the edge of the cone, in degrees (half its opening angle)
+- `falloff_start::Float32`: Angle from the axis where the falloff begins, in degrees
 - `power`: Optional radiant power in Watts. If specified, overrides the RGB intensity.
 
 # Example
@@ -89,7 +99,7 @@ function SpotLight(
         k_e = 2f0 * Float32(π) * ((1f0 - cos_falloff_start_val) + (cos_falloff_start_val - cos_falloff_end) / 2f0)
         scale *= power / k_e
     end
-    light_to_world = _spotlight_transform(position, target)
+    light_to_world = spotlight_transform(position, target)
     SpotLight(light_to_world, spectrum, total_width, falloff_start, scale)
 end
 
@@ -102,7 +112,7 @@ end
 Create a transformation that positions a spotlight and orients it to point at a target.
 The spotlight points in +Z direction in local space.
 """
-function _spotlight_transform(position::Point3f, target::Point3f)
+function spotlight_transform(position::Point3f, target::Point3f)
     dir = normalize(Vec3f(target - position))
     # Choose up vector that's not parallel to dir
     up = abs(dir[2]) < 0.99f0 ? Vec3f(0f0, 1f0, 0f0) : Vec3f(1f0, 0f0, 0f0)
@@ -137,28 +147,8 @@ function falloff(s::SpotLight, w::Vec3f)::Float32
     cosθ = wl[3]
     cosθ < s.cos_total_width && return 0f0
     cosθ ≥ s.cos_falloff_start && return 1f0
-    # Compute falloff inside spotlight cone.
+    # SmoothStep — matches pbrt-v4 util/math.h:268 SmoothStep(x, a, b) = t²(3 - 2t)
     δ = (cosθ - s.cos_total_width) / (s.cos_falloff_start - s.cos_total_width)
-    δ^4
+    δ * δ * (3f0 - 2f0 * δ)
 end
 
-"""
-Total power emitted by the spotlight.
-"""
-@propagate_inbounds function power(s::SpotLight)
-    # pbrt-v4: scale * Iemit * 2π * ((1 - cosFalloffStart) + (cosFalloffStart - cosFalloffEnd) / 2)
-    s.scale * s.i * 2f0 * π * (1f0 - 0.5f0 * (s.cos_falloff_start + s.cos_total_width))
-end
-
-function sample_le(
-        s::SpotLight, u1::Point2f, ::Point2f, ::Float32,
-    )::Tuple{RGBSpectrum,Ray,Normal3f,Float32,Float32}
-
-    w = s.light_to_world(uniform_sample_cone(u1, s.cos_total_width))
-    ray = Ray(o=s.position, d=w)
-    light_normal = Normal3f(ray.d)
-    pdf_pos = 1f0
-    pdf_dir = uniform_cone_pdf(s.cos_total_width)
-    # Use scale * i (matching pbrt-v4)
-    s.scale * s.i * falloff(s, ray.d), ray, light_normal, pdf_pos, pdf_dir
-end

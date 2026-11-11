@@ -473,6 +473,7 @@ end
 # ============================================================================
 
 @propagate_inbounds is_emissive(::NanoVDBMedium) = false
+@inline get_template_grid(medium::NanoVDBMedium) = medium.majorant_grid
 
 @propagate_inbounds function sample_point(
     medium::NanoVDBMedium,
@@ -576,6 +577,12 @@ end
 end
 @inline function write_buf!(buffer::Vector{UInt8}, offset::Integer, value::UInt64)
     GC.@preserve buffer unsafe_store!(reinterpret(Ptr{UInt64}, pointer(buffer, offset)), value)
+end
+@inline function write_buf!(buffer::Vector{UInt8}, offset::Integer, value::Float64)
+    GC.@preserve buffer unsafe_store!(reinterpret(Ptr{Float64}, pointer(buffer, offset)), value)
+end
+@inline function write_buf!(buffer::Vector{UInt8}, offset::Integer, value::UInt16)
+    GC.@preserve buffer unsafe_store!(reinterpret(Ptr{UInt16}, pointer(buffer, offset)), value)
 end
 
 # Set bit n in a bitmask at mask_offset (1-indexed, n is 0-indexed)
@@ -858,27 +865,60 @@ function build_nanovdb_from_dense(
 end
 
 """
-    save_nanovdb(filepath, buffer, metadata)
+    save_nanovdb(filepath, buffer, metadata; name="density", gridclass=2)
 
 Save a NanoVDB buffer (from `build_nanovdb_from_dense`) to a `.nanovdb` file
-that can be loaded back with `NanoVDBMedium(filepath; ...)`.
+compatible with both Hikari and pbrt-v4.
 
-Prepends GridData (672 bytes) + TreeData (64 bytes) header, compresses with zlib.
+File layout (standard NanoVDB IO format):
+  [16B segment header][176B MetaData][NUL-terminated name][compressed size][zlib grid]
+
+`gridclass` is NanoVDB's class number (2 for fog density, 0 for an unclassified
+scalar such as temperature). The float and double transforms are both populated;
+the checksum is explicitly disabled, as supported by NanoVDB.
+
+Hikari's reader uses the IO metadata to locate and size the ZIP payload.
+pbrt-v4's nanovdb::io::readGrid reads the segment header first.
 """
-function save_nanovdb(filepath::String, buffer::Vector{UInt8}, metadata::NamedTuple)
+function save_nanovdb(filepath::String, buffer::AbstractVector{UInt8}, metadata::NamedTuple;
+                      name::AbstractString="density", gridclass::Integer=2)
+    namebytes = collect(codeunits(name))
+    length(namebytes) <= 255 && !any(iszero, namebytes) ||
+        throw(ArgumentError("NanoVDB grid names must contain at most 255 UTF-8 bytes and no NUL"))
+    push!(namebytes, 0x00)
+    # NanoVDB constants
+    # magic = "NanoVDB0", version encoding = major<<21 | minor<<10 | patch (v32.3.3)
+    nanovdb_magic   = UInt64(0x304244566f6e614e)
+    nanovdb_version = UInt32((32 << 21) | (3 << 10) | 3)
+
     header_size = NANOVDB_GRIDDATA_SIZE + TREEDATA_SIZE  # 672 + 64 = 736
-    full_buffer = zeros(UInt8, header_size + length(buffer))
+    grid_bytes = header_size + length(buffer)
+    # Only the header is assembled. Nodes stream into the same ZIP payload,
+    # avoiding several full-grid copies for multi-gigabyte sparse fields.
+    full_buffer = zeros(UInt8, header_size)
 
-    # Copy node data after header
-    copyto!(full_buffer, header_size + 1, buffer, 1, length(buffer))
+    # ---- GridData fields (offsets from NanoVDB.h:2184, 1-indexed) ----
+    # magic(8) checksum(8) version(4) flags(4) gridIndex(4) gridCount(4)
+    # gridSize(8) name[256] Map(264) worldBBox(48) voxelSize(24)
+    # gridClass(4) gridType(4) ...
+    write_buf!(full_buffer,   1, nanovdb_magic)                      # mMagic     offset 0
+    write_buf!(full_buffer,   9, typemax(UInt64))                    # checksum explicitly disabled
+    write_buf!(full_buffer,  17, nanovdb_version)                    # mVersion   offset 16
+    write_buf!(full_buffer,  29, UInt32(1))                          # mGridCount offset 28
+    write_buf!(full_buffer,  33, UInt64(grid_bytes))                 # mGridSize  offset 32
+    # mGridName[256] at offset 40 — used by pbrt-v4 after decompression
+    for (i, c) in enumerate(namebytes)
+        full_buffer[40 + i] = c
+    end
+    write_buf!(full_buffer, 633, UInt32(gridclass))                  # mGridClass offset 632
+    write_buf!(full_buffer, 637, UInt32(1))                          # mGridType  offset 636 (Float)
 
-    # ---- Write Map in GridData ----
+    # Map: invMatF (world→index), matF (index→world), vecF (translation)
     inv_mat = metadata.inv_mat
     for (i, v) in enumerate(inv_mat)
         write_buf!(full_buffer, MAP_INVMATF_OFFSET + (i - 1) * 4, Float32(v))
+        write_buf!(full_buffer, MAP_OFFSET + 160 + (i - 1) * 8, Float64(v))
     end
-
-    # matF = inverse of invMatF (3x3 matrix inverse via cofactors)
     m = inv_mat
     cof = (m[5]*m[9] - m[6]*m[8], m[3]*m[8] - m[2]*m[9], m[2]*m[6] - m[3]*m[5],
            m[6]*m[7] - m[4]*m[9], m[1]*m[9] - m[3]*m[7], m[3]*m[4] - m[1]*m[6],
@@ -886,51 +926,102 @@ function save_nanovdb(filepath::String, buffer::Vector{UInt8}, metadata::NamedTu
     det = m[1]*cof[1] + m[2]*cof[4] + m[3]*cof[7]
     for (i, v) in enumerate(cof)
         write_buf!(full_buffer, MAP_OFFSET + (i - 1) * 4, Float32(v / det))
+        write_buf!(full_buffer, MAP_OFFSET + 88 + (i - 1) * 8, Float64(v / det))
     end
-
-    # vecF
     for (i, v) in enumerate(metadata.vec)
         write_buf!(full_buffer, MAP_VECF_OFFSET + (i - 1) * 4, Float32(v))
+        write_buf!(full_buffer, MAP_OFFSET + 232 + (i - 1) * 8, Float64(v))
     end
+    write_buf!(full_buffer, MAP_OFFSET + 84, 1f0)
+    write_buf!(full_buffer, MAP_OFFSET + 256, 1.0)
 
-    # World bounding box (6 × Float64)
+    # worldBBox (6 × Float64) at offset 560
     wmin, wmax = metadata.world_min, metadata.world_max
-    GC.@preserve full_buffer begin
-        ptr = pointer(full_buffer, WORLDBBOX_OFFSET)
-        unsafe_store!(reinterpret(Ptr{Float64}, ptr), Float64(wmin[1]), 1)
-        unsafe_store!(reinterpret(Ptr{Float64}, ptr), Float64(wmin[2]), 2)
-        unsafe_store!(reinterpret(Ptr{Float64}, ptr), Float64(wmin[3]), 3)
-        unsafe_store!(reinterpret(Ptr{Float64}, ptr), Float64(wmax[1]), 4)
-        unsafe_store!(reinterpret(Ptr{Float64}, ptr), Float64(wmax[2]), 5)
-        unsafe_store!(reinterpret(Ptr{Float64}, ptr), Float64(wmax[3]), 6)
+    for (i, v) in enumerate((wmin[1], wmin[2], wmin[3], wmax[1], wmax[2], wmax[3]))
+        write_buf!(full_buffer, WORLDBBOX_OFFSET + (i-1)*8, Float64(v))
     end
 
-    # ---- Write TreeData ----
-    # mNodeOffset[4]: byte offsets from TreeData start to each node level
-    # extract_nanovdb_metadata computes: absolute = tree_data_start + mNodeOffset
-    # where tree_data_start = NANOVDB_GRIDDATA_SIZE + 1 = 673 (Julia 1-indexed)
-    # Nodes are at (header_size + orig_offset) in full buffer
-    # So: mNodeOffset = header_size + orig_offset - tree_data_start
-    #                 = 736 + orig_offset - 673 = orig_offset + 63
-    GC.@preserve full_buffer begin
-        ptr = pointer(full_buffer, TREEDATA_NODE_OFFSET_START)
-        unsafe_store!(reinterpret(Ptr{UInt64}, ptr), UInt64(metadata.leaf_offset + 63), 1)
-        unsafe_store!(reinterpret(Ptr{UInt64}, ptr), UInt64(metadata.lower_offset + 63), 2)
-        unsafe_store!(reinterpret(Ptr{UInt64}, ptr), UInt64(metadata.upper_offset + 63), 3)
-        unsafe_store!(reinterpret(Ptr{UInt64}, ptr), UInt64(metadata.root_offset + 63), 4)
+    # voxelSize (3 × Float64) at offset 608 — 1/diagonal of invMatF
+    voxel_size = (Float64(1f0 / inv_mat[1]), Float64(1f0 / inv_mat[5]), Float64(1f0 / inv_mat[9]))
+    for (i, v) in enumerate(voxel_size)
+        write_buf!(full_buffer, 609 + (i-1)*8, Float64(v))  # offset 608 (1-indexed: 609)
     end
 
-    # mNodeCount[3]: leaf, lower, upper
-    GC.@preserve full_buffer begin
-        ptr = pointer(full_buffer, TREEDATA_NODE_COUNT_START)
-        unsafe_store!(reinterpret(Ptr{UInt32}, ptr), UInt32(metadata.leaf_count), 1)
-        unsafe_store!(reinterpret(Ptr{UInt32}, ptr), UInt32(metadata.lower_count), 2)
-        unsafe_store!(reinterpret(Ptr{UInt32}, ptr), UInt32(metadata.upper_count), 3)
+    # TreeData: node offsets and counts
+    for (i, off) in enumerate((metadata.leaf_offset + 63, metadata.lower_offset + 63,
+                                metadata.upper_offset + 63, metadata.root_offset + 63))
+        write_buf!(full_buffer, TREEDATA_NODE_OFFSET_START + (i-1)*8, UInt64(off))
+    end
+    for (i, n) in enumerate((metadata.leaf_count, metadata.lower_count, metadata.upper_count))
+        write_buf!(full_buffer, TREEDATA_NODE_COUNT_START + (i-1)*4, UInt32(n))
     end
 
-    # Compress and write
-    compressed = compress_zlib(full_buffer)
-    write(filepath, compressed)
+    # ---- NanoVDB IO file format header (pbrt-v4 nanovdb::io::readGrid compatibility) ----
+    # Segment header (16B): magic(8) version(4) gridCount(2) codec(2)
+    # MetaData (176B): gridSize(8) fileSize(8) nameKey(8) voxelCount(8) gridType(4)
+    #   gridClass(4) worldBBox(48) indexBBox(24) voxelSize(24) nameSize(4)
+    #   nodeCount[4](16) tileCount[3](12) codec(2) padding(2) version(4)
+    # Grid name (8B): "density\0"
+    io_hdr = zeros(UInt8, 192 + length(namebytes))
+
+    # Segment header at offset 0
+    write_buf!(io_hdr,  1, nanovdb_magic)    # magic    offset 0
+    write_buf!(io_hdr,  9, nanovdb_version)  # version  offset 8
+    write_buf!(io_hdr, 13, UInt16(1))        # gridCount offset 12
+    write_buf!(io_hdr, 15, UInt16(1))        # codec=ZIP offset 14
+
+    # MetaData at offset 16 (1-indexed byte 17)
+    # MetaData field offsets are relative to MetaData start (offset 16 in file)
+    m0 = 17  # MetaData base (1-indexed)
+    write_buf!(io_hdr, m0 +   0, UInt64(grid_bytes))       # gridSize offset 0
+    namekey = UInt64(0)
+    for c in namebytes[1:end-1]
+        overflow = namekey >> 56
+        namekey = namekey * UInt64(67) + UInt64(c) + overflow
+    end
+    write_buf!(io_hdr, m0 +  16, namekey)                      # NanoVDB stringHash(name)
+    write_buf!(io_hdr, m0 +  24, UInt64(0))                    # voxelCount offset 24
+    write_buf!(io_hdr, m0 +  32, UInt32(1))                    # gridType=Float(1) offset 32
+    write_buf!(io_hdr, m0 +  36, UInt32(gridclass))
+    for (i, v) in enumerate((wmin[1], wmin[2], wmin[3], wmax[1], wmax[2], wmax[3]))
+        write_buf!(io_hdr, m0 + 40 + (i-1)*8, Float64(v))     # worldBBox offset 40
+    end
+    for (i, v) in enumerate((metadata.index_min[1], metadata.index_min[2], metadata.index_min[3],
+                              metadata.index_max[1], metadata.index_max[2], metadata.index_max[3]))
+        write_buf!(io_hdr, m0 + 88 + (i-1)*4, Int32(v))       # indexBBox offset 88
+    end
+    for (i, v) in enumerate(voxel_size)
+        write_buf!(io_hdr, m0 + 112 + (i-1)*8, Float64(v))    # voxelSize offset 112
+    end
+    write_buf!(io_hdr, m0 + 136, UInt32(length(namebytes)))
+    for (i, n) in enumerate((metadata.leaf_count, metadata.lower_count, metadata.upper_count, 1))
+        write_buf!(io_hdr, m0 + 140 + (i-1)*4, UInt32(n))     # nodeCount[4] offset 140
+    end
+    # tileCount[3] stays zero (offset 156)
+    write_buf!(io_hdr, m0 + 168, UInt16(1))                    # codec=ZIP offset 168
+    write_buf!(io_hdr, m0 + 172, nanovdb_version)              # version  offset 172
+
+    # Grid name "density\0" (8 bytes) at bytes 193-200
+    for (i, c) in enumerate(namebytes)
+        io_hdr[192 + i] = c
+    end
+
+    # ZIP format: 8-byte compressed size prefix, then compressed data (required by nanovdb::io)
+    temporary, io = mktemp(dirname(abspath(filepath)))
+    try
+        write(io, io_hdr)
+        write(io, UInt64(0))
+        compressed_size = compress_zlib!(io, (full_buffer, buffer))
+        write_buf!(io_hdr, m0 + 8, UInt64(8 + compressed_size))
+        seekstart(io)
+        write(io, io_hdr)
+        write(io, UInt64(compressed_size))
+        close(io)
+        mv(temporary, filepath; force=true)
+    finally
+        isopen(io) && close(io)
+        isfile(temporary) && rm(temporary)
+    end
 
     return nothing
 end
@@ -1034,46 +1125,95 @@ ZStream() = ZStream(
 )
 
 
-function compress_zlib(data::Vector{UInt8})
-    out_buf = Vector{UInt8}(undef, length(data) + div(length(data), 100) + 1024)
-
+function compress_zlib!(io::IO, parts; chunk_bytes::Int=4*1024*1024)
+    0 < chunk_bytes <= typemax(Cuint) || throw(ArgumentError("Invalid ZIP chunk size"))
+    input = Vector{UInt8}(undef, chunk_bytes)
+    output = similar(input)
     z = Ref(ZStream())
-    z[].next_in = pointer(data)
-    z[].avail_in = length(data)
-    z[].next_out = pointer(out_buf)
-    z[].avail_out = length(out_buf)
-
     ret = ccall((:deflateInit_, Zlib_jll.libz), Cint,
         (Ref{ZStream}, Cint, Cstring, Cint), z, 6, "1.2.11", sizeof(ZStream))
     ret != 0 && error("deflateInit failed: $ret")
+    try
+        GC.@preserve input output begin
+            for part in parts, first in 1:chunk_bytes:length(part)
+                n = min(chunk_bytes, length(part)-first+1)
+                copyto!(input, 1, part, first, n)
+                z[].next_in = pointer(input)
+                z[].avail_in = Cuint(n)
+                while z[].avail_in > 0
+                    z[].next_out = pointer(output)
+                    z[].avail_out = Cuint(chunk_bytes)
+                    ret = ccall((:deflate, Zlib_jll.libz), Cint, (Ref{ZStream}, Cint), z, 0)
+                    ret == 0 || error("ZIP compression failed: $ret")
+                    write(io, view(output, 1:chunk_bytes-Int(z[].avail_out)))
+                end
+            end
+            z[].next_in = C_NULL
+            z[].avail_in = 0
+            while true
+                z[].next_out = pointer(output)
+                z[].avail_out = Cuint(chunk_bytes)
+                ret = ccall((:deflate, Zlib_jll.libz), Cint, (Ref{ZStream}, Cint), z, 4)
+                ret in (0,1) || error("ZIP compression finalization failed: $ret")
+                write(io, view(output, 1:chunk_bytes-Int(z[].avail_out)))
+                ret == 1 && break
+            end
+        end
+        return Int(z[].total_out)
+    finally
+        ccall((:deflateEnd, Zlib_jll.libz), Cint, (Ref{ZStream},), z)
+    end
+end
 
-    ret = ccall((:deflate, Zlib_jll.libz), Cint, (Ref{ZStream}, Cint), z, 4)  # Z_FINISH=4
-    compressed_size = z[].total_out
-    ccall((:deflateEnd, Zlib_jll.libz), Cint, (Ref{ZStream},), z)
-
-    return out_buf[1:compressed_size]
+function compress_zlib(data::AbstractVector{UInt8})
+    io = IOBuffer()
+    compress_zlib!(io, (data,))
+    return take!(io)
 end
 
 
-function decompress_nanovdb(compressed_data::Vector{UInt8})
-    # Use Zlib_jll for decompression
-    output_buffer = Vector{UInt8}(undef, 200_000_000)  # 200MB should be enough
-
+function decompress_nanovdb(compressed_data::Vector{UInt8}; expected_size::Union{Int,Nothing}=nothing)
+    expected_size === nothing || expected_size > 0 || throw(ArgumentError("Invalid NanoVDB grid size"))
+    output_buffer = Vector{UInt8}(undef, expected_size === nothing ? 65536 : expected_size)
     z = Ref(ZStream())
-    z[].next_in = pointer(compressed_data)
-    z[].avail_in = length(compressed_data)
-    z[].next_out = pointer(output_buffer)
-    z[].avail_out = length(output_buffer)
-
     ret = ccall((:inflateInit_, Zlib_jll.libz), Cint,
                 (Ref{ZStream}, Cstring, Cint), z, "1.2.11", sizeof(ZStream))
-    ret != 0 && error("inflateInit failed: $ret")
-
-    ret = ccall((:inflate, Zlib_jll.libz), Cint, (Ref{ZStream}, Cint), z, 4)  # Z_FINISH=4
-    decompressed_size = z[].total_out
-    ccall((:inflateEnd, Zlib_jll.libz), Cint, (Ref{ZStream},), z)
-
-    return output_buffer[1:decompressed_size]
+    ret == 0 || error("inflateInit failed: $ret")
+    supplied = 0
+    try
+        while true
+            written = Int(z[].total_out)
+            if written == length(output_buffer)
+                # A small spare byte also lets zlib consume the stream trailer
+                # when the declared size exactly fills the output buffer.
+                capacity = expected_size === nothing ? max(65536,2length(output_buffer)) : expected_size+1
+                capacity > written || error("NanoVDB stream exceeds its declared grid size")
+                resize!(output_buffer,capacity)
+            end
+            previous = (z[].total_in,z[].total_out)
+            GC.@preserve compressed_data output_buffer begin
+                if z[].avail_in == 0 && supplied < length(compressed_data)
+                    count = min(length(compressed_data)-supplied,Int(typemax(Cuint)))
+                    z[].next_in = pointer(compressed_data,supplied+1)
+                    z[].avail_in = Cuint(count)
+                    supplied += count
+                end
+                z[].next_out = pointer(output_buffer,written+1)
+                z[].avail_out = Cuint(min(length(output_buffer)-written,Int(typemax(Cuint))))
+                ret = ccall((:inflate, Zlib_jll.libz), Cint, (Ref{ZStream}, Cint), z, 0)
+            end
+            expected_size === nothing || z[].total_out <= expected_size ||
+                error("NanoVDB stream exceeds its declared grid size")
+            ret == 1 && break # Z_STREAM_END, including checksum/trailer validation
+            ret in (0,-5) || error("Invalid NanoVDB ZIP stream: zlib status $ret")
+            previous != (z[].total_in,z[].total_out) || error("Truncated NanoVDB ZIP stream")
+        end
+        expected_size === nothing || z[].total_out == expected_size || error("NanoVDB grid size differs from its header")
+        resize!(output_buffer,Int(z[].total_out))
+        return output_buffer
+    finally
+        ccall((:inflateEnd, Zlib_jll.libz), Cint, (Ref{ZStream},), z)
+    end
 end
 
 """
@@ -1084,20 +1224,40 @@ Returns raw buffer suitable for GPU upload.
 """
 function parse_nanovdb_buffer(filepath::String)
     nvdb_data = read(filepath)
+    scalar(T,at) = reinterpret(T,nvdb_data[at:at+sizeof(T)-1])[1]
+    length(nvdb_data) >= 192 || error("Truncated NanoVDB file header")
+    scalar(UInt64,1) == 0x304244566f6e614e || error("Unsupported NanoVDB file magic")
+    scalar(UInt16,13) == 1 || error("NanoVDB reader requires a single-grid file")
+    scalar(UInt16,15) == 1 || error("NanoVDB reader requires ZIP compression")
+    scalar(UInt32,49) == 1 || error("NanoVDB reader requires Float grid values")
+    grid_size = Int(scalar(UInt64,17))
+    name_size = Int(scalar(UInt32,153))
+    # Standard IO metadata gives the exact payload location. Searching for a
+    # zlib byte pattern can instead match arbitrary bytes in a name or bounds.
+    payload = 193+name_size
+    payload+7 <= length(nvdb_data) || error("Truncated NanoVDB grid name")
+    compressed_size = Int(scalar(UInt64,payload))
+    0 < compressed_size <= length(nvdb_data)-payload-7 || error("Truncated NanoVDB ZIP payload")
+    buffer = decompress_nanovdb(nvdb_data[payload+8:payload+7+compressed_size];expected_size=grid_size)
 
-    # Find zlib header (0x78 0x9c for default compression)
-    compressed_start = 0
-    for i in 1:min(500, length(nvdb_data)-1)
-        if nvdb_data[i] == 0x78 && nvdb_data[i+1] in (0x01, 0x5e, 0x9c, 0xda)
-            compressed_start = i
-            break
-        end
+    length(buffer) >= NANOVDB_GRIDDATA_SIZE+TREEDATA_SIZE || error("Truncated NanoVDB grid header")
+    raw(T,at) = reinterpret(T,buffer[at:at+sizeof(T)-1])[1]
+    raw(UInt64,1) == 0x304244566f6e614e || error("Invalid NanoVDB grid magic")
+    raw(UInt32,637) == 1 || error("NanoVDB reader requires Float grid values")
+    # Validate every fixed-size range before metadata extraction walks nodes
+    # through raw pointers. Offsets are relative to the TreeData header.
+    tree_start = NANOVDB_GRIDDATA_SIZE+1
+    offsets = ntuple(i -> raw(UInt64,TREEDATA_NODE_OFFSET_START+8(i-1)),4)
+    counts = ntuple(i -> raw(UInt32,TREEDATA_NODE_COUNT_START+4(i-1)),3)
+    for (offset,count,stride) in zip(offsets,counts,(LEAFDATA_SIZE,LOWER_NODE_SIZE,UPPER_NODE_SIZE))
+        UInt128(tree_start)+offset+UInt128(count)*stride-1 <= length(buffer) ||
+            error("Truncated NanoVDB node data")
     end
-    compressed_start == 0 && error("Could not find zlib header in NanoVDB file")
-
-    # Decompress using external zlib
-    compressed_data = nvdb_data[compressed_start:end]
-    buffer = decompress_nanovdb(compressed_data)
+    UInt128(tree_start)+offsets[4]+ROOTDATA_HEADER_SIZE-1 <= length(buffer) || error("Truncated NanoVDB root")
+    root = tree_start+Int(offsets[4])
+    tiles = raw(UInt32,root+ROOTDATA_TABLESIZE_OFFSET)
+    UInt128(root)+ROOTDATA_HEADER_SIZE+UInt128(tiles)*ROOTTILE_SIZE-1 <= length(buffer) ||
+        error("Truncated NanoVDB root tiles")
 
     # Extract metadata
     metadata = extract_nanovdb_metadata(buffer)
@@ -1178,15 +1338,6 @@ function build_nanovdb_majorant_grid(
     res::Vec3i = Vec3i(64, 64, 64)
 )
     grid = MajorantGrid(res, Vector{Float32})
-
-    # Create temporary medium-like structure for sampling
-    temp_medium = (
-        buffer = buffer,
-        root_offset = metadata.root_offset,
-        root_table_size = metadata.root_table_size,
-        inv_mat = metadata.inv_mat,
-        vec = metadata.vec
-    )
 
     # For each majorant cell, find max density
     diag = bounds.p_max - bounds.p_min

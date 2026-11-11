@@ -22,28 +22,29 @@ using Adapt
 should_use_soa(::Type{T}) where T = false
 
 """
-    allocate_array(backend, T, n; soa=false)
+    allocate_array(mem, T, n; soa=false)
 
-Allocate array with AOS (soa=false) or SOA (soa=true) layout.
-Both support identical indexing: arr[i] returns T, arr[i] = val stores T.
+Allocate array with AOS (soa=false) or SOA (soa=true) layout, from the memory
+the render state owns. Both support identical indexing: arr[i] returns T,
+arr[i] = val stores T.
 """
-function allocate_array(backend, ::Type{T}, n::Integer; soa::Bool=false) where T
-    soa ? _allocate_soa(backend, T, n) : KA.allocate(backend, T, n)
+function allocate_array(mem::DeviceMemory, ::Type{T}, n::Integer; soa::Bool=false) where T
+    soa ? allocate_soa(mem, T, n) : alloc!(mem, T, n)
 end
 
-function _allocate_soa(backend, ::Type{T}, n::Integer) where T
+function allocate_soa(mem::DeviceMemory, ::Type{T}, n::Integer) where T
     if !should_use_soa(T)
-        return KA.allocate(backend, T, n)
+        return alloc!(mem, T, n)
     end
     if fieldcount(T) > 0
         fnames = fieldnames(T)
         ftypes = fieldtypes(T)
         components = NamedTuple{fnames}(
-            ntuple(i -> _allocate_soa(backend, ftypes[i], n), length(fnames))
+            ntuple(i -> allocate_soa(mem, ftypes[i], n), length(fnames))
         )
         return StructArray{T}(components)
     end
-    return KA.allocate(backend, T, n)
+    return alloc!(mem, T, n)
 end
 
 # ============================================================================
@@ -66,8 +67,8 @@ counter to track the current size. Supports both AOS and SOA layouts.
 
 # Example
 ```julia
-# Create a queue on GPU backend
-queue = WorkQueue{MyWorkItem}(backend, 1024)
+# Create a queue in the memory a render state owns
+queue = WorkQueue{MyWorkItem}(mem, 1024)
 
 # In a kernel, push items atomically
 idx = push!(queue, item)
@@ -84,20 +85,31 @@ struct WorkQueue{T, V <: AbstractVector{T}, S <: AbstractVector{Int32}}
     capacity::Int32
 end
 
-"""
-    WorkQueue{T}(backend, capacity; soa=false)
+# A queue has no `free!` of its own: its arrays are views into regions the
+# state's `DeviceMemory` owns, so `free!(mem)` releases them and there is nothing
+# per-queue to remember. Walking the SOA components to `finalize` each is the
+# alternative, because `finalize(::StructArray)` is a no-op and would leave them
+# alive until the GC ran: one more piece of a lifetime protocol that belongs to
+# the pool.
 
-Create a new work queue with the given capacity on the specified backend.
+"""
+    WorkQueue{T}(mem::DeviceMemory, capacity; soa=should_use_soa(T))
+
+Create a new work queue with the given capacity, in memory the render state
+owns.
 
 # Arguments
-- `backend`: KernelAbstractions backend (e.g., `CPU()`, `CUDABackend()`, `ROCBackend()`)
+- `mem`: the state's [`DeviceMemory`](@ref); `free!(mem)` releases this queue
 - `capacity`: Maximum number of items the queue can hold
-- `soa`: If true, use Structure-of-Arrays layout for better GPU memory coalescing
+- `soa`: If true, use Structure-of-Arrays layout for better GPU memory coalescing.
+  Defaults to `should_use_soa(T)` so flagged item types automatically get the
+  faster layout without every caller having to remember the kwarg. (Before
+  this default was wired up, the trait was set on `VPRayWorkItem` and friends
+  but never actually read — every queue was AOS regardless.)
 """
-function WorkQueue{T}(backend, capacity::Integer; soa::Bool=false) where T
-    items = allocate_array(backend, T, capacity; soa=soa)
-    size = KA.allocate(backend, Int32, 1)
-    KA.fill!(size, Int32(0))
+function WorkQueue{T}(mem::DeviceMemory, capacity::Integer; soa::Bool=should_use_soa(T)) where T
+    items = allocate_array(mem, T, capacity; soa=soa)
+    size = alloc!(mem, Int32, 1, Int32(0))
     WorkQueue{T, typeof(items), typeof(size)}(items, size, Int32(capacity))
 end
 
@@ -111,8 +123,9 @@ function Base.length(queue::WorkQueue)
 end
 
 @inline function Base.push!(queue::WorkQueue{T}, item::T) where T
-    # Atomically increment size and get index
-    idx = @atomic queue.size[1] += Int32(1)
+    # Reserve a distinct slot. This counter does not publish the payload:
+    # consumers run after the producing graph stage's memory barrier.
+    idx = @atomic :monotonic queue.size[1] += Int32(1)
     # Only store if within bounds
     if idx <= length(queue.items)
         @inbounds queue.items[idx] = item
@@ -134,11 +147,6 @@ function Base.empty!(queue::WorkQueue)
     return queue
 end
 
-function cleanup!(queue::WorkQueue)
-    finalize(queue.items)
-    finalize(queue.size)
-    return nothing
-end
 
 # ============================================================================
 # Adapt.jl Integration for GPU Kernels
@@ -165,7 +173,7 @@ end
 # ============================================================================
 # Map Operations for GPU Kernel Execution
 # ============================================================================
-@kernel function _workqueue_map_kernel!(f, queue, args...)
+@kernel function workqueue_map_kernel!(f, queue, args...)
     i = @index(Global)
     if i <= queue.size[1]
         @inbounds f(queue.items[i], args...)
@@ -173,18 +181,46 @@ end
 end
 
 # Default workgroupsize=256 gives ~14% speedup on CUDA (Ampere) vs auto-selection.
-# Static workgroupsize helps the compiler optimize register allocation and enables
+# Static workgroupsize helps GPU compilers optimize register allocation and enables
 # more concurrent blocks per SM.
+#
+# How a queue is dispatched over is `Mantle.DeviceRange(q.size; max = q.capacity)`
+# in the graph — the count lives on the device, the backend turns it into
+# workgroups there, and the graph orders the stage after whoever wrote the count.
 const DEFAULT_WORKGROUPSIZE = 256
 
-function Base.foreach(f, queue::WorkQueue, args...; workgroupsize=DEFAULT_WORKGROUPSIZE)
-    n = length(queue)
-    n == 0 && return nothing
-    backend = KA.get_backend(queue.items)
-    kernel! = _workqueue_map_kernel!(backend, workgroupsize)
-    kernel!(f, queue, args...; ndrange=n)
+# ============================================================================
+# Batched counter reset — one dispatch for all queues
+# ============================================================================
+#
+# `empty!(queue)` is a `fill!` on a 1-element array → one GPU dispatch (plus
+# barrier) per queue. The volpath bounce loop resets ~20 queues per round;
+# at ~20µs effective cost per command that was ~0.4ms of pure overhead per
+# round (measured on Crown: 27 single-thread fills per round). One kernel
+# writing every counter replaces all of them.
+
+# Every element of each counter array: a queue's one, and the material queues' one per slot.
+@inline _zero_counters!(::Tuple{}) = nothing
+@inline function _zero_counters!(counters::Tuple)
+    c = counters[1]
+    for j in Int32(1):Int32(length(c))
+        @inbounds c[j] = Int32(0)
+    end
+    _zero_counters!(Base.tail(counters))
     return nothing
 end
+
+@kernel function zero_size_counters_kernel!(counters)
+    i = @index(Global)
+    if i == 1
+        _zero_counters!(counters)
+    end
+end
+
+# Flatten queues into a tuple of size-counter arrays.
+_collect_size_counters(acc::Tuple) = acc
+_collect_size_counters(acc::Tuple, q::WorkQueue, rest...) =
+    _collect_size_counters((acc..., q.size), rest...)
 
 # ============================================================================
 # Convenience Aliases

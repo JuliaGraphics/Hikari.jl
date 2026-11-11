@@ -15,7 +15,7 @@
 # before creating material evaluation work items.
 
 """
-    MixMaterial{M1, M2, AmountTex}
+    MixMaterial
 
 A material that stochastically blends between two sub-materials based on a mixing amount.
 
@@ -25,80 +25,78 @@ Following pbrt-v4, the material selection is deterministic based on:
 - The `amount` texture value at the hit point
 
 # Fields
-- `material1`: First material (selected when amount → 0)
-- `material2`: Second material (selected when amount → 1)
-- `amount`: Texture controlling the blend ratio (0 = material1, 1 = material2)
-- `material1_idx`: Index of material1 in the materials tuple
-- `material2_idx`: Index of material2 in the materials tuple
+- `amount`: blend ratio (0 = material1, 1 = material2)
+- `material1_idx`: scene-materials key of the first sub-material
+- `material2_idx`: scene-materials key of the second sub-material
 
 # Usage
 MixMaterial is resolved at intersection time before material evaluation.
 The integrator should call `choose_material()` to get the actual material index
 to use for the hit point, then proceed with normal material evaluation.
 """
-struct MixMaterial{M1<:Material, M2<:Material, AmountTex} <: Material
-    material1::M1
-    material2::M2
-    amount::AmountTex
-    # Store material indices for use after resolution
+# NON-PARAMETRIC, and that matters more here than anywhere else: the
+# MixMaterial shading kernel has to dispatch over EVERY material type in the
+# scene (see `vp_shade_surface_hit!`'s `T <: MixMaterial`), so it inlines the
+# whole shading system. One MixMaterial type per distinct sub-material PAIR therefore
+# cost a full copy of that shader each — the two Crown mixes were the single
+# largest item in its compile time.
+#
+# pbrt-v4 has the same shape: `MixMaterial` holds `Material materials[2]`,
+# where `Material` is a TaggedPointer into a heterogeneous pool. `SetKey` is
+# our TaggedPointer, so the sub-materials are referenced, not embedded. The
+# consequence is that a MixMaterial can only be built against a scene, since
+# that is what hands out the keys.
+struct MixMaterial{AmountT} <: Material
+    amount::AmountT
     material1_idx::SetKey
     material2_idx::SetKey
 end
 
-# Constructor with material tuple indices
-function MixMaterial(
-    material1::M1,
-    material2::M2,
-    amount::Texture,
-    material1_idx::SetKey,
-    material2_idx::SetKey
-) where {M1<:Material, M2<:Material}
-    MixMaterial{M1, M2, typeof(amount)}(material1, material2, amount, material1_idx, material2_idx)
+"""
+    Mix(a, b; factor = 0.5)
+
+Blender's Mix Shader: `a` where `factor` is 0, `b` where it is 1, which takes a number, an image or
+a node graph. Cycles and pbrt models combine in one shader graph. Ordinary scattering lobes
+are weighted together. A graph containing a layered pbrt model selects its
+complete BSDF at the vertex so its random-walk sampling PDF remains valid.
+"""
+struct Mix{A <: Material, B <: Material, FactorT} <: Material
+    a::A
+    b::B
+    factor::FactorT
 end
 
+Mix(a::Material, b::Material; factor = 0.5f0) = Mix(a, b, factor)
+
 """
-    MixMaterial(; materials, amount, material_indices)
+    resolve_material(scene, mat) -> mat
 
-Create a MixMaterial with keyword arguments.
-
-# Arguments
-- `materials`: Tuple of two materials (material1, material2)
-- `amount`: Mixing amount (0-1 scalar, texture, or image path)
-- `material_indices`: Tuple of SetKey for each material
-
-# Examples
-```julia
-# Simple 50-50 blend
-MixMaterial(
-    materials=(gold_material, red_diffuse),
-    amount=0.5,
-    material_indices=(gold_idx, diffuse_idx)
-)
-
-# Texture-based blend (e.g., mask texture)
-MixMaterial(
-    materials=(gold_material, red_diffuse),
-    amount=mask_texture,
-    material_indices=(gold_idx, diffuse_idx)
-)
-```
+The material stored on the device for the one `surface_material` gives. Only a mix that picks
+needs it: its materials are pushed first, so the mix can reference them by `SetKey`.
 """
-function MixMaterial(;
-    materials::Tuple{<:Material, <:Material},
-    amount=0.5f0,
-    material_indices::Tuple{SetKey, SetKey}
-)
-    MixMaterial(
-        materials[1],
-        materials[2],
-        _to_texture(amount),
-        material_indices[1],
-        material_indices[2]
-    )
+resolve_material(scene, mat::Material) = mat
+function resolve_material(scene, mix::Mix)
+    key1 = push!(scene.materials, resolve_material(scene, mix.a))
+    key2 = push!(scene.materials, resolve_material(scene, mix.b))
+    return MixMaterial(mix.factor, key1, key2)
 end
 
-# MixMaterial is not directly emissive (emission comes from chosen sub-material)
-is_emissive(::MixMaterial) = false
+# The mix's half of `store_surface!` (scene.jl). A mix in place of a mix: its materials in place of
+# the old one's, then itself, the factor texture copied into the slot it has.
+function store_surface!(scene::Scene, key::SetKey, old::MixMaterial, mix::Mix)
+    a = store_surface!(scene, old.material1_idx, mix.a)
+    b = store_surface!(scene, old.material2_idx, mix.b)
+    return Raycore.store!(scene.materials, key, MixMaterial(mix.factor, a, b))
+end
+
+# Anything else in place of a mix: the materials the mix referenced go with it.
+function store_surface!(scene::Scene, key::SetKey, old::MixMaterial, material::Material)
+    vacate_parts!(scene, old)
+    return Raycore.store!(scene.materials, key, resolve_material(scene, material))
+end
+
+vacate_parts!(scene::Scene, mix::MixMaterial) =
+    (vacate_surface!(scene, mix.material1_idx); vacate_surface!(scene, mix.material2_idx))
 
 # ============================================================================
 # Hash function for deterministic material selection
@@ -162,13 +160,13 @@ end
 # ============================================================================
 
 """
-    choose_material(mix::MixMaterial, textures, p::Point3f, wo::Vec3f, uv::Point2f) -> SetKey
+    choose_material(mix::MixMaterial, textures, p::Point3f, wo::Vec3f, tfc) -> SetKey
 
 Choose which sub-material to use at the given hit point.
 Returns the SetKey of the chosen material.
 
 Following pbrt-v4's ChooseMaterial:
-1. Evaluate the amount texture at (uv)
+1. Evaluate the amount texture at the hit (`tfc`: uv, face and barycentrics)
 2. If amount ≤ 0, return material1
 3. If amount ≥ 1, return material2
 4. Otherwise, use deterministic hash to stochastically select
@@ -177,9 +175,9 @@ This function is called at intersection time, before material evaluation.
 """
 @propagate_inbounds function choose_material(
     mix::MixMaterial, ctx::StaticMultiTypeSet,
-    p::Point3f, wo::Vec3f, uv::Point2f
+    p::Point3f, wo::Vec3f, tfc::TextureFilterContext
 )::SetKey
-    amt = eval_tex(ctx, mix.amount, uv)
+    amt = eval_handle(ctx, mix.amount, tfc)
 
     # Early exit for boundary cases
     if amt <= 0f0
@@ -213,36 +211,23 @@ Type-stable dispatch to check if a material is MixMaterial.
 @propagate_inbounds function is_mix_material_dispatch(
     materials::StaticMultiTypeSet, idx::SetKey
 )::Bool
+    # A material that is not in the set is not a mix. Guarding here rather than
+    # asking `with_index`, which has no element to hand `is_mix_material` and
+    # would either fall into its else-branch — answering about an ARBITRARY
+    # material — or, when the set is empty, expand to a bare `error(...)` that a
+    # GPU kernel cannot raise and simply dies on. See
+    # `surface_transparency_dispatch` for the same guard and what it cost.
+    Raycore.is_valid(idx) || return false
     return with_index(is_mix_material, materials, idx)
 end
 
-"""
-    choose_material_dispatch(materials::StaticMultiTypeSet, idx::SetKey, p, wo, uv) -> SetKey
-
-Type-stable dispatch for choosing material from MixMaterial.
-If the material is not MixMaterial, returns the input index unchanged.
-`materials` is used both for material lookup and texture evaluation.
-"""
-@propagate_inbounds function choose_material_dispatch(
-    materials::StaticMultiTypeSet,
-    idx::SetKey,
-    p::Point3f, wo::Vec3f, uv::Point2f
-)::SetKey
-    return with_index(_choose_material_impl, materials, idx, materials, p, wo, uv)
-end
-
-# Helper for choose_material_dispatch - called with concrete material type
-@propagate_inbounds function _choose_material_impl(mat, ctx, p, wo, uv)
-    return is_mix_material(mat) ? choose_material(mat, ctx, p, wo, uv) : SetKey()
-end
-
-# Overload that preserves the index for non-mix materials
-@propagate_inbounds function _choose_material_impl(mat, ctx, p, wo, uv, idx::SetKey)
-    return is_mix_material(mat) ? choose_material(mat, ctx, p, wo, uv) : idx
+# Helper for resolve_mix_material - called with concrete material type
+@propagate_inbounds function choose_material_impl(mat, ctx, p, wo, tfc, idx::SetKey)
+    return is_mix_material(mat) ? choose_material(mat, ctx, p, wo, tfc) : idx
 end
 
 """
-    resolve_mix_material(materials::StaticMultiTypeSet, idx::SetKey, p, wo, uv) -> SetKey
+    resolve_mix_material(materials::StaticMultiTypeSet, idx::SetKey, p, wo, tfc) -> SetKey
 
 Resolve any MixMaterial chain to get the final material index.
 Handles nested MixMaterials by iterating until a non-mix material is found.
@@ -253,7 +238,7 @@ This should be called at intersection time before creating material work items.
 @propagate_inbounds function resolve_mix_material(
     materials::StaticMultiTypeSet,
     idx::SetKey,
-    p::Point3f, wo::Vec3f, uv::Point2f
+    p::Point3f, wo::Vec3f, tfc::TextureFilterContext
 )::SetKey
     # Iterate to handle nested MixMaterials (up to 8 levels to prevent infinite loops)
     current_idx = idx
@@ -261,7 +246,7 @@ This should be called at intersection time before creating material work items.
         if !is_mix_material_dispatch(materials, current_idx)
             return current_idx
         end
-        current_idx = with_index(_choose_material_impl, materials, current_idx, materials, p, wo, uv, current_idx)
+        current_idx = with_index(choose_material_impl, materials, current_idx, materials, p, wo, tfc, current_idx)
     end
     return current_idx
 end
@@ -271,5 +256,3 @@ end
 # to a concrete material before any BSDF evaluation occurs.
 # See pbrt-v4 materials.h line 339-344: GetBxDF() is LOG_FATAL if called.
 
-"""Type alias: `Mix` is the same as `MixMaterial`"""
-const Mix = MixMaterial

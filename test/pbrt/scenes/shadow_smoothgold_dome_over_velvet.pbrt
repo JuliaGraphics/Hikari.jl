@@ -1,0 +1,39 @@
+## Control for shadow_bumpgold_dome_over_velvet: identical scene with the
+## bump displacement removed. If Hikari renders the velvet just as dark as
+## pbrt here (i.e. as a SMOOTH gold dome blocks all light) but bright in the
+## bump version, the bug is unambiguously in the BumpMapped material path,
+## not the conductor BSDF or shadow trace.
+
+LookAt 0 6 22   0 3 0   0 1 0
+Camera "perspective" "float fov" 35
+Film "rgb" "integer xresolution" 256 "integer yresolution" 256
+    "float maxcomponentvalue" 10
+Sampler "halton" "integer pixelsamples" 64
+Integrator "volpath" "integer maxdepth" 100 "bool regularize" false
+
+WorldBegin
+
+AttributeBegin
+    AreaLightSource "diffuse" "float scale" [10] "blackbody L" [5500] "bool twosided" true
+    Shape "trianglemesh"
+        "integer indices" [ 0 1 2  0 2 3 ]
+        "point3 P" [ -10 18 -10   10 18 -10   10 18 10   -10 18 10 ]
+AttributeEnd
+
+AttributeBegin
+    Rotate 90 1 0 0
+    Material "conductor"
+        "spectrum eta" [ "metal-Au-eta" ]
+        "spectrum k"   [ "metal-Au-k" ]
+        "float roughness" [ 0.0 ]
+    Shape "sphere" "float radius" 10  "float zmin" -10  "float zmax" 0
+AttributeEnd
+
+AttributeBegin
+    Material "coateddiffuse"
+        "rgb reflectance" [ 0.15 0.0015 0.0015 ]
+        "float roughness" [ 0.2 ]
+    Shape "trianglemesh"
+        "point3 P"   [ -9 0.05 -9   9 0.05 -9   9 0.05 9   -9 0.05 9 ]
+        "integer indices" [ 0 1 2  0 2 3 ]
+AttributeEnd

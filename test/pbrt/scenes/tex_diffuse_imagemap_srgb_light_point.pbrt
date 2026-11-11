@@ -1,0 +1,27 @@
+# Minimal pbrt reference: imagemap with mid-tone sRGB pixel values.
+# Same flat quad as tex_diffuse_imagemap_light_point.pbrt, but the texture
+# (`test_midgrey_stripes.png`) only contains the two sRGB byte values 247
+# (0.969 / 0.929-linear) and 79 (0.310 / 0.077-linear) — exactly the two
+# values used by Killeroo's `textures/lines.png`. pbrt-v4 auto-decodes
+# 8-bit PNG as sRGB; if Hikari treats it as linear instead, the dark band
+# brightens from ~0.077 to ~0.310 and the contrast in the rendered stripe
+# pattern collapses (≈ 4× too bright dark bands).
+
+LookAt 0 0 2   0 0 0   0 1 0
+Camera "perspective" "float fov" 60
+Film "rgb" "integer xresolution" 128 "integer yresolution" 128
+    "float maxcomponentvalue" 10
+Integrator "volpath" "integer maxdepth" 4 "bool regularize" true
+
+WorldBegin
+
+LightSource "point" "rgb I" [20 20 20] "point3 from" [0 0 3]
+
+Texture "stripes" "spectrum" "imagemap"
+    "string filename" "textures/test_midgrey_stripes.png"
+
+Material "diffuse" "texture reflectance" "stripes"
+Shape "trianglemesh"
+    "point3 P"   [ -1 -1 0   1 -1 0   1 1 0   -1 1 0 ]
+    "point2 uv"  [  0  0     1  0    1 1    0 1    ]
+    "integer indices" [ 0 1 2  0 2 3 ]

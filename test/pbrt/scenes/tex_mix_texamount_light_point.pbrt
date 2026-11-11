@@ -1,0 +1,41 @@
+# Minimal pbrt reference: `mix` material with a *texture* amount (mask).
+# pbrt allows `"texture amount" "..."` so the blend factor varies across the
+# surface. Crown's `bl_clamp_a` uses exactly this pattern (red coateddiffuse
+# mixed with gold conductor via clamp_mask.png). If Hikari's parser only
+# accepts `"float amount"` the mask silently collapses to a flat 0.5 mix —
+# the rendered surface becomes uniform pink-gold instead of the masked
+# red-on-gold pattern.
+#
+# Expected: flat quad showing horizontal stripes of pure red (where mask=1
+# → material1=red diffuse) alternating with pure white (where mask=0 →
+# material2=white diffuse). A flat pink render means texture-amount was
+# dropped.
+
+LookAt 0 0 2   0 0 0   0 1 0
+Camera "perspective" "float fov" 60
+Film "rgb" "integer xresolution" 128 "integer yresolution" 128
+    "float maxcomponentvalue" 10
+Integrator "volpath" "integer maxdepth" 4 "bool regularize" true
+
+WorldBegin
+
+LightSource "point" "rgb I" [20 20 20] "point3 from" [0 0 3]
+
+Texture "mask" "float" "imagemap"
+    "string filename" "textures/test_stripes.png"
+
+MakeNamedMaterial "red"  "string type" "diffuse"
+    "rgb reflectance" [ 0.8 0.05 0.05 ]
+MakeNamedMaterial "white"  "string type" "diffuse"
+    "rgb reflectance" [ 0.9 0.9 0.9 ]
+
+MakeNamedMaterial "redwhite"
+    "string type" "mix"
+    "string materials" [ "red" "white" ]
+    "texture amount" "mask"
+
+NamedMaterial "redwhite"
+Shape "trianglemesh"
+    "point3 P"   [ -1 -1 0   1 -1 0   1 1 0   -1 1 0 ]
+    "point2 uv"  [  0  0     1  0    1 1    0 1    ]
+    "integer indices" [ 0 1 2  0 2 3 ]

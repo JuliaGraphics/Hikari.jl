@@ -24,9 +24,16 @@ struct EnvironmentMap{S<:Spectrum, T<:AbstractMatrix{S}, D}
     function EnvironmentMap(data::AbstractMatrix{S}, rotation::Mat3f=Mat3f(I)) where {S<:Spectrum}
         h, w = size(data)
 
-        # pbrt-v4 expects square images for equal-area mapping
-        if h != w
-            @warn "Environment map is not square ($w x $h). pbrt-v4 uses equal-area mapping which expects square images."
+        # A 2:1 image is an EQUIRECTANGULAR map, and every HDRI you can
+        # download is one. Resample it rather than warn: read as equal-area it
+        # produces a sky that looks plausible and is wrong in every direction —
+        # the ground ends up overhead — which is a bug nobody reads as a format
+        # mismatch. See `equirect_to_equalarea`.
+        if 2h == w
+            data = equirect_to_equalarea(data)
+            h, w = size(data)
+        elseif h != w
+            @warn "Environment map is not square ($w x $h) and not 2:1, so it is neither equal-area nor equirectangular; it will be read as equal-area."
         end
 
         # Build luminance-weighted distribution for importance sampling
@@ -55,17 +62,83 @@ function rotation_matrix(angle_degrees::Real, axis::Vec3f)::Mat3f
     s, c = sincos(θ)
     t = 1f0 - c
 
-    # Rodrigues' rotation formula as matrix
+    # Rodrigues' rotation formula, written COLUMN BY COLUMN.
+    #
+    # `Mat3f(...)` fills column-major, so laying it out to READ like the
+    # textbook row-major matrix makes it the TRANSPOSE, a rotation by -angle:
+    # `rotation_matrix(90, ẑ)` then maps x̂ to (0,-1,0) instead of (0,1,0),
+    # so every rotated environment map was turned the wrong way, and by twice the
+    # requested angle relative to the reference.
     Mat3f(
-        t*a[1]*a[1] + c,      t*a[1]*a[2] - s*a[3], t*a[1]*a[3] + s*a[2],
-        t*a[1]*a[2] + s*a[3], t*a[2]*a[2] + c,      t*a[2]*a[3] - s*a[1],
-        t*a[1]*a[3] - s*a[2], t*a[2]*a[3] + s*a[1], t*a[3]*a[3] + c
+        # column 1
+        t*a[1]*a[1] + c,      t*a[1]*a[2] + s*a[3], t*a[1]*a[3] - s*a[2],
+        # column 2
+        t*a[1]*a[2] - s*a[3], t*a[2]*a[2] + c,      t*a[2]*a[3] + s*a[1],
+        # column 3
+        t*a[1]*a[3] + s*a[2], t*a[2]*a[3] - s*a[1], t*a[3]*a[3] + c
     )
 end
 
 # =============================================================================
 # Equal-Area Sphere Mapping (pbrt-v4 octahedral mapping)
 # =============================================================================
+
+"""
+    equirect_to_equalarea(img, n = size(img, 2) ÷ 2) -> Matrix
+
+Resample an equirectangular environment map into the equal-area octahedral
+square this type samples.
+
+The two formats look interchangeable and are not: equirectangular is
+`(atan(y, x), acos(z))` on a 2:1 rectangle, equal-area octahedral folds the
+sphere into a square so that every texel carries the same solid angle. Reading
+one as the other gives a picture that still looks like a sky, so the mistake
+survives inspection — the giveaway is that the ground is overhead.
+
+Nearest-neighbour: the destination is chosen no coarser than the source, so the
+resampling is a rotation of information rather than a reduction of it.
+"""
+function equirect_to_equalarea(img::AbstractMatrix{S}, n::Integer = size(img, 2) ÷ 2) where {S}
+    H, W = size(img)
+    out = Matrix{S}(undef, n, n)
+    for j in 1:n, i in 1:n
+        # Texel centre in the square, then the direction it stands for.
+        p = Point2f((i - 0.5f0) / n, (j - 0.5f0) / n)
+        d = equal_area_square_to_sphere(p)
+        u = 0.5f0 + atan(d[2], d[1]) * 0.15915494f0        # 1/(2pi)
+        v = acos(clamp(d[3], -1f0, 1f0)) * 0.31830987f0    # 1/pi, 0 at the zenith
+        si = clamp(round(Int, u * W + 0.5f0), 1, W)
+        sj = clamp(round(Int, v * H + 0.5f0), 1, H)
+        @inbounds out[j, i] = img[sj, si]
+    end
+    return out
+end
+
+"""
+    equalarea_to_equirect(img, w = size(img, 1) * 2) -> Matrix
+
+The inverse of [`equirect_to_equalarea`](@ref): an equal-area octahedral square
+back out to a `w x w/2` equirectangular rectangle.
+
+Here because a renderer that is not this one wants the other convention — a
+raster path sampling `atan(y, x)` / `acos(z)` directly — and converting at the
+boundary is what lets both draw the same sky from one file.
+"""
+function equalarea_to_equirect(img::AbstractMatrix{S}, w::Integer = size(img, 1) * 2) where {S}
+    n = size(img, 1)
+    h = w ÷ 2
+    out = Matrix{S}(undef, h, w)
+    for j in 1:h, i in 1:w
+        phi = ((i - 0.5f0) / w - 0.5f0) * 2f0 * Float32(pi)
+        th = (j - 0.5f0) / h * Float32(pi)
+        d = Vec3f(sin(th) * cos(phi), sin(th) * sin(phi), cos(th))
+        uv = equal_area_sphere_to_square(d)
+        si = clamp(round(Int, uv[1] * n + 0.5f0), 1, n)
+        sj = clamp(round(Int, uv[2] * n + 0.5f0), 1, n)
+        @inbounds out[j, i] = img[sj, si]
+    end
+    return out
+end
 
 """
     equal_area_sphere_to_square(d::Vec3f) -> Point2f
@@ -76,9 +149,25 @@ This is pbrt-v4's octahedral/equal-area mapping used for environment maps.
 Reference: Clarberg, "Fast Equal-Area Mapping of the (Hemi)Sphere using SIMD"
 """
 @propagate_inbounds function equal_area_sphere_to_square(d::Vec3f)::Point2f
-    x, y, z = abs(d[1]), abs(d[2]), abs(d[3])
+    x, y, z = abs(d[1]), abs(d[2]), min(abs(d[3]), 1f0)
 
     # Compute the radius r = sqrt(1 - |z|)
+    #
+    # `min(…, 1f0)` on |z|, not a bare `1 - |z|`: pbrt DCHECKs that `d` is
+    # normalised and leans on it, which a GPU cannot afford. A `d` a hair
+    # longer than unit makes `1 - |z|` negative, and `sqrt` of that is a
+    # `DomainError` — on Metal a device-side throw that kills the render loop
+    # and leaves the window up, frozen, looking for all the world like a hang.
+    #
+    # Such a `d` is routine: a conductor builds `wi = -wo + 2(wo·wm)wm` in local
+    # space and `local_to_world`s it, and that round trip lands outside the unit
+    # sphere about once in 1300 reflections. Measured, not supposed — see
+    # `test_environment_map_domain.jl`. Gold surfaced it because a mirror sends
+    # nearly every path to the environment; the same directions reach here from
+    # any material.
+    #
+    # Clamping is also the right ANSWER, not just a guard: |z| ≥ 1 is the pole,
+    # and r = 0 is the pole. For a genuinely unit `d` this changes nothing.
     r = sqrt(1f0 - z)
 
     # Compute the argument to atan (detect a=0 to avoid div-by-zero)
