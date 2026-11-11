@@ -144,8 +144,8 @@ jobs:
     name: Build Docs
     needs: setup
     runs-on: ubuntu-latest
-    # The build took 36 min on Nov 5, before the material, texture and recipe galleries.
-    timeout-minutes: 90
+    # It runs no example (Docs Examples does), so a few minutes; running them took 34 min.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Install virtual display
@@ -169,6 +169,30 @@ jobs:
         with:
           name: docs-build
           path: docs/build/
+
+  # Every example of the docs, at one sample per pixel, to prove the code they show still runs:
+  # the docs build shows the published images without running any.
+  docs-examples:
+    name: Docs Examples
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install virtual display
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+      - uses: ./.github/actions/ci-environment
+        with:
+          depot-key: ${{ needs.setup.outputs.depot-key }}
+      - name: Run the examples
+        env:
+          HIKARI_DOCS_EXAMPLES: "true"
+          HIKARI_TEST_LAVAPIPE: "true"
+          GKSwstype: "100"
+          DATADEPS_ALWAYS_ACCEPT: true
+        run: xvfb-run -a julia --project=.ci --color=yes -e 'include("test/lavapipe.jl"); include("docs/make.jl")'
 
   deploy-docs:
     name: Deploy Docs

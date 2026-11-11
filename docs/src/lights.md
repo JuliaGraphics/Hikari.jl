@@ -81,7 +81,7 @@ render_light([
 
 ## SpotLight
 
-A point source with a cone-shaped beam. `total_width` is the full cone angle and `falloff_start` is where the soft falloff begins, both in degrees.
+A point source with a cone-shaped beam. `total_width` is the angle from the beam's axis to its edge, half the cone's opening angle, and `falloff_start` the angle from the axis where the soft falloff begins, both in degrees.
 
 ```julia
 Hikari.SpotLight(position, target, intensity, total_width, falloff_start)

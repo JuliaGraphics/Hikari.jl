@@ -2,7 +2,9 @@ using Documenter
 using DocumenterVitepress
 using Hikari
 
-# `docs_image` and `docs_samples` for the pages, and the check that no image is stale.
+# `docs_image` and `docs_samples` for the pages, the check that no image is stale, and
+# `PublishedExample`, which shows the examples without running them unless asked to
+# (`HIKARI_DOCS_EXAMPLES=true`, see renders.jl).
 include(joinpath(@__DIR__, "renders.jl"))
 
 # The comparison page links to `pbrt-comparison/gallery.html`. CI adds the gallery when it
