@@ -49,14 +49,14 @@ An omnidirectional point source. Intensity falls off as 1/r².
 
 ```julia
 Hikari.PointLight(position, intensity)
-Hikari.PointLight(Point3f(0f0, 2.5f0, 0f0), Hikari.RGBSpectrum(40f0))
+Hikari.PointLight(Point3f(0f0, 2.5f0, 0f0), Hikari.RGBSpectrum(6f0))
 ```
 
 ```@example lights
 docs_image("lights-point", # hide
 render_light([
-    Hikari.PointLight(Point3f(0f0, 2.4f0, 0f0), Hikari.RGBSpectrum(40f0)),
-    Hikari.PointLight(Point3f(-1f0, 1.5f0, -1.5f0), Hikari.RGBSpectrum(15f0)),
+    Hikari.PointLight(Point3f(0f0, 2.4f0, 0f0), Hikari.RGBSpectrum(6f0)),
+    Hikari.PointLight(Point3f(-1f0, 1.5f0, -1.5f0), Hikari.RGBSpectrum(2.5f0)),
 ])
 ) # hide
 ```
