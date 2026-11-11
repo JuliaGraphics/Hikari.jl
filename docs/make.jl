@@ -7,9 +7,10 @@ using Hikari
 # (`HIKARI_DOCS_EXAMPLES=true`, see renders.jl).
 include(joinpath(@__DIR__, "renders.jl"))
 
-# The comparison page links to `pbrt-comparison/gallery.html`. CI adds the gallery when it
-# deploys, built from the pbrt test groups' records; a local build copies the one in
-# `test/pbrt/display` (`test/pbrt/run_comparison.jl`) if there is one.
+# The comparison page links to `pbrt-comparison/gallery.html`. CI deploys the gallery on its
+# own once the pbrt test groups are done (Deploy pbrt Gallery in ci.yml), built from their
+# records; a local build copies the one in `test/pbrt/display` (`test/pbrt/run_comparison.jl`)
+# if there is one.
 let display = joinpath(@__DIR__, "..", "test", "pbrt", "display")
     if isfile(joinpath(display, "gallery.html"))
         gallery = mkpath(joinpath(@__DIR__, "src", "public", "pbrt-comparison"))
