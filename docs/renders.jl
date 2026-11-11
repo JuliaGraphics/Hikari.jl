@@ -17,7 +17,7 @@
 #
 # then commit the changed Artifacts.toml.
 
-using FileIO, SHA, TOML
+using Downloads, FileIO, SHA, TOML
 using Pkg.Artifacts: ensure_artifact_installed
 
 render_mode() = get(ENV, "HIKARI_DOCS_RENDER", "false") == "true"
@@ -81,4 +81,42 @@ function check_images(src)
         These docs images are older than the code that shows them: $(join(stale, ", ")).
         Render and publish them again, as described in docs/renders.jl.""")
     return hashes
+end
+
+"""
+    gallery_thumbnails(src)
+
+The pictures of the start page's gallery. Every `/gallery/<name>-<width>.jpg` that
+`index.md` shows is the render `<name>.png` of Hikari's `assets` release, shrunk to about
+`width` pixels, so the page loads a few hundred kilobytes instead of the full renders it
+links to. Made here, into the untracked `public/gallery`, so neither the repository nor the
+release keeps a second copy; a picture made by an earlier build is kept.
+"""
+function gallery_thumbnails(src)
+    out = mkpath(joinpath(src, "public", "gallery"))
+    for m in eachmatch(r"/gallery/([A-Za-z0-9_]+)-(\d+)\.jpg", read(joinpath(src, "index.md"), String))
+        name, width = m.captures[1], parse(Int, m.captures[2])
+        file = joinpath(out, "$name-$width.jpg")
+        isfile(file) && continue
+        png = Downloads.download("https://github.com/JuliaGraphics/Hikari.jl/releases/download/assets/$name.png")
+        FileIO.save(file, shrink(FileIO.load(png), width))
+    end
+end
+
+# sRGB's transfer function and its inverse: `shrink` averages light, not encoded values.
+linear_srgb(c::Float32) = c <= 0.04045f0 ? c / 12.92f0 : ((c + 0.055f0) / 1.055f0)^2.4f0
+encode_srgb(c::Float32) = c <= 0.0031308f0 ? 12.92f0 * c : 1.055f0 * c^(1 / 2.4f0) - 0.055f0
+
+"""
+`img`, an 8-bit RGB render, made smaller by the largest whole factor that leaves it at least
+`width` pixels wide: each pixel is the mean of the block of pixels it replaces.
+"""
+function shrink(img::AbstractMatrix, width::Int)
+    f = max(1, size(img, 2) ÷ width)
+    # `min`: white encodes to 1 + eps in Float32, which an 8-bit channel refuses.
+    channel(block, k) = min(1f0, encode_srgb(sum(c -> linear_srgb(Float32(getfield(c, k))), block) / length(block)))
+    return [begin
+                block = view(img, (i - 1) * f + 1:i * f, (j - 1) * f + 1:j * f)
+                eltype(img)(channel(block, :r), channel(block, :g), channel(block, :b))
+            end for i in 1:size(img, 1) ÷ f, j in 1:size(img, 2) ÷ f]
 end

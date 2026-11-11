@@ -22,6 +22,7 @@ end
 # ============================================================================
 
 check_images(joinpath(@__DIR__, "src"))
+gallery_thumbnails(joinpath(@__DIR__, "src"))
 
 makedocs(; sitename = "Hikari", authors = "Anton Smirnov, Simon Danisch and contributors",
     modules = [Hikari],
