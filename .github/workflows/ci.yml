@@ -9,9 +9,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A pull request's next push replaces its run. Runs on master and tags each finish, side by
+# side: queued behind each other, a push's docs waited for the previous push's tests. Their
+# deploys queue per branch instead (`concurrency` of the deploy jobs).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+  group: ${{ github.workflow }}-${{ startsWith(github.ref, 'refs/pull/') && github.ref || github.run_id }}
+  cancel-in-progress: true
 
 env:
   # The setup job's precompiled depot is loaded on other runners with other CPUs. A pkgimage
@@ -199,6 +202,7 @@ jobs:
     needs: [setup, docs-build]
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    concurrency: deploy-docs-${{ github.ref }}
     permissions:
       contents: write
       statuses: write
@@ -252,6 +256,7 @@ jobs:
     needs: [setup, test-group, docs-build, deploy-docs]
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    concurrency: deploy-pbrt-gallery-${{ github.ref }}
     permissions:
       contents: write
     steps:
