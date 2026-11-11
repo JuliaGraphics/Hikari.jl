@@ -330,15 +330,24 @@ The lobes' `f` summed, and their pdfs under `s` weighted by their shares of the 
 over the tuple. The pdf is of sampling the lobes in proportion to their shares, to divide by the
 shares of those that can scatter under `s` (`share`).
 """
-@inline mixture(::Tuple{}, wo, wi, ns, lambda, s::Scattering = AnyScattering()) = (SpectralRadiance(0f0), 0f0)
+@inline mixture(::Tuple{}, wo, wi, ns, lambda, s::Scattering = AnyScattering(), hidden::UInt8 = 0x00) =
+    (SpectralRadiance(0f0), 0f0)
 @propagate_inbounds function mixture(lobes::Tuple{Any, Vararg{Any}}, wo::Vec3f, wi::Vec3f, ns::Vec3f, lambda::Wavelengths,
-                                     s::Scattering = AnyScattering())
-    f, pdf = mixture(Base.tail(lobes), wo, wi, ns, lambda, s)
+                                     s::Scattering = AnyScattering(), hidden::UInt8 = 0x00)
+    f, pdf = mixture(Base.tail(lobes), wo, wi, ns, lambda, s, hidden)
     w = first(lobes)
     w.sample_weight > 0f0 || return (f, pdf)
     fi, pi = weighted_f(w, wo, wi, ns, lambda, s)
-    return (f + fi, pdf + pi * w.sample_weight)
+    return (shows_lobe(w, hidden) ? f + fi : f, pdf + pi * w.sample_weight)
 end
+
+"""The ray type a reflection off `lobe` has (`bounce_ray_type`)."""
+@inline lobe_ray_type(lobe) = is_diffuse_lobe(lobe) ? DIFFUSE_RAYS : GLOSSY_RAYS
+"""
+Whether a lobe adds its `f` to a mixture evaluated without the lobe classes `hidden`
+(`hidden_lobes`). Its pdf counts either way, as the samples it takes do.
+"""
+@inline shows_lobe(w, hidden::UInt8) = lobe_ray_type(w.lobe) & hidden == 0x00
 
 """A lobe's share of the samples under `s`: none where it cannot scatter so."""
 @inline share(w::Weighted, s::Scattering) = can_scatter(w.lobe, s) ? w.sample_weight : 0f0
@@ -388,10 +397,11 @@ dispersion ends them only with the refraction that disperses (`terminates_second
 @propagate_inbounds function evaluate_bsdf_spectral(
     bsdf::LobeBSDF, ::RGBToSpectrumTable, textures,
     wo::Vec3f, wi::Vec3f, n::Vec3f, dpdus::Vec3f, ::TextureFilterContext, ::Wavelengths,
-    ::Bool = false,
+    ::Bool = false, hidden::UInt8 = 0x00,
 )
     bsdf.total > 0f0 || return (SpectralRadiance(0f0), 0f0)
-    f, pdf = mixture(bsdf.lobes, wo, wi, n, bsdf.lambda)
+    transmits = dot(wo, n) * dot(wi, n) < 0f0
+    f, pdf = mixture(bsdf.lobes, wo, wi, n, bsdf.lambda, AnyScattering(), hidden_lobes(hidden, transmits))
     return (f, pdf / bsdf.total)
 end
 

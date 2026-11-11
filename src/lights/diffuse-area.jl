@@ -21,6 +21,7 @@ with BSDF sampling.
 - `Le`: Emitted radiance — `RGBSpectrum` for constant, `TextureRef` for textured emission
 - `scale`: Intensity multiplier applied to Le
 - `two_sided`: If true, emits from both sides of the surface
+- `hidden`: Ray types its light is hidden from (see [`Visibility`](@ref))
 """
 struct DiffuseAreaLight{LeTex} <: Light
     vertices::SVector{3, Point3f}    # Triangle vertices (for sampling)
@@ -30,7 +31,11 @@ struct DiffuseAreaLight{LeTex} <: Light
     Le::LeTex                         # Emission color/texture
     scale::Float32
     two_sided::Bool
+    hidden::UInt8
 end
+
+DiffuseAreaLight(vertices, normal, area, uv, Le, scale, two_sided) =
+    DiffuseAreaLight(vertices, normal, area, uv, Le, scale, two_sided, 0x00)
 
 # ============================================================================
 # Emission Evaluation (pbrt-v4 DiffuseAreaLight::L)
@@ -88,7 +93,7 @@ function to_gpu(ArrayType, light::DiffuseAreaLight)
     Le_gpu = to_gpu(ArrayType, light.Le)
     return DiffuseAreaLight(
         light.vertices, light.normal, light.area, light.uv,
-        Le_gpu, light.scale, light.two_sided
+        Le_gpu, light.scale, light.two_sided, light.hidden
     )
 end
 

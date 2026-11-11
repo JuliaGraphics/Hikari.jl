@@ -35,7 +35,7 @@ end
     traveled = 0.0f0
     first_depth = miss_depth
     for step in 1:32
-        hit, prim, t, bary, instance = Raycore.closest_hit(accel, ray)
+        hit, prim, t, bary, instance = Raycore.closest_hit(accel, ray, CAMERA_RAYS)
         hit || return (RGB{Float32}(0, 0, 0), Vec3f(0), first_depth)
         step == 1 && (first_depth = t)
         mi = interfaces[resolve_mi_idx(instance, prim)]

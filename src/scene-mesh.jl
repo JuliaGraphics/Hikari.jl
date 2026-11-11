@@ -66,12 +66,13 @@ Base.push!(scene::Scene, ::Any, m::GeneratedGeometry; kw...) =
 # `opaque` is whether shadow rays stop at the geometry without shading it (`opaque`). A caller that
 # stored a material's images itself knows it better than its handles say, which count as cutouts.
 function Base.push!(scene::Scene, mesh::GeometryBasics.Mesh, material::Material;
-                    transform::Mat4f=Mat4f(I), opaque::Bool = Hikari.opaque(material))
+                    transform::Mat4f=Mat4f(I), opaque::Bool = Hikari.opaque(material),
+                    visibility::Visibility = Visibility())
     mesh, material = bind_mesh(mesh, surface_material(material))
     mat_idx = push!(scene, material)
-    face_meta = build_face_meta(scene, mesh, mat_idx, material)
+    face_meta = build_face_meta(scene, mesh, mat_idx, material; hidden = emitter_hidden_rays(visibility))
     mesh_with_meta = GeometryBasics.mesh(mesh; face_meta=GeometryBasics.per_face(face_meta, mesh))
-    handle = push!(scene.accel, mesh_with_meta, transform; opaque)
+    handle = push!(scene.accel, mesh_with_meta, transform; opaque, instance_mask = instance_mask(visibility))
     return SceneHandle(scene, mat_idx, handle, mesh_area_lights(face_meta))
 end
 
@@ -89,11 +90,11 @@ frame.
 """
 function Base.push!(scene::Scene, mesh::GeometryBasics.Mesh, mat_idx::UInt32,
                     material::Material; transform::Mat4f=Mat4f(I), area_lights=SetKey[],
-                    opaque::Bool = Hikari.opaque(material))
+                    opaque::Bool = Hikari.opaque(material), visibility::Visibility = Visibility())
     mesh, material = bind_mesh(mesh, surface_material(material))
-    face_meta = build_face_meta(scene, mesh, mat_idx, material; area_lights)
+    face_meta = build_face_meta(scene, mesh, mat_idx, material; area_lights, hidden = emitter_hidden_rays(visibility))
     mesh_with_meta = GeometryBasics.mesh(mesh; face_meta=GeometryBasics.per_face(face_meta, mesh))
-    handle = push!(scene.accel, mesh_with_meta, transform; opaque)
+    handle = push!(scene.accel, mesh_with_meta, transform; opaque, instance_mask = instance_mask(visibility))
     return SceneHandle(scene, mat_idx, handle, mesh_area_lights(face_meta))
 end
 
@@ -119,7 +120,8 @@ feature.  Use the per-mesh `push!` for emitters.
 function Base.push!(scene::Scene, mesh::GeometryBasics.Mesh,
                     materials::AbstractVector{<:Material},
                     transforms::AbstractVector{Mat4f};
-                    reuse_mi_indices::Union{Nothing, AbstractVector{UInt32}}=nothing)
+                    reuse_mi_indices::Union{Nothing, AbstractVector{UInt32}}=nothing,
+                    visibility::Visibility = Visibility())
     length(materials) == length(transforms) ||
         throw(ArgumentError("materials ($(length(materials))) and transforms ($(length(transforms))) must have same length"))
     # Each material object is converted once, however many instances name it.
@@ -159,7 +161,8 @@ function Base.push!(scene::Scene, mesh::GeometryBasics.Mesh,
     mesh_with_meta = GeometryBasics.mesh(mesh; face_meta=GeometryBasics.per_face(face_meta, mesh))
 
     accel_handle = push!(scene.accel, mesh_with_meta, collect(transforms);
-                         instance_ids=mi_indices, opaque = all(opaque, materials))
+                         instance_ids=mi_indices, opaque = all(opaque, materials),
+                         instance_mask = instance_mask(visibility))
     # One SceneHandle per instance, all sharing the same accel handle.
     return [SceneHandle(scene, mi_indices[i], accel_handle) for i in eachindex(mi_indices)]
 end
@@ -221,7 +224,7 @@ end
 
 # Per-face materials (for MetaMesh with multiple materials)
 function Base.push!(scene::Scene, mesh::GeometryBasics.Mesh, materials::AbstractVector{<:Material};
-                    transform::Mat4f=Mat4f(I))
+                    transform::Mat4f=Mat4f(I), visibility::Visibility = Visibility())
     # Deduplicate materials via cache (push! already deduplicates at scene level).
     # Each push! just marks its MultiTypeSet dirty; the next `get_static` read
     # collapses the whole batch into one rebuild.
@@ -231,9 +234,10 @@ function Base.push!(scene::Scene, mesh::GeometryBasics.Mesh, materials::Abstract
             push!(scene, m)
         end
     end
-    face_meta = build_face_meta(scene, mesh, mat_indices, materials)
+    face_meta = build_face_meta(scene, mesh, mat_indices, materials; hidden = emitter_hidden_rays(visibility))
     mesh_with_meta = GeometryBasics.mesh(mesh; face_meta=GeometryBasics.per_face(face_meta, mesh))
-    handle = push!(scene.accel, mesh_with_meta, transform; opaque = all(opaque, materials))
+    handle = push!(scene.accel, mesh_with_meta, transform; opaque = all(opaque, materials),
+                   instance_mask = instance_mask(visibility))
     # Return SceneHandle with first material index (for compatibility)
     return SceneHandle(scene, first(mat_indices), handle, mesh_area_lights(face_meta))
 end
@@ -270,7 +274,7 @@ function update_material!(scene::Scene, handle::SceneHandle, material::Material;
             face_emission!(IdDict(), scene.lights, emission.Le)
         DiffuseAreaLight(old.vertices, old.normal, old.area, old.uv, Le,
             emission === nothing ? 0f0 : emission.scale,
-            emission === nothing ? old.two_sided : emission.two_sided)
+            emission === nothing ? old.two_sided : emission.two_sided, old.hidden)
     end
     update_face_area_lights!(scene, handle.area_lights, lights)
     update_material!(scene, handle.interface, material)
@@ -352,7 +356,7 @@ emits_nothing(Le) = false
 # ============================================================================
 
 # Single material
-function build_face_meta(scene, mesh, mat_idx::UInt32, material::Material; area_lights=SetKey[])
+function build_face_meta(scene, mesh, mat_idx::UInt32, material::Material; area_lights=SetKey[], hidden::UInt8=0x00)
     gb_faces = GeometryBasics.faces(mesh)
     n_faces = length(gb_faces)
     face_meta = Vector{TriangleMeta}(undef, n_faces)
@@ -365,14 +369,14 @@ function build_face_meta(scene, mesh, mat_idx::UInt32, material::Material; area_
             face_meta[i] = TriangleMeta(mat_idx, UInt32(i), UInt32(0))
         end
     else
-        register_face_area_lights!(scene, mesh, face_meta, mat_idx, emission; area_lights)
+        register_face_area_lights!(scene, mesh, face_meta, mat_idx, emission; area_lights, hidden)
     end
     return face_meta
 end
 
 # Per-face materials
 function build_face_meta(scene, mesh, mat_indices::AbstractVector{UInt32},
-                         materials::AbstractVector{<:Material})
+                         materials::AbstractVector{<:Material}; hidden::UInt8=0x00)
     gb_faces = GeometryBasics.faces(mesh)
     n_faces = length(gb_faces)
     face_meta = Vector{TriangleMeta}(undef, n_faces)
@@ -384,7 +388,7 @@ function build_face_meta(scene, mesh, mat_indices::AbstractVector{UInt32},
             face_meta[i] = TriangleMeta(mat_indices[i], UInt32(i), UInt32(0))
         end
     else
-        register_face_area_lights!(scene, mesh, face_meta, mat_indices, materials)
+        register_face_area_lights!(scene, mesh, face_meta, mat_indices, materials; hidden)
     end
     return face_meta
 end
@@ -416,7 +420,7 @@ function update_face_area_lights!(scene, keys, lights)
         texturekey = old.Le isa Raycore.TextureRef ? (typeof(old.Le), old.Le.idx) : nothing
         Le = texturekey === nothing ? light.Le : get(uploaded, texturekey, light.Le)
         replacement = DiffuseAreaLight(light.vertices, light.normal, light.area, light.uv,
-            Le, light.scale, light.two_sided)
+            Le, light.scale, light.two_sided, light.hidden)
         Raycore.update!(scene.lights, key, replacement)
         texturekey === nothing || (uploaded[texturekey] = scene.lights[key].Le)
     end
@@ -427,7 +431,7 @@ function disable_face_area_lights!(scene, keys)
     for key in keys
         old = scene.lights[key]
         Raycore.update!(scene.lights, key, DiffuseAreaLight(old.vertices, old.normal,
-            old.area, old.uv, old.Le, 0f0, old.two_sided))
+            old.area, old.uv, old.Le, 0f0, old.two_sided, old.hidden))
     end
     isempty(keys) || notify_lights_changed(scene)
     return nothing
@@ -456,7 +460,8 @@ function flush_face_area_lights!(scene, face_meta, lights, emissive_faces, mat; 
 end
 
 # Single material (all faces share one material + emission)
-function register_face_area_lights!(scene, mesh, face_meta, mat_idx::UInt32, emission; area_lights=SetKey[])
+function register_face_area_lights!(scene, mesh, face_meta, mat_idx::UInt32, emission; area_lights=SetKey[],
+                                    hidden::UInt8=0x00)
     verts = GeometryBasics.coordinates(mesh)
     gb_faces = GeometryBasics.faces(mesh)
     has_uv = hasproperty(mesh, :uv)
@@ -491,7 +496,7 @@ function register_face_area_lights!(scene, mesh, face_meta, mat_idx::UInt32, emi
         normal = Raycore.Normal3f(cross_product / twice_area)
         tri_area = 0.5f0 * twice_area
         push!(lights, DiffuseAreaLight(vs, normal, tri_area, face_uv, Le,
-                                       emission.scale, emission.two_sided))
+                                       emission.scale, emission.two_sided, hidden))
         push!(emissive_faces, i)
     end
 
@@ -501,7 +506,7 @@ end
 # Per-face materials (different materials per face, some may be emissive)
 function register_face_area_lights!(scene, mesh, face_meta,
                                     mat_indices::AbstractVector{UInt32},
-                                    materials::AbstractVector{<:Material})
+                                    materials::AbstractVector{<:Material}; hidden::UInt8=0x00)
     verts = GeometryBasics.coordinates(mesh)
     gb_faces = GeometryBasics.faces(mesh)
     has_uv = hasproperty(mesh, :uv)
@@ -542,7 +547,7 @@ function register_face_area_lights!(scene, mesh, face_meta,
         normal = Raycore.Normal3f(cross_product / twice_area)
         tri_area = 0.5f0 * twice_area
         push!(lights, DiffuseAreaLight(vs, normal, tri_area, face_uv, Le,
-                                       emission.scale, emission.two_sided))
+                                       emission.scale, emission.two_sided, hidden))
         push!(emissive_faces, i)
     end
 

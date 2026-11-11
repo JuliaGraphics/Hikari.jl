@@ -176,25 +176,26 @@ end
 # Scene push! methods
 # ============================================================================
 
-function Base.push!(scene::Scene, light::Light)
-    key = push!(scene.lights, light)
+function Base.push!(scene::Scene, light::Light; visibility::Visibility = Visibility())
+    key = push!(scene.lights, with_hidden(light, hidden_rays(visibility)))
     notify_scene_changed(scene)
     return key
 end
 
 """
-    update_light!(scene, key, light)
+    update_light!(scene, key, light; visibility = nothing)
 
 Replace the light stored under `key` — what `push!(scene.lights, light)`
-returned — in place. The same concrete type only, as every `MultiTypeSet`
+returned — in place, keeping its [`Visibility`](@ref) unless `visibility` is given. The same concrete type only, as every `MultiTypeSet`
 update: a light that moves or dims is this, a different kind of light is not.
 
 The slot is written where it lies, so recorded plans, which read the lights
 from that buffer, stay valid: a light following the camera used to throw them
 away and record them again every frame.
 """
-function update_light!(scene::Scene, key::SetKey, light::Light)
-    Raycore.update!(scene.lights, key, light)
+function update_light!(scene::Scene, key::SetKey, light::Light; visibility::Union{Nothing, Visibility} = nothing)
+    hidden = visibility === nothing ? hidden_rays(scene.lights[key]) : hidden_rays(visibility)
+    Raycore.update!(scene.lights, key, with_hidden(light, hidden))
     notify_lights_changed(scene)
     return nothing
 end

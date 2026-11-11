@@ -361,12 +361,15 @@ end
 @propagate_inbounds function evaluate_bsdf_spectral(
     b::LayeredBSDF, ::RGBToSpectrumTable, textures,
     wo::Vec3f, wi::Vec3f, n::Vec3f, dpdus::Vec3f, ::TextureFilterContext, ::Wavelengths,
-    ::Bool = false,
+    ::Bool = false, hidden::UInt8 = 0x00,
 )
     ln, lt, lb = local_frame(b)
     o, i = world_to_local(wo, ln, lt, lb), world_to_local(wi, ln, lt, lb)
     (o[3] == 0f0 || i[3] == 0f0) && return (SpectralRadiance(0f0), 0f0)
-    return (layered_f(b, o, i) * layered_cosine_transfer(b, wi, n), layered_pdf(b, o, i))
+    pdf = layered_pdf(b, o, i)
+    # Its layers are not lobes of their own: only light hidden from all of them is left out.
+    hidden_lobes(hidden, dot(wo, n) * dot(wi, n) < 0f0) == DIFFUSE_RAYS | GLOSSY_RAYS && return (SpectralRadiance(0f0), pdf)
+    return (layered_f(b, o, i) * layered_cosine_transfer(b, wi, n), pdf)
 end
 
 @propagate_inbounds function sample_bsdf_spectral(
