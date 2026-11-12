@@ -1405,8 +1405,6 @@ function build_pbrt_light(lrec::PBRTLightRecord, pbrt::PBRTScene)
                 rotation = Mat3f(t[1,1], t[2,1], t[3,1],
                                  t[1,2], t[2,2], t[3,2],
                                  t[1,3], t[2,3], t[3,3])
-                # pbrt normalizes: scale /= SpectrumToPhotometric(colorSpace.illuminant)
-                sc /= D65_PHOTOMETRIC
                 # Convert non-sRGB images to sRGB (Hikari's spectral uplift uses sRGB tables)
                 env_path_converted = convert_envmap_to_srgb(path)
                 return EnvironmentLight(env_path_converted; scale=RGBSpectrum(sc), rotation=rotation)

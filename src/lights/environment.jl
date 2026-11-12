@@ -26,6 +26,7 @@ paints_escaped_rays(::Type{<:EnvironmentLight}) = true
 
 """
 Convenience constructor that loads an environment map from a file.
+The image's values are radiance, as an `Emission` color of strength 1 is; `scale` multiplies them.
 rotation: Mat3f rotation matrix (use rotation_matrix(angle_deg, axis) to create)
 """
 function EnvironmentLight(
@@ -34,7 +35,7 @@ function EnvironmentLight(
     rotation::Mat3f=Mat3f(I),
 )
     env_map = load_environment_map(path; rotation=rotation)
-    EnvironmentLight(env_map, scale)
+    EnvironmentLight(env_map, scale / D65_PHOTOMETRIC)
 end
 
 """
