@@ -22,23 +22,28 @@ Settings that choose a different scattering model, such as `distribution`, `thin
 
 ## The scene behind the pictures
 
-The renders on this page put materials on spheres under a sun and sky, at 256 samples per pixel,
-denoised with OIDN (see [Postprocessing and Denoising](@ref)):
+The renders on this page put materials on balls with the Makie logo engraved, under a sun and sky,
+at 256 samples per pixel, denoised with OIDN (see [Postprocessing and Denoising](@ref)):
 
 ```@example materials
 using Main: docs_image, docs_samples # hide
-using GeometryBasics, LinearAlgebra, Hikari, Mantle
+using GeometryBasics, LinearAlgebra, Hikari, Mantle, FileIO
 using Hikari.TextureNodes
 backend = Mantle.defaultbackend()
 
-sphere(x, r) = normal_mesh(Tessellation(Sphere(Point3f(x, 0, r), r), 96))
+const logo_ball = load(pkgdir(Hikari, "docs", "src", "assets", "logo_ball.obj"))
+
+function ball(center, r)
+    positions = [center + r * p for p in coordinates(logo_ball)]
+    return GeometryBasics.Mesh(positions, faces(logo_ball); normal = normals(positions, faces(logo_ball)))
+end
 
 function showcase(materials; resolution = (1200, 360), samples = 256)
     samples = docs_samples(samples) # hide
     scene = Hikari.Scene(; backend)
     n = length(materials)
     for (i, material) in enumerate(materials)
-        push!(scene, sphere(i - (n + 1) / 2, 0.42f0), material)
+        push!(scene, ball(Point3f(i - (n + 1) / 2, 0, 0.42), 0.42f0), material)
     end
     tiles = checker(xyz(); scale = 1, color1 = (0.5, 0.5, 0.5), color2 = (0.38, 0.38, 0.38))
     ground = normal_mesh(Rect3f(Vec3f(-50, -50, -0.01), Vec3f(100, 100, 0.01)))
