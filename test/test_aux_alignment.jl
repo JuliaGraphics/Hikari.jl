@@ -120,34 +120,3 @@ end
     end
 end
 
-# One ray through `Hikari.intersect!`, in a kernel: whether it hit, where, the
-# normal there, and the instance's custom index the interaction carries.
-KA.@kernel function intersect_one_kernel!(out, accel, ray)
-    hit, _, si = Hikari.intersect!(accel, ray)
-    out[1] = (hit, si.core.p, Vec3f(si.core.n), si.instance_id)
-end
-
-@testset "intersect! puts a moved instance's hit where the ray meets it" begin
-    # `closest_hit` returns the hit triangle in world space and the instance's
-    # custom index on every structure. The software `intersect!` moved the
-    # interaction by the instance's transform once more and stored the
-    # instance's position in the structure, so the aux depth and normal of every
-    # moved instance were taken somewhere else.
-    backend = Mantle.defaultbackend()
-    for hw_accel in (Mantle.supports_hwtlas(backend) ? (false, true) : (false,))
-        scene = Hikari.Scene(; backend, hw_accel)
-        slab = normal_mesh(Rect3f(Vec3f(-0.5, -0.5, 0), Vec3f(1, 1, 0.01)))
-        moved = Raycore.Mat4f(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 2, 0, 1, 1)
-        hs = push!(scene, slab, [Hikari.Diffuse(color = Hikari.RGBSpectrum(0.5f0))], [moved])
-        Hikari.sync!(scene)
-        out = Adapt.adapt(backend, [(false, Point3f(0), Vec3f(0), UInt32(0))])
-        intersect_one_kernel!(backend)(out, Adapt.adapt(backend, scene.accel),
-                                       Raycore.Ray(o = Point3f(2, 0.1, 5), d = Vec3f(0, 0, -1)); ndrange = 1)
-        KA.synchronize(backend)
-        hit, p, n, id = only(Array(out))
-        @test hit
-        @test p ≈ Point3f(2, 0.1, 1.01)
-        @test abs(n[3]) ≈ 1f0
-        @test id == only(hs).interface != UInt32(0)
-    end
-end

@@ -190,6 +190,11 @@ end
         @test metal.fresnel.film_thickness == 350f0
         @test metal.fresnel.film_ior ≈ 1.4f0
         @test Hikari.bsdf_nodes(Hikari.ShaderGraph(Hikari.shader_node(Hikari.Glass()))) == Tuple{Hikari.PrincipledBSDF{false, false, false}}
+        # One Airy sum serves the dielectric and F82 substrates too; written with
+        # `n3 cos θ3` it was NaN at n3 == 0 for them, while the conductor's copy was not.
+        for mu in (0.1f0, 0.5f0, 1f0)
+            @test isfinite(Hikari._thin_film_reflectance(mu, 400f0, 1.33f0, 0f0, 0f0, 550f0, 0.5f0))
+        end
         @test Hikari.bsdf_nodes(Hikari.ShaderGraph(Hikari.shader_node(Hikari.Metallic()))) == Tuple{Hikari.MetallicBSDF}
     end
 
@@ -245,12 +250,12 @@ end
             (0.5f0, 300f0, 1.7f0, 2.757f0, 3.867f0, 550f0, 0.4777693683227485),
             (1f0, 550f0, 1.4f0, 2.5f0, 0.5f0, 650f0, 0.0366015563841131),
         )
-            @test Hikari._conductor_film_reflectance(mu, d, nf, n, k, wavelength) ≈ expected atol = 2e-6
+            @test Hikari._thin_film_reflectance(mu, d, nf, n, k, wavelength) ≈ expected atol = 2e-6
         end
         for mu in (0f0, 0.1f0, 0.5f0, 1f0), wavelength in (400f0, 550f0, 700f0)
-            @test 0f0 <= Hikari._conductor_film_reflectance(mu, 400f0, 1.33f0, 0f0, 0f0, wavelength) <= 1f0
+            @test 0f0 <= Hikari._thin_film_reflectance(mu, 400f0, 1.33f0, 0f0, 0f0, wavelength) <= 1f0
             if mu > 0f0
-                @test Hikari._conductor_film_reflectance(mu, 400f0, 1f0, 0f0, 0f0, wavelength) ≈
+                @test Hikari._thin_film_reflectance(mu, 400f0, 1f0, 0f0, 0f0, wavelength) ≈
                       Hikari._conductor_reflectance(mu, 0f0, 0f0) atol = 2e-6
             end
         end

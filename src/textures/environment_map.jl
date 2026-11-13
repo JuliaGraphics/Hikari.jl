@@ -40,43 +40,9 @@ struct EnvironmentMap{S<:Spectrum, T<:AbstractMatrix{S}, D}
         # For equal-area mapping, NO sin(θ) weighting is needed because
         # equal-area projection already preserves solid angle uniformity.
         # This matches pbrt-v4's Image::GetSamplingDistribution() for equal-area images.
-        luminance = Matrix{Float32}(undef, h, w)
-        for v in 1:h
-            for u in 1:w
-                luminance[v, u] = to_Y(data[v, u])
-            end
-        end
-        distribution = Distribution2D(luminance)
+        distribution = Distribution2D(Float32[luminance(data[v, u]) for v in 1:h, u in 1:w])
         new{S, typeof(data), typeof(distribution)}(data, rotation, distribution)
     end
-end
-
-"""
-Create rotation matrix from axis-angle representation (like pbrt's Rotate command).
-angle: rotation angle in degrees
-axis: rotation axis (will be normalized)
-"""
-function rotation_matrix(angle_degrees::Real, axis::Vec3f)::Mat3f
-    θ = Float32(deg2rad(angle_degrees))
-    a = normalize(axis)
-    s, c = sincos(θ)
-    t = 1f0 - c
-
-    # Rodrigues' rotation formula, written COLUMN BY COLUMN.
-    #
-    # `Mat3f(...)` fills column-major, so laying it out to READ like the
-    # textbook row-major matrix makes it the TRANSPOSE, a rotation by -angle:
-    # `rotation_matrix(90, ẑ)` then maps x̂ to (0,-1,0) instead of (0,1,0),
-    # so every rotated environment map was turned the wrong way, and by twice the
-    # requested angle relative to the reference.
-    Mat3f(
-        # column 1
-        t*a[1]*a[1] + c,      t*a[1]*a[2] + s*a[3], t*a[1]*a[3] - s*a[2],
-        # column 2
-        t*a[1]*a[2] - s*a[3], t*a[2]*a[2] + c,      t*a[2]*a[3] + s*a[1],
-        # column 3
-        t*a[1]*a[3] + s*a[2], t*a[2]*a[3] - s*a[1], t*a[3]*a[3] + c
-    )
 end
 
 # =============================================================================
@@ -109,32 +75,6 @@ function equirect_to_equalarea(img::AbstractMatrix{S}, n::Integer = size(img, 2)
         v = acos(clamp(d[3], -1f0, 1f0)) * 0.31830987f0    # 1/pi, 0 at the zenith
         si = clamp(round(Int, u * W + 0.5f0), 1, W)
         sj = clamp(round(Int, v * H + 0.5f0), 1, H)
-        @inbounds out[j, i] = img[sj, si]
-    end
-    return out
-end
-
-"""
-    equalarea_to_equirect(img, w = size(img, 1) * 2) -> Matrix
-
-The inverse of [`equirect_to_equalarea`](@ref): an equal-area octahedral square
-back out to a `w x w/2` equirectangular rectangle.
-
-Here because a renderer that is not this one wants the other convention — a
-raster path sampling `atan(y, x)` / `acos(z)` directly — and converting at the
-boundary is what lets both draw the same sky from one file.
-"""
-function equalarea_to_equirect(img::AbstractMatrix{S}, w::Integer = size(img, 1) * 2) where {S}
-    n = size(img, 1)
-    h = w ÷ 2
-    out = Matrix{S}(undef, h, w)
-    for j in 1:h, i in 1:w
-        phi = ((i - 0.5f0) / w - 0.5f0) * 2f0 * Float32(pi)
-        th = (j - 0.5f0) / h * Float32(pi)
-        d = Vec3f(sin(th) * cos(phi), sin(th) * sin(phi), cos(th))
-        uv = equal_area_sphere_to_square(d)
-        si = clamp(round(Int, uv[1] * n + 0.5f0), 1, n)
-        sj = clamp(round(Int, uv[2] * n + 0.5f0), 1, n)
         @inbounds out[j, i] = img[sj, si]
     end
     return out

@@ -46,8 +46,8 @@ end
     fill!(grid.voxels, 0.001f0)
     bounds = Hikari.Bounds3(Point3f(0), Point3f(1024, 1, 1))
     origin = Point3f(0, 0.5, 0.5); direction = Vec3f(1, 0, 0)
-    iter = Hikari.RayMajorantIterator(Hikari.create_dda_iterator(grid, bounds, origin, direction,
-              0f0, 1024f0, Hikari.SpectralRadiance(1f0)))
+    iter = Hikari.create_dda_iterator(grid, bounds, origin, direction,
+              0f0, 1024f0, Hikari.SpectralRadiance(1f0))
     control = Hikari.MediumProperties(Hikari.SpectralRadiance(0.001f0), Hikari.SpectralRadiance(0f0),
                                       Hikari.SpectralRadiance(0f0), 0f0)
     transmittance, _, _ = Hikari.ratio_tracking_dda(iter, origin, direction, nothing,
@@ -62,7 +62,7 @@ end
                                          Hikari.SpectralRadiance(1f0))
     optical_depth = 0f0; length_covered = 0f0
     while true
-        segment, iterator, valid = Hikari.dda_next(iterator,nothing)
+        segment, iterator, valid = Hikari.ray_majorant_next(iterator,nothing)
         valid || break
         distance = segment.t_max-segment.t_min
         optical_depth += distance*segment.σ_maj[1]
@@ -146,7 +146,7 @@ end
             Hikari.majorant_lookup(tight,nothing,cell[1],cell[2],cell[3])+1f-6
     end
     λ = Hikari.sample_wavelengths_visible(0.5f0)
-    mp = Hikari.sample_point(gas, nothing, Hikari.get_rgb2spec_table(), Point3f(0.4), λ)
+    mp = Hikari.sample_point(gas, nothing, Hikari.get_srgb_table(), Point3f(0.4), λ)
     @test Hikari.is_emissive(gas)
     @test !Hikari.is_emissive(Hikari.NanoGridMedium(host; majorant_res=(1, 1, 1)))
     @test mp.Le[1] ≈ Hikari.thermalradiance(λ.lambda[1], 1800f0)

@@ -192,8 +192,6 @@ end
 
 @inline _invert(color::Vec3f, fac::Float32) = fac * (Vec3f(1) - color) + (1f0 - fac) * color
 
-"""Luminance of linear Rec. 709 (sRGB) primaries, the space Hikari renders in."""
-@inline _rgb_to_bw(c::Vec3f) = 0.2126f0 * c[1] + 0.7152f0 * c[2] + 0.0722f0 * c[3]
 
 @inline function _separate_color(model::UInt8, c::Vec3f)
     model == ColorModel.HSV && return _rgb_to_hsv(c)

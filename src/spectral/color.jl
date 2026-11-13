@@ -597,6 +597,18 @@ Matrix values are inlined for performance and to avoid const reload issues.
 end
 
 """
+    luminance(r, g, b)
+    luminance(c)
+
+The luminance Y of a linear sRGB (Rec. 709 primaries) colour, the space Hikari
+renders in: the Y row of [`linear_srgb_to_xyz`](@ref).
+"""
+@inline luminance(r, g, b) = 0.2126729f0 * r + 0.7151522f0 * g + 0.0721750f0 * b
+@inline luminance(c::Vec3f) = luminance(c[1], c[2], c[3])
+@inline luminance(c::RGB) = luminance(Float32(c.r), Float32(c.g), Float32(c.b))
+@inline luminance(s::RGBSpectrum) = luminance(s.c[1], s.c[2], s.c[3])
+
+"""
     linear_srgb_to_xyz(rgb::Vec3f) -> Vec3f
 
 Convert linear sRGB to CIE XYZ color space.

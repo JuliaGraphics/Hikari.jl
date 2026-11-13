@@ -41,7 +41,7 @@ end
         return LightSampleSpectral()
     end
     wi = to_light / dist
-    Li = light.scale * Sample(table, light.i, lambda) / dist_sq
+    Li = light.scale * uplift_rgb_illuminant(table, light.i, lambda) / dist_sq
     return LightSampleSpectral(Li, wi, 1f0, light.position, true)
 end
 
@@ -67,7 +67,7 @@ end
                 (light.cos_falloff_start - light.cos_total_width)
         delta * delta * (3f0 - 2f0 * delta)  # SmoothStep (pbrt-v4 math.h:273)
     end
-    Li = light.scale * Sample(table, light.i, lambda) * spot_falloff / dist_sq
+    Li = light.scale * uplift_rgb_illuminant(table, light.i, lambda) * spot_falloff / dist_sq
     return LightSampleSpectral(Li, wi, 1f0, light.position, true)
 end
 
@@ -229,7 +229,7 @@ end
 @propagate_inbounds function evaluate_environment_spectral(
     light::AmbientLight, lights, table::RGBToSpectrumTable, ray_d::Vec3f, lambda::Wavelengths
 )::SpectralRadiance
-    return light.scale * Sample(table, light.i, lambda)
+    return light.scale * uplift_rgb_illuminant(table, light.i, lambda)
 end
 
 @propagate_inbounds evaluate_environment_spectral(::Light, lights, ::RGBToSpectrumTable, ::Vec3f, ::Wavelengths) = SpectralRadiance(0f0)

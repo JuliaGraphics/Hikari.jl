@@ -1,8 +1,8 @@
 # ============================================================================
 # Filter System - pbrt-v4 Compatible
 # ============================================================================
-# Implements filter types and FilterSampler for importance sampling the filter
-# footprint during camera ray generation.
+# Implements filter types and their importance sampling (pbrt-v4's FilterSampler,
+# tabulated in `GPUFilterSamplerData`) during camera ray generation.
 
 abstract type AbstractFilter end
 
@@ -199,8 +199,7 @@ end
     (gaussian_integral(-f.radius[2], f.radius[2], f.sigma) - 2f0 * f.radius[2] * f.exp_y)
 end
 
-# Gaussian filter requires tabulated importance sampling (FilterSampler)
-# filter_sample is implemented via FilterSampler
+# Gaussian filter requires tabulated importance sampling (`GPUFilterSamplerData`)
 
 # ============================================================================
 # Mitchell Filter
@@ -254,7 +253,7 @@ end
     f.radius[1] * f.radius[2] / 4f0
 end
 
-# Mitchell filter requires tabulated importance sampling (FilterSampler)
+# Mitchell filter requires tabulated importance sampling (`GPUFilterSamplerData`)
 
 # ============================================================================
 # Lanczos Sinc Filter
@@ -318,243 +317,8 @@ end
     sum / n_samples * area
 end
 
-# Lanczos filter requires tabulated importance sampling (FilterSampler)
+# Lanczos filter requires tabulated importance sampling (`GPUFilterSamplerData`)
 
-# Note: lerp(v1, v2, t) is defined in spectrum.jl
-
-# ============================================================================
-# PiecewiseConstant2D - For importance sampling arbitrary 2D functions
-# ============================================================================
-
-"""
-    PiecewiseConstant2D
-
-2D piecewise constant distribution for importance sampling.
-Stores a 2D function tabulated on a grid and allows efficient sampling
-proportional to the function values.
-"""
-struct PiecewiseConstant2D{A<:AbstractMatrix{Float32}, V<:AbstractVector{Float32}}
-    # Function values on grid
-    func::A
-
-    # Marginal CDF for y (sum of each row)
-    marginal_cdf::V
-    marginal_func::V
-
-    # Conditional CDFs for x given y (one per row)
-    conditional_cdfs::A
-
-    # Domain
-    domain_min::Point2f
-    domain_max::Point2f
-
-    # Grid size
-    nx::Int32
-    ny::Int32
-end
-
-"""
-Build a PiecewiseConstant2D from a 2D function array.
-func[y, x] = function value at grid cell (x, y).
-"""
-function PiecewiseConstant2D(func::AbstractMatrix{Float32}, domain_min::Point2f, domain_max::Point2f)
-    ny, nx = size(func)
-
-    # Compute conditional CDFs for each row (sampling x given y)
-    conditional_cdfs = similar(func)
-    row_integrals = zeros(Float32, ny)
-
-    for y in 1:ny
-        # Compute CDF for this row
-        row_sum = 0f0
-        for x in 1:nx
-            row_sum += func[y, x]
-            conditional_cdfs[y, x] = row_sum
-        end
-        row_integrals[y] = row_sum
-
-        # Normalize CDF
-        if row_sum > 0f0
-            for x in 1:nx
-                conditional_cdfs[y, x] /= row_sum
-            end
-        else
-            # Uniform fallback if row is all zeros
-            for x in 1:nx
-                conditional_cdfs[y, x] = Float32(x) / Float32(nx)
-            end
-        end
-    end
-
-    # Compute marginal CDF for y
-    marginal_cdf = zeros(Float32, ny)
-    marginal_sum = 0f0
-    for y in 1:ny
-        marginal_sum += row_integrals[y]
-        marginal_cdf[y] = marginal_sum
-    end
-
-    # Normalize marginal CDF
-    if marginal_sum > 0f0
-        marginal_cdf ./= marginal_sum
-    else
-        for y in 1:ny
-            marginal_cdf[y] = Float32(y) / Float32(ny)
-        end
-    end
-
-    PiecewiseConstant2D(
-        func,
-        marginal_cdf,
-        row_integrals,
-        conditional_cdfs,
-        domain_min,
-        domain_max,
-        Int32(nx),
-        Int32(ny)
-    )
-end
-
-"""
-Sample from the 2D distribution using inverse CDF sampling.
-Returns (point, pdf, grid_index).
-"""
-@inline function sample_piecewise_2d(d::PiecewiseConstant2D, u::Point2f)
-    # Sample y from marginal distribution
-    y_idx = binary_search_cdf(d.marginal_cdf, u[2])
-    y_idx = clamp(y_idx, Int32(1), d.ny)
-
-    # Sample x from conditional distribution given y
-    x_idx = binary_search_cdf_row(d.conditional_cdfs, y_idx, u[1])
-    x_idx = clamp(x_idx, Int32(1), d.nx)
-
-    # Compute continuous position within cell
-    # Map grid index to domain coordinates
-    dx = (d.domain_max[1] - d.domain_min[1]) / Float32(d.nx)
-    dy = (d.domain_max[2] - d.domain_min[2]) / Float32(d.ny)
-
-    # Center of the selected cell
-    px = d.domain_min[1] + (Float32(x_idx) - 0.5f0) * dx
-    py = d.domain_min[2] + (Float32(y_idx) - 0.5f0) * dy
-
-    # Compute PDF at this point
-    total_sum = d.marginal_cdf[end] * sum(d.marginal_func)
-    if total_sum > 0f0
-        pdf = d.func[y_idx, x_idx] / total_sum * Float32(d.nx * d.ny)
-    else
-        pdf = 1f0 / (Float32(d.nx * d.ny))
-    end
-
-    Point2f(px, py), pdf, Point2{Int32}(x_idx, y_idx)
-end
-
-# GPU-compatible branchless binary search - fully unrolled (SPIR-V requires no loops)
-# Uses @nexprs to generate 20 iterations of branchless binary search at compile time
-@inline function binary_search_cdf(cdf::AbstractVector{Float32}, u::Float32)::Int32
-    n = length(cdf)
-    lo = Int32(1)
-    hi = Int32(n)
-
-    # Fully unrolled branchless binary search (20 iterations enough for 2^20 elements)
-    Base.Cartesian.@nexprs 20 _ -> begin
-        mid = (lo + hi) ÷ Int32(2)
-        cond = cdf[mid] < u
-        lo = ifelse(cond, mid + Int32(1), lo)
-        hi = ifelse(cond, hi, mid)
-    end
-    lo
-end
-
-# GPU-compatible branchless binary search for matrix rows - fully unrolled
-@inline function binary_search_cdf_row(cdfs::AbstractMatrix{Float32}, row::Int32, u::Float32)::Int32
-    n = size(cdfs, 2)
-    lo = Int32(1)
-    hi = Int32(n)
-
-    # Fully unrolled branchless binary search (20 iterations enough for 2^20 elements)
-    Base.Cartesian.@nexprs 20 _ -> begin
-        mid = (lo + hi) ÷ Int32(2)
-        cond = cdfs[row, mid] < u
-        lo = ifelse(cond, mid + Int32(1), lo)
-        hi = ifelse(cond, hi, mid)
-    end
-    lo
-end
-
-# ============================================================================
-# FilterSampler - Importance sampling for arbitrary filters
-# ============================================================================
-
-"""
-    FilterSampler{F<:AbstractFilter}
-
-Importance sampler for filters that don't have analytical sampling.
-Tabulates the filter function and uses PiecewiseConstant2D for sampling.
-
-For BoxFilter and TriangleFilter, direct analytical sampling is used instead.
-"""
-struct FilterSampler{F<:AbstractFilter, D}
-    filter::F
-    distrib::D  # PiecewiseConstant2D or nothing for analytically samplable filters
-    func_table::Matrix{Float32}  # Tabulated filter values
-end
-
-"""
-Create a FilterSampler for the given filter.
-"""
-function FilterSampler(filter::F) where F<:AbstractFilter
-    # Box and Triangle filters have analytical sampling - no table needed
-    if filter isa BoxFilter || filter isa TriangleFilter
-        return FilterSampler{F, Nothing}(filter, nothing, Matrix{Float32}(undef, 0, 0))
-    end
-
-    # Tabulate filter function
-    r = filter_radius(filter)
-    # Use 32 samples per unit radius (matching pbrt-v4)
-    nx = max(Int32(32 * r[1]), Int32(8))
-    ny = max(Int32(32 * r[2]), Int32(8))
-
-    func_table = Matrix{Float32}(undef, ny, nx)
-    domain_min = Point2f(-r[1], -r[2])
-    domain_max = Point2f(r[1], r[2])
-
-    dx = (domain_max[1] - domain_min[1]) / Float32(nx)
-    dy = (domain_max[2] - domain_min[2]) / Float32(ny)
-
-    for iy in 1:ny
-        for ix in 1:nx
-            px = domain_min[1] + (Float32(ix) - 0.5f0) * dx
-            py = domain_min[2] + (Float32(iy) - 0.5f0) * dy
-            func_table[iy, ix] = filter_evaluate(filter, Point2f(px, py))
-        end
-    end
-
-    distrib = PiecewiseConstant2D(func_table, domain_min, domain_max)
-
-    FilterSampler{F, typeof(distrib)}(filter, distrib, func_table)
-end
-
-"""
-Sample the filter using the FilterSampler.
-Returns FilterSample with position and weight.
-"""
-@inline function sample_filter(fs::FilterSampler{BoxFilter, Nothing}, u::Point2f)::FilterSample
-    filter_sample(fs.filter, u)
-end
-
-@inline function sample_filter(fs::FilterSampler{TriangleFilter, Nothing}, u::Point2f)::FilterSample
-    filter_sample(fs.filter, u)
-end
-
-@inline function sample_filter(fs::FilterSampler{F, D}, u::Point2f)::FilterSample where {F<:AbstractFilter, D<:PiecewiseConstant2D}
-    p, pdf, grid_idx = sample_piecewise_2d(fs.distrib, u)
-
-    # Weight = f(p) / pdf
-    f_val = fs.func_table[grid_idx[2], grid_idx[1]]
-    weight = pdf > 0f0 ? f_val / pdf : 0f0
-
-    FilterSample(p, weight)
-end
 
 # ============================================================================
 # GPU-Compatible Filter Sampling with Importance Sampling (pbrt-v4 style)
@@ -728,24 +492,22 @@ function GPUFilterSamplerData(filter::Union{AbstractFilter, GPUFilterParams})
 end
 
 """
-Binary search in CDF to find interval containing u.
-Returns index o such that cdf[o] <= u < cdf[o+1] (1-based indexing).
-CDF has size n+1 with cdf[1]=0 and cdf[n+1]=1.
-GPU-compatible fully unrolled branchless implementation.
-"""
-@inline function find_interval(cdf::AbstractVector{Float32}, u::Float32, n::Int32)::Int32
-    # Fully unrolled branchless binary search for interval containing u
-    lo = Int32(1)
-    hi = n + Int32(1)
+    find_interval(pred, n) -> Int32
 
-    # 20 iterations (enough for 2^20 elements)
+The largest `i` in `1:n` for which `pred(i)` holds, or 1 when none does, for a `pred`
+true up to some index and false after it: pbrt-v4's `FindInterval`. A branchless
+binary search unrolled 20 times (tables of up to 2^20 entries), for device code.
+"""
+@inline function find_interval(pred, n::Int32)::Int32
+    lo = Int32(1)
+    hi = n
     Base.Cartesian.@nexprs 20 _ -> begin
-        mid = (lo + hi) >> Int32(1)
-        cond = cdf[mid] <= u
+        mid = (lo + hi + Int32(1)) ÷ Int32(2)
+        cond = pred(mid)
         lo = ifelse(cond, mid, lo)
-        hi = ifelse(cond, hi, mid)
+        hi = ifelse(cond, hi, mid - Int32(1))
     end
-    lo
+    return lo
 end
 
 """
@@ -762,8 +524,7 @@ Returns (continuous_position, pdf, cell_index).
     domain_max::Float32
 )
     # Find interval containing u
-    o = find_interval(cdf, u, n)
-    o = clamp(o, Int32(1), n)
+    o = clamp(find_interval(i -> cdf[i] <= u, n + Int32(1)), Int32(1), n)
 
     # Compute offset within interval
     du = u - cdf[o]
@@ -798,17 +559,7 @@ Sample 1D from conditional distribution (row of 2D distribution).
     domain_min::Float32,
     domain_max::Float32
 )
-    # Find interval in this row's CDF (fully unrolled branchless binary search)
-    lo = Int32(1)
-    hi = nx + Int32(1)
-
-    Base.Cartesian.@nexprs 20 _ -> begin
-        mid = (lo + hi) >> Int32(1)
-        cond = conditional_cdf[row, mid] <= u
-        lo = ifelse(cond, mid, lo)
-        hi = ifelse(cond, hi, mid)
-    end
-    o = clamp(lo, Int32(1), nx)
+    o = clamp(find_interval(i -> conditional_cdf[row, i] <= u, nx + Int32(1)), Int32(1), nx)
 
     # Compute offset within interval
     du = u - conditional_cdf[row, o]

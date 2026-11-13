@@ -237,8 +237,7 @@ function bind_attributes(g::ShaderGraph, mesh::GeometryBasics.Mesh)
     return ShaderGraph(map(rebuild, g.closures))
 end
 
-_linear(c::Colorant) = (rgb = RGB{Float32}(c); Vec3f(_srgb_to_linear.((red(rgb), green(rgb), blue(rgb)))...))
-_srgb_to_linear(x) = x <= 0.04045f0 ? x / 12.92f0 : ((x + 0.055f0) / 1.055f0)^2.4f0
+_linear(c::Colorant) = (rgb = RGB{Float32}(c); Vec3f(srgb_gamma_to_linear.((red(rgb), green(rgb), blue(rgb)))...))
 _as_vec3(x::Colorant) = _linear(x)
 _as_vec3(x::Real) = Vec3f(x)
 _as_vec3(x::AbstractVector{<:Real}) = Vec3f(ntuple(i -> i <= length(x) ? Float32(x[i]) : 0f0, 3))

@@ -74,17 +74,3 @@ function SunLight(rgb::RGB, direction::Vec3f; kwargs...)
     SunLight(RGB{Float32}(rgb.r, rgb.g, rgb.b), direction; kwargs...)
 end
 
-function sample_li(
-        s::SunLight{S}, ref::Interaction, u::Point2f, scene::AbstractScene,
-    )::Tuple{S,Vec3f,Float32,VisibilityTester} where S<:Spectrum
-
-    # s.direction is the direction light TRAVELS (away from light source)
-    # wi should be the direction TO the light source (opposite of s.direction)
-    wi = -s.direction
-    outside_point = ref.p .+ wi .* (2 * world_radius(scene))
-    tester = VisibilityTester(
-        ref, Interaction(outside_point, ref.time, Vec3f(0f0), Normal3f(0f0)),
-    )
-    s.scale * s.i, wi, 1f0, tester
-end
-

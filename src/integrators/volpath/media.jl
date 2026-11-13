@@ -32,9 +32,7 @@ p(cos θ) = (1 - g²) / [4π(1 + g² - 2g cos θ)^(3/2)]
 @propagate_inbounds function hg_p(g::Float32, cos_θ::Float32)::Float32
     g2 = g * g
     denom = 1f0 + g2 - 2f0 * g * cos_θ
-    # `max(1f-10, denom)` under the `sqrt`, matching `hg_phase_pdf` and
-    # `sample_hg_phase` in `materials/common.jl` — the same formula, which
-    # guarded it and this one did not. `denom` is `(1 ∓ g)²` at grazing
+    # `max(1f-10, denom)` under the `sqrt`: `denom` is `(1 ∓ g)²` at grazing
     # cos θ, so it reaches zero for strongly forward- or back-scattering
     # media and goes slightly negative in Float32; `sqrt` of that is a
     # `DomainError`, which on a GPU is a device-side throw, not a NaN.
@@ -237,50 +235,6 @@ end
 RayMajorantSegment() = RayMajorantSegment(0f0, 0f0, SpectralRadiance(0f0))
 
 # ============================================================================
-# Homogeneous Majorant Iterator (trivial single-segment iterator)
-# ============================================================================
-
-"""
-    HomogeneousMajorantIterator
-
-Simple iterator that returns a single majorant segment for homogeneous media.
-Provides consistent iterator interface with DDAMajorantIterator.
-"""
-struct HomogeneousMajorantIterator
-    t_min::Float32
-    t_max::Float32
-    σ_maj::SpectralRadiance
-    called::Bool  # Has the segment been returned?
-end
-
-HomogeneousMajorantIterator() = HomogeneousMajorantIterator(Inf32, -Inf32, SpectralRadiance(0f0), true)
-
-function HomogeneousMajorantIterator(t_min::Float32, t_max::Float32, σ_maj::SpectralRadiance)
-    HomogeneousMajorantIterator(t_min, t_max, σ_maj, false)
-end
-
-"""
-    homogeneous_next(iter::HomogeneousMajorantIterator) -> (RayMajorantSegment, HomogeneousMajorantIterator, Bool)
-
-Return the single majorant segment for homogeneous media.
-Returns (seg, new_iter, true) if valid, (invalid_seg, exhausted_iter, false) if exhausted.
-
-The Bool indicates validity: true = has segment, false = exhausted.
-"""
-@propagate_inbounds function homogeneous_next(iter::HomogeneousMajorantIterator)
-    if iter.called || iter.t_min >= iter.t_max
-        # Return invalid/exhausted state
-        invalid_seg = RayMajorantSegment()
-        exhausted_iter = HomogeneousMajorantIterator()
-        return (invalid_seg, exhausted_iter, false)
-    end
-
-    seg = RayMajorantSegment(iter.t_min, iter.t_max, iter.σ_maj)
-    new_iter = HomogeneousMajorantIterator(iter.t_min, iter.t_max, iter.σ_maj, true)
-    return (seg, new_iter, true)
-end
-
-# ============================================================================
 # Majorant Grid (forward declaration for DDA iterator)
 # ============================================================================
 
@@ -338,55 +292,7 @@ end
 # ============================================================================
 
 """
-    DDAMajorantIterator
-
-3D DDA iterator for traversing voxels along a ray through a majorant grid.
-Returns per-voxel majorant bounds for tight delta tracking.
-
-Following PBRT-v4's DDAMajorantIterator implementation.
-The iterator state is immutable - dda_next returns a new iterator with updated state.
-
-Note: Uses NTuple instead of Vec types for GPU compatibility.
-"""
-struct DDAMajorantIterator{M<:MajorantGrid}
-    # Base extinction coefficient (σ_a + σ_s at full density)
-    σ_t::SpectralRadiance
-    # Current position and bounds along ray
-    t_min::Float32
-    t_max::Float32
-    # Majorant grid reference
-    grid::M
-    grid_res::NTuple{3, Int32}
-    # DDA state: next crossing t for each axis
-    next_crossing_t::NTuple{3, Float32}
-    # DDA state: step increment per voxel
-    delta_t::NTuple{3, Float32}
-    # DDA state: step direction per axis (-1 or +1)
-    step::NTuple{3, Int32}
-    # DDA state: limit voxel (exclusive) per axis
-    voxel_limit::NTuple{3, Int32}
-    # DDA state: current voxel indices
-    voxel::NTuple{3, Int32}
-end
-
-"""Create an empty/invalid DDA iterator (for rays that miss the grid)"""
-@inline function DDAMajorantIterator(grid::M) where {M<:MajorantGrid}
-    res = grid.res
-    DDAMajorantIterator{M}(
-        SpectralRadiance(0f0),
-        Inf32, -Inf32,  # t_min > t_max means empty
-        grid,
-        (Int32(res[1]), Int32(res[2]), Int32(res[3])),
-        (0f0, 0f0, 0f0),
-        (0f0, 0f0, 0f0),
-        (Int32(0), Int32(0), Int32(0)),
-        (Int32(0), Int32(0), Int32(0)),
-        (Int32(0), Int32(0), Int32(0))
-    )
-end
-
-"""
-    create_dda_iterator(grid, bounds, ray_o, ray_d, t_min, t_max, σ_t) -> DDAMajorantIterator
+    create_dda_iterator(grid, bounds, ray_o, ray_d, t_min, t_max, σ_t) -> RayMajorantIterator
 
 Initialize a DDA iterator for traversing the majorant grid along a ray.
 The ray should already be transformed to medium space.
@@ -499,9 +405,11 @@ Following PBRT-v4's DDAMajorantIterator constructor.
         voxel_limit_z = Int32(-1)
     end
 
-    DDAMajorantIterator{M}(
+    RayMajorantIterator{M}(
+        t_min >= t_max ? Int32(0) : Int32(2),
         σ_t,
         t_min, t_max,
+        false,
         grid,
         (res_x, res_y, res_z),
         (next_crossing_t_x, next_crossing_t_y, next_crossing_t_z),
@@ -510,127 +418,6 @@ Following PBRT-v4's DDAMajorantIterator constructor.
         (voxel_limit_x, voxel_limit_y, voxel_limit_z),
         (voxel_x, voxel_y, voxel_z)
     )
-end
-
-"""
-    dda_next(iter::DDAMajorantIterator, media) -> (RayMajorantSegment, DDAMajorantIterator, Bool)
-
-Advance the DDA iterator and return the next majorant segment.
-Returns (seg, new_iter, true) if valid, (invalid_seg, exhausted_iter, false) if exhausted.
-
-The Bool indicates validity: true = has segment, false = exhausted.
-
-Since structs are immutable in Julia, this returns a new iterator with updated state.
-Following PBRT-v4's DDAMajorantIterator::Next().
-"""
-@inline @propagate_inbounds function dda_step(iter::DDAMajorantIterator{M}, media) where M
-    t_min = iter.t_min
-    t_max = iter.t_max
-
-    # Check if done
-    if t_min >= t_max
-        invalid_seg = RayMajorantSegment()
-        exhausted_iter = DDAMajorantIterator(iter.grid)
-        return (invalid_seg, exhausted_iter, false)
-    end
-
-    next_crossing_t = iter.next_crossing_t
-    voxel = iter.voxel
-
-    # Find step axis: axis with smallest nextCrossingT
-    # Using bit manipulation like PBRT for branchless selection
-    # bits = (t_x < t_y) << 2 + (t_x < t_z) << 1 + (t_y < t_z)
-    t_x, t_y, t_z = next_crossing_t[1], next_crossing_t[2], next_crossing_t[3]
-    # IMPORTANT: Use Int32 literals to avoid Int64 which causes SPIR-V "Unsupported integer width" error
-    # See spirv-int64-ifelse-mwe.jl for minimal reproduction case
-    bits = ((t_x < t_y) ? Int32(4) : Int32(0)) + ((t_x < t_z) ? Int32(2) : Int32(0)) + ((t_y < t_z) ? Int32(1) : Int32(0))
-
-    # Lookup table: cmpToAxis[bits] gives the axis to step
-    # cmpToAxis = [2, 1, 2, 1, 2, 2, 0, 0]  (0-indexed in C++)
-    # Julia 1-indexed: axis 1=X, 2=Y, 3=Z
-    step_axis = if bits == Int32(0)
-        Int32(3)  # Z axis
-    elseif bits == Int32(1)
-        Int32(2)  # Y axis
-    elseif bits == Int32(2)
-        Int32(3)  # Z axis
-    elseif bits == Int32(3)
-        Int32(2)  # Y axis
-    elseif bits == Int32(4)
-        Int32(3)  # Z axis
-    elseif bits == Int32(5)
-        Int32(3)  # Z axis
-    elseif bits == Int32(6)
-        Int32(1)  # X axis
-    else  # bits == 7
-        Int32(1)  # X axis
-    end
-
-    # Exit t for this voxel
-    t_voxel_exit = min(t_max, next_crossing_t[step_axis])
-
-    # Lookup majorant density for current voxel
-    max_density = majorant_lookup(iter.grid, media, voxel[1], voxel[2], voxel[3])
-    σ_maj = iter.σ_t * max_density
-
-    # Create segment
-    seg = RayMajorantSegment(t_min, t_voxel_exit, σ_maj)
-
-    # Advance state for next iteration
-    new_t_min = t_voxel_exit
-
-    # Check if we're exiting the grid on this axis - compute new voxel
-    new_voxel_x = step_axis == Int32(1) ? voxel[1] + iter.step[1] : voxel[1]
-    new_voxel_y = step_axis == Int32(2) ? voxel[2] + iter.step[2] : voxel[2]
-    new_voxel_z = step_axis == Int32(3) ? voxel[3] + iter.step[3] : voxel[3]
-
-    # If stepped voxel hits limit, we're done
-    new_voxel_axis = step_axis == Int32(1) ? new_voxel_x : (step_axis == Int32(2) ? new_voxel_y : new_voxel_z)
-    voxel_limit_axis = iter.voxel_limit[step_axis]
-    if new_voxel_axis == voxel_limit_axis
-        new_t_min = t_max
-    end
-
-    # Also terminate if next crossing exceeds t_max
-    if next_crossing_t[step_axis] > t_max
-        new_t_min = t_max
-    end
-
-    # Update next crossing t
-    new_next_crossing_t = (
-        step_axis == Int32(1) ? next_crossing_t[1] + iter.delta_t[1] : next_crossing_t[1],
-        step_axis == Int32(2) ? next_crossing_t[2] + iter.delta_t[2] : next_crossing_t[2],
-        step_axis == Int32(3) ? next_crossing_t[3] + iter.delta_t[3] : next_crossing_t[3]
-    )
-
-    # Create new iterator with updated state
-    new_iter = DDAMajorantIterator{M}(
-        iter.σ_t,
-        new_t_min, t_max,
-        iter.grid,
-        iter.grid_res,
-        new_next_crossing_t,
-        iter.delta_t,
-        iter.step,
-        iter.voxel_limit,
-        (new_voxel_x, new_voxel_y, new_voxel_z)
-    )
-
-    return (seg, new_iter, true)
-end
-
-"Merge adjacent equal majorants, preserving their exact interval and bound."
-@inline @propagate_inbounds function dda_next(iter::DDAMajorantIterator, media)
-    seg, next, valid = dda_step(iter, media)
-    valid || return (seg, next, false)
-    density = majorant_lookup(iter.grid, media, iter.voxel...)
-    while next.t_min < next.t_max
-        v = next.voxel
-        majorant_lookup(next.grid, media, v[1], v[2], v[3]) == density || break
-        following, next, _ = dda_step(next, media)
-        seg = RayMajorantSegment(seg.t_min, following.t_max, seg.σ_maj)
-    end
-    return (seg, next, true)
 end
 
 # ============================================================================
@@ -699,34 +486,14 @@ end
     )
 end
 
-"""Create a homogeneous mode iterator directly (for HomogeneousMedium)"""
-@inline function RayMajorantIterator_homogeneous(t_min::Float32, t_max::Float32, σ_maj::SpectralRadiance)
-    grid = EmptyMajorantGrid()
-    mode = (t_min >= t_max) ? Int32(0) : Int32(1)
-    RayMajorantIterator{typeof(grid)}(
-        mode,
+"""The single segment `t_min..t_max` with majorant `σ_maj`, of a homogeneous medium; `grid` only fixes the type."""
+@inline function RayMajorantIterator(t_min::Float32, t_max::Float32, σ_maj::SpectralRadiance, grid::M) where {M<:MajorantGrid}
+    res = grid.res
+    RayMajorantIterator{M}(
+        t_min >= t_max ? Int32(0) : Int32(1),
         σ_maj,
         t_min, t_max,
-        false,  # not called yet
-        grid,
-        (Int32(1), Int32(1), Int32(1)),
-        (0f0, 0f0, 0f0),
-        (0f0, 0f0, 0f0),
-        (Int32(0), Int32(0), Int32(0)),
-        (Int32(0), Int32(0), Int32(0)),
-        (Int32(0), Int32(0), Int32(0))
-    )
-end
-
-"""Create a homogeneous mode iterator (from HomogeneousMajorantIterator)"""
-@inline function RayMajorantIterator(hom::HomogeneousMajorantIterator, grid::M) where {M<:MajorantGrid}
-    res = grid.res
-    mode = (hom.called || hom.t_min >= hom.t_max) ? Int32(0) : Int32(1)
-    RayMajorantIterator{M}(
-        mode,
-        hom.σ_maj,
-        hom.t_min, hom.t_max,
-        hom.called,
+        false,
         grid,
         (Int32(res[1]), Int32(res[2]), Int32(res[3])),
         (0f0, 0f0, 0f0),
@@ -734,24 +501,6 @@ end
         (Int32(0), Int32(0), Int32(0)),
         (Int32(0), Int32(0), Int32(0)),
         (Int32(0), Int32(0), Int32(0))
-    )
-end
-
-"""Create a DDA mode iterator (from DDAMajorantIterator)"""
-@inline function RayMajorantIterator(dda::DDAMajorantIterator{M}) where {M<:MajorantGrid}
-    mode = (dda.t_min >= dda.t_max) ? Int32(0) : Int32(2)
-    RayMajorantIterator{M}(
-        mode,
-        dda.σ_t,
-        dda.t_min, dda.t_max,
-        false,
-        dda.grid,
-        dda.grid_res,
-        dda.next_crossing_t,
-        dda.delta_t,
-        dda.step,
-        dda.voxel_limit,
-        dda.voxel
     )
 end
 
@@ -940,33 +689,16 @@ end
     return MediumProperties(σ_a, σ_s, Le, medium.g)
 end
 
-@propagate_inbounds function get_majorant(
-    medium::HomogeneousMedium,
-    table::RGBToSpectrumTable,
-    ray::Raycore.Ray,
-    t_min::Float32,
-    t_max::Float32,
-    λ::Wavelengths
-)::RayMajorantSegment
-    # Use unbounded uplift for scattering/absorption coefficients (can be > 1.0)
-    σ_a = uplift_rgb_unbounded(table, medium.σ_a, λ)
-    σ_s = uplift_rgb_unbounded(table, medium.σ_s, λ)
-    σ_maj = σ_a + σ_s
-    return RayMajorantSegment(t_min, t_max, σ_maj)
-end
+"""
+    create_majorant_iterator(medium, table, ray, t_max, λ, template_grid) -> RayMajorantIterator
 
-@propagate_inbounds function create_majorant_iterator(
-    medium::HomogeneousMedium,
-    table::RGBToSpectrumTable,
-    ray::Raycore.Ray,
-    t_max::Float32,
-    λ::Wavelengths
-)
-    σ_a = uplift_rgb_unbounded(table, medium.σ_a, λ)
-    σ_s = uplift_rgb_unbounded(table, medium.σ_s, λ)
-    σ_maj = σ_a + σ_s
-    return RayMajorantIterator_homogeneous(0f0, t_max, σ_maj)
-end
+The iterator a kernel steps through `medium` with, of the type `template_grid` fixes
+for every medium of the kernel. A medium whose iterator already has its own grid's
+type answers the five-argument form.
+"""
+@propagate_inbounds create_majorant_iterator(medium::Medium, table::RGBToSpectrumTable, ray::Raycore.Ray,
+                                             t_max::Float32, λ::Wavelengths, ::MajorantGrid) =
+    create_majorant_iterator(medium, table, ray, t_max, λ)
 
 @propagate_inbounds function create_majorant_iterator(
     medium::HomogeneousMedium,
@@ -980,22 +712,8 @@ end
     σ_s = uplift_rgb_unbounded(table, medium.σ_s, λ)
     σ_maj = σ_a + σ_s
 
-    # Create iterator with template grid type for GPU type consistency
-    mode = (0f0 >= t_max) ? Int32(0) : Int32(1)
-    res = template_grid.res
-    return RayMajorantIterator{M}(
-        mode,
-        σ_maj,
-        0f0, t_max,
-        false,  # not called yet
-        template_grid,  # Use template grid (never accessed in homogeneous mode)
-        (Int32(res[1]), Int32(res[2]), Int32(res[3])),
-        (0f0, 0f0, 0f0),
-        (0f0, 0f0, 0f0),
-        (Int32(0), Int32(0), Int32(0)),
-        (Int32(0), Int32(0), Int32(0)),
-        (Int32(0), Int32(0), Int32(0))
-    )
+    # The template grid fixes the iterator's type for every medium in a kernel.
+    return RayMajorantIterator(0f0, t_max, σ_maj, template_grid)
 end
 
 """
@@ -1234,59 +952,8 @@ function build_rgb_majorant_grid(
     grid_size::Tuple{Int,Int,Int},
     majorant_res::Vec3i
 )
-    nx, ny, nz = grid_size
-    grid = MajorantGrid(majorant_res, Vector{Float32})
-
-    for iz in 0:majorant_res[3]-1
-        # Map majorant voxel to density grid range
-        z_start_f = iz * nz / majorant_res[3]
-        z_end_f = (iz + 1) * nz / majorant_res[3]
-        z_start = max(1, floor(Int, z_start_f) + 1)
-        z_end = min(nz, ceil(Int, z_end_f))
-
-        for iy in 0:majorant_res[2]-1
-            y_start_f = iy * ny / majorant_res[2]
-            y_end_f = (iy + 1) * ny / majorant_res[2]
-            y_start = max(1, floor(Int, y_start_f) + 1)
-            y_end = min(ny, ceil(Int, y_end_f))
-
-            for ix in 0:majorant_res[1]-1
-                x_start_f = ix * nx / majorant_res[1]
-                x_end_f = (ix + 1) * nx / majorant_res[1]
-                x_start = max(1, floor(Int, x_start_f) + 1)
-                x_end = min(nx, ceil(Int, x_end_f))
-
-                # Find max σ_t = max(σ_a) + max(σ_s) in this region
-                # Following pbrt-v4: use MaxValue (max RGB component) of each spectrum
-                max_σ_a = 0f0
-                max_σ_s = 0f0
-
-                for z in z_start:z_end, y in y_start:y_end, x in x_start:x_end
-                    if !isnothing(σ_a_grid)
-                        rgb = σ_a_grid[x, y, z]
-                        max_σ_a = max(max_σ_a, max(rgb.c[1], rgb.c[2], rgb.c[3]))
-                    end
-                    if !isnothing(σ_s_grid)
-                        rgb = σ_s_grid[x, y, z]
-                        max_σ_s = max(max_σ_s, max(rgb.c[1], rgb.c[2], rgb.c[3]))
-                    end
-                end
-
-                # If grid is absent, default value is 1.0
-                if isnothing(σ_a_grid)
-                    max_σ_a = 1f0
-                end
-                if isnothing(σ_s_grid)
-                    max_σ_s = 1f0
-                end
-
-                # Store sigma_scale * max_σ_t
-                majorant_set!(grid, ix, iy, iz, sigma_scale * (max_σ_a + max_σ_s))
-            end
-        end
-    end
-
-    return grid
+    return build_rgb_majorant_grid!(MajorantGrid(majorant_res, Vector{Float32}), σ_a_grid, σ_s_grid,
+                                    sigma_scale, grid_size)
 end
 
 """In-place majorant grid rebuild for RGBGridMedium density updates."""
@@ -1318,6 +985,8 @@ function build_rgb_majorant_grid!(
                 x_start = max(1, floor(Int, x_start_f) + 1)
                 x_end = min(nx, ceil(Int, x_end_f))
 
+                # Find max σ_t = max(σ_a) + max(σ_s) in this region; pbrt-v4's
+                # MaxValue, the largest RGB component of each spectrum.
                 max_σ_a = 0f0
                 max_σ_s = 0f0
 
@@ -1332,6 +1001,7 @@ function build_rgb_majorant_grid!(
                     end
                 end
 
+                # An absent grid is 1 everywhere.
                 if isnothing(σ_a_grid)
                     max_σ_a = 1f0
                 end
@@ -1563,7 +1233,7 @@ end
     # SampledSpectrum sigma_t(1);
     σ_t = SpectralRadiance(1f0)
 
-    dda_iter = create_dda_iterator(
+    return create_dda_iterator(
         medium.majorant_grid,
         medium.bounds,
         ray_o,
@@ -1572,63 +1242,15 @@ end
         t_exit,
         σ_t
     )
-    return RayMajorantIterator(dda_iter)
 end
 
-@propagate_inbounds function create_majorant_iterator(
-    medium::RGBGridMedium,
-    table::RGBToSpectrumTable,
-    ray::Raycore.Ray,
-    t_max::Float32,
-    λ::Wavelengths,
-    ::MajorantGrid
-)
-    return create_majorant_iterator(medium, table, ray, t_max, λ)
-end
-
-@propagate_inbounds function get_majorant(
-    medium::RGBGridMedium,
-    table::RGBToSpectrumTable,
-    ray::Raycore.Ray,
-    t_min::Float32,
-    t_max::Float32,
-    λ::Wavelengths
-)::RayMajorantSegment
-    # Find global max from majorant grid (conservative bound)
-    # The majorant grid already stores sigma_scale * max(σ_a + σ_s) per voxel
-    max_majorant = 0f0
-    for v in medium.majorant_grid.voxels
-        max_majorant = max(max_majorant, v)
-    end
-
-    # Following pbrt-v4: majorant grid stores scalar max, use unit spectrum
-    # since the actual σ_t values are wavelength-dependent but bounded by this max
-    σ_maj = SpectralRadiance(max_majorant)
-
-    return RayMajorantSegment(t_min, t_max, σ_maj)
-end
-
-"""Build a coarse majorant grid from the density field (CPU path)."""
-function build_majorant_grid(density::Array{Float32,3}, res::Vec3i)
-    nx, ny, nz = size(density)
-    grid = MajorantGrid(res, Vector{Float32})
-    build_majorant_grid_cpu!(grid, density, nx, ny, nz)
-    return grid
-end
-
-"""Build a coarse majorant grid from a GPU density field using a KA kernel."""
+"""A coarse majorant grid of resolution `res` over the density field, on the field's device."""
+build_majorant_grid(density::Array{Float32,3}, res::Vec3i) =
+    build_majorant_grid!(MajorantGrid(res, Vector{Float32}), density)
 function build_majorant_grid(density::AbstractArray{Float32,3}, res::Vec3i)
-    nx, ny, nz = size(density)
-    backend = KA.get_backend(density)
-    n_voxels = Int(res[1]) * Int(res[2]) * Int(res[3])
-    voxels = Mantle.devicearray(backend, Float32, n_voxels)
+    voxels = Mantle.devicearray(KA.get_backend(density), Float32, Int(res[1]) * Int(res[2]) * Int(res[3]))
     fill!(voxels, 0f0)
-    grid = MajorantGrid(voxels, Vec{3,Int32}(Int32(res[1]), Int32(res[2]), Int32(res[3])))
-    build_majorant_kernel!(backend)(
-        grid.voxels, density, Int32(res[1]), Int32(res[2]), Int32(res[3]),
-        Int32(nx), Int32(ny), Int32(nz); ndrange=n_voxels)
-    Mantle.waitidle(mantle_device(backend))
-    return grid
+    return build_majorant_grid!(MajorantGrid(voxels, Vec{3,Int32}(Int32(res[1]), Int32(res[2]), Int32(res[3]))), density)
 end
 
 @kernel function build_majorant_kernel!(voxels, @Const(density),
@@ -1653,12 +1275,6 @@ end
     @inbounds voxels[linear] = max_val
 end
 
-"""In-place majorant grid rebuild (CPU path)."""
-function build_majorant_grid!(grid::MajorantGrid{Vector{Float32}}, density::Array{Float32,3})
-    nx, ny, nz = size(density)
-    build_majorant_grid_cpu!(grid, density, nx, ny, nz)
-    return grid
-end
 
 """In-place majorant grid rebuild (GPU path)."""
 function build_majorant_grid!(grid::MajorantGrid, density::AbstractArray{Float32,3})
@@ -1673,7 +1289,9 @@ function build_majorant_grid!(grid::MajorantGrid, density::AbstractArray{Float32
     return grid
 end
 
-function build_majorant_grid_cpu!(grid::MajorantGrid, density, nx, ny, nz)
+"""In-place majorant grid rebuild (CPU path)."""
+function build_majorant_grid!(grid::MajorantGrid{Vector{Float32}}, density::Array{Float32,3})
+    nx, ny, nz = size(density)
     res = grid.res
     for iz in 0:res[3]-1
         z_start = max(1, floor(Int, iz * nz / res[3]) + 1)
@@ -1692,6 +1310,7 @@ function build_majorant_grid_cpu!(grid::MajorantGrid, density, nx, ny, nz)
             end
         end
     end
+    return grid
 end
 
 @propagate_inbounds is_emissive(::GridMedium) = false
@@ -1836,7 +1455,7 @@ end
     σ_t = σ_a + σ_s
 
     # Create the DDA iterator and wrap in unified iterator
-    dda_iter = create_dda_iterator(
+    return create_dda_iterator(
         medium.majorant_grid,
         medium.bounds,
         ray_o,
@@ -1845,18 +1464,6 @@ end
         t_exit,
         σ_t
     )
-    return RayMajorantIterator(dda_iter)
-end
-
-@propagate_inbounds function create_majorant_iterator(
-    medium::GridMedium,
-    table::RGBToSpectrumTable,
-    ray::Raycore.Ray,
-    t_max::Float32,
-    λ::Wavelengths,
-    ::MajorantGrid
-)
-    return create_majorant_iterator(medium, table, ray, t_max, λ)
 end
 
 """
@@ -1901,23 +1508,6 @@ Uses scalar operations for GPU compatibility.
     t_exit = min(t1x, t1y, t1z)
 
     return (t_enter, t_exit)
-end
-
-@propagate_inbounds function get_majorant(
-    medium::GridMedium,
-    table::RGBToSpectrumTable,
-    ray::Raycore.Ray,
-    t_min::Float32,
-    t_max::Float32,
-    λ::Wavelengths
-)::RayMajorantSegment
-    # Fallback: Use global max density for simplicity
-    # NOTE: Use create_majorant_iterator for proper DDA-based majorant traversal
-    σ_a = uplift_rgb_unbounded(table, medium.σ_a, λ)
-    σ_s = uplift_rgb_unbounded(table, medium.σ_s, λ)
-    σ_maj = (σ_a + σ_s) * medium.max_density
-
-    return RayMajorantSegment(t_min, t_max, σ_maj)
 end
 
 # ============================================================================

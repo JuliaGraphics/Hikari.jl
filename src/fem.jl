@@ -30,14 +30,14 @@
 # (`FEMFieldTexture`), bound to any material's albedo, and every material
 # Hikari has composes with it. Material dispatch stays `MultiTypeSet`, untouched.
 #
-# ── Why `SurfaceInteraction` fits without being bent ────────────────────────
+# ── Why a surface hit fits without being bent ───────────────────────────────
 #
 #     uv::Point2f      <- ξ, the element's reference coordinate
 #     ∂p∂u, ∂p∂v       <- ∂x/∂ξ, the isoparametric Jacobian Newton already has
 #     face_idx::UInt32 <- the cell id, selecting the coefficient block
 #
-# That is not a coincidence. A parametric surface is what `SurfaceInteraction`
-# was designed around; a triangle is the degenerate case of one.
+# That is not a coincidence. A parametric surface is what pbrt's surface
+# interaction was designed around; a triangle is the degenerate case of one.
 
 using StaticArrays: SVector
 import Mantle
@@ -527,11 +527,6 @@ end
 @propagate_inbounds function eval_tex(textures, t::FEMFieldTexture,
                                       tfc::TextureFilterContext)
     return fem_ramp(t, fem_field_value(textures, t, tfc.uv, tfc.face_idx))
-end
-
-@propagate_inbounds function eval_tex(textures, t::FEMFieldTexture,
-                                      si::SurfaceInteraction)
-    return fem_ramp(t, fem_field_value(textures, t, si.uv, si.face_idx))
 end
 
 # The one-element store re-read, then evaluated — the `CheckerboardTexture`

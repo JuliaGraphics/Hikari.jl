@@ -20,7 +20,7 @@ end
     enter=max(0f0,enter)
     total=0f0; n=Int32(0)
     if enter<leave
-        it=Hikari.RayMajorantIterator(Hikari.create_dda_iterator(grid,bounds,o,d,enter,leave,Hikari.SpectralRadiance(1f0)))
+        it=Hikari.create_dda_iterator(grid,bounds,o,d,enter,leave,Hikari.SpectralRadiance(1f0))
         for step in Int32(1):Int32(1000)
             seg,it,valid=Hikari.ray_majorant_next(it,nothing)
             valid || break
@@ -53,7 +53,7 @@ end
         enter,leave = Hikari.ray_bounds_intersect(o,d,box)
         enter=max(0f0,enter)
         enter>=leave && return (0f0,0,0f0)
-        it=Hikari.RayMajorantIterator(Hikari.create_dda_iterator(g,box,o,d,enter,leave,Hikari.SpectralRadiance(1f0)))
+        it=Hikari.create_dda_iterator(g,box,o,d,enter,leave,Hikari.SpectralRadiance(1f0))
         total=0f0; n=0; finish=enter
         while true
             seg,it,valid=Hikari.ray_majorant_next(it,nothing)

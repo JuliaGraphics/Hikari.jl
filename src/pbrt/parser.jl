@@ -301,7 +301,7 @@ function parse_pbrt_string(text::AbstractString;
             ax = Float32(parse(Float64, expect!(ts, TOK_NUMBER).value))
             ay = Float32(parse(Float64, expect!(ts, TOK_NUMBER).value))
             az = Float32(parse(Float64, expect!(ts, TOK_NUMBER).value))
-            ctm = ctm * pbrt_rotation_matrix(angle, Vec3f(ax, ay, az))
+            ctm = ctm * rotate(angle, Vec3f(ax, ay, az)).m
 
         elseif word == "Scale"
             x = Float32(parse(Float64, expect!(ts, TOK_NUMBER).value))
@@ -527,15 +527,3 @@ function pbrt_scale_matrix(v::Vec3f)
           0f0,  0f0,  0f0,  1f0)
 end
 
-function pbrt_rotation_matrix(angle_deg::Float32, axis::Vec3f)
-    a = normalize(axis)
-    s, c = sincosd(angle_deg)
-    t = 1f0 - c
-    # Column-major layout
-    Mat4f(
-        t*a[1]*a[1] + c,       t*a[1]*a[2] + s*a[3], t*a[1]*a[3] - s*a[2], 0f0,  # col 0
-        t*a[1]*a[2] - s*a[3],  t*a[2]*a[2] + c,      t*a[2]*a[3] + s*a[1], 0f0,  # col 1
-        t*a[1]*a[3] + s*a[2],  t*a[2]*a[3] - s*a[1], t*a[3]*a[3] + c,      0f0,  # col 2
-        0f0,                   0f0,                   0f0,                   1f0,  # col 3
-    )
-end

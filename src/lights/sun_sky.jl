@@ -349,13 +349,12 @@ function sunsky_sun_rgb(intensity::Real, towards_sun::Vec3f = Vec3f(0, 0, 1); tu
     dir = normalize(towards_sun)
     dir[3] > 0 || return RGB{Float32}(0, 0, 0)
     overhead = transmitted_sun_rgb(0.0, turbidity)
-    rgb = transmitted_sun_rgb(acos(Float64(dir[3])), turbidity) .* (5 * intensity / srgb_luminance(overhead))
+    rgb = transmitted_sun_rgb(acos(Float64(dir[3])), turbidity) .* (5 * intensity / luminance(overhead...))
     return RGB{Float32}(max.(rgb, 0)...)
 end
 
 const SUN_TEMPERATURE = 5778.0
 
-srgb_luminance(rgb) = 0.2126 * rgb[1] + 0.7152 * rgb[2] + 0.0722 * rgb[3]
 
 """Linear sRGB of sunlight that reached the ground through the air at `zenith`
 radians, from a black body at the sun's surface temperature."""

@@ -29,8 +29,9 @@ public attach_bump
 import Raycore: AbstractRay, Ray, RayDifferentials, apply, check_direction, scale_differentials
 import Raycore: Bounds2, Bounds3, area, surface_area, diagonal, maximum_extent, offset, is_valid, inclusive_sides, expand
 import Raycore: distance, distance_squared, bounding_sphere
-# Note: lerp is defined in spectrum.jl for Spectrum, Float32, and Point3f
-import Raycore: Transformation, translate, scale, rotate, rotate_x, rotate_y, rotate_z, look_at, perspective
+import Raycore: lerp, @real_assert
+import Raycore: Transformation, translate, scale, rotate, rotation_matrix, look_at, perspective
+import Raycore: concentric_sample_disk, cosine_sample_hemisphere, sum_mul, coordinate_system, face_forward
 import Raycore: swaps_handedness, has_scale
 import Raycore: Triangle
 import Raycore: TLAS, StaticTLAS, TraversableTLAS, TLASHandle, world_bound, closest_hit, any_hit, sync!
@@ -122,15 +123,6 @@ shadingmaterial(::GeneratedGeometry) = Diffuse()
 Base.close(::Integrator) = nothing
 clear!(::Integrator) = nothing
 
-const DO_ASSERTS = false
-macro real_assert(expr, msg="")
-    if DO_ASSERTS
-        esc(:(@assert $expr $msg))
-    else
-        return :()
-    end
-end
-
 # Where a render state's device memory comes from. First, because everything
 # below that allocates on the device takes a `DeviceMemory` in its signature —
 # the spectral tables, the light BVH, the Sobol matrices, the work queues.
@@ -145,7 +137,6 @@ include("spectral/metal-spectra.jl")
 include("spectral/ior-spectra.jl")
 
 include("random.jl")
-include("surface_interaction.jl")
 include("materials/medium-interface.jl")
 include("scene.jl")
 
@@ -154,7 +145,6 @@ include("film.jl")
 
 include("camera/camera.jl")
 include("sampler/sampling.jl")
-include("textures/mapping.jl")
 include("textures/basic.jl")
 include("textures/texture-ref.jl")
 include("textures/tex-handle.jl")
@@ -195,8 +185,6 @@ include("materials/dispatch.jl")
 # Sobol sampler (needs mix_bits from materials/common.jl)
 include("sampler/sobol_matrices.jl")
 include("sampler/sobol.jl")
-# Stratified sampler (needs murmur_hash_64a from spectral-eval.jl, sobol functions from sobol.jl)
-include("sampler/stratified.jl")
 include("primitive.jl")
 include("lights/emission.jl")
 include("lights/light.jl")

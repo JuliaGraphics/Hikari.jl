@@ -85,29 +85,5 @@ end
     tree = iter.grid.voxels.tree
     dimension,density = majorant_tile(tree,Raycore.deref(media,tree.words),Vec{3,Int32}(iter.voxel))
     dimension == Int32(1) && return ray_majorant_next_dda_step(iter,media,density)
-    # Aligned tile boundaries, exactly as HDDA::update; retain fine DDA times
-    # so an active tile can immediately resume voxel traversal.
-    exits = ntuple(3) do a
-        v = iter.voxel[a]; d = iter.delta_t[a]
-        # NanoVDB tile dimensions are powers of two. Align with the HDDA bit
-        # mask rather than signed division, whose exception guards are unsafe
-        # in device code (see u_div in film.jl).
-        aligned = v & -dimension
-        boundary = iter.step[a] > 0 ? min(aligned+dimension,iter.grid_res[a]) : aligned
-        cells = iter.step[a] > 0 ? boundary-v : v-boundary+Int32(1)
-        isfinite(d) ? iter.next_crossing_t[a]+Float32(cells-Int32(1))*d : Inf32
-    end
-    stop = min(iter.t_max,exits[1],exits[2],exits[3])
-    crossed = ntuple(3) do a
-        d = iter.delta_t[a]; first = iter.next_crossing_t[a]
-        # A finite crossing count is nonnegative and bounded by the grid.
-        # Avoid the InexactError path of checked floor(Int32, ...).
-        isfinite(d) && stop>=first ? floor_int32((stop-first)/d)+Int32(1) : Int32(0)
-    end
-    voxel = ntuple(a->iter.voxel[a]+iter.step[a]*crossed[a],3)
-    next_t = ntuple(a->isfinite(iter.delta_t[a]) ? iter.next_crossing_t[a]+Float32(crossed[a])*iter.delta_t[a] : Inf32,3)
-    mode = all(a->Int32(0)<=voxel[a]<iter.grid_res[a],1:3) && stop<iter.t_max ? Int32(2) : Int32(0)
-    next = typeof(iter)(mode,iter.σ_t,stop,iter.t_max,false,iter.grid,iter.grid_res,next_t,
-                       iter.delta_t,iter.step,iter.voxel_limit,voxel)
-    return (RayMajorantSegment(iter.t_min,stop,iter.σ_t*density),next,true)
+    return majorant_tile_step(iter,density,dimension)
 end

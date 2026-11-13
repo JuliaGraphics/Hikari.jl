@@ -516,8 +516,13 @@ end
     (fr_complex_spectral(abs(cos_i), f.eta, f.k), SpectralRadiance(0f0))
 
 @inline function physical_conductor_reflectance(f::PhysicalConductorFresnel, mu::Float32, j::Int, wavelength::Float32)
-    return has_film(f) ? _conductor_film_reflectance(mu, f.film_thickness, f.film_ior, f.eta[j], f.k[j], wavelength) :
-                        _conductor_reflectance(mu, f.eta[j], f.k[j])
+    eta, k = f.eta[j], f.k[j]
+    has_film(f) || return _conductor_reflectance(mu, eta, k)
+    # The film's Airy sum stays a call here, as it always was for conductors. The
+    # arguments are bound first: a call-site `@noinline` covers every call in its
+    # expression, and a field access kept out of line is a dynamic field lookup.
+    thickness, film_ior = f.film_thickness, f.film_ior
+    return @noinline _thin_film_reflectance(mu, thickness, film_ior, eta, k, wavelength)
 end
 @inline fresnel_rt(f::PhysicalConductorFresnel{SpectralRadiance}, cos_i::Float32, ior::Float32, lambda::Wavelengths) =
     (SpectralRadiance(ntuple(j -> physical_conductor_reflectance(f, abs(cos_i), j, lambda.lambda[j]), Val(4))), SpectralRadiance(0f0))

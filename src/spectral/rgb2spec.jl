@@ -76,26 +76,6 @@ struct RGBToSpectrumTable{V1 <: AbstractVector{Float32}, V5 <: AbstractArray{Flo
 end
 
 """
-    find_interval(nodes, n, z) -> Int32
-
-The largest `i` in `1:n-1` with `nodes[i] < z`, or 1 when there is none, for increasing `nodes`:
-pbrt-v4's `FindInterval`, a binary search. The z axis of the coefficient table was scanned
-instead, all 63 nodes read for every colour lifted to a spectrum.
-"""
-@propagate_inbounds function find_interval(nodes::AbstractVector{Float32}, n::Int32, z::Float32)
-    lo, hi = Int32(1), n - Int32(1)
-    while lo < hi
-        mid = (lo + hi + Int32(1)) >> Int32(1)
-        if nodes[mid] < z
-            lo = mid
-        else
-            hi = mid - Int32(1)
-        end
-    end
-    return lo
-end
-
-"""
     rgb_to_spectrum(table, rgb) -> RGBSigmoidPolynomial
 
 Convert an RGB color to a sigmoid polynomial spectrum representation.
@@ -136,7 +116,9 @@ RGB values should be in [0, 1] range.
     x = x_comp * Float32(res - Int32(1)) / z
     y = y_comp * Float32(res - Int32(1)) / z
 
-    zi = find_interval(table.scale, res, z)
+    # The z node below `z`: the table's nodes increase, so the search replaces
+    # reading all `res` of them for every colour lifted to a spectrum.
+    zi = find_interval(i -> table.scale[i] < z, res - Int32(1))
 
     # Compute integer indices and fractional offsets
     xi = min(u_int32(x) + Int32(1), res - Int32(1))
@@ -187,47 +169,6 @@ rgb_to_spectrum(table::RGBToSpectrumTable, rgb::NTuple{3, Float32}) =
 # ============================================================================
 # Spectrum Types using RGBSigmoidPolynomial
 # ============================================================================
-
-"""
-    RGBAlbedoSpectrum
-
-Bounded [0,1] spectrum for surface reflectance/albedo.
-"""
-struct RGBAlbedoSpectrum
-    poly::RGBSigmoidPolynomial
-end
-
-@propagate_inbounds (s::RGBAlbedoSpectrum)(lambda::Float32) = s.poly(lambda)
-
-"""
-    RGBUnboundedSpectrum
-
-Unbounded spectrum for illumination/emission. Scales the sigmoid polynomial
-to match the maximum RGB component.
-"""
-struct RGBUnboundedSpectrum
-    poly::RGBSigmoidPolynomial
-    scale::Float32
-end
-
-@propagate_inbounds function (s::RGBUnboundedSpectrum)(lambda::Float32)::Float32
-    return s.scale * s.poly(lambda)
-end
-
-"""Create unbounded spectrum from RGB (for lights/emission)"""
-function rgb_unbounded_spectrum(table::RGBToSpectrumTable, r::Float32, g::Float32, b::Float32)::RGBUnboundedSpectrum
-    # Find scale factor
-    m = max(r, g, b)
-    if m <= 0
-        return RGBUnboundedSpectrum(RGBSigmoidPolynomial(0.0f0, 0.0f0, -1.0f10), 0.0f0)
-    end
-
-    # Normalize and get polynomial
-    scale = 2.0f0 * m  # Factor of 2 because sigmoid max is ~0.5 for large positive input
-    poly = rgb_to_spectrum(table, r / m, g / m, b / m)
-
-    return RGBUnboundedSpectrum(poly, scale / max_value(poly))
-end
 
 """
     RGBIlluminantSpectrum

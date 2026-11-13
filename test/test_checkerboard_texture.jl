@@ -93,9 +93,9 @@ end
     # spectrum-class PNGs leaves float height maps linear and
     # scaled bump gradients wrong by the local slope of the sRGB curve
     # (~1.45× at h≈0.7) — pinned by tex_conductor_bumpmap_light_point.
-    @test Hikari.srgb_to_linear(0.04045f0) ≈ 0.04045f0 / 12.92f0
-    @test Hikari.srgb_to_linear(0.5f0) ≈ ((0.5f0 + 0.055f0) / 1.055f0)^2.4f0
-    @test Hikari.srgb_to_linear(1f0) ≈ 1f0
+    @test Hikari.srgb_gamma_to_linear(0.04045f0) ≈ 0.04045f0 / 12.92f0
+    @test Hikari.srgb_gamma_to_linear(0.5f0) ≈ ((0.5f0 + 0.055f0) / 1.055f0)^2.4f0
+    @test Hikari.srgb_gamma_to_linear(1f0) ≈ 1f0
 end
 
 # ── the analytic filter's own bound ───────────────────────────────────────────

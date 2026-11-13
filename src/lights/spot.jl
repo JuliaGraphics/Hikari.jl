@@ -131,17 +131,6 @@ function spotlight_transform(position::Point3f, target::Point3f)
     translate(Vec3f(position)) * Transformation(rot, inv(rot))
 end
 
-function sample_li(s::SpotLight, ref::Interaction, ::Point2f, ::AbstractScene)
-    wi = normalize(Vec3f(s.position - ref.p))
-    pdf = 1f0
-    visibility = VisibilityTester(
-        ref, Interaction(s.position, ref.time, Vec3f(0f0), Normal3f(0f0)),
-    )
-    # Use scale * i (matching pbrt-v4's SpotLight::SampleLi)
-    radiance = s.scale * s.i * falloff(s, -wi) / distance_squared(s.position, ref.p)
-    radiance, wi, pdf, visibility
-end
-
 function falloff(s::SpotLight, w::Vec3f)::Float32
     wl = normalize(s.world_to_light(w))
     cosθ = wl[3]

@@ -49,21 +49,15 @@ tiledmajorants(grid::MajorantGrid{<:TiledMajorantValues}) = grid
     return Raycore.deref(media,v.fine)[idx]
 end
 
-@inline @propagate_inbounds function ray_majorant_next_dda(iter::RayMajorantIterator{<:MajorantGrid{<:TiledMajorantValues}},media)
-    iter.t_min>=iter.t_max && return (RayMajorantSegment(),iter,false)
-    values=iter.grid.voxels
-    q=ntuple(a->iter.voxel[a]>>Int32(3),3)
-    idx=q[1]+values.tile_res[1]*(q[2]+values.tile_res[2]*q[3])+Int32(1)
-    density=Raycore.deref(media,values.tiles)[idx]
-    isnan(density) && return ray_majorant_next_dda_step(iter,media,
-        majorant_lookup(iter.grid,media,iter.voxel...))
-    return majorant_tile_step(iter,density,Int32(8))
-end
-
-"Cross one aligned uniform tile, then resume with the original fine DDA state."
+"""
+Cross one aligned uniform tile of `dimension` voxels per axis (a power of two, as
+NanoVDB's HDDA::update has them), then resume with the original fine DDA state.
+"""
 @inline function majorant_tile_step(iter::RayMajorantIterator,density::Float32,dimension::Int32)
     exits=ntuple(3) do a
         v=iter.voxel[a];d=iter.delta_t[a]
+        # The HDDA bit mask rather than signed division, whose exception guards
+        # are unsafe in device code (see u_div in film.jl).
         aligned=v & -dimension
         boundary=iter.step[a]>0 ? min(aligned+dimension,iter.grid_res[a]) : aligned
         cells=iter.step[a]>0 ? boundary-v : v-boundary+Int32(1)

@@ -1079,15 +1079,6 @@ end
     MediumProperties(SpectralRadiance(0f0), SpectralRadiance(airscattering(medium, media, p)), SpectralRadiance(0f0), 0f0)
 @propagate_inbounds residual(medium::AeratedMedium, media, table, p, λ, d) = residual(medium, media, table, p, λ)
 
-@propagate_inbounds function get_majorant(medium::AeratedMedium, table::RGBToSpectrumTable, ray::Raycore.Ray,
-                                          t_min::Float32, t_max::Float32, λ::Wavelengths)::RayMajorantSegment
-    top = 0f0
-    for v in medium.majorant_grid.voxels
-        top = max(top, v)
-    end
-    return RayMajorantSegment(t_min, t_max, SpectralRadiance(top))
-end
-
 @propagate_inbounds function create_majorant_iterator(medium::AeratedMedium, table::RGBToSpectrumTable,
                                                       ray::Raycore.Ray, t_max::Float32, λ::Wavelengths)
     t_enter, t_exit = ray_bounds_intersect(ray.o, ray.d, medium.bounds)
@@ -1095,10 +1086,6 @@ end
     t_exit = min(t_exit, t_max)
     t_enter >= t_exit && return RayMajorantIterator(medium.majorant_grid)
     # The majorant grid holds the whole σ_t bound per cell.
-    dda = create_dda_iterator(medium.majorant_grid, medium.bounds, ray.o, ray.d, t_enter, t_exit, SpectralRadiance(1f0))
-    return RayMajorantIterator(dda)
+    return create_dda_iterator(medium.majorant_grid, medium.bounds, ray.o, ray.d, t_enter, t_exit, SpectralRadiance(1f0))
 end
 
-@propagate_inbounds create_majorant_iterator(medium::AeratedMedium, table::RGBToSpectrumTable, ray::Raycore.Ray,
-                                             t_max::Float32, λ::Wavelengths, ::MajorantGrid) =
-    create_majorant_iterator(medium, table, ray, t_max, λ)

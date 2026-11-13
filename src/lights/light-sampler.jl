@@ -477,19 +477,6 @@ distribution_integral(d::Distribution2D) = d.marginal_func_int
     4f0 * Float32(π)^2 * scene_radius^2 * Float32(total) * luminance(light.scale)
 end
 
-"""
-    luminance(rgb) -> Float32
-
-Compute luminance from RGB using standard coefficients (Rec. 709).
-"""
-@propagate_inbounds function luminance(rgb::RGB)
-    0.212671f0 * Float32(rgb.r) + 0.715160f0 * Float32(rgb.g) + 0.072169f0 * Float32(rgb.b)
-end
-
-@propagate_inbounds function luminance(s::RGBSpectrum)
-    0.212671f0 * s.c[1] + 0.715160f0 * s.c[2] + 0.072169f0 * s.c[3]
-end
-
 @propagate_inbounds function luminance(s::RGBIlluminantSpectrum)
     # Use MaxValue() matching pbrt-v4's approach for light bounds/power estimation:
     # scale * rsp.MaxValue() * illuminant->MaxValue()

@@ -40,14 +40,6 @@ end
     return Vec3f(0)
 end
 
-function _rotate_around_axis(p::Vec3f, axis::Vec3f, angle::Float32)
-    c, s = cos(angle), sin(angle)
-    x, y, z = axis
-    return Vec3f((c + (1 - c) * x * x) * p[1] + ((1 - c) * x * y - z * s) * p[2] + ((1 - c) * x * z + y * s) * p[3],
-                 ((1 - c) * x * y + z * s) * p[1] + (c + (1 - c) * y * y) * p[2] + ((1 - c) * y * z - x * s) * p[3],
-                 ((1 - c) * x * z - y * s) * p[1] + ((1 - c) * y * z + x * s) * p[2] + (c + (1 - c) * z * z) * p[3])
-end
-
 @noinline function _vector_rotate(type::UInt8, invert::Bool, v::Vec3f, center::Vec3f, axis::Vec3f, angle::Float32, rotation::Vec3f)
     if type == RotateType.EULER_XYZ
         rows = _euler_rows(rotation)
@@ -57,5 +49,5 @@ end
            type == RotateType.Z ? Vec3f(0, 0, 1) : axis
     axis_length = norm(axis)
     axis_length == 0f0 && return v
-    return _rotate_around_axis(v - center, axis / axis_length, invert ? -angle : angle) + center
+    return rotation_matrix(axis / axis_length, sincos(invert ? -angle : angle)...) * (v - center) + center
 end

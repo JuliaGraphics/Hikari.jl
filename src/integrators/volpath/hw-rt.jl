@@ -34,30 +34,8 @@ end
 # fill_aux_buffers! for HWTLAS: trace primary rays via HW RT for depth
 # ============================================================================
 
-# Fused primary-ray + closest hit + depth/normal/albedo kernel.  One thread
-# per pixel: generate the camera ray, run inline ray query via
-# `Raycore.closest_hit(accel, ray)` (lowers to OpRayQueryInitializeKHR /
-# Proceed / Get*KHR through the polymorphic dispatch), write the aux buffers.
-# One kernel instead of a 3-step
-# (generate_rays → trace_closest_hits! → extract_depth) plus the dependency
-# on `aux_rays`/`aux_results` scratch buffers.
-@kernel inbounds = true function hw_fill_aux_kernel!(
-    depth, normal, albedo,
-    @Const(camera), @Const(filter), filter_data,
-    @Const(miss_depth::Float32), @Const(grid::Int32),
-    @Const(width::Int32), @Const(height::Int32),
-    accel, materials, interfaces,
-)
-    idx = @index(Global)
-    if idx <= width * height
-        h = height
-        row = Int32(((idx - Int32(1)) % h) + Int32(1))
-        col = Int32(((idx - Int32(1)) ÷ h) + Int32(1))
-        albedo[idx], normal[idx], depth[idx] =
-            pixel_guides(accel, materials, interfaces, camera, filter, filter_data, pixel_centre(row, col, h), miss_depth, grid)
-    end
-end
-
+# The guides through the hardware structure: the same kernel as the software one,
+# whose `Raycore.closest_hit` lowers to an inline ray query here.
 function fill_aux_buffers!(film::Film, scene::Scene{<:AdaptedAccel}, camera;
                            has_infinite_lights::Bool=false,
                            cull_mask::UInt32=UInt32(0xFF), grid::Integer=GUIDE_GRID)
@@ -66,17 +44,14 @@ function fill_aux_buffers!(film::Film, scene::Scene{<:AdaptedAccel}, camera;
     Raycore.n_instances(hwtlas) == 0 && return nothing
 
     backend = KA.get_backend(film.depth)
-    h, w = size(film.depth)
-    n = h * w
-    miss_depth = has_infinite_lights ? Float32(1e30) : Inf32
+    miss_depth = has_infinite_lights ? MISS_DEPTH : Inf32
 
     accel = Adapt.adapt(backend, hwtlas)  # CPU-form AdaptedAccel; LavaAdaptor
                                            # will strip hwtlas at kernel-arg time
-    hw_fill_aux_kernel!(backend)(
-        film.depth, film.normal, film.albedo,
-        camera, film.filter_params, film.filter_sampler,
-        miss_depth, Int32(grid), Int32(w), Int32(h),
-        accel,scene.materials,scene.media_interfaces; ndrange=n)
+    aux_buffer_kernel!(backend)(
+        film.albedo, film.normal, film.depth,
+        accel, camera, film.filter_params, film.filter_sampler, miss_depth, Int32(grid),
+        scene.materials, scene.media_interfaces; ndrange = length(film.albedo))
     Mantle.waitidle(mantle_device(backend))
     return film
 end

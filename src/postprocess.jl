@@ -18,13 +18,13 @@ using ImageCore: RGB
 # ============================================================================
 
 @propagate_inbounds function tonemap_reinhard(r::Float32, g::Float32, b::Float32)
-    lum = 0.2126f0 * r + 0.7152f0 * g + 0.0722f0 * b
+    lum = luminance(r, g, b)
     scale = ifelse(lum > 0f0, 1f0 / (1f0 + lum), 1f0)
     clamp(r * scale, 0f0, 1f0), clamp(g * scale, 0f0, 1f0), clamp(b * scale, 0f0, 1f0)
 end
 
 @propagate_inbounds function tonemap_reinhard_extended(r::Float32, g::Float32, b::Float32, Lwhite::Float32)
-    lum = 0.2126f0 * r + 0.7152f0 * g + 0.0722f0 * b
+    lum = luminance(r, g, b)
     Lwhite2 = Lwhite * Lwhite
     scale = ifelse(lum > 0f0, (1f0 + lum / Lwhite2) / (1f0 + lum), 1f0)
     clamp(r * scale, 0f0, 1f0), clamp(g * scale, 0f0, 1f0), clamp(b * scale, 0f0, 1f0)

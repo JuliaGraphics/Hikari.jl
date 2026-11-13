@@ -76,15 +76,6 @@ end
 # =============================================================================
 
 """
-    denoise_luminance(r, g, b) -> Float32
-
-Compute luminance from RGB using Rec. 709 coefficients.
-"""
-@propagate_inbounds function denoise_luminance(r::Float32, g::Float32, b::Float32)::Float32
-    return 0.2126f0 * r + 0.7152f0 * g + 0.0722f0 * b
-end
-
-"""
     weight_color(lum_p, lum_q, sigma) -> Float32
 
 Color/luminance edge-stopping weight in **log-luminance space** (HDR-safe).
@@ -196,7 +187,7 @@ Applies a 5x5 filter with edge-stopping weights.
         # Get center pixel data
         pixel_p = input[row, col]
         r_p, g_p, b_p = pixel_p.r, pixel_p.g, pixel_p.b
-        lum_p = denoise_luminance(r_p, g_p, b_p)
+        lum_p = luminance(r_p, g_p, b_p)
 
         n_p = normals[row, col]
         d_p = depth[row, col]
@@ -224,7 +215,7 @@ Applies a 5x5 filter with edge-stopping weights.
                 # Get neighbor data
                 pixel_q = input[q_row, q_col]
                 r_q, g_q, b_q = pixel_q.r, pixel_q.g, pixel_q.b
-                lum_q = denoise_luminance(r_q, g_q, b_q)
+                lum_q = luminance(r_q, g_q, b_q)
 
                 n_q = normals[q_row, q_col]
                 d_q = depth[q_row, q_col]
