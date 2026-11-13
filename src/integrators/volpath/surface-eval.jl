@@ -414,6 +414,7 @@ write/read of two `pixel_samples_direct_*` arrays per bounce — measured as
     light_sample = sample_light_spectral(
         rgb2spec_table, lights, light_idx, work.pi, work.lambda, u_light,
     )
+    hidden = Raycore.with_index(hidden_rays, lights, flat_to_light_index(lights, light_idx))
 
     # The connection to the light, then one shadow ray along it. Under a refracting
     # surface (a floor under water) the sky is sampled through Snell's window, as at
@@ -436,7 +437,7 @@ write/read of two `pixel_samples_direct_*` arrays per bounce — measured as
         jacobian > 0f0 || return
         bsdf_f, bsdf_pdf = evaluate_bsdf_spectral(
             bxdf, rgb2spec_table, materials,
-            work.wo, ω_in, work.ns, work.dpdus, tfc, work.lambda, regularize,
+            work.wo, ω_in, work.ns, work.dpdus, tfc, work.lambda, regularize, hidden,
         )
         is_black(bsdf_f) && return
         Ld = work.beta * bsdf_f * abs(dot(ω_in, work.ns))      # times the sky, found at the end
@@ -449,7 +450,7 @@ write/read of two `pixel_samples_direct_*` arrays per bounce — measured as
         # Direct call into the concrete material — Julia inlines.
         bsdf_f, bsdf_pdf = evaluate_bsdf_spectral(
             bxdf, rgb2spec_table, materials,
-            work.wo, light_sample.wi, work.ns, work.dpdus, tfc, work.lambda, regularize,
+            work.wo, light_sample.wi, work.ns, work.dpdus, tfc, work.lambda, regularize, hidden,
         )
         is_black(bsdf_f) && return
         result = compute_direct_lighting_spectral(
@@ -474,7 +475,7 @@ write/read of two `pixel_samples_direct_*` arrays per bounce — measured as
     ray = Raycore.Ray(o = origin, d = dir, t_min = 0f0, t_max = t_max)
     if !has_medium(medium) && !refract
         # Whether anything lies on the way: one kept, on every structure.
-        th = Raycore.transparent_hits(accel, ray, 0xff, Val(1), typemax(UInt32))
+        th = Raycore.transparent_hits(accel, ray, shadow_cull_mask(hidden), Val(1), typemax(UInt32))
         th.blocked && return
         if th.count == UInt32(0)
             # Nothing on the way: unit transmittance, as the trace returns it.
@@ -485,7 +486,8 @@ write/read of two `pixel_samples_direct_*` arrays per bounce — measured as
             return
         end
     end
-    push!(shadow_queue, VPShadowRayWorkItem(ray, t_max, work.lambda, Ld, r_u, r_l, work.pixel_index, medium, refract))
+    push!(shadow_queue, VPShadowRayWorkItem(ray, t_max, work.lambda, Ld, r_u, r_l, work.pixel_index, medium, refract,
+                                            shadow_cull_mask(hidden)))
     return
 end
 
@@ -592,6 +594,7 @@ carrier, applies Russian roulette, pushes the continuation ray."""
                 is_specular(sample.flags),
                 work.any_non_specular_bounces || !is_specular(sample.flags),
                 new_medium,
+                bounce_ray_type(sample.flags),
             )
             push!(next_ray_queue, ray_item)
         end
@@ -717,7 +720,7 @@ end
             work.prev_intr_p, work.prev_intr_n,
             work.eta_scale,
             work.specular_bounce, work.any_non_specular_bounces,
-            new_medium))
+            new_medium, work.ray_type))
         return nothing
     end
 

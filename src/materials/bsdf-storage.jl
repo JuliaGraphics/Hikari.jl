@@ -169,30 +169,32 @@ end
 # The same traversal supports immutable tuples and counted local collections.
 @inline function mixture(
         lobes::Tuple{SurfaceStoredWeight{true}, Vararg{SurfaceStoredWeight{true}}},
-        wo::Vec3f, wi::Vec3f, ns::Vec3f, lambda::Wavelengths, s::Scattering = AnyScattering()
+        wo::Vec3f, wi::Vec3f, ns::Vec3f, lambda::Wavelengths, s::Scattering = AnyScattering(), hidden::UInt8 = 0x00
     )
-    return surface_mixture(lobes, length(lobes), wo, wi, ns, lambda, s)
+    return surface_mixture(lobes, length(lobes), wo, wi, ns, lambda, s, hidden)
 end
-@inline function surface_mixture(lobes, count, wo, wi, ns, lambda, s)
+@inline function surface_mixture(lobes, count, wo, wi, ns, lambda, s, hidden::UInt8 = 0x00)
     f, pdf = SpectralRadiance(0.0f0), 0.0f0
     @inbounds for j in count:-1:1
         w = lobes[j]
         if w.sample_weight > 0.0f0
             fi, pi = weighted_f(w, wo, wi, ns, lambda, s)
-            f += fi;pdf += pi * w.sample_weight
+            shows_lobe(w, hidden) && (f += fi)
+            pdf += pi * w.sample_weight
         end
     end
     return f, pdf
 end
 # A one-record class needs no runtime indexing, while an empty counted span
 # must still ignore its backing record. Larger classes retain the shared loop.
-@inline function surface_mixture(lobes::Tuple{W}, count, wo, wi, ns, lambda, s) where {W <: SurfaceStoredWeight}
+@inline function surface_mixture(lobes::Tuple{W}, count, wo, wi, ns, lambda, s, hidden::UInt8 = 0x00) where {W <: SurfaceStoredWeight}
     f, pdf = SpectralRadiance(0.0f0), 0.0f0
     if count == 1
         w = first(lobes)
         if w.sample_weight > 0.0f0
             fi, pi = weighted_f(w, wo, wi, ns, lambda, s)
-            f += fi;pdf += pi * w.sample_weight
+            shows_lobe(w, hidden) && (f += fi)
+            pdf += pi * w.sample_weight
         end
     end
     return f, pdf
@@ -200,28 +202,28 @@ end
 
 # Constant indices in the opaque classes avoid large runtime tuple
 # selections. Retain the live-count check and reverse accumulation order.
-@inline function surface_mixture(lobes::NTuple{2, W}, count, wo, wi, ns, lambda, s) where {W <: SurfaceStoredWeight}
+@inline function surface_mixture(lobes::NTuple{2, W}, count, wo, wi, ns, lambda, s, hidden::UInt8 = 0x00) where {W <: SurfaceStoredWeight}
     f, pdf = SpectralRadiance(0.0f0), 0.0f0
     Base.Cartesian.@nexprs 2 k -> begin
         if count >= 3 - k
             w = lobes[3 - k]
             if w.sample_weight > 0.0f0
                 fi, pi = weighted_f(w, wo, wi, ns, lambda, s)
-                f += fi
+                shows_lobe(w, hidden) && (f += fi)
                 pdf += pi * w.sample_weight
             end
         end
     end
     return f, pdf
 end
-@inline function surface_mixture(lobes::NTuple{5, W}, count, wo, wi, ns, lambda, s) where {W <: SurfaceStoredWeight}
+@inline function surface_mixture(lobes::NTuple{5, W}, count, wo, wi, ns, lambda, s, hidden::UInt8 = 0x00) where {W <: SurfaceStoredWeight}
     f, pdf = SpectralRadiance(0.0f0), 0.0f0
     Base.Cartesian.@nexprs 5 k -> begin
         if count >= 6 - k
             w = lobes[6 - k]
             if w.sample_weight > 0.0f0
                 fi, pi = weighted_f(w, wo, wi, ns, lambda, s)
-                f += fi
+                shows_lobe(w, hidden) && (f += fi)
                 pdf += pi * w.sample_weight
             end
         end
@@ -294,8 +296,9 @@ end
     end
     return total
 end
-@inline mixture(s::SurfaceLobeSpan, wo::Vec3f, wi::Vec3f, ns::Vec3f, lambda::Wavelengths, restriction::Scattering = AnyScattering()) =
-    surface_mixture(s.data, s.count, wo, wi, ns, lambda, restriction)
+@inline mixture(s::SurfaceLobeSpan, wo::Vec3f, wi::Vec3f, ns::Vec3f, lambda::Wavelengths, restriction::Scattering = AnyScattering(),
+                 hidden::UInt8 = 0x00) =
+    surface_mixture(s.data, s.count, wo, wi, ns, lambda, restriction, hidden)
 @inline pick_sample(s::SurfaceLobeSpan, target::Float32, before::Float32, wo::Vec3f, u::Point2f, lambda::Wavelengths, restriction::Scattering = AnyScattering()) =
     surface_pick_sample(s.data, s.count, target, before, wo, u, lambda, restriction)
 @inline terminates_at_vertex(::LobeBSDF{<:SurfaceLobeSpan}) = false

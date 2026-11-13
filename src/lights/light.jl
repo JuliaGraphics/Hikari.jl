@@ -26,3 +26,7 @@ radiance there" was true of the lights' NAMES and false of their contribution.
 paints_escaped_rays(::Light) = false
 paints_escaped_rays(::Type{<:Light}) = false
 
+"""The ray types `light` is hidden from, as `hidden_rays(::Visibility)`."""
+@inline hidden_rays(light::Light) = light.hidden
+"""`light` hidden from the ray types `hidden`."""
+with_hidden(light::L, hidden::UInt8) where {L <: Light} = Base.typename(L).wrapper(light, hidden)

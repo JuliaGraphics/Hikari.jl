@@ -228,7 +228,7 @@ import .SPIRVTestUtils: check, check_not, check_vendor_safety, spirv_opt_roundtr
                 ld = Hikari.SampledSpectrum{4}(NTuple{4, Float32}((val, val, val, val)))
                 item = Hikari.VPShadowRayWorkItem(
                     ray, 100.0f0, lambda, ld, ld, ld,
-                    Int32(i), Raycore.SetKey(UInt32(0), UInt32(0)), false)
+                    Int32(i), Raycore.SetKey(UInt32(0), UInt32(0)), false, Hikari.SHADOW_RAYS)
                 output[i] = item
             end
             return nothing

@@ -248,7 +248,7 @@ end
             push!(next_ray_queue, VPRayWorkItem(
                 ray, work.depth, work.lambda, work.pixel_index, beta, r_u, r_l,
                 work.prev_intr_p, work.prev_intr_n, work.eta_scale,
-                work.specular_bounce, work.any_non_specular_bounces, work.medium_idx))
+                work.specular_bounce, work.any_non_specular_bounces, work.medium_idx, work.ray_type))
         end
         return
     end
@@ -269,7 +269,7 @@ end
             push!(next_ray_queue, VPRayWorkItem(ray, work.depth, work.lambda,
                 work.pixel_index, beta, r_u, r_l, work.prev_intr_p, work.prev_intr_n,
                 work.eta_scale, work.specular_bounce, work.any_non_specular_bounces,
-                work.medium_idx))
+                work.medium_idx, work.ray_type))
             return
         end
         # Ray escaped scene (t_max was Infinity)
@@ -278,7 +278,7 @@ end
             ray_d, work.lambda, work.pixel_index,
             beta, r_u, r_l,
             work.depth, work.specular_bounce,
-            work.prev_intr_p, work.prev_intr_n
+            work.prev_intr_p, work.prev_intr_n, work.ray_type
         )
         push!(escaped_queue, escaped)
     else
@@ -309,7 +309,7 @@ end
                 work.prev_intr_p, work.prev_intr_n,
                 work.eta_scale,
                 work.specular_bounce, work.any_non_specular_bounces,
-                new_medium))
+                new_medium, work.ray_type))
             return
         end
         wants_shading(work.depth, max_depth, primitive.metadata.arealight_id, material_queues, mi.material) || return
@@ -320,7 +320,7 @@ end
             work.prev_intr_p, work.prev_intr_n,
             work.eta_scale,
             work.specular_bounce, work.any_non_specular_bounces,
-            work.medium_idx)
+            work.medium_idx, work.ray_type)
         a = push!(arrivals, arrival)
         a <= arrivals.capacity || return
         enqueue_surface_hit!(material_queues, surface_hits, mi.material,

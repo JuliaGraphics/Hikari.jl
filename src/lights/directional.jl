@@ -15,15 +15,19 @@ struct DirectionalLight{S<:Spectrum} <: Light
     """
     scale::Float32
     direction::Vec3f
+    """Ray types its light is hidden from (see [`Visibility`](@ref))."""
+    hidden::UInt8
 
     function DirectionalLight(
         light_to_world::Transformation, l::S, direction::Vec3f, scale::Float32=1f0,
     ) where S<:Spectrum
         new{S}(
             light_to_world, inv(light_to_world),
-            l, scale, normalize(light_to_world(direction)),
+            l, scale, normalize(light_to_world(direction)), 0x00,
         )
     end
+    DirectionalLight(l::DirectionalLight{S}, hidden::UInt8) where S<:Spectrum =
+        new{S}(l.light_to_world, l.world_to_light, l.i, l.scale, l.direction, hidden)
 end
 
 # Directional lights are delta lights (emit along a single direction)

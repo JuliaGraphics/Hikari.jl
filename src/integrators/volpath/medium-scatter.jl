@@ -61,6 +61,8 @@ for the rationale.
     end
 
     # Sample the light (works with both Tuple and StaticMultiTypeSet)
+    hidden = Raycore.with_index(hidden_rays, lights, flat_to_light_index(lights, light_idx))
+    hidden & VOLUME_SCATTER_RAYS == 0x00 || return
     light_sample = sample_light_spectral(
         rgb2spec_table, lights, light_idx, work.p, work.lambda, u_light
     )
@@ -82,7 +84,7 @@ for the rationale.
             work.r_u * phase_val,                        # MIS with the paths into the window
             # The sky all the infinite lights make, over the density of their mixture.
             work.r_u * (compute_env_light_pdf(lights, light_sample.wi) * light_pmf * jacobian * participation),
-            work.pixel_index, work.medium_idx, true))
+            work.pixel_index, work.medium_idx, true, shadow_cull_mask(hidden)))
         return
     end
 
@@ -140,7 +142,8 @@ for the rationale.
                 r_l,
                 work.pixel_index,
                 work.medium_idx,  # Shadow ray travels through same medium
-                false
+                false,
+                shadow_cull_mask(hidden)
             )
 
             push!(shadow_queue, shadow_item)
@@ -238,7 +241,8 @@ Sobol samples are generated inline; see `surface_direct_lighting_inner!`.
             work.eta_scale,   # eta_scale (carry through from path state)
             false,            # specular_bounce
             true,             # any_non_specular_bounces
-            work.medium_idx   # Stay in same medium
+            work.medium_idx,  # Stay in same medium
+            VOLUME_SCATTER_RAYS
         )
 
         push!(ray_queue, ray_item)

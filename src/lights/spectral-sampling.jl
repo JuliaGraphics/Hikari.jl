@@ -234,11 +234,18 @@ end
 
 @propagate_inbounds evaluate_environment_spectral(::Light, lights, ::RGBToSpectrumTable, ::Vec3f, ::Wavelengths) = SpectralRadiance(0f0)
 
+"""The radiance of the lights a ray of `ray_type` that escapes along `ray_d` sees: all of them for `0x00`."""
 @propagate_inbounds function evaluate_escaped_ray_spectral(
-    table::RGBToSpectrumTable, lights::Raycore.StaticMultiTypeSet, ray_d::Vec3f, lambda::Wavelengths
+    table::RGBToSpectrumTable, lights::Raycore.StaticMultiTypeSet, ray_d::Vec3f, lambda::Wavelengths,
+    ray_type::UInt8 = 0x00,
 )::SpectralRadiance
-    return mapreduce(evaluate_environment_spectral, +, lights, lights, table, ray_d, lambda; init=SpectralRadiance(0f0))
+    return mapreduce(evaluate_visible_environment, +, lights, lights, table, ray_d, lambda, ray_type;
+                     init=SpectralRadiance(0f0))
 end
+
+@propagate_inbounds evaluate_visible_environment(light, lights, table, ray_d, lambda, ray_type::UInt8) =
+    sees_light(hidden_rays(light), ray_type) ? evaluate_environment_spectral(light, lights, table, ray_d, lambda) :
+    SpectralRadiance(0f0)
 
 @propagate_inbounds function env_light_pdf_single(light::EnvironmentLight, lights, wi::Vec3f)::Float32
     return pdf_li_spectral(lights, light, Point3f(0f0, 0f0, 0f0), wi)

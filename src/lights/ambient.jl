@@ -1,7 +1,12 @@
 struct AmbientLight{S<:Spectrum} <: Light
     i::S
     scale::Float32
+    """Ray types its light is hidden from (see [`Visibility`](@ref))."""
+    hidden::UInt8
 end
+AmbientLight{S}(i::S, scale::Float32) where S<:Spectrum = AmbientLight{S}(i, scale, 0x00)
+AmbientLight(i::S, scale::Float32) where S<:Spectrum = AmbientLight{S}(i, scale)
+AmbientLight(l::AmbientLight{S}, hidden::UInt8) where S<:Spectrum = AmbientLight{S}(l.i, l.scale, hidden)
 
 # Ambient lights are infinite (emit from all directions)
 is_infinite_light(::AmbientLight) = true

@@ -19,6 +19,8 @@ struct SunLight{S<:Spectrum} <: Light
     # Cloud rendering parameters
     angular_diameter::Float32  # Angular size of sun disk in radians (~0.00933 for real sun)
     corona_falloff::Float32    # How quickly corona fades around sun disk
+    """Ray types its light is hidden from (see [`Visibility`](@ref))."""
+    hidden::UInt8
 
     function SunLight(
         light_to_world::Transformation, l::S, direction::Vec3f, scale::Float32=1f0;
@@ -28,9 +30,12 @@ struct SunLight{S<:Spectrum} <: Light
         new{S}(
             light_to_world, inv(light_to_world),
             l, scale, normalize(light_to_world(direction)),
-            angular_diameter, corona_falloff,
+            angular_diameter, corona_falloff, 0x00,
         )
     end
+    SunLight(l::SunLight{S}, hidden::UInt8) where S<:Spectrum =
+        new{S}(l.light_to_world, l.world_to_light, l.i, l.scale, l.direction, l.angular_diameter,
+               l.corona_falloff, hidden)
 end
 
 # Sun lights are delta lights (emit along a single direction)

@@ -371,7 +371,8 @@ Following pbrt-v4's GetCameraSample: samples the filter, computes offset and wei
             1f0,                   # eta_scale
             false,                 # specular_bounce
             false,                 # any_non_specular_bounces
-            initial_medium_idx
+            initial_medium_idx,
+            CAMERA_RAYS
         )
         return work_item, weight
     end

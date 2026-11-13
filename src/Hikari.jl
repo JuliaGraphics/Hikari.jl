@@ -138,6 +138,7 @@ include("spectral/ior-spectra.jl")
 
 include("random.jl")
 include("materials/medium-interface.jl")
+include("visibility.jl")
 include("scene.jl")
 
 include("filter.jl")

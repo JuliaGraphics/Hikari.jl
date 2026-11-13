@@ -103,7 +103,8 @@ end
 function Adapt.adapt_structure(to, light::Hikari.EnvironmentLight)
     Hikari.EnvironmentLight(
         Adapt.adapt(to, light.env_map),
-        light.scale
+        light.scale,
+        light.hidden
     )
 end
 
