@@ -1,6 +1,8 @@
 # The docs' images are rendered once, at full quality, and published as Hikari's
-# `docs_renders` artifact. A normal docs build still runs every example, at one sample per
-# pixel to prove the code works, and shows the published image instead of its own.
+# `docs_renders` artifact. A normal docs build runs no example: it shows each one's code and
+# the published image (`PublishedExample`), and takes a minute where running them on
+# Lavapipe took CI 34. `HIKARI_DOCS_EXAMPLES=true` runs them, at one sample per pixel to prove
+# the code works, still showing the published images; CI's Docs Examples job does that.
 #
 # A block shows a published image by wrapping its last expression in hidden lines:
 #
@@ -18,9 +20,14 @@
 # then commit the changed Artifacts.toml.
 
 using Downloads, FileIO, SHA, TOML
+using Base64: base64encode
+import Documenter
 using Pkg.Artifacts: ensure_artifact_installed
 
 render_mode() = get(ENV, "HIKARI_DOCS_RENDER", "false") == "true"
+
+"""Whether this build runs the examples: to render the images, or to check that they run."""
+run_examples() = render_mode() || get(ENV, "HIKARI_DOCS_EXAMPLES", "false") == "true"
 
 # The artifact search stops at docs/Project.toml, so name Hikari's file.
 renders_dir() = render_mode() ? mkpath(joinpath(@__DIR__, "renders")) :
@@ -35,6 +42,31 @@ function docs_image(name::AbstractString, image)
     render_mode() || return FileIO.load(file)
     FileIO.save(file, image)
     return image
+end
+
+# A build that runs no example shows each `@example` block as its code and the published image
+# its `docs_image` names, and a `@setup` block as nothing. Every example block ends in a
+# `docs_image` or in `nothing # hide`, so that is everything a block would show. Runs ahead of
+# Documenter's own `ExampleBlocks` (8.0) and `SetupBlocks` (10.0), which then find no block left.
+abstract type PublishedExample <: Documenter.Expanders.ExpanderPipeline end
+Documenter.Selectors.order(::Type{PublishedExample}) = 7.5
+Documenter.Selectors.disable(::Type{PublishedExample}) = run_examples()
+Documenter.Selectors.matcher(::Type{PublishedExample}, node, page, doc) =
+    Documenter.iscodelang(node, "@example") || Documenter.iscodelang(node, "@setup")
+function Documenter.Selectors.runner(::Type{PublishedExample}, node, page, doc)
+    block = node.element
+    if Documenter.iscodelang(node, "@setup")
+        node.element = Documenter.SetupNode(block.info, block.code)
+        return
+    end
+    shown = [Documenter.MarkdownAST.Node(Documenter.MarkdownAST.CodeBlock("julia", Documenter.droplines(block.code)))]
+    for m in eachmatch(r"docs_image\(\"([^\"]+)\"", block.code)
+        png = base64encode(read(joinpath(renders_dir(), "$(m.captures[1]).png")))
+        push!(shown, Documenter.MarkdownAST.Node(Documenter.MultiOutputElement(Dict{MIME, Any}(MIME"image/png"() => png))))
+    end
+    node.element = Documenter.MultiOutput(block)
+    append!(node.children, shown)
+    return
 end
 
 """The code of every `@setup` and `@example` block of the page at `path`, in order."""

@@ -7,8 +7,8 @@ hero:
   name: "Hikari.jl"
   tagline: Spectral path tracing in Julia, on Vulkan and Metal GPUs
   image:
-    src: https://github.com/JuliaGraphics/Hikari.jl/releases/download/assets/protein_glass.png
-    alt: A protein rendered in glass with Hikari
+    src: /logo.jpg
+    alt: "Three spheres in the Julia colours, rendered with Hikari: glowing cracked lava, green hammered glass and purple car paint"
   actions:
     - theme: brand
       text: Get Started

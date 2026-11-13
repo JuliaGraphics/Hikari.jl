@@ -125,7 +125,8 @@ showcase([
 ```
 
 Common indices of refraction are 1.33 for water, 1.5 for window glass and 2.42 for diamond.
-`base_color` tints both reflection and transmission, as in Blender. For colour that deepens with
+`base_color` tints the light that passes through, by its square root at each surface, so light that
+enters and leaves takes it once; `specular_tint` tints the reflection, as in Blender's Principled BSDF. For colour that deepens with
 the distance light travels inside, fill the glass with an absorbing medium (see [Volumes](@ref)).
 
 ## Blender's other BSDFs
