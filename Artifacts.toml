@@ -1,18 +1,18 @@
 [docs_renders]
-git-tree-sha1 = "994b165801931c7cd0b536aed69c8cd6d91d2b82"
+git-tree-sha1 = "daae46c8d32e95ae325b471b284355dbde3c137a"
 lazy = true
 
     [[docs_renders.download]]
-    sha256 = "27f5a07da250dca1a73c62d42a262c7088638fa98b4247dd082cc33c0b95351a"
-    url = "https://github.com/JuliaGraphics/Hikari.jl/releases/download/assets/docs_renders-994b165801931c7cd0b536aed69c8cd6d91d2b82.tar.gz"
+    sha256 = "b5bacb6f3fce9e70884f4c59092fe89c027c57938d4bb7635942ca42d1a57d25"
+    url = "https://github.com/JuliaGraphics/Hikari.jl/releases/download/assets/docs_renders-daae46c8d32e95ae325b471b284355dbde3c137a.tar.gz"
 
 [logo_ball]
 git-tree-sha1 = "071d1859d5c9633bbf3930a342b01227c5f92a93"
 lazy = true
 
     [[logo_ball.download]]
-    sha256 = "8e789212b154cf7820bc21c974106d01eba7d67e4f756dbcd73bfead3ed75943"
-    url = "https://github.com/jkrumbiegel/Hikari.jl/releases/download/assets/logo_ball-071d1859d5c9633bbf3930a342b01227c5f92a93.tar.gz"
+    sha256 = "26d3d1811503e5ba98c54ad52e7f3736bc42088b66ac05b424953d8e6a0495ec"
+    url = "https://github.com/JuliaGraphics/Hikari.jl/releases/download/assets/logo_ball-071d1859d5c9633bbf3930a342b01227c5f92a93.tar.gz"
 
 [oidn]
 git-tree-sha1 = "142512dd114af71ad79f80a27a21f45a79bf8276"
