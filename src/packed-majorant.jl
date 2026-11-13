@@ -198,7 +198,9 @@ end
     return packed_majorant_value(grid.voxels,media,x,y,z)
 end
 
-@inline @propagate_inbounds function ray_majorant_next_dda(iter::RayMajorantIterator{<:MajorantGrid{<:PackedMajorantValues}},media)
+# Tiled and packed values walk their uniform tiles alike; only `majorant_lookup` differs.
+@inline @propagate_inbounds function ray_majorant_next_dda(
+        iter::RayMajorantIterator{<:MajorantGrid{<:Union{TiledMajorantValues,PackedMajorantValues}}},media)
     iter.t_min>=iter.t_max && return (RayMajorantSegment(),iter,false)
     values = iter.grid.voxels
     q = ntuple(a->iter.voxel[a]>>Int32(3),3)

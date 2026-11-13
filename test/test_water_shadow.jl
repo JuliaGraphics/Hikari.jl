@@ -11,7 +11,7 @@ function test_water_shadow_scalar(;n=20000)
     origins=[Point3f(0,rand(rng,Float32),rand(rng,Float32)) for _ in 1:n]
     direction=Vec3f(1,0,0)
     lambda=H.sample_wavelengths_visible(.5f0)
-    table=H.get_rgb2spec_table()
+    table=H.get_srgb_table()
     @testset "Scalar water shadows retain spectral control and residual expectation" begin
         for residual in (0f0,.01f0,.7f0,3f0,8f0),cells in (1,17)
             base=1f0
@@ -23,7 +23,7 @@ function test_water_shadow_scalar(;n=20000)
             results=zeros(Float64,n,4)
             difference=0.0
             for (i,origin) in enumerate(origins)
-                iter=H.RayMajorantIterator(H.create_dda_iterator(grid,bounds,origin,direction,0f0,1f0,H.SpectralRadiance(1f0)))
+                iter=H.create_dda_iterator(grid,bounds,origin,direction,0f0,1f0,H.SpectralRadiance(1f0))
                 actual=H.water_ratio_tracking(iter,origin,direction,nothing,medium,mc)
                 general=H.ratio_tracking_dda(iter,origin,direction,media,key,table,lambda,mc,base)
                 @test all(isfinite,actual[1].data)

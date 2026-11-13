@@ -82,35 +82,3 @@ function PointLight(position, i::RGBSpectrum)
     PointLight(translate(Vec3f(position)), i, scale)
 end
 
-"""
-Compute radiance arriving at `ref.p` interaction point at `ref.time` time
-due to that light, assuming there are no occluding objects between them.
-
-# Args
-
-- `p::PointLight`: Light which illuminates the interaction point `ref`.
-- `ref::Interaction`: Interaction point for which to compute radiance.
-- `u::Point2f`: Sampling point that is ignored for `PointLight`,
-    since it has no area.
-
-# Returns
-
-`Tuple{S, Vec3f, Float32, VisibilityTester} where S <: Spectrum`:
-
-    - `S`: Computed radiance.
-    - `Vec3f`: Incident direction to the light source `wi`.
-    - `Float32`: Probability density for the light sample that was taken.
-        For `PointLight` it is always `1`.
-    - `VisibilityTester`: Initialized visibility tester that holds the
-        shadow ray that must be traced to verify that
-        there are no occluding objects between the light and reference point.
-"""
-function sample_li(p::PointLight, i::Interaction, ::Point2f, ::AbstractScene)
-    wi = normalize(Vec3f(p.position - i.p))
-    pdf = 1f0
-    visibility = VisibilityTester(
-        i, Interaction(p.position, i.time, Vec3f(0.0f0), Normal3f(0.0f0)),
-    )
-    radiance = p.scale * p.i / distance_squared(p.position, i.p)
-    radiance, wi, pdf, visibility
-end

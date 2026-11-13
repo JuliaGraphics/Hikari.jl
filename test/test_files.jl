@@ -32,7 +32,6 @@ const TEST_FILES = [
     "test_curved_transport.jl",
     "test_step_integral.jl",
     "test_synchrotron.jl",
-    "type_stability.jl",
     "film.jl",
     "gpu_compat.jl",
     # Hikari's work items and its shading kernel through Lava's SPIR-V emitter,

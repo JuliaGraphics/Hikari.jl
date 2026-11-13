@@ -276,31 +276,14 @@ end
     MediumProperties(SpectralRadiance(0f0), SpectralRadiance(airscattering(media, m.air, p)), SpectralRadiance(0f0), 0f0)
 @propagate_inbounds residual(m::WaterMedium, media, table, p, λ, d) = residual(m, media, table, p, λ)
 
-@propagate_inbounds function get_majorant(m::WaterMedium, table::RGBToSpectrumTable, ray::Raycore.Ray,
-                                          t_min::Float32, t_max::Float32, λ::Wavelengths)::RayMajorantSegment
-    top = 0f0
-    if m.majorant_grid.voxels isa NativeMajorantValues
-        top = m.majorant_grid.voxels.top
-    else
-        for v in m.majorant_grid.voxels
-            top = max(top, v)
-        end
-    end
-    return RayMajorantSegment(t_min, t_max, SpectralRadiance(top))
-end
-
 @propagate_inbounds function create_majorant_iterator(m::WaterMedium, table::RGBToSpectrumTable, ray::Raycore.Ray,
                                                       t_max::Float32, λ::Wavelengths)
     t_enter, t_exit = ray_bounds_intersect(ray.o, ray.d, m.bounds)
     t_enter = max(t_enter, 0f0)
     t_exit = min(t_exit, t_max)
     t_enter >= t_exit && return RayMajorantIterator(m.majorant_grid)
-    dda = create_dda_iterator(m.majorant_grid, m.bounds, ray.o, ray.d, t_enter, t_exit, SpectralRadiance(1f0))
-    return RayMajorantIterator(dda)
+    return create_dda_iterator(m.majorant_grid, m.bounds, ray.o, ray.d, t_enter, t_exit, SpectralRadiance(1f0))
 end
-
-@propagate_inbounds create_majorant_iterator(m::WaterMedium, table::RGBToSpectrumTable, ray::Raycore.Ray, t_max::Float32,
-                                             λ::Wavelengths, ::MajorantGrid) = create_majorant_iterator(m, table, ray, t_max, λ)
 
 # The water control is spectral, but its air residual is achromatic. In ratio
 # tracking the scalar majorant exponential cancels from every likelihood ratio:

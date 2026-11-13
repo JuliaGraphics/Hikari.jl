@@ -166,11 +166,11 @@ end
                 zp == z && continue
                 if 0f0 < zp < b.thickness
                     # A scattering event in the medium: the light's way out through the exit, then onwards.
-                    wt = exit_specular ? 1f0 : power_heuristic(1, wis_pdf, 1, hg_phase_pdf(b.g, dot(-w, -wis_wi)))
-                    f += beta * b.albedo * hg_phase_pdf(b.g, dot(-w, -wis_wi)) * wt * layer_tr(zp - exit_z, wis_wi) *
+                    wt = exit_specular ? 1f0 : power_heuristic(1, wis_pdf, 1, hg_p(b.g, dot(-w, -wis_wi)))
+                    f += beta * b.albedo * hg_p(b.g, dot(-w, -wis_wi)) * wt * layer_tr(zp - exit_z, wis_wi) *
                          wis_f / wis_pdf
                     p1, rng = uniform(rng); p2, rng = uniform(rng)
-                    ps_wi, ps_p = sample_hg_phase_spectral(b.g, -w, Point2f(p1, p2))
+                    ps_wi, ps_p = sample_hg(b.g, -w, Point2f(p1, p2))
                     (ps_p > 0f0 && ps_wi[3] != 0f0) || continue
                     beta = beta * b.albedo     # p / pdf is one for Henyey-Greenstein
                     w = ps_wi
@@ -265,7 +265,7 @@ proportional only.
             zp == z && return none
             if 0f0 < zp < b.thickness
                 p1, rng = uniform(rng); p2, rng = uniform(rng)
-                ps_wi, ps_p = sample_hg_phase_spectral(b.g, -w, Point2f(p1, p2))
+                ps_wi, ps_p = sample_hg(b.g, -w, Point2f(p1, p2))
                 (ps_p > 0f0 && ps_wi[3] != 0f0) || return none
                 f = f * b.albedo * ps_p
                 pdf *= ps_p

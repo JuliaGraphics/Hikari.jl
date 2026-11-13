@@ -228,12 +228,6 @@ emits(mat::Material) = emits(typeof(mat))
 emits(::Type{<:Material}) = false
 emits(::Type{<:MediumInterface{M}}) where {M} = emits(M)
 emits(::Type{<:ShaderMaterial{P, T, M}}) where {P, T, M} = emits(M)
-@propagate_inbounds function add_emission!(pixel_L, bsdf::LobeBSDF, work)
-    is_black(bsdf.emission) && return nothing
-    L = work.beta * bsdf.emission / average(work.r_u)
-    accumulate_spectrum!(pixel_L, (work.pixel_index - Int32(1)) * Int32(4), L)
-    return nothing
-end
 @inline _uplift(table, c::Vec3f, lambda) = uplift_rgb(table, RGBSpectrum(c[1], c[2], c[3]), lambda)
 """A positive colour that is not a reflectance, such as a mean free path, lifted by its shape and scaled back."""
 @inline function _uplift_unbounded(table, c::Vec3f, lambda)

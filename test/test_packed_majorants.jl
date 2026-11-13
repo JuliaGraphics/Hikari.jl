@@ -14,8 +14,8 @@ function packed_bound_integral(grid,media,bounds,origin,direction)
     enter,leave=Hikari.ray_bounds_intersect(origin,direction,bounds)
     enter=max(enter,0f0)
     enter>=leave && return 0f0
-    iter=Hikari.RayMajorantIterator(Hikari.create_dda_iterator(grid,bounds,origin,direction,
-        enter,leave,Hikari.SpectralRadiance(1f0)))
+    iter=Hikari.create_dda_iterator(grid,bounds,origin,direction,
+        enter,leave,Hikari.SpectralRadiance(1f0))
     integral=0f0
     for _ in 1:4096
         segment,iter,valid=Hikari.ray_majorant_next(iter,media)

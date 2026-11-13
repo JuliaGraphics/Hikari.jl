@@ -6,8 +6,8 @@ using KernelAbstractions: @kernel,@index
 
 @inline function packed_water_probe(m,media,origin,direction)
     enter,leave=Hikari.ray_bounds_intersect(origin,direction,m.bounds)
-    iter=Hikari.RayMajorantIterator(Hikari.create_dda_iterator(m.majorant_grid,m.bounds,
-        origin,direction,max(enter,0f0),leave,Hikari.SpectralRadiance(1f0)))
+    iter=Hikari.create_dda_iterator(m.majorant_grid,m.bounds,
+        origin,direction,max(enter,0f0),leave,Hikari.SpectralRadiance(1f0))
     zero=Hikari.SpectralRadiance(0f0)
     control=Hikari.MediumProperties(zero,zero,zero,0f0)
     transmission=Hikari.water_ratio_tracking(iter,origin,direction,media,m,control)[1][1]

@@ -77,10 +77,6 @@ end
 # const texture, which is what `isconst` is here to tell us.
 @inline constant_value(t::Texture{T, 0}) where {T} = t.isconst ? t.constval : t.data[]
 
-function (c::Texture{T})(si::SurfaceInteraction)::T where {T<:TextureType}
-    return sample_texture_data(c.data, si.uv)
-end
-
 # UV-only texture evaluation
 @propagate_inbounds function evaluate_texture(tex::Texture{T}, uv::Point2f)::T where T
     tex.isconst && return tex.constval

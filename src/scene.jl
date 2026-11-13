@@ -416,10 +416,6 @@ function Adapt.adapt_structure(to, scene::Scene)
 end
 
 # Common interface for both scene types
-@propagate_inbounds function intersect!(scene::AbstractScene, ray::AbstractRay)
-    intersect!(scene.accel, ray)
-end
-
 @propagate_inbounds function intersect_p(scene::AbstractScene, ray::AbstractRay)
     hit_found, _, _, _ = any_hit(scene.accel, ray)
     return hit_found

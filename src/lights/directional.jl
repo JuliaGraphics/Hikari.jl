@@ -74,18 +74,3 @@ function DirectionalLight(i::RGBSpectrum, direction::Vec3f)
     DirectionalLight(Transformation(Mat4f(I)), i, direction, scale)
 end
 
-@propagate_inbounds function sample_li(
-        d::DirectionalLight{S}, ref::Interaction, u::Point2f, scene::AbstractScene,
-    )::Tuple{S,Vec3f,Float32,VisibilityTester} where S<:Spectrum
-
-    # d.direction is the direction light TRAVELS (away from light source)
-    # wi should be the direction TO the light source (opposite of d.direction)
-    wi = -d.direction
-    # outside_point should be in the direction the light COMES FROM
-    outside_point = ref.p .+ wi .* (2 * world_radius(scene))
-    tester = VisibilityTester(
-        ref, Interaction(outside_point, ref.time, Vec3f(0f0), Normal3f(0f0)),
-    )
-    d.scale * d.i, wi, 1f0, tester
-end
-

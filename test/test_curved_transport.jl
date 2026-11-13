@@ -43,7 +43,7 @@ Hikari.sample_point(::CurvedTransportFixture,media,table,p::Point3f,wl::Hikari.W
 function Hikari.create_majorant_iterator(m::CurvedTransportFixture,table::Hikari.RGBToSpectrumTable,
     ray::Raycore.Ray,tmax::Float32,wl::Hikari.Wavelengths,grid::M) where {M<:Hikari.MajorantGrid}
     m.empty && return Hikari.RayMajorantIterator(grid)
-    Hikari.RayMajorantIterator(Hikari.HomogeneousMajorantIterator(0f0,tmax,Hikari.SpectralRadiance(100)),grid)
+    Hikari.RayMajorantIterator(0f0,tmax,Hikari.SpectralRadiance(100),grid)
 end
 
 @testset "Curved medium chord lifecycle" begin
@@ -90,8 +90,8 @@ Hikari.sample_point(::CurvedGridFixture,media,table,p::Point3f,wl::Hikari.Wavele
 Hikari.get_template_grid(m::CurvedGridFixture) = m.majorant_grid
 Hikari.create_majorant_iterator(m::CurvedGridFixture,table::Hikari.RGBToSpectrumTable,
     ray::Raycore.Ray,tmax::Float32,wl::Hikari.Wavelengths,::Hikari.MajorantGrid) =
-    Hikari.RayMajorantIterator(Hikari.create_dda_iterator(m.majorant_grid,
-        Hikari.Bounds3(Point3f(-1f-3,-1,-1),Point3f(0.3f0,1,1)),ray.o,ray.d,0f0,tmax,Hikari.SpectralRadiance(1)))
+    Hikari.create_dda_iterator(m.majorant_grid,
+        Hikari.Bounds3(Point3f(-1f-3,-1,-1),Point3f(0.3f0,1,1)),ray.o,ray.d,0f0,tmax,Hikari.SpectralRadiance(1))
 
 @testset "Curved chord through a majorant grid bends once" begin
     table=Hikari.get_srgb_table()

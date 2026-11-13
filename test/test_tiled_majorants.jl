@@ -15,7 +15,7 @@ function test_tiled_majorants()
     function intervals(grid,box,o,d)
         lo,hi=H.ray_bounds_intersect(o,d,box);lo=max(lo,0f0)
         lo>=hi && return (integral=0.0,distance=0.0,count=0)
-        it=H.RayMajorantIterator(H.create_dda_iterator(grid,box,o,d,lo,hi,H.SpectralRadiance(1f0)))
+        it=H.create_dda_iterator(grid,box,o,d,lo,hi,H.SpectralRadiance(1f0))
         integral=0.0;distance=0.0;count=0;last=lo
         for _ in 1:H.majorant_segment_limit(it)
             seg,it,valid=H.ray_majorant_next(it,nothing)

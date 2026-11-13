@@ -492,21 +492,6 @@ end
     return MediumProperties(σ_a, σ_s, SpectralRadiance(0f0), medium.g)
 end
 
-@propagate_inbounds function get_majorant(
-    medium::NanoVDBMedium,
-    table::RGBToSpectrumTable,
-    ray::Raycore.Ray,
-    t_min::Float32,
-    t_max::Float32,
-    λ::Wavelengths
-)::RayMajorantSegment
-    # Use precomputed global max from majorant grid (conservative bound)
-    σ_a = uplift_rgb_unbounded(table, medium.σ_a, λ)
-    σ_s = uplift_rgb_unbounded(table, medium.σ_s, λ)
-    σ_maj = (σ_a + σ_s) * medium.max_density
-    return RayMajorantSegment(t_min, t_max, σ_maj)
-end
-
 @propagate_inbounds function create_majorant_iterator(
     medium::NanoVDBMedium,
     table::RGBToSpectrumTable,
@@ -531,7 +516,7 @@ end
     σ_t = σ_a + σ_s
 
     # Create DDA iterator (ray is already in world space, majorant grid is in world space)
-    dda_iter = create_dda_iterator(
+    return create_dda_iterator(
         medium.majorant_grid,
         medium.bounds,
         ray.o,
@@ -540,18 +525,6 @@ end
         t_exit,
         σ_t
     )
-    return RayMajorantIterator(dda_iter)
-end
-
-@propagate_inbounds function create_majorant_iterator(
-    medium::NanoVDBMedium,
-    table::RGBToSpectrumTable,
-    ray::Raycore.Ray,
-    t_max::Float32,
-    λ::Wavelengths,
-    ::MajorantGrid
-)
-    return create_majorant_iterator(medium, table, ray, t_max, λ)
 end
 
 # ============================================================================

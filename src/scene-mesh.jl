@@ -459,12 +459,27 @@ function flush_face_area_lights!(scene, face_meta, lights, emissive_faces, mat; 
     return face_meta
 end
 
+"""
+The area light of triangle `face` of `mesh` (`verts` its coordinates), emitting `Le`
+as `emission` says and hidden from the ray types `hidden`; `nothing` for a degenerate
+face. Without UVs the face takes (0, 0), (1, 0), (1, 1).
+"""
+function face_area_light(mesh, verts, face, Le, emission, hidden::UInt8)
+    vs = SVector(Point3f(verts[face[1]]), Point3f(verts[face[2]]), Point3f(verts[face[3]]))
+    face_uv = hasproperty(mesh, :uv) ?
+        SVector(Point2f(mesh.uv[face[1]]), Point2f(mesh.uv[face[2]]), Point2f(mesh.uv[face[3]])) :
+        SVector(Point2f(0), Point2f(1, 0), Point2f(1, 1))
+    cross_product = Vec3f(vs[2] - vs[1]) × Vec3f(vs[3] - vs[1])
+    twice_area = norm(cross_product)
+    twice_area < 1f-10 && return nothing
+    return DiffuseAreaLight(vs, Raycore.Normal3f(cross_product / twice_area), 0.5f0 * twice_area, face_uv, Le,
+                            emission.scale, emission.two_sided, hidden)
+end
+
 # Single material (all faces share one material + emission)
 function register_face_area_lights!(scene, mesh, face_meta, mat_idx::UInt32, emission; area_lights=SetKey[],
                                     hidden::UInt8=0x00)
     verts = GeometryBasics.coordinates(mesh)
-    gb_faces = GeometryBasics.faces(mesh)
-    has_uv = hasproperty(mesh, :uv)
     # Every face of this mesh shares `emission`, so the emitted-radiance type is
     # fixed and the staging vector can be concrete.
     Le = !isempty(area_lights) && emission.Le isa Texture && !emission.Le.isconst ?
@@ -472,31 +487,13 @@ function register_face_area_lights!(scene, mesh, face_meta, mat_idx::UInt32, emi
     lights = DiffuseAreaLight{typeof(Le)}[]
     emissive_faces = Int[]
 
-    for (i, face) in enumerate(gb_faces)
-        vs = SVector(Point3f(verts[face[1]]), Point3f(verts[face[2]]), Point3f(verts[face[3]]))
-        face_uv = if has_uv
-            SVector(Point2f(mesh.uv[face[1]]), Point2f(mesh.uv[face[2]]), Point2f(mesh.uv[face[3]]))
-        else
-            SVector(Point2f(0), Point2f(1, 0), Point2f(1, 1))
-        end
-
-        if emits_nothing(Le)
+    for (i, face) in enumerate(GeometryBasics.faces(mesh))
+        light = emits_nothing(Le) ? nothing : face_area_light(mesh, verts, face, Le, emission, hidden)
+        if light === nothing
             face_meta[i] = TriangleMeta(mat_idx, UInt32(i), UInt32(0))
             continue
         end
-
-        e1 = Vec3f(vs[2] - vs[1]); e2 = Vec3f(vs[3] - vs[1])
-        cross_product = e1 × e2
-        twice_area = norm(cross_product)
-        if twice_area < 1f-10
-            face_meta[i] = TriangleMeta(mat_idx, UInt32(i), UInt32(0))
-            continue
-        end
-
-        normal = Raycore.Normal3f(cross_product / twice_area)
-        tri_area = 0.5f0 * twice_area
-        push!(lights, DiffuseAreaLight(vs, normal, tri_area, face_uv, Le,
-                                       emission.scale, emission.two_sided, hidden))
+        push!(lights, light)
         push!(emissive_faces, i)
     end
 
@@ -508,46 +505,21 @@ function register_face_area_lights!(scene, mesh, face_meta,
                                     mat_indices::AbstractVector{UInt32},
                                     materials::AbstractVector{<:Material}; hidden::UInt8=0x00)
     verts = GeometryBasics.coordinates(mesh)
-    gb_faces = GeometryBasics.faces(mesh)
-    has_uv = hasproperty(mesh, :uv)
     # Faces may carry different materials here, so the emitted-radiance type is
     # not fixed across the mesh; `Raycore.append!` groups by stored type anyway.
     lights = DiffuseAreaLight[]
     emissive_faces = Int[]
     refs = IdDict()
 
-    for (i, face) in enumerate(gb_faces)
+    for (i, face) in enumerate(GeometryBasics.faces(mesh))
         emission = get_emission_info(materials[i])
-        if isnothing(emission)
+        Le = isnothing(emission) ? nothing : face_emission!(refs, scene.lights, emission.Le)
+        light = Le === nothing || emits_nothing(Le) ? nothing : face_area_light(mesh, verts, face, Le, emission, hidden)
+        if light === nothing
             face_meta[i] = TriangleMeta(mat_indices[i], UInt32(i), UInt32(0))
             continue
         end
-
-        vs = SVector(Point3f(verts[face[1]]), Point3f(verts[face[2]]), Point3f(verts[face[3]]))
-        face_uv = if has_uv
-            SVector(Point2f(mesh.uv[face[1]]), Point2f(mesh.uv[face[2]]), Point2f(mesh.uv[face[3]]))
-        else
-            SVector(Point2f(0), Point2f(1, 0), Point2f(1, 1))
-        end
-
-        Le = face_emission!(refs, scene.lights, emission.Le)
-        if emits_nothing(Le)
-            face_meta[i] = TriangleMeta(mat_indices[i], UInt32(i), UInt32(0))
-            continue
-        end
-
-        e1 = Vec3f(vs[2] - vs[1]); e2 = Vec3f(vs[3] - vs[1])
-        cross_product = e1 × e2
-        twice_area = norm(cross_product)
-        if twice_area < 1f-10
-            face_meta[i] = TriangleMeta(mat_indices[i], UInt32(i), UInt32(0))
-            continue
-        end
-
-        normal = Raycore.Normal3f(cross_product / twice_area)
-        tri_area = 0.5f0 * twice_area
-        push!(lights, DiffuseAreaLight(vs, normal, tri_area, face_uv, Le,
-                                       emission.scale, emission.two_sided, hidden))
+        push!(lights, light)
         push!(emissive_faces, i)
     end
 

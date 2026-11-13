@@ -35,11 +35,11 @@ end
 # `live_buffer_count`, `drain_deferred_frees!`, `device_lost`, `gpu_live_bytes`,
 # and each needs either a portable spelling or a deliberate decision that a
 # backend-internals test belongs in the backend's own suite.
-# NOT `using JET` here. Only `type_stability.jl` and `gpu_compat.jl` need it, and
-# it is a test-target dependency, so an environment without it made this line
-# throw before the first testset and took all 24 files down with it. The two
-# files that use it import it themselves; if JET is missing they fail and the
-# rest of the suite still runs, which is the point of the wrapper below.
+# NOT `using JET` here. Only `gpu_compat.jl` needs it, and it is a test-target
+# dependency, so an environment without it made this line throw before the first
+# testset and took all 24 files down with it. That file imports it itself; if JET
+# is missing it fails and the rest of the suite still runs, which is the point of
+# the wrapper below.
 
 # One outer testset around every file.
 #

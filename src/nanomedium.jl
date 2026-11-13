@@ -88,21 +88,12 @@ end
     return MediumProperties(σa, σs, Le, m.g)
 end
 
-@propagate_inbounds function get_majorant(m::NanoGridMedium, table::RGBToSpectrumTable, ray::Raycore.Ray,
-                                         t_min::Float32, t_max::Float32, λ::Wavelengths)
-    σt = uplift_rgb_unbounded(table, m.σ_a, λ) + uplift_rgb_unbounded(table, m.σ_s, λ)
-    return RayMajorantSegment(t_min, t_max, m.max_density * σt)
-end
-
 @propagate_inbounds function create_majorant_iterator(m::NanoGridMedium, table::RGBToSpectrumTable,
                                                      ray::Raycore.Ray, t_max::Float32, λ::Wavelengths)
     enter, leave = ray_bounds_intersect(ray.o, ray.d, m.bounds)
     enter = max(enter, 0f0); leave = min(leave, t_max)
     enter >= leave && return RayMajorantIterator(m.majorant_grid)
     σt = uplift_rgb_unbounded(table, m.σ_a, λ) + uplift_rgb_unbounded(table, m.σ_s, λ)
-    return RayMajorantIterator(create_dda_iterator(m.majorant_grid, m.bounds, ray.o, ray.d, enter, leave, σt))
+    return create_dda_iterator(m.majorant_grid, m.bounds, ray.o, ray.d, enter, leave, σt)
 end
 
-@propagate_inbounds create_majorant_iterator(m::NanoGridMedium, table::RGBToSpectrumTable, ray::Raycore.Ray,
-                                             t_max::Float32, λ::Wavelengths, ::MajorantGrid) =
-    create_majorant_iterator(m, table, ray, t_max, λ)

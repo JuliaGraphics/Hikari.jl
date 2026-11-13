@@ -60,7 +60,7 @@ function run_loaded(output, m; policy = :local, batch = 7, samples = 64, capture
             native!(mod); $control(mod); nothing
         end))
         Core.eval(L, :(function compile_or_lookup(job::LavaCompilerJob)::LavaGPUKernel
-            COMPILE_STATS.misses += 1
+            @atomic COMPILE_STATS.misses += 1
             invoke_frozen(lava_compile_gpu_from_job, job)
         end))
         L.ObjCache.enabled_state[] = false

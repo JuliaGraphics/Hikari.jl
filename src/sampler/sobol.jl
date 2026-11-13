@@ -2,6 +2,29 @@
 # Reference: pbrt-v4/src/pbrt/samplers.h, pbrt-v4/src/pbrt/util/lowdiscrepancy.h
 
 const ONE_MINUS_EPSILON = Float32(1.0) - eps(Float32)
+
+"""
+    PixelSample
+
+Holds all sample values needed for a single pixel sample in path tracing.
+Computed deterministically from (pixel, sample_index), by `compute_pixel_sample`.
+"""
+struct PixelSample
+    # Camera ray jitter
+    jitter_x::Float32
+    jitter_y::Float32
+
+    # Wavelength selection
+    wavelength_u::Float32
+
+    # Lens sampling (for DoF)
+    lens_u::Float32
+    lens_v::Float32
+
+    # Time (for motion blur)
+    time::Float32
+end
+
 const FLOAT32_SCALE = Float32(2.3283064365386963e-10)  # 1/2^32 = 0x1p-32
 
 # =============================================================================
@@ -79,16 +102,6 @@ Reference: pbrt-v4/src/pbrt/util/lowdiscrepancy.h FastOwenScrambler (lines 220-2
     return bitreverse(v)
 end
 
-"""
-    binary_permute_scramble(v::UInt32, perm::UInt32) -> UInt32
-
-Simple XOR-based scrambling (less quality than Owen, but faster).
-Reference: pbrt-v4/src/pbrt/util/lowdiscrepancy.h BinaryPermuteScrambler
-"""
-@inline function binary_permute_scramble(v::UInt32, perm::UInt32)::UInt32
-    return perm ⊻ v
-end
-
 # =============================================================================
 # Core Sobol sample function (matching pbrt-v4/src/pbrt/util/lowdiscrepancy.h)
 # =============================================================================
@@ -127,39 +140,6 @@ Arguments:
 end
 
 """
-    sobol_sample_2(a::Int64, dim0::Int32, dim1::Int32, scramble0::UInt32, scramble1::UInt32, matrices) -> (Float32, Float32)
-
-Generate two Sobol samples at the same index but different dimensions, fused
-into one 52-iteration loop.  Both samples share the bit-by-bit scan of `a`;
-only the matrix table base and the scrambling seed differ.
-
-Used by `sample_2d` so the jitter (2D) sample pays for one loop's worth of
-induction/branch overhead instead of two.  Bit-identical output to two
-separate `sobol_sample` calls.
-"""
-@inline function sobol_sample_2(
-    a::Int64, dim0::Int32, dim1::Int32,
-    scramble0::UInt32, scramble1::UInt32, matrices,
-)::Tuple{Float32, Float32}
-    v0 = UInt32(0)
-    v1 = UInt32(0)
-    base0 = dim0 * SOBOL_MATRIX_SIZE + Int32(1)
-    base1 = dim1 * SOBOL_MATRIX_SIZE + Int32(1)
-    for bit0 in Int32(0):Int32(SOBOL_MATRIX_SIZE - 1)
-        bit_val = UInt32((a >> bit0) & Int64(1))
-        mask = bit_val * UInt32(0xffffffff)
-        @inbounds v0 ⊻= matrices[base0 + bit0] & mask
-        @inbounds v1 ⊻= matrices[base1 + bit0] & mask
-    end
-    v0 = fast_owen_scramble(v0, scramble0)
-    v1 = fast_owen_scramble(v1, scramble1)
-    return (
-        min(Float32(v0) * FLOAT32_SCALE, ONE_MINUS_EPSILON),
-        min(Float32(v1) * FLOAT32_SCALE, ONE_MINUS_EPSILON),
-    )
-end
-
-"""
 The first two Sobol dimensions at index `a`, unscrambled, as `sobol_sample` computes them: the
 first is the radical inverse, the bits of `a` reversed, and the second reads the matrix only at
 the bits of `a` that are set.
@@ -183,25 +163,6 @@ end
 
 @inline _sobol_float(v::UInt32, scramble::UInt32) =
     min(Float32(fast_owen_scramble(v, scramble)) * FLOAT32_SCALE, ONE_MINUS_EPSILON)
-
-"""
-    sobol_sample_unscrambled(a::Int64, dimension::Int32) -> Float32
-
-Generate an unscrambled Sobol sample (for debugging/comparison).
-"""
-@inline function sobol_sample_unscrambled(a::Int64, dimension::Int32)::Float32
-    v = UInt32(0)
-    i = dimension * SOBOL_MATRIX_SIZE + Int32(1)
-    a_bits = a
-    while a_bits != 0
-        if (a_bits & 1) != 0
-            @inbounds v ⊻= SobolMatrices32[i]
-        end
-        a_bits >>= 1
-        i += Int32(1)
-    end
-    return min(Float32(v) * FLOAT32_SCALE, ONE_MINUS_EPSILON)
-end
 
 # =============================================================================
 # ZSobol sampler (matching pbrt-v4/src/pbrt/samplers.h ZSobolSampler)
@@ -505,31 +466,6 @@ Generate a 2D Sobol sample for the given pixel and dimension.
 end
 
 """
-    compute_pixel_sample(rng::SobolRNG, px::Int32, py::Int32, sample_idx::Int32)
-
-Compute all camera sample values for a pixel using SobolRNG.
-Returns a PixelSample struct with jitter, wavelength, lens, and time samples.
-
-# Dimension allocation (matching PBRT-v4 exactly):
-# See pbrt-v4/src/pbrt/wavefront/camera.cpp:51-60 and samplers.h:797-814
-# pbrt-v4's Get1D/Get2D increment dimension BEFORE computing hash:
-# - StartPixelSample(pPixel, sampleIndex, 0): dimension = 0
-# - Get1D() for wavelength: dimension++ → 1, hash uses 1
-# - GetPixel2D() which is Get2D(): dimension += 2 → 3, hash uses 3 (for jitter)
-# - Get1D() for time: dimension++ → 4, hash uses 4
-# - Get2D() for lens: dimension += 2 → 6, hash uses 6
-# So dimensions used are: 1 (wavelength), 3 (jitter), 4 (time), 6 (lens)
-"""
-@inline function compute_pixel_sample(rng::SobolRNG, px::Int32, py::Int32, sample_idx::Int32)
-    # Match pbrt-v4 dimension usage after Get1D/Get2D increments
-    wavelength_u = sample_1d(rng, px, py, sample_idx, Int32(1))       # dim 1
-    jitter_x, jitter_y = sample_2d(rng, px, py, sample_idx, Int32(3)) # dim 3
-    time = sample_1d(rng, px, py, sample_idx, Int32(4))               # dim 4
-    lens_u, lens_v = sample_2d(rng, px, py, sample_idx, Int32(6))     # dim 6
-    return PixelSample(jitter_x, jitter_y, wavelength_u, lens_u, lens_v, time)
-end
-
-"""
     compute_pixel_sample(rng, px, py, sample_idx, needs_time, needs_lens)
 
 Same as the 4-arg version but skips Sobol calls for dimensions the camera
@@ -558,26 +494,3 @@ for the kept dimensions is byte-identical to the 4-arg version.
     return PixelSample(jitter_x, jitter_y, wavelength_u, lens_u, lens_v, time)
 end
 
-"""
-    compute_path_sample_1d(rng::SobolRNG, px::Int32, py::Int32, sample_idx::Int32, depth::Int32, local_dim::Int32) -> Float32
-
-Compute a 1D sample for path tracing at a given depth using SobolRNG.
-
-# Dimension allocation:
-- Base dimension = 6 (camera uses 0-5)
-- Each depth uses 8 dimensions for BSDF, light, RR, etc.
-"""
-@inline function compute_path_sample_1d(rng::SobolRNG, px::Int32, py::Int32, sample_idx::Int32, depth::Int32, local_dim::Int32)::Float32
-    dim = Int32(6) + depth * Int32(8) + local_dim
-    sample_1d(rng, px, py, sample_idx, dim)
-end
-
-"""
-    compute_path_sample_2d(rng::SobolRNG, px::Int32, py::Int32, sample_idx::Int32, depth::Int32, local_dim::Int32) -> Tuple{Float32, Float32}
-
-Compute a 2D sample for path tracing at a given depth using SobolRNG.
-"""
-@inline function compute_path_sample_2d(rng::SobolRNG, px::Int32, py::Int32, sample_idx::Int32, depth::Int32, local_dim::Int32)::Tuple{Float32, Float32}
-    dim = Int32(6) + depth * Int32(8) + local_dim
-    sample_2d(rng, px, py, sample_idx, dim)
-end

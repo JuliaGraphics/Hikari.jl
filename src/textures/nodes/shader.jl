@@ -184,50 +184,10 @@ this function a fifth of every Principled shading kernel, in `Float64` code that
 compile at all.
 """
 # Let the device compiler choose inlining: a forced call boundary penalizes
-# shared BSDF shading even when the material has no film.
+# shared BSDF shading even when the material has no film. A caller that wants
+# the boundary says so at its call.
 function _thin_film_reflectance(cos_i::Float32, thickness::Float32, eta2::Float32, eta3::Float32,
                                         k3::Float32, lambda::Float32, f82::Float32 = -1f0)
-    if thickness < 1f0
-        t = clamp(thickness, 0f0, 1f0)
-        eta2 = 1f0 + (eta2 - 1f0) * t^2 * (3f0 - 2f0 * t)
-    end
-    sin2_i = max(1f0 - cos_i^2, 0f0)
-    sin2_2 = sin2_i / eta2^2
-    sin2_2 >= 1f0 && return 1f0
-    cos_2 = sqrt(1f0 - sin2_2)
-    n3 = Complex{Float32}(eta3, k3)
-    cos_3 = complex_sqrt(Complex{Float32}(1f0, 0f0) - complex_div(sin2_i, n3 * n3))
-    # The film's phase is imaginary, so its exponential is a rotation.
-    shift = cis(4f0 * Float32(π) * eta2 * thickness * cos_2 / lambda)
-    r = 0f0
-    for polarization in (0x00, 0x01)
-        r12 = polarization == 0x00 ? (cos_i - eta2 * cos_2) / (cos_i + eta2 * cos_2) :
-                                     (eta2 * cos_i - cos_2) / (eta2 * cos_i + cos_2)
-        r23 = polarization == 0x00 ? complex_div(eta2 * cos_2 - n3 * cos_3, eta2 * cos_2 + n3 * cos_3) :
-                                     complex_div(n3 * cos_2 - eta2 * cos_3, n3 * cos_2 + eta2 * cos_3)
-        if f82 >= 0f0
-            # Cycles keeps the artist's F82 reflectance at the film/substrate interface;
-            # the fitted complex IOR supplies its phase, rather than its magnitude.
-            n = eta3 / eta2
-            k2 = (k3 / eta2)^2
-            f0 = ((n - 1f0)^2 + k2) / ((n + 1f0)^2 + k2)
-            s = 6f0 / 7f0
-            b = (f0 + (1f0 - f0) * s^5 - f82) * (7f0 / s^6)
-            m = 1f0 - cos_2
-            R = clamp(f0 + (1f0 - f0) * m^5 - b * cos_2 * m^6, 0f0, 1f0)
-            magnitude = abs(r23)
-            r23 = magnitude > 0f0 ? r23 * (sqrt(R) / magnitude) : Complex{Float32}(sqrt(R), 0f0)
-        end
-        rr = complex_div(r12 + r23 * shift, 1f0 + r12 * r23 * shift)
-        r += abs2(rr)
-    end
-    return clamp(0.5f0 * r, 0f0, 1f0)
-end
-
-# Airy sum for a physical conductor. Use the normal wavevector q directly:
-# n * sqrt(1 - sin²(theta) / n²) is undefined at n == 0, a valid Cycles input.
-@noinline function _conductor_film_reflectance(cos_i::Float32, thickness::Float32, eta2::Float32,
-                                              eta3::Float32, k3::Float32, lambda::Float32)
     if thickness < 1f0
         t = clamp(thickness, 0f0, 1f0)
         eta2 = 1f0 + (eta2 - 1f0) * t^2 * (3f0 - 2f0 * t)
@@ -239,7 +199,10 @@ end
     cos_2 = sqrt(1f0 - sin2_2)
     n3 = Complex{Float32}(eta3, k3)
     n3sq = n3 * n3
+    # The substrate's normal wavevector `q = n3 cos θ3` directly: `n3 cos θ3` written
+    # as `n3 sqrt(1 - sin² θ / n3²)` is undefined at n3 == 0, a valid Cycles input.
     q = complex_sqrt(n3sq - sin2_i)
+    # The film's phase is imaginary, so its exponential is a rotation.
     shift = cis(4f0 * Float32(π) * eta2 * thickness * cos_2 / lambda)
     r = 0f0
     for polarization in (0x00, 0x01)
@@ -248,6 +211,19 @@ end
         a, b = polarization == 0x00 ? (Complex{Float32}(eta2 * cos_2, 0f0), q) : (n3sq * cos_2, eta2 * q)
         denominator = a + b
         r23 = iszero(denominator) ? Complex{Float32}(0f0, 0f0) : complex_div(a - b, denominator)
+        if f82 >= 0f0
+            # Cycles keeps the artist's F82 reflectance at the film/substrate interface;
+            # the fitted complex IOR supplies its phase, rather than its magnitude.
+            n = eta3 / eta2
+            k2 = (k3 / eta2)^2
+            f0 = ((n - 1f0)^2 + k2) / ((n + 1f0)^2 + k2)
+            s = 6f0 / 7f0
+            fb = (f0 + (1f0 - f0) * s^5 - f82) * (7f0 / s^6)
+            m = 1f0 - cos_2
+            R = clamp(f0 + (1f0 - f0) * m^5 - fb * cos_2 * m^6, 0f0, 1f0)
+            magnitude = abs(r23)
+            r23 = magnitude > 0f0 ? r23 * (sqrt(R) / magnitude) : Complex{Float32}(sqrt(R), 0f0)
+        end
         rr = complex_div(r12 + r23 * shift, 1f0 + r12 * r23 * shift)
         r += abs2(rr)
     end

@@ -55,7 +55,7 @@ const _RAMP_DATA = Int32(cld(RAMP_TABLE_SIZE, RAMP_ENTRIES_PER_DATA))
     elseif _has(ins, NodeFeature.COLOR) && op == NodeOp.INVERT
         s = _store(s, ins, _invert(_v(s, ins, 2), _f(s, ins, 1)))
     elseif _has(ins, NodeFeature.COLOR) && op == NodeOp.RGB_TO_BW
-        s = _store(s, ins, _splat(_rgb_to_bw(_v(s, ins, 1))))
+        s = _store(s, ins, _splat(luminance(_v(s, ins, 1))))
     elseif _has(ins, NodeFeature.COLOR) && op == NodeOp.SEPARATE_COLOR
         s = _store(s, ins, _separate_color(ins.mode[1], _v(s, ins, 1)))
     elseif _has(ins, NodeFeature.COLOR) && op == NodeOp.COMBINE_COLOR

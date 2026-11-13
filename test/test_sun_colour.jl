@@ -1,17 +1,16 @@
 using Test, Hikari, GeometryBasics, LinearAlgebra, Colors
 
-luminance(c) = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b
 towards(elevation) = Vec3f(cosd(elevation), 0, sind(elevation))
 redness(c) = c.r / c.b
 
 @testset "the sun dims and reddens as it sets" begin
     overhead = Hikari.sunsky_sun_rgb(1.0, towards(90))
-    @test luminance(overhead) ≈ 5 rtol = 1e-5
+    @test Hikari.luminance(overhead) ≈ 5 rtol = 1e-5
     @test Hikari.sunsky_sun_rgb(1.0) == overhead
-    @test luminance(Hikari.sunsky_sun_rgb(2.0, towards(90))) ≈ 10 rtol = 1e-5
+    @test Hikari.luminance(Hikari.sunsky_sun_rgb(2.0, towards(90))) ≈ 10 rtol = 1e-5
 
     setting = [Hikari.sunsky_sun_rgb(1.0, towards(e)) for e in (60, 30, 15, 5, 2)]
-    @test issorted(luminance.(setting); rev = true)
+    @test issorted(Hikari.luminance.(setting); rev = true)
     @test issorted(redness.(setting))
     @test Hikari.sunsky_sun_rgb(1.0, towards(-1)) == RGB{Float32}(0, 0, 0)
 end

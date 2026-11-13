@@ -70,15 +70,13 @@ end
 end
 
 @testset "Henyey-Greenstein denominator is guarded" begin
-    # `hg_p` had a bare `sqrt(denom)` while `hg_phase_pdf` in materials/common.jl
-    # guarded the identical expression. At g → ±1 and grazing cos θ, denom is
-    # (1 ∓ g)² — zero, or slightly negative in Float32.
-    # Away from the degenerate corner, the density is finite and positive.
+    # `hg_p` had a bare `sqrt(denom)` while a second copy of the formula guarded it.
+    # At g → ±1 and grazing cos θ, denom is (1 ∓ g)² — zero, or slightly negative
+    # in Float32. Away from the degenerate corner, the density is finite and positive.
     for g in (0.9f0, -0.9f0, 0.99f0, -0.99f0, 0.5f0, -0.5f0, 0f0)
         for c in (1f0, -1f0, 0.999999f0, -0.999999f0, 0f0)
             @test isfinite(H.hg_p(g, c))
             @test H.hg_p(g, c) > 0f0
-            @test H.hg_p(g, c) ≈ H.hg_phase_pdf(g, c)
         end
     end
 
@@ -86,17 +84,12 @@ end
     # peak it genuinely DIVERGES — and `denom = 1 + g² - 2g·cosθ` cancels to
     # zero in Float32 well before that. Inf (or NaN, at |g| = 1, where the
     # numerator vanishes too) is the arithmetic's honest answer, so finiteness
-    # is not the property to demand here.
-    #
-    # What the guard buys is that these RETURN instead of throwing a
-    # `DomainError`, and that `hg_p` does exactly what its twin does — the
-    # inconsistency being the actual bug. On a GPU the throw is not a NaN you
-    # can trace; it is a device-side exception that kills the render loop.
+    # is not the property to demand here. What the guard buys is that these
+    # RETURN instead of throwing a `DomainError`: on a GPU the throw is not a NaN
+    # you can trace, it is a device-side exception that kills the render loop.
     for g in (1f0, -1f0, 0.99999f0, -0.99999f0, 0.9999999f0, -0.9999999f0)
         for c in (1f0, -1f0, 0.999999f0, -0.999999f0, 0f0)
-            a = H.hg_p(g, c)           # no DomainError: reaching here is the test
-            b = H.hg_phase_pdf(g, c)
-            @test (isnan(a) && isnan(b)) || a ≈ b
+            @test H.hg_p(g, c) isa Float32
         end
     end
 end

@@ -274,8 +274,6 @@ dispatching_probe(x::Vector{Any}) = sin(x[1]) + 1f0
     @testset "Geometry Sampling" begin
         @test test_no_dispatch(Hikari.concentric_sample_disk, (Point2f,))
         @test test_no_dispatch(Hikari.cosine_sample_hemisphere, (Point2f,))
-        @test test_no_dispatch(Hikari.uniform_sample_sphere, (Point2f,))
-        @test test_no_dispatch(Hikari.uniform_sample_cone, (Point2f, Float32))
     end
 
     @testset "Wavelength Sampling" begin

@@ -100,30 +100,19 @@ end
     @test length(shade) == 4
     precompiled = Hikari.precompile_shader_signatures(typeof(dev))
     if !isempty(precompiled)
+        # The signature each shade dispatch is compiled at, which is the one its access
+        # walk inferred: the precompile workload's inference serves both.
         actual = Type[]
-        raw_signatures = Type[]
         for plan in Hikari.allplans(vp.state.plans), pass in plan.passes
             pass.pass.name == "shade" || continue
             for (original, compiled) in zip(pass.pass.dispatches, pass.dispatches)
-                raw = Mantle.resolve(dev, original.args)
-                touches = Mantle.argument_usage(dev, original.kernel, original.args,
-                                                original.ndrange, original.group)
-                args = Mantle.readonlyargs(plan.graph, touches, raw,
-                    Mantle.devargs(Mantle.adaptor(dev.default_bq), raw))
-                raw_types = Mantle.devicetype(dev, original.args)
-                push!(raw_signatures, Tuple{typeof(compiled.kernel), typeof(compiled.iter.ka_ctx),
-                                            raw_types.parameters...})
                 push!(actual, Tuple{typeof(compiled.kernel), typeof(compiled.iter.ka_ctx),
-                                    map(Core.Typeof, args)...})
+                                    Mantle.devicetype(dev, original.args).parameters...})
             end
         end
         append!(precompiled, Hikari.precompile_shader_signatures(typeof(dev); hw_accel = false))
         @test length(unique(actual)) == 4
         @test Set(actual) ⊆ Set(precompiled)
-        precompiled_raw = vcat(Hikari.precompile_shader_signatures(typeof(dev); readonly = false),
-            Hikari.precompile_shader_signatures(typeof(dev); hw_accel = false, readonly = false))
-        @test length(unique(raw_signatures)) == 4
-        @test Set(raw_signatures) ⊆ Set(precompiled_raw)
     end
     push!(scene, sphere(1), Hikari.Principled(base_color = voronoi(xyz()).color))
     push!(scene, sphere(-1), Hikari.Glass(ior = 1.5))

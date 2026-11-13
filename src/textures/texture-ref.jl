@@ -164,8 +164,6 @@ end
 # ±1 branch), matching pbrt with zero differentials.
 @propagate_inbounds eval_tex(ctx::DeviceSet, cb::CheckerboardTexture, uv::Point2f) =
     eval_tex(ctx, cb, TextureFilterContext(uv))
-@propagate_inbounds eval_tex(ctx::DeviceSet, cb::CheckerboardTexture, si::SurfaceInteraction) =
-    eval_tex(ctx, cb, TextureFilterContext(si.uv))
 
 # ============================================================================
 # Filtered Texture Evaluation (with UV derivatives for mipmap selection)
@@ -219,54 +217,6 @@ end
     ::Float32, ::Float32, ::Float32, ::Float32
 )::T where T
     return data[]
-end
-
-"""
-    sample_texture_bilinear(data, uv) -> T
-
-Bilinear texture sampling for 2D textures.
-Provides smoother results than point sampling.
-"""
-@propagate_inbounds function sample_texture_bilinear(data::AbstractArray{T,2}, uv::Point2f)::T where T
-    # Apply UV flip (standard texture coordinate convention)
-    uv_adj = Vec2f(1f0 - uv[2], uv[1])
-
-    h, w = size(data)
-    # Convert to pixel coordinates (0-indexed float)
-    px = uv_adj[2] * (w - 1) + 1f0
-    py = uv_adj[1] * (h - 1) + 1f0
-
-    # Get integer coordinates
-    x0 = unsafe_trunc(Int32, floor(px))
-    y0 = unsafe_trunc(Int32, floor(py))
-    x1 = x0 + Int32(1)
-    y1 = y0 + Int32(1)
-
-    # Clamp to valid range
-    x0 = clamp(x0, Int32(1), Int32(w))
-    x1 = clamp(x1, Int32(1), Int32(w))
-    y0 = clamp(y0, Int32(1), Int32(h))
-    y1 = clamp(y1, Int32(1), Int32(h))
-
-    # Compute interpolation weights
-    fx = px - floor(px)
-    fy = py - floor(py)
-
-    # Sample four corners
-    c00 = data[y0, x0]
-    c10 = data[y0, x1]
-    c01 = data[y1, x0]
-    c11 = data[y1, x1]
-
-    # Bilinear interpolation
-    c0 = c00 * (1f0 - fx) + c10 * fx
-    c1 = c01 * (1f0 - fx) + c11 * fx
-    return c0 * (1f0 - fy) + c1 * fy
-end
-
-# Fallback for non-2D textures
-@propagate_inbounds function sample_texture_bilinear(data::AbstractArray{T,N}, uv::Point2f)::T where {T,N}
-    return sample_texture_data(data, uv)
 end
 
 # ============================================================================
@@ -330,23 +280,6 @@ function Raycore.update_item(dhv::Raycore.MultiTypeSet,
                               new::VertexColorTexture{<:AbstractArray})
     Raycore.copyto_texture!(dhv, old.face_colors, new.face_colors)
     return old
-end
-
-# ============================================================================
-# SurfaceInteraction-based Texture Evaluation
-# ============================================================================
-
-# Regular textures: extract UV from SI
-@propagate_inbounds eval_tex(ctx::DeviceSet, tref::Raycore.TextureRef, si::SurfaceInteraction) = eval_tex(ctx, tref, si.uv)
-@propagate_inbounds eval_tex(::DeviceSet, val::T, ::SurfaceInteraction) where T<:Union{Float32, RGB{Float32}, Spectrum} = val
-@propagate_inbounds eval_tex(::DeviceSet, val::PiecewiseLinearSpectrum, ::SurfaceInteraction) = val
-
-# VertexColorTexture: barycentric interpolation using face_idx and bary from SI
-@propagate_inbounds function eval_tex(ctx::DeviceSet, vtex::VertexColorTexture, si::SurfaceInteraction)
-    data = Raycore.deref(ctx, vtex.face_colors)
-    fi = si.face_idx
-    b = si.bary
-    return data[1, fi] * b[1] + data[2, fi] * b[2] + data[3, fi] * b[3]
 end
 
 # VertexColorTexture: barycentric interpolation using face_idx and bary from TextureFilterContext

@@ -306,26 +306,6 @@ Get sin(φ) of a direction in local coordinates (matches pbrt-v4's SinPhi).
     return sin_θ == 0f0 ? 0f0 : clamp(w[2] / sin_θ, -1f0, 1f0)
 end
 
-# ============================================================================
-# Coordinate System / Frame Transforms
-# ============================================================================
-
-"""
-    coordinate_system(n::Vec3f) -> (tangent, bitangent)
-
-Build orthonormal basis from a normal vector.
-"""
-@propagate_inbounds function coordinate_system(n::Vec3f)
-    if abs(n[1]) > abs(n[2])
-        inv_len = 1f0 / sqrt(n[1] * n[1] + n[3] * n[3])
-        tangent = Vec3f(n[3] * inv_len, 0f0, -n[1] * inv_len)
-    else
-        inv_len = 1f0 / sqrt(n[2] * n[2] + n[3] * n[3])
-        tangent = Vec3f(0f0, n[3] * inv_len, -n[2] * inv_len)
-    end
-    bitangent = cross(n, tangent)
-    return (tangent, bitangent)
-end
 
 """
     shading_frame(ns::Vec3f, dpdus::Vec3f) -> (tangent, bitangent)
@@ -363,14 +343,6 @@ In local space, the normal is (0, 0, 1).
     return Vec3f(dot(v, tangent), dot(v, bitangent), dot(v, n))
 end
 
-"""
-    reflect(wo, n) -> wi
-
-Compute reflected direction: wi = -wo + 2*dot(wo,n)*n
-"""
-@inline function reflect(wo::Vec3f, n::Vec3f)::Vec3f
-    return -wo + 2f0 * dot(wo, n) * n
-end
 
 # ============================================================================
 # GGX / TrowbridgeReitz Microfacet Distribution Functions (pbrt-v4)
@@ -758,49 +730,6 @@ Returns -log(1-u)/a, matching pbrt-v4's SampleExponential.
 """
 @inline function sample_exponential(u::Float32, a::Float32)::Float32
     return -log(1f0 - u) / a
-end
-
-"""
-    sample_hg_phase_spectral(g, wo, u) -> (wi, phase_pdf)
-
-Sample direction from Henyey-Greenstein phase function.
-"""
-@propagate_inbounds function sample_hg_phase_spectral(g::Float32, wo::Vec3f, u::Point2f)
-    # Sample cos_θ from HG distribution
-    cos_θ = if abs(g) < 1f-3
-        # Isotropic case
-        1f0 - 2f0 * u[1]
-    else
-        g2 = g * g
-        sqr_term = (1f0 - g2) / (1f0 - g + 2f0 * g * u[1])
-        clamp((1f0 + g2 - sqr_term * sqr_term) / (2f0 * g), -1f0, 1f0)
-    end
-
-    sin_θ = sqrt(max(0f0, 1f0 - cos_θ * cos_θ))
-    ϕ = 2f0 * Float32(π) * u[2]
-
-    # Build local frame around -wo
-    t1, t2 = coordinate_system(-wo)
-    wi = sin_θ * cos(ϕ) * t1 + sin_θ * sin(ϕ) * t2 + cos_θ * (-wo)
-    wi = normalize(wi)
-
-    # HG phase function value (equals PDF)
-    g2 = g * g
-    denom = 1f0 + g2 - 2f0 * g * cos_θ
-    p = (1f0 - g2) / (4f0 * Float32(π) * denom * sqrt(max(1f-10, denom)))
-
-    return (wi, p)
-end
-
-"""
-    hg_phase_pdf(g, cos_θ) -> Float32
-
-Evaluate Henyey-Greenstein phase function PDF.
-"""
-@propagate_inbounds function hg_phase_pdf(g::Float32, cos_θ::Float32)::Float32
-    g2 = g * g
-    denom = 1f0 + g2 - 2f0 * g * cos_θ
-    (1f0 - g2) / (4f0 * Float32(π) * denom * sqrt(max(1f-10, denom)))
 end
 
 """

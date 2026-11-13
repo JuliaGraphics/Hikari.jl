@@ -328,7 +328,8 @@ end
     s = selected_component(sample_bsdf_spectral, b.components, b.selected, args...)
     return SpectralBSDFSample(s.f * b.scale, s.wi, s.pdf, s.flags, s.eta, s.pdf_is_proportional, s.secondary_terminated)
 end
-@propagate_inbounds function add_emission!(pixel_L, bsdf::ComponentBSDF, work)
+# A shader graph's and a pbrt graph's BSDF carry their emission alike.
+@propagate_inbounds function add_emission!(pixel_L, bsdf::Union{LobeBSDF,ComponentBSDF}, work)
     is_black(bsdf.emission) && return nothing
     L = work.beta * bsdf.emission / average(work.r_u)
     accumulate_spectrum!(pixel_L, (work.pixel_index - Int32(1)) * Int32(4), L)

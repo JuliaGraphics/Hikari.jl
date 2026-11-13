@@ -5,9 +5,6 @@
 
 const IDENTITY4 = Mat4f(LinearAlgebra.I)
 
-@inline function srgb_to_linear(u::Float32)
-    return u <= 0.04045f0 ? u / 12.92f0 : ((u + 0.055f0) / 1.055f0)^2.4f0
-end
 
 struct PBRTResult
     scene::Scene
@@ -38,67 +35,116 @@ function load_pbrt(filename::AbstractString;
     build_hikari_scene(pbrt; backend=backend, samples=samples, max_depth=max_depth, hw_accel=hw_accel)
 end
 
+"""
+    pbrt_settings(pbrt) -> NamedTuple
+
+What a `.pbrt` file sets besides the scene, with pbrt-v4's defaults where it is
+silent: `resolution`, the pixel `filter`, the `sensor` (and its `sensor_name`),
+the camera's `fov`, `lens_radius` and `focal_distance`, and the `integrator`
+settings a `VolPath` takes. Hikari's scene builder and RayMakie's importer both
+read the file through this, so they cannot disagree about it.
+"""
+function pbrt_settings(pbrt::PBRTScene)
+    film = pbrt.film
+    xres = film === nothing ? 512 : pbrt_get_int(film, "xresolution", 512)
+    yres = film === nothing ? 512 : pbrt_get_int(film, "yresolution", 512)
+    sensor_name = film === nothing ? "cie1931" : pbrt_get_string(film, "sensor", "cie1931")
+    sensor = PixelSensor(sensor = sensor_name,
+                         iso = film === nothing ? 100f0 : Float32(pbrt_get_float(film, "iso", 100.0)),
+                         whitebalance = film === nothing ? 0f0 : Float32(pbrt_get_float(film, "whitebalance", 0.0)),
+                         exposure_time = film === nothing ? 1f0 : Float32(pbrt_get_float(film, "exposuretime", 1.0)))
+    # Defaults match pbrt-v4 cameras.cpp PerspectiveCamera::Create: a zero lens
+    # radius is a pinhole, and focaldistance is only consulted when the lens has
+    # area. Dropping these silently rendered every depth-of-field scene sharp.
+    camera = pbrt.camera
+    fov = camera === nothing ? 90f0 : Float32(pbrt_get_float(camera, "fov", 90.0))
+    lens_radius = camera === nothing ? 0f0 : Float32(pbrt_get_float(camera, "lensradius", 0.0))
+    focal_distance = camera === nothing ? 1f6 : Float32(pbrt_get_float(camera, "focaldistance", 1.0e6))
+    return (; resolution = (xres, yres), filter = pbrt_pixel_filter(pbrt.pixel_filter), sensor, sensor_name,
+            fov, lens_radius, focal_distance, integrator = pbrt_integrator_settings(pbrt))
+end
+
+"""The pixel filter a `PixelFilter` directive names; pbrt-v4's default, a Gaussian of radius 1.5 and sigma 0.5, without one."""
+pbrt_pixel_filter(::Nothing) = GaussianFilter(Point2f(1.5f0), 0.5f0)
+function pbrt_pixel_filter(pf::PBRTEntity)
+    ft = lowercase(pf.type)
+    xr = Float32(pbrt_get_float(pf, "xradius", ft == "box" ? 0.5 : ft == "gaussian" ? 1.5 : 2.0))
+    yr = Float32(pbrt_get_float(pf, "yradius", ft == "box" ? 0.5 : ft == "gaussian" ? 1.5 : 2.0))
+    r = Point2f(xr, yr)
+    ft == "box" && return BoxFilter(r)
+    ft == "gaussian" && return GaussianFilter(r, Float32(pbrt_get_float(pf, "sigma", 0.5)))
+    if ft == "mitchell"
+        B = Float32(pbrt_get_float(pf, haskey(pf.params, "B") ? "B" : "b", 1/3))
+        C = Float32(pbrt_get_float(pf, haskey(pf.params, "C") ? "C" : "c", 1/3))
+        return MitchellFilter(r, B, C)
+    end
+    ft == "triangle" && return TriangleFilter(r)
+    ft == "sinc" && return LanczosSincFilter(r, Float32(pbrt_get_float(pf, "tau", 3.0)))
+    throw(ArgumentError("pbrt: unsupported PixelFilter \"$(pf.type)\""))
+end
+
+"""
+The `VolPath` settings a `.pbrt` file gives, with pbrt-v4's defaults where it is
+silent: `regularize` false (wavefront surfscatter.cpp:196), Russian roulette from
+depth 1 (surfscatter.cpp:215), `maxcomponentvalue` Infinity (film.cpp:576).
+"""
+function pbrt_integrator_settings(pbrt::PBRTScene)
+    integrator = pbrt.integrator
+    samples = integrator === nothing ? 64 : pbrt_get_int(integrator, "pixelsamples", 64)
+    # pbrt-v4 puts `pixelsamples` on the Sampler, not the Integrator. Crown
+    # specifies `Sampler "halton" "integer pixelsamples" 512`.
+    pbrt.sampler === nothing || (samples = pbrt_get_int(pbrt.sampler, "pixelsamples", samples))
+    return (samples = samples,
+            max_depth = integrator === nothing ? 5 : pbrt_get_int(integrator, "maxdepth", 5),
+            regularize = integrator === nothing ? false : pbrt_get_bool(integrator, "regularize", false),
+            russian_roulette_depth = 1,
+            max_component_value = pbrt.film === nothing ? Inf32 :
+                                  Float32(pbrt_get_float(pbrt.film, "maxcomponentvalue", Inf)))
+end
+
+"""The file's named materials over its built `textures`; a mix after the materials it mixes."""
+function build_pbrt_materials(pbrt::PBRTScene, textures)
+    materials = Dict{String, Material}()
+    for pass in (false, true), (name, entity) in pbrt.named_materials
+        (lowercase(entity.type) == "mix") == pass || continue
+        haskey(materials, name) && continue
+        materials[name] = attach_bump(build_pbrt_material(entity, pbrt, textures, materials), entity, textures)
+    end
+    return materials
+end
+
+"""The file's named media."""
+function build_pbrt_media(pbrt::PBRTScene)
+    media = Dict{String, Medium}()
+    for (name, entity) in pbrt.named_media
+        medium = build_pbrt_medium(entity, pbrt, get(pbrt.media_transforms, name, IDENTITY4))
+        medium !== nothing && (media[name] = medium)
+    end
+    return media
+end
+
+"""
+The material shape `srec` is drawn with: its own, in a `MediumInterface` with its
+area light's emission and its media when it has them. The keyword constructor
+normalises the emission by the D65 constant rather than the emitter's spectrum.
+"""
+function pbrt_shape_material(srec::PBRTShapeRecord, materials, media, pbrt::PBRTScene, textures)
+    mat = resolve_pbrt_material(srec, materials, pbrt; textures)
+    inside = get(media, srec.medium_inner, nothing)
+    outside = get(media, srec.medium_outer, nothing)
+    srec.area_light !== nothing && return MediumInterface(mat; emission = Emission(srec.area_light), inside, outside)
+    (inside !== nothing || outside !== nothing) && return MediumInterface(mat; inside, outside)
+    return mat
+end
+
 function build_hikari_scene(pbrt::PBRTScene;
                             backend=Mantle.defaultbackend(),
                             samples::Union{Nothing, Int}=nothing,
                             max_depth::Union{Nothing, Int}=nothing,
                             hw_accel::Bool=false)
-    # --- Film ---
-    xres = 512
-    yres = 512
-    sensor_name = "cie1931"
-    sensor_iso = 100f0
-    sensor_wb = 0f0
-    if pbrt.film !== nothing
-        xres = pbrt_get_int(pbrt.film, "xresolution", 512)
-        yres = pbrt_get_int(pbrt.film, "yresolution", 512)
-        sensor_name = pbrt_get_string(pbrt.film, "sensor", "cie1931")
-        sensor_iso = Float32(pbrt_get_float(pbrt.film, "iso", 100.0))
-        sensor_wb = Float32(pbrt_get_float(pbrt.film, "whitebalance", 0.0))
-    end
-    exposure_time = 1f0
-    if pbrt.film !== nothing
-        exposure_time = Float32(pbrt_get_float(pbrt.film, "exposuretime", 1.0))
-    end
+    settings = pbrt_settings(pbrt)
+    film = Film(backend, Film(Point2f(settings.resolution...); filter = settings.filter))
 
-    # --- Pixel Filter ---
-    # pbrt-v4 default: gaussian with radius (1.5, 1.5), sigma 0.5
-    pixel_filter = GaussianFilter(Point2f(1.5f0), 0.5f0)  # match pbrt-v4 default
-    if pbrt.pixel_filter !== nothing
-        pf = pbrt.pixel_filter
-        ft = lowercase(pf.type)
-        xr = Float32(pbrt_get_float(pf, "xradius", ft == "box" ? 0.5 : ft == "gaussian" ? 1.5 : 2.0))
-        yr = Float32(pbrt_get_float(pf, "yradius", ft == "box" ? 0.5 : ft == "gaussian" ? 1.5 : 2.0))
-        r = Point2f(xr, yr)
-        if ft == "box"
-            pixel_filter = BoxFilter(r)
-        elseif ft == "gaussian"
-            sigma = Float32(pbrt_get_float(pf, "sigma", 0.5))
-            pixel_filter = GaussianFilter(r, sigma)
-        elseif ft == "mitchell"
-            B = Float32(pbrt_get_float(pf, haskey(pf.params, "B") ? "B" : "b", 1/3))
-            C = Float32(pbrt_get_float(pf, haskey(pf.params, "C") ? "C" : "c", 1/3))
-            pixel_filter = MitchellFilter(r, B, C)
-        elseif ft == "triangle"
-            pixel_filter = TriangleFilter(r)
-        elseif ft == "sinc"
-            tau = Float32(pbrt_get_float(pf, "tau", 3.0))
-            pixel_filter = LanczosSincFilter(r, tau)
-        end
-    end
-    film = Film(backend, Film(Point2f(xres, yres); filter=pixel_filter))
-    sensor = PixelSensor(sensor=sensor_name, iso=sensor_iso, whitebalance=sensor_wb,
-                         exposure_time=exposure_time)
-
-    # --- Camera ---
-    fov = 90f0
-    lens_radius = 0f0
-    focal_distance = 1f6
-    if pbrt.camera !== nothing
-        fov = Float32(pbrt_get_float(pbrt.camera, "fov", 90.0))
-        lens_radius = Float32(pbrt_get_float(pbrt.camera, "lensradius", 0.0))
-        focal_distance = Float32(pbrt_get_float(pbrt.camera, "focaldistance", 1.0e6))
-    end
     # `pbrt.camera_transform` from `pbrt_lookat`, NOT `Raycore.look_at`. The two
     # differ by a `cross(up, dir)` vs `cross(dir, up)` flip, and that difference
     # is a real convention split, not a bug in either:
@@ -140,108 +186,36 @@ function build_hikari_scene(pbrt::PBRTScene;
     # diffing a RayMakie render against a pbrt EXR must CHECK BOTH orientations
     # rather than assume either.
     wtc_mat = pbrt.camera_transform
-    ctw_mat = inv(wtc_mat)
-    wtc_tf = Transformation(wtc_mat, ctw_mat)
+    wtc_tf = Transformation(wtc_mat, inv(wtc_mat))
     # Matches RayMakie's to_trace_camera convention.
-    screen = screen_window((xres, yres))
-    camera = PerspectiveCamera(
-        wtc_tf, screen, 0f0, 1f0, lens_radius, focal_distance, Float32(fov), film
-    )
+    camera = PerspectiveCamera(wtc_tf, screen_window(settings.resolution), 0f0, 1f0,
+                               settings.lens_radius, settings.focal_distance, settings.fov, film)
 
-    # --- Integrator settings ---
-    # Match pbrt-v4 defaults exactly
-    int_samples = 64
-    int_max_depth = 5           # pbrt-v4 default
-    int_regularize = false      # pbrt-v4 wavefront default (surfscatter.cpp:196)
-    int_rr_depth = 1            # pbrt-v4 hardcoded (surfscatter.cpp:215: depth >= 1)
-    int_max_component = Inf32   # pbrt-v4 default (film.cpp:576: Infinity)
-    if pbrt.integrator !== nothing
-        int_samples = pbrt_get_int(pbrt.integrator, "pixelsamples", 64)
-        int_max_depth = pbrt_get_int(pbrt.integrator, "maxdepth", 5)
-        int_regularize = pbrt_get_bool(pbrt.integrator, "regularize", false)
-    end
-    # pbrt-v4 puts `pixelsamples` on the Sampler, not the Integrator. Crown
-    # specifies `Sampler "halton" "integer pixelsamples" 512`. Without this the
-    # parser fell through to the integrator default (64) and the caller's
-    # `samples` arg silently overrode pbrt's scene-specified count.
-    if pbrt.sampler !== nothing
-        int_samples = pbrt_get_int(pbrt.sampler, "pixelsamples", int_samples)
-    end
-    # Film maxcomponentvalue
-    if pbrt.film !== nothing
-        int_max_component = Float32(pbrt_get_float(pbrt.film, "maxcomponentvalue", Inf))
-    end
-    samples !== nothing && (int_samples = samples)
-    max_depth !== nothing && (int_max_depth = max_depth)
+    integrator = settings.integrator
+    samples === nothing || (integrator = merge(integrator, (; samples)))
+    max_depth === nothing || (integrator = merge(integrator, (; max_depth)))
 
-    # --- Build scene first ---
     # The scene owns the texture store (`scene.materials`, a MultiTypeSet), and
     # image textures must be pushed into it BEFORE materials are constructed:
-    # a material's texture parameters are now `TexHandle`s carrying a runtime
-    # `(slot, idx)`, which only exists once the array has been stored. Building
-    # the scene here rather than after the material cache is what makes the
-    # non-parametric material structs possible.
+    # a material's texture parameters are `TexHandle`s carrying a runtime
+    # `(slot, idx)`, which only exists once the array has been stored.
     scene = Scene(; backend=backend, hw_accel=hw_accel)
+    textures = build_pbrt_textures(pbrt, scene)
+    materials = build_pbrt_materials(pbrt, textures)
+    media = build_pbrt_media(pbrt)
 
-    # --- Build textures (pushed into the scene's store, returned as handles) ---
-    hikari_textures = build_pbrt_textures(pbrt, scene)
-
-    # --- Build materials cache ---
-    mat_cache = Dict{String, Material}()
-    for pass in (false, true)
-        for (name, entity) in pbrt.named_materials
-            is_mix = lowercase(entity.type) == "mix"
-            is_mix == pass || continue
-            haskey(mat_cache, name) && continue
-            mat_cache[name] = attach_bump(
-                build_pbrt_material(entity, pbrt, hikari_textures, mat_cache),
-                entity, hikari_textures)
-        end
-    end
-
-    # --- Build media cache ---
-    media_cache = Dict{String, Medium}()
-    for (name, entity) in pbrt.named_media
-        transform = get(pbrt.media_transforms, name, IDENTITY4)
-        med = build_pbrt_medium(entity, pbrt, transform)
-        med !== nothing && (media_cache[name] = med)
-    end
-
-    # Add standalone lights
     for lrec in pbrt.lights
         light = build_pbrt_light(lrec, pbrt)
         light !== nothing && push!(scene, light)
     end
-
-    # Add shapes with materials
     for srec in pbrt.shapes
         mesh = build_pbrt_shape(srec, pbrt)
         mesh === nothing && continue
-        mat = resolve_pbrt_material(srec, mat_cache, pbrt; textures=hikari_textures)
-
-        # Resolve media for this shape
-        inside_medium = get(media_cache, srec.medium_inner, nothing)
-        outside_medium = get(media_cache, srec.medium_outer, nothing)
-
-        # Area light → wrap material in MediumInterface with its emission
-        if srec.area_light !== nothing
-            push!(scene, mesh, MediumInterface(mat;
-                emission=Emission(srec.area_light), inside=inside_medium, outside=outside_medium))
-        elseif inside_medium !== nothing || outside_medium !== nothing
-            # Shape has participating media — wrap in MediumInterface
-            push!(scene, mesh, MediumInterface(mat;
-                inside=inside_medium, outside=outside_medium))
-        else
-            push!(scene, mesh, mat)
-        end
+        push!(scene, mesh, pbrt_shape_material(srec, materials, media, pbrt, textures))
     end
-
     sync!(scene)
 
-    return PBRTResult(scene, camera, film,
-        (samples=int_samples, max_depth=int_max_depth, regularize=int_regularize,
-         russian_roulette_depth=int_rr_depth, max_component_value=int_max_component),
-        sensor, sensor_name)
+    return PBRTResult(scene, camera, film, integrator, settings.sensor, settings.sensor_name)
 end
 
 # ============================================================================
@@ -525,16 +499,16 @@ function build_pbrt_textures(pbrt::PBRTScene, scene)
             if apply_srgb
                 @inbounds for idx in CartesianIndices(img_rgb)
                     px = img_rgb[idx]
-                    img_rgb[idx] = Colors.RGB{Float32}(srgb_to_linear(px.r),
-                                                      srgb_to_linear(px.g),
-                                                      srgb_to_linear(px.b))
+                    img_rgb[idx] = Colors.RGB{Float32}(srgb_gamma_to_linear(px.r),
+                                                      srgb_gamma_to_linear(px.g),
+                                                      srgb_gamma_to_linear(px.b))
                 end
             end
             if tex_class == "float"
                 data = Matrix{Float32}(undef, size(img_rgb)...)
                 for idx in CartesianIndices(img_rgb)
                     px = img_rgb[idx]
-                    data[idx] = 0.2126f0 * px.r + 0.7152f0 * px.g + 0.0722f0 * px.b
+                    data[idx] = luminance(px)
                 end
                 textures[name] = Texture(data)
             else
