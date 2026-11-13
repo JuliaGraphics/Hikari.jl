@@ -7,6 +7,8 @@ struct ProjectiveCamera <: Camera
 
     lens_radius::Float32
     focal_distance::Float32
+    aperture_blades::Int32
+    aperture_rotation::Float32
     """Camera space to the image's window, 0 to 1 from the bottom left (homogeneous)."""
     camera_to_window::Mat4f
 
@@ -15,7 +17,7 @@ struct ProjectiveCamera <: Camera
             screen_window::Bounds2,
             shutter_open::Float32, shutter_close::Float32,
             lens_radius::Float32, focal_distance::Float32,
-            film::Film,
+            film::Film; aperture_blades::Integer = 0, aperture_rotation::Real = 0f0,
         )
         core = CameraCore(camera_to_world, shutter_open, shutter_close)
         # Computer projective camera transformations.
@@ -35,7 +37,7 @@ struct ProjectiveCamera <: Camera
             core,
             camera_to_screen, raster_to_camera,
             screen_to_raster, raster_to_screen,
-            lens_radius, focal_distance,
+            lens_radius, focal_distance, Int32(aperture_blades), Float32(aperture_rotation),
             (inv_bounds * offset * camera_to_screen).m,
         )
     end
@@ -60,18 +62,21 @@ struct PerspectiveCamera <: Camera
       rather than renderer-wide constants. Anything needing the camera-space
       plane the film maps onto must ask `raster_plane_z(camera)`, NOT assume
       `near`: the projection puts that plane at `2 * near`.
+    - `aperture_blades`/`aperture_rotation`: the lens is a regular polygon of that many corners,
+      turned by `aperture_rotation` radians, or a disk for `0`.
     """
     function PerspectiveCamera(
         camera_to_world::Transformation, screen_window::Bounds2,
         shutter_open::Float32, shutter_close::Float32,
         lens_radius::Float32, focal_distance::Float32,
         fov::Float32, film::Film; near::Float32 = 0.01f0, far::Float32 = 1000f0,
+        aperture_blades::Integer = 0, aperture_rotation::Real = 0f0,
     )
         pc = ProjectiveCamera(
             inv(camera_to_world),
             perspective(fov, near, far),
             screen_window, shutter_open, shutter_close,
-            lens_radius, focal_distance, film,
+            lens_radius, focal_distance, film; aperture_blades, aperture_rotation,
         )
 
         p_min = pc.raster_to_camera(Point3f(0))
@@ -97,13 +102,42 @@ function screen_window(resolution)
                           Bounds2(Point2f(-1f0, -1f0 / frame), Point2f(1f0, 1f0 / frame))
 end
 
-"""
-    PerspectiveCamera(eye, lookat, film; up = Vec3f(0, 1, 0), fov = 55)
+const SENSOR_WIDTH = 0.036f0
 
-A pinhole camera at `eye` looking at `lookat`, for `film`. `fov` is in degrees, across the
-shorter side of the image, as in pbrt.
 """
-function PerspectiveCamera(eyepos, lookat, film; up=Vec3f(0, 1, 0), fov=55)
+The focal length in meters of a camera with field of view `fov` (degrees) over `screen`, whose
+longer side is a 36 mm sensor as Blender's default.
+"""
+function focal_length(fov, screen::Bounds2)
+    half_extent = maximum(max.(abs.(screen.p_min), abs.(screen.p_max)))
+    return SENSOR_WIDTH / 2 / (half_extent * tan(deg2rad(Float32(fov)) / 2))
+end
+
+"""The lens radius of an aperture of f-number `fstop`, with scene units in meters."""
+lens_radius(fstop, fov, screen::Bounds2) = Float32(focal_length(fov, screen) / (2 * fstop))
+
+"""The depth of `focus` in front of a camera at `eye` looking at `lookat`: the look-at point's for `nothing`."""
+focus_distance(eye, lookat, ::Nothing) = norm(Vec3f(lookat) - Vec3f(eye))
+focus_distance(eye, lookat, distance::Real) = Float32(distance)
+focus_distance(eye, lookat, point::Point) =
+    abs(dot(Vec3f(point) - Vec3f(eye), normalize(Vec3f(lookat) - Vec3f(eye))))
+
+"""
+    PerspectiveCamera(eye, lookat, film; up = Vec3f(0, 1, 0), fov = 55, fstop = Inf,
+                      focus = nothing, aperture_blades = 0, aperture_rotation = 0)
+
+A camera at `eye` looking at `lookat`, for `film`. `fov` is in degrees, across the
+shorter side of the image, as in pbrt.
+
+For depth of field, `fstop` is the f-number of the lens, whose focal length follows from `fov`
+on a 36 mm sensor across the longer side of the image, so scene units are meters. An infinite
+`fstop` is a pinhole. `focus` is what is sharp: the look-at point for `nothing`, a distance
+along the view, or a point, whose depth along the view is used. `aperture_blades` makes the
+aperture, and with it out-of-focus highlights, a polygon of that many corners, turned by
+`aperture_rotation` radians.
+"""
+function PerspectiveCamera(eyepos, lookat, film; up=Vec3f(0, 1, 0), fov=55, fstop=Inf, focus=nothing,
+                           aperture_blades::Integer=0, aperture_rotation::Real=0)
     screen = screen_window(film.resolution)
     # An `up` along the view leaves the camera's frame undefined: the image came out black.
     dir = Vec3f(lookat) - Vec3f(eyepos)
@@ -112,7 +146,8 @@ function PerspectiveCamera(eyepos, lookat, film; up=Vec3f(0, 1, 0), fov=55)
         "orient the image by; pass an `up` across it"))
     return PerspectiveCamera(
         Hikari.look_at(eyepos, lookat, up),
-        screen, 0f0, 1f0, 0f0, 1f6, Float32(fov), film,
+        screen, 0f0, 1f0, lens_radius(fstop, fov, screen), Float32(focus_distance(eyepos, lookat, focus)),
+        Float32(fov), film; aperture_blades, aperture_rotation,
     )
 end
 
@@ -136,7 +171,7 @@ camera_uses_lens(c::PerspectiveCamera) = c.core.lens_radius > 0f0
     # Modify ray for depth of field.
     if camera.core.lens_radius > 0
         # Sample points on lens.
-        p_lens = camera.core.lens_radius * concentric_sample_disk(sample.lens)
+        p_lens = camera.core.lens_radius * sample_aperture(sample.lens, camera.core.aperture_blades, camera.core.aperture_rotation)
         # Compute point on plane of focus.
         # Camera looks in -z, so d[3] < 0; negate to get positive t.
         t = -camera.core.focal_distance / d[3]

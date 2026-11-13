@@ -2,6 +2,22 @@
 # Basic sampling primitives
 # ============================================================================
 
+"""
+A point on a lens of radius 1: a disk for no `blades`, else a regular polygon of `blades`
+corners on the unit circle, the first at `rotation` radians.
+"""
+@propagate_inbounds function sample_aperture(u::Point2f, blades::Int32, rotation::Float32)::Point2f
+    blades == Int32(0) && return concentric_sample_disk(u)
+    n = Float32(blades)
+    slice = min(floor(u[1] * n), n - 1f0)
+    along = u[1] * n - slice
+    a0 = rotation + 2f0 * Float32(π) * slice / n
+    a1 = a0 + 2f0 * Float32(π) / n
+    corner0 = Point2f(cos(a0), sin(a0))
+    corner1 = Point2f(cos(a1), sin(a1))
+    return sqrt(u[2]) * (corner0 + along * (corner1 - corner0))
+end
+
 @propagate_inbounds function concentric_sample_disk(u::Point2f)::Point2f
     # Map uniform random numbers to [-1, 1].
     offset_x = 2f0 * u[1] - 1f0
