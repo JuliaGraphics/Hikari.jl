@@ -3,25 +3,20 @@ precompile_device_types() = Mantle.precompile_device_types()
 # Describe the common opaque triangle/point-light dispatch without allocating
 # arrays or initializing a device. Keep this in sync with shade_pass!; a test
 # compares these signatures with those of real recorded shading dispatches.
-function precompile_shader_signatures(device::Type{<:Mantle.Device}; hw_accel::Bool = true,
-                                      readonly::Bool = true)
+function precompile_shader_signatures(device::Type{<:Mantle.Device}; hw_accel::Bool = true)
     abi = Mantle.kernel_precompile_abi(device, 32)
     abi === nothing && return ()
     A(T, N = 1) = abi.array(T, N)
-    C(T, N = 1) = readonly ? abi.readonly(T, N) : abi.array(T, N)
     context = abi.context
     fields = NamedTuple{fieldnames(VPRayWorkItem),Tuple{map(A,fieldtypes(VPRayWorkItem))...}}
     rays = StructArray{VPRayWorkItem,1,fields,Int}
     ray_queue = WorkQueue{VPRayWorkItem,rays,A(Int32)}
-    read_fields = NamedTuple{fieldnames(VPRayWorkItem),Tuple{map(C,fieldtypes(VPRayWorkItem))...}}
-    read_rays = StructArray{VPRayWorkItem,1,read_fields,Int}
-    read_queue = WorkQueue{VPRayWorkItem,read_rays,C(Int32)}
-    hit_queue = WorkQueue{VPSurfaceHit,C(VPSurfaceHit),C(Int32)}
+    hit_queue = WorkQueue{VPSurfaceHit,A(VPSurfaceHit),A(Int32)}
     shadow_fields = NamedTuple{fieldnames(VPShadowRayWorkItem),Tuple{map(A,fieldtypes(VPShadowRayWorkItem))...}}
     shadow_queue = WorkQueue{VPShadowRayWorkItem,StructArray{VPShadowRayWorkItem,1,shadow_fields,Int},A(Int32)}
-    inputs = ShaderInputs{C(Float32),C(Int32)}
+    inputs = ShaderInputs{A(Float32),A(Int32)}
     nodes = SurfaceProgramNodes{16,true,SURFACE_PRINCIPLED_MASK | SURFACE_ONE_PRINCIPLED,false}
-    queue = ClosureQueue{nodes,C(Int32),inputs}
+    queue = ClosureQueue{nodes,A(Int32),inputs}
     queues = Core.Compiler.return_type(shade_queues, Tuple{queue})
     triangle = Raycore.Triangle{TriangleMeta}
     accel = if hw_accel
@@ -31,23 +26,22 @@ function precompile_shader_signatures(device::Type{<:Mantle.Device}; hw_accel::B
                           A(Raycore.BVHNode2),A(triangle),A(Raycore.BLASDescriptor)}
     end
     media = StaticMultiTypeSet{Tuple{},Tuple{}}
-    textures = Tuple{C(A(LookupValue)),C(A(NodeInstr{NodeFeature.CLOSURES}))}
+    textures = Tuple{A(A(LookupValue)),A(A(NodeInstr{NodeFeature.CLOSURES}))}
     materials = Raycore.SetView{(),(1,3),Tuple{},textures}
-    lights = StaticMultiTypeSet{Tuple{C(PointLight{RGBSpectrum})},Tuple{}}
-    rgb = RGBToSpectrumTable{C(Float32),C(Float32,5),C(Float32)}
-    tail = (hit_queue,read_queue,read_queue,ray_queue,A(Float32),shadow_queue,A(Float32),
-        accel,C(MediumInterfaceIdx),media,materials,lights,rgb,C(LightBVHNode),
-        C(Int32),A(UInt32),Int32,Int32,Int32,Int32,Bool,Bool,
-        SobolRNG{C(UInt32)},C(Int32),C(PerspectiveCamera),Int32,Int32)
+    lights = StaticMultiTypeSet{Tuple{A(PointLight{RGBSpectrum})},Tuple{}}
+    rgb = RGBToSpectrumTable{A(Float32),A(Float32,5),A(Float32)}
+    tail = (hit_queue,ray_queue,ray_queue,ray_queue,A(Float32),shadow_queue,A(Float32),
+        accel,A(MediumInterfaceIdx),media,materials,lights,rgb,A(LightBVHNode),
+        A(Int32),A(UInt32),Int32,Int32,Int32,Int32,Bool,Bool,
+        SobolRNG{A(UInt32)},A(Int32),A(PerspectiveCamera),Int32,Int32)
     return [Tuple{typeof(gpu_vp_shade_kernel!),context,Q,tail...} for Q in queues.parameters]
 end
 
 function precompile_shader_workload(device::Type{<:Mantle.Device})
     cache = Mantle.AccessCache()
-    # Access analysis runs before readonly adaptation, while code generation
-    # sees the adapted signature. Both inference roots must reach the image.
-    for readonly in (false, true), hw_accel in (true, false),
-        sig in precompile_shader_signatures(device; hw_accel, readonly)
+    # The access walk and the compile infer the same signature, so this inference is
+    # the compile's too.
+    for hw_accel in (true, false), sig in precompile_shader_signatures(device; hw_accel)
         args = Tuple(sig.parameters[2:end])
         interp = Mantle.precompile_kernelinterpreter(device, gpu_vp_shade_kernel!, Tuple{args...}, 32)
         Mantle.accessof(interp, gpu_vp_shade_kernel!, args; cache)
