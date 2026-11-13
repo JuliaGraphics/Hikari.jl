@@ -181,7 +181,7 @@ const BSDFLessMaterial = Union{Emission, MixMaterial}
 @propagate_inbounds evaluate_bsdf_spectral(
     ::BSDFLessMaterial, ::RGBToSpectrumTable, textures,
     wo::Vec3f, wi::Vec3f, n::Vec3f, dpdus::Vec3f, ::TextureFilterContext,
-    ::Wavelengths, regularize::Bool = false,
+    ::Wavelengths, regularize::Bool = false, hidden::UInt8 = 0x00,
 ) = (SpectralRadiance(), 0f0)
 
 # ============================================================================

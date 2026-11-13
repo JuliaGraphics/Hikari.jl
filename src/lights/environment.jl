@@ -8,14 +8,18 @@ struct EnvironmentLight{S<:Spectrum, E<:EnvironmentMap{S}} <: Light
 
     """Scale factor for the light intensity."""
     scale::S
+    """Ray types its light is hidden from (see [`Visibility`](@ref))."""
+    hidden::UInt8
 
     function EnvironmentLight(
         env_map::E,
-        scale::S=RGBSpectrum(1f0);
+        scale::S=RGBSpectrum(1f0),
+        hidden::UInt8=0x00,
     ) where {S<:Spectrum, E<:EnvironmentMap{S}}
-        new{S, E}(env_map, scale)
+        new{S, E}(env_map, scale, hidden)
     end
 end
+EnvironmentLight(l::EnvironmentLight, hidden::UInt8) = EnvironmentLight(l.env_map, l.scale, hidden)
 
 # Environment lights are infinite (at infinity)
 is_infinite_light(::EnvironmentLight) = true
@@ -151,5 +155,6 @@ paints_sky_in_rgb(lights::Raycore.MultiTypeSet, sensor::PixelSensor) =
     framebuffer[idx] = RGB{Float32}(c[1], c[2], c[3])
 end
 
-@propagate_inbounds sky_rgb(light::EnvironmentLight, lights, d::Vec3f) = light.scale.c[1] * light.env_map(d, lights)
+@propagate_inbounds sky_rgb(light::EnvironmentLight, lights, d::Vec3f) =
+    sees_light(light.hidden, CAMERA_RAYS) ? light.scale.c[1] * light.env_map(d, lights) : RGBSpectrum(0f0)
 @propagate_inbounds sky_rgb(::Light, lights, ::Vec3f) = RGBSpectrum(0f0)

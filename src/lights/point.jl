@@ -11,13 +11,17 @@ struct PointLight{S<:Spectrum} <: Light
     scale::Float32
     """Position in world space."""
     position::Point3f
+    """Ray types its light is hidden from (see [`Visibility`](@ref))."""
+    hidden::UInt8
 
     function PointLight(light_to_world::Transformation, i::S, scale::Float32=1f0) where S<:Spectrum
         new{S}(
             light_to_world, inv(light_to_world),
-            i, scale, light_to_world(Point3f(0f0)),
+            i, scale, light_to_world(Point3f(0f0)), 0x00,
         )
     end
+    PointLight(l::PointLight{S}, hidden::UInt8) where S<:Spectrum =
+        new{S}(l.light_to_world, l.world_to_light, l.i, l.scale, l.position, hidden)
 end
 
 # Point lights are delta lights (emit from a single point)

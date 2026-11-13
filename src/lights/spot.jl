@@ -10,6 +10,8 @@ struct SpotLight{S<:Spectrum} <: Light
     scale::Float32
     cos_total_width::Float32
     cos_falloff_start::Float32
+    """Ray types its light is hidden from (see [`Visibility`](@ref))."""
+    hidden::UInt8
 
     function SpotLight(
         light_to_world::Transformation, i::S,
@@ -19,9 +21,12 @@ struct SpotLight{S<:Spectrum} <: Light
         new{S}(
             light_to_world, inv(light_to_world),
             light_to_world(Point3f(0f0)), i, scale,
-            cos(deg2rad(total_width)), cos(deg2rad(falloff_start)),
+            cos(deg2rad(total_width)), cos(deg2rad(falloff_start)), 0x00,
         )
     end
+    SpotLight(l::SpotLight{S}, hidden::UInt8) where S<:Spectrum =
+        new{S}(l.light_to_world, l.world_to_light, l.position, l.i, l.scale, l.cos_total_width,
+               l.cos_falloff_start, hidden)
 end
 
 # Spot lights are delta lights (emit from a single point)

@@ -38,12 +38,13 @@ struct VPRayWorkItem
     specular_bounce::Bool           # Was last bounce specular?
     any_non_specular_bounces::Bool  # Any non-specular bounces in path?
     medium_idx::SetKey         # Current medium (0 = vacuum)
+    ray_type::UInt8            # The `Visibility` bit of the lobe this ray was sampled from
 end
 
 """`w` with the path throughput `beta`."""
 @inline with_beta(w::VPRayWorkItem, beta::SpectralRadiance) =
     VPRayWorkItem(w.ray, w.depth, w.lambda, w.pixel_index, beta, w.r_u, w.r_l, w.prev_intr_p, w.prev_intr_n,
-                  w.eta_scale, w.specular_bounce, w.any_non_specular_bounces, w.medium_idx)
+                  w.eta_scale, w.specular_bounce, w.any_non_specular_bounces, w.medium_idx, w.ray_type)
 
 "Prepare a curved chord before either hardware or software intersection."
 @propagate_inbounds function prepare_medium_work(work::VPRayWorkItem, media)
@@ -59,7 +60,7 @@ end
     chord=Raycore.Ray(o=ray.o,d=d,t_min=ray.t_min,t_max=min(ray.t_max,h),time=ray.time)
     VPRayWorkItem(chord,work.depth,work.lambda,work.pixel_index,
         work.beta,work.r_u,work.r_l,work.prev_intr_p,work.prev_intr_n,
-        work.eta_scale,work.specular_bounce,work.any_non_specular_bounces,work.medium_idx)
+        work.eta_scale,work.specular_bounce,work.any_non_specular_bounces,work.medium_idx,work.ray_type)
 end
 
 function VPRayWorkItem(
@@ -81,7 +82,8 @@ function VPRayWorkItem(
         1f0,
         false,
         false,
-        medium_idx
+        medium_idx,
+        CAMERA_RAYS
     )
 end
 
@@ -123,6 +125,7 @@ struct VPMediumSampleWorkItem
 
     # The surface the ray reaches if no medium event stops it first.
     hit::Raycore.HitRecord
+    ray_type::UInt8
 end
 
 """Whether the medium ray reaches a surface at `t_max`, rather than escaping."""
@@ -139,6 +142,7 @@ function VPMediumSampleWorkItem(work::VPRayWorkItem, hit::Raycore.HitRecord)
         work.prev_intr_p, work.prev_intr_n,
         work.medium_idx,
         hit,
+        work.ray_type,
     )
 end
 
@@ -241,6 +245,7 @@ struct VPShadowRayWorkItem
     pixel_index::Int32
     medium_idx::SetKey         # Medium the shadow ray travels through
     refract::Bool              # Through Snell's window: bends at surfaces, `Ld` waits for the sky (see `snells_window`)
+    cull_mask::UInt8           # What may block it: nothing for a light casting no shadows (`shadow_cull_mask`)
 end
 
 # ============================================================================
@@ -285,6 +290,7 @@ struct VPEscapedRayWorkItem
     specular_bounce::Bool
     prev_intr_p::Point3f
     prev_intr_n::Vec3f
+    ray_type::UInt8
 end
 
 # Constructor from VPRayWorkItem
@@ -293,7 +299,7 @@ function VPEscapedRayWorkItem(work::VPRayWorkItem)
         work.ray.d, work.lambda, work.pixel_index,
         work.beta, work.r_u, work.r_l,
         work.depth, work.specular_bounce,
-        work.prev_intr_p, work.prev_intr_n
+        work.prev_intr_p, work.prev_intr_n, work.ray_type
     )
 end
 
@@ -306,7 +312,7 @@ function VPEscapedRayWorkItem(
         work.ray.d, work.lambda, work.pixel_index,
         beta, r_u, r_l,
         work.depth, work.specular_bounce,
-        work.prev_intr_p, work.prev_intr_n
+        work.prev_intr_p, work.prev_intr_n, work.ray_type
     )
 end
 

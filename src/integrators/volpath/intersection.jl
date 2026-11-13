@@ -30,7 +30,7 @@ end
     # is idx, including sample lanes. Ordinary queued rays do not have this identity.
     @inbounds return VPRayWorkItem(rays.ray[path], Int32(0), rays.lambda[path], path,
         rays.beta[path], SpectralRadiance(1f0), SpectralRadiance(1f0), Point3f(0f0), Vec3f(0, 0, 1),
-        1f0, false, false, rays.medium_idx[path])
+        1f0, false, false, rays.medium_idx[path], CAMERA_RAYS)
 end
 
 "Offset to the outgoing side, including Float32 position error at large coordinates."
@@ -374,7 +374,7 @@ end
     # A medium ray: delta tracking is bounded by the hit and delivers the surface.
     if has_medium(work.medium_idx)
         work = prepare_medium_work(work, media)
-        push!(medium_sample_queue, VPMediumSampleWorkItem(work, Raycore.closest_hit_record(accel, work.ray)))
+        push!(medium_sample_queue, VPMediumSampleWorkItem(work, Raycore.closest_hit_record(accel, work.ray, work.ray_type)))
         return
     end
 
@@ -385,7 +385,7 @@ end
     ray = work.ray
     tinted = false
     for _ in 1:Int32(16)
-        rec = Raycore.closest_hit_record(accel, ray)
+        rec = Raycore.closest_hit_record(accel, ray, work.ray_type)
         if rec.kind == Raycore.HIT_MISS
             # Surface misses have all their path state here. Evaluate before
             # discarding it rather than contending on a queue and copying it
@@ -443,7 +443,7 @@ end
                 work.prev_intr_p, work.prev_intr_n,
                 work.eta_scale,
                 work.specular_bounce, work.any_non_specular_bounces,
-                new_medium))
+                new_medium, work.ray_type))
             return
         end
 
@@ -462,7 +462,7 @@ end
 # ============================================================================
 
 """
-    trace_shadow_transmittance(accel, media_interfaces, media, materials, rgb2spec_table, origin, dir, t_max, lambda, medium_idx, refract)
+    trace_shadow_transmittance(accel, media_interfaces, media, materials, rgb2spec_table, origin, dir, t_max, lambda, medium_idx, refract, cull_mask)
 
 Trace a shadow ray computing transmittance through media and the surfaces that let
 it through; with `refract`, bending at surfaces that pass shadow rays (see
@@ -491,7 +491,7 @@ last of them.
 @inline function trace_shadow_transmittance(
     accel, media_interfaces, media, materials, rgb2spec_table,
     origin::Point3f, dir::Vec3f, t_max::Float32, lambda::Wavelengths, medium_idx::SetKey,
-    refract::Bool = false
+    refract::Bool = false, cull_mask::UInt8 = SHADOW_RAYS
 )
     # Transmittance and MIS weights following pbrt-v4
     T_ray = SpectralRadiance(1f0)
@@ -511,7 +511,7 @@ last of them.
 
     while true
         th = Raycore.transparent_hits(accel, Raycore.Ray(o = ray_o, d = dir, t_min = t_min, t_max = t_end),
-                                      0xff, Val(4), max_crossed - crossed)
+                                      cull_mask, Val(4), max_crossed - crossed)
         th.blocked && return blocked
         # Nearest first, each taken from the front of the tuple turned by one: an
         # index that varies would put the tuple in scratch memory on a GPU.
@@ -806,7 +806,7 @@ Handles transmissive boundaries (MediumInterface) by tracing through them.
     # Returns (T_ray, tr_r_u, tr_r_l, visible) following pbrt-v4's TraceTransmittance
     T_ray, tr_r_u, tr_r_l, visible, out = trace_shadow_transmittance(
         accel, media_interfaces, media, materials, rgb2spec_table,
-        work.ray.o, work.ray.d, work.t_max, work.lambda, work.medium_idx, work.refract
+        work.ray.o, work.ray.d, work.t_max, work.lambda, work.medium_idx, work.refract, work.cull_mask
     )
 
     if visible && !is_black(T_ray)
@@ -849,7 +849,7 @@ end
     num_bvh_lights::Int32
 )
     # Evaluate environment lights
-    Le = evaluate_escaped_ray_spectral(rgb2spec_table, lights, work.ray_d, work.lambda)
+    Le = evaluate_escaped_ray_spectral(rgb2spec_table, lights, work.ray_d, work.lambda, work.ray_type)
 
     # Apply path throughput
     contribution = work.beta * Le
@@ -876,10 +876,11 @@ end
                     num_infinite_lights, num_bvh_lights,
                     work.prev_intr_p, work.prev_intr_n, light_flat_idx
                 )
-                if light_choice_pdf > 0f0
+                light_idx = flat_to_light_index(lights, light_flat_idx)
+                if light_choice_pdf > 0f0 &&
+                   sees_light(Raycore.with_index(hidden_rays, lights, light_idx), work.ray_type)
                     # Get PDF_Li for this specific light
                     # env_light_pdf_single(light, lights, wi) is with_index-compatible (element first)
-                    light_idx = flat_to_light_index(lights, light_flat_idx)
                     light_pdf_li = with_index(env_light_pdf_single, lights, light_idx,
                         lights, work.ray_d
                     )
