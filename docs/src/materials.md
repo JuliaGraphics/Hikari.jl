@@ -392,6 +392,84 @@ render_chapel(scene)
 ) # hide
 ```
 
+Outdoors the camera can stand in the fog itself. Here a box of fog covers the bay around a
+suspension bridge at night, lit by the lamps on the deck and a dim blue `AmbientLight` for the
+sky. `g = 0.8` scatters most light only slightly off its way, so the fog glows around the
+lamps and the far end of the bridge fades into it.
+
+```@raw html
+<details><summary>The bridge</summary>
+```
+
+```@example materials
+block(center, size) = box(center .- size ./ 2, center .+ size ./ 2)
+rod(a, b, r) = normal_mesh(Tessellation(Cylinder(Point3f(a), Point3f(b), Float32(r)), 8))
+lamp(center, r) = normal_mesh(Tessellation(Sphere(Point3f(center), Float32(r)), 8))
+
+const tower_x, cable_end, deck_z, tower_z, half_deck = 64, 110, 11, 34, 3.5
+
+function cable_z(x)
+    u = abs(x)
+    u < tower_x && return deck_z + 2 + (tower_z - deck_z - 2) * (u / tower_x)^2
+    s = (u - tower_x) / (cable_end - tower_x)
+    return tower_z + (deck_z - tower_z) * s - 6s * (1 - s)
+end
+
+function bridge_pieces()
+    sides, xs = (-half_deck, half_deck), range(-cable_end, cable_end; length = 221)
+    cables = [rod((x0, y, cable_z(x0)), (x1, y, cable_z(x1)), 0.35) for y in sides for (x0, x1) in zip(xs, xs[2:end])]
+    hangers = [rod((x, y, deck_z), (x, y, cable_z(x)), 0.06) for y in sides
+               for x in -cable_end+4:4:cable_end-4 if abs(x) != tower_x]
+    towers = [[block((x, y, tower_z / 2), (2.2, 1.6, tower_z + 2)) for x in (-tower_x, tower_x) for y in sides];
+              [block((x, 0, z), (1.6, 2half_deck, 1.4)) for x in (-tower_x, tower_x) for z in (deck_z, 20, 27, tower_z + 0.5)]]
+    piers = [block((x, 0, deck_z / 2), (2, 2half_deck, deck_z)) for x in -250:25:250 if abs(x) > cable_end]
+    deck = block((0, 0, deck_z), (500, 2half_deck + 1, 1.2))
+    lamps = [lamp((x, 1.1y, deck_z + 2.5), 0.35) for x in -250:9:250 for y in sides]
+    beacons = [lamp((x, y, tower_z + 1.5), 0.3) for x in (-tower_x, tower_x) for y in sides]
+    return [cables; hangers; towers; piers; deck], lamps, beacons
+end
+
+function render_bridge(scene; resolution = (1200, 800), samples = 512, exposure = 1.8f0)
+    samples = docs_samples(samples) # hide
+    Hikari.sync!(scene)
+    film = Hikari.Film(backend, Hikari.Film(Point2f(resolution...)))
+    camera = Hikari.PerspectiveCamera(Point3f(0, -130, 3), Point3f(0, 0, 3), film;
+                                      up = Vec3f(0, 0, 1), fov = 54)
+    Hikari.clear!(film)
+    integrator = Hikari.VolPath(; samples, max_depth = 12)
+    integrator(scene, film, camera)
+    Hikari.fill_aux_buffers!(film, scene, camera; has_infinite_lights = true)
+    Hikari.denoise!(film; config = Hikari.OIDN())
+    image = Array(Hikari.postprocess!(film; tonemap = :aces, exposure, gamma = 2.2))
+    close(integrator)
+    return image
+end
+nothing # hide
+```
+
+```@raw html
+</details>
+```
+
+```@example materials
+scene = Hikari.Scene(; backend)
+steel, lamps, beacons = bridge_pieces()
+push!(scene, merge(steel), Hikari.Diffuse(color = (0.45, 0.1, 0.04), roughness = 1))
+push!(scene, merge(lamps), Hikari.Emission(color = (1, 0.55, 0.2), strength = 150, two_sided = true))
+push!(scene, merge(beacons), Hikari.Emission(color = (1, 0.05, 0.02), strength = 500, two_sided = true))
+
+ripples = noise(mapping(xyz(); scale = (0.12, 0.6, 1)); detail = 4).fac
+water = Hikari.Principled(base_color = (0.01, 0.015, 0.02), roughness = 0.015, normal = bump(ripples; distance = 0.06))
+push!(scene, block((0, 0, -0.5), (4000, 4000, 1)), water)
+
+fog = Hikari.HomogeneousMedium(σ_a = Hikari.RGBSpectrum(0.001f0), σ_s = Hikari.RGBSpectrum(0.015f0), g = 0.8f0)
+push!(scene, block((0, 600, 140), (3000, 1800, 300)), Hikari.MediumInterface(Hikari.NullMaterial(); inside = fog))
+push!(scene, Hikari.AmbientLight(Hikari.RGBSpectrum(0.014f0, 0.032f0, 0.084f0)))
+docs_image("materials-foggy-bridge", # hide
+render_bridge(scene)
+) # hide
+```
+
 ## glTF and OpenPBR materials
 
 `Hikari.GLTF` and `Hikari.OpenPBR` take the parameters of those standards by their own names and

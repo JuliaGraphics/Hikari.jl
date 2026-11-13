@@ -1,10 +1,10 @@
 [docs_renders]
-git-tree-sha1 = "daae46c8d32e95ae325b471b284355dbde3c137a"
+git-tree-sha1 = "3f01f8d546e28ba0424cb91802ed02eb44036014"
 lazy = true
 
     [[docs_renders.download]]
-    sha256 = "b5bacb6f3fce9e70884f4c59092fe89c027c57938d4bb7635942ca42d1a57d25"
-    url = "https://github.com/JuliaGraphics/Hikari.jl/releases/download/assets/docs_renders-daae46c8d32e95ae325b471b284355dbde3c137a.tar.gz"
+    sha256 = "a15ca1bd8d5f9c005d1c438801111c0b727a8093f9d0bb77274811f68f2b8a7b"
+    url = "https://github.com/JuliaGraphics/Hikari.jl/releases/download/assets/docs_renders-3f01f8d546e28ba0424cb91802ed02eb44036014.tar.gz"
 
 [logo_ball]
 git-tree-sha1 = "071d1859d5c9633bbf3930a342b01227c5f92a93"
