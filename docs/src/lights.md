@@ -10,10 +10,10 @@ All lights are added to the scene with `push!(scene, light)`.
 
 ```@setup lights
 using GeometryBasics, LinearAlgebra, Hikari, Mantle, ImageShow, FileIO
-using Main: docs_image, docs_samples
+using Main: docs_image, docs_samples, logo_ball_path
 backend = Mantle.defaultbackend()
 
-const logo_ball = load(pkgdir(Hikari, "docs", "src", "assets", "logo_ball.obj"))
+const logo_ball = load(logo_ball_path())
 
 function ball(center, r)
     positions = [center + r * p for p in coordinates(logo_ball)]

@@ -26,12 +26,12 @@ The renders on this page put materials on balls with the Makie logo engraved, un
 at 256 samples per pixel, denoised with OIDN (see [Postprocessing and Denoising](@ref)):
 
 ```@example materials
-using Main: docs_image, docs_samples # hide
+using Main: docs_image, docs_samples, logo_ball_path # hide
 using GeometryBasics, LinearAlgebra, Hikari, Mantle, FileIO
 using Hikari.TextureNodes
 backend = Mantle.defaultbackend()
 
-const logo_ball = load(pkgdir(Hikari, "docs", "src", "assets", "logo_ball.obj"))
+const logo_ball = load(logo_ball_path())
 
 function ball(center, r)
     positions = [center + r * p for p in coordinates(logo_ball)]

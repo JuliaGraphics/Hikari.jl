@@ -26,6 +26,9 @@ using Pkg.Artifacts: ensure_artifact_installed
 
 render_mode() = get(ENV, "HIKARI_DOCS_RENDER", "false") == "true"
 
+"""The Makie logo ball of the material renders, made by `docs/utils/logo_ball`."""
+logo_ball_path() = joinpath(ensure_artifact_installed("logo_ball", joinpath(@__DIR__, "..", "Artifacts.toml")), "logo_ball.obj")
+
 """Whether this build runs the examples: to render the images, or to check that they run."""
 run_examples() = render_mode() || get(ENV, "HIKARI_DOCS_EXAMPLES", "false") == "true"
 

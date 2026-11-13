@@ -6,12 +6,12 @@ scales. The recipes below build eight such materials from the nodes of
 [Textures and Node Graphs](@ref) and the BSDFs of [Materials](@ref).
 
 ```@setup recipes
-using Main: docs_image, docs_samples
+using Main: docs_image, docs_samples, logo_ball_path
 using GeometryBasics, LinearAlgebra, Hikari, Mantle, FileIO
 using Hikari.TextureNodes
 backend = Mantle.defaultbackend()
 
-const logo_ball = load(pkgdir(Hikari, "docs", "src", "assets", "logo_ball.obj"))
+const logo_ball = load(logo_ball_path())
 
 function ball(center, r)
     positions = [center + r * p for p in coordinates(logo_ball)]
