@@ -41,8 +41,8 @@ Convenience constructor for SpotLight that takes position and target points.
 - `position::Point3f`: World-space position of the spotlight
 - `target::Point3f`: Point the spotlight is aimed at
 - `i::Spectrum`: Light intensity/color
-- `total_width::Float32`: Total cone angle in degrees
-- `falloff_start::Float32`: Angle where intensity falloff begins (degrees)
+- `total_width::Float32`: Angle from the axis to the edge of the cone, in degrees (half its opening angle)
+- `falloff_start::Float32`: Angle from the axis where the falloff begins, in degrees
 - `scale::Float32`: Photometric scale factor (default 1.0)
 
 # Example
@@ -80,8 +80,8 @@ normalization, matching pbrt-v4's light creation pattern.
 - `rgb`: RGB color (intensity encoded in color values)
 - `position::Point3f`: World-space position of the spotlight
 - `target::Point3f`: Point the spotlight is aimed at
-- `total_width::Float32`: Total cone angle in degrees
-- `falloff_start::Float32`: Angle where intensity falloff begins (degrees)
+- `total_width::Float32`: Angle from the axis to the edge of the cone, in degrees (half its opening angle)
+- `falloff_start::Float32`: Angle from the axis where the falloff begins, in degrees
 - `power`: Optional radiant power in Watts. If specified, overrides the RGB intensity.
 
 # Example

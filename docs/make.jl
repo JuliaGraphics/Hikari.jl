@@ -2,12 +2,15 @@ using Documenter
 using DocumenterVitepress
 using Hikari
 
-# `docs_image` and `docs_samples` for the pages, and the check that no image is stale.
+# `docs_image` and `docs_samples` for the pages, the check that no image is stale, and
+# `PublishedExample`, which shows the examples without running them unless asked to
+# (`HIKARI_DOCS_EXAMPLES=true`, see renders.jl).
 include(joinpath(@__DIR__, "renders.jl"))
 
-# The comparison page links to `pbrt-comparison/gallery.html`. CI adds the gallery when it
-# deploys, built from the pbrt test groups' records; a local build copies the one in
-# `test/pbrt/display` (`test/pbrt/run_comparison.jl`) if there is one.
+# The comparison page links to `pbrt-comparison/gallery.html`. CI deploys the gallery on its
+# own once the pbrt test groups are done (Deploy pbrt Gallery in ci.yml), built from their
+# records; a local build copies the one in `test/pbrt/display` (`test/pbrt/run_comparison.jl`)
+# if there is one.
 let display = joinpath(@__DIR__, "..", "test", "pbrt", "display")
     if isfile(joinpath(display, "gallery.html"))
         gallery = mkpath(joinpath(@__DIR__, "src", "public", "pbrt-comparison"))
@@ -22,6 +25,7 @@ end
 # ============================================================================
 
 check_images(joinpath(@__DIR__, "src"))
+gallery_thumbnails(joinpath(@__DIR__, "src"))
 
 makedocs(; sitename = "Hikari", authors = "Anton Smirnov, Simon Danisch and contributors",
     modules = [Hikari],

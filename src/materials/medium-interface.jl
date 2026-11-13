@@ -29,7 +29,9 @@ in scene.lights, not on the material).
 - `shadows`: `0` (the default) and the surface blocks shadow rays, as a surface with a
   BSDF does in pbrt-v4. An index of refraction and shadow rays pass through it, weighted
   by the Fresnel transmittance of a dielectric of that index, and cross into the medium
-  on the other side, unbent. A water surface needs this: the sun is a delta light only
+  on the other side. They go straight, except towards the sky from inside a medium with an
+  `ior` (see `refracting`): those are sampled through Snell's window and bend at the
+  surface. A water surface needs this: the sun is a delta light only
   shadow rays reach, and with the surface opaque to them no sunlight ever lit the water
   inside, which then glowed only from the few paths that happened to refract out to the
   sky (dark, and very noisy). What is lost is the refraction of the light on its way in,
