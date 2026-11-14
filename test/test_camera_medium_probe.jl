@@ -27,3 +27,23 @@ using GeometryBasics: normal_mesh, Tesselation, Rect3f, Sphere
     @test all(z -> probe(z) == inside, range(0.5f0, 2f0; length = 16))
     @test Hikari.nallocations(mem) == 0
 end
+
+@testset "the hardware acceleration structure finds the camera's medium" begin
+    backend = Mantle.defaultbackend()
+    if !Mantle.supports_hwtlas(Hikari.mantle_device(backend))
+        @test_skip false
+    else
+        scene = Hikari.Scene(; backend, hw_accel = true)
+        fog = Hikari.HomogeneousMedium(σ_a = Hikari.RGBSpectrum(0.01f0), σ_s = Hikari.RGBSpectrum(0.2f0),
+                                       Le = Hikari.RGBSpectrum(0f0), g = 0f0)
+        push!(scene, normal_mesh(Rect3f(Vec3f(-5), Vec3f(10))), Hikari.MediumInterface(Hikari.NullMaterial(); inside = fog))
+        Hikari.sync!(scene)
+        vp = Hikari.VolPath(; samples = 1, max_depth = 1)
+        adapted = Hikari.adapt_scene_for_render(backend, scene, vp)
+        probe(position) = Hikari.detect_initial_medium(backend, adapted.accel, adapted.media_interfaces, position, vp)
+
+        @test probe(Point3f(0, -3, 1)) != Raycore.SetKey()
+        @test probe(Point3f(0, -8, 1)) == Raycore.SetKey()
+        close(vp)
+    end
+end

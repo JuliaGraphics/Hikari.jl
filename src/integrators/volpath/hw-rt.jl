@@ -60,10 +60,6 @@ end
 # VolPath Dispatch Overrides
 # ============================================================================
 
-function detect_initial_medium(backend, accel::AdaptedAccel, mi, pos, vp::VolPath)
-    return Raycore.SetKey()
-end
-
 # Tracing needs no hardware override of its own: `Raycore.closest_hit_record`
 # on an `AdaptedAccel` is Mantle's ray-query loop on every backend, so
 # `vp_trace_kernel!` covers every traversal.
