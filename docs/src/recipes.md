@@ -6,19 +6,24 @@ scales. The recipes below build eight such materials from the nodes of
 [Textures and Node Graphs](@ref) and the BSDFs of [Materials](@ref).
 
 ```@setup recipes
-using Main: docs_image, docs_samples
-using GeometryBasics, LinearAlgebra, Hikari, Mantle
+using Main: docs_image, docs_samples, logo_ball_path
+using GeometryBasics, LinearAlgebra, Hikari, Mantle, FileIO
 using Hikari.TextureNodes
 backend = Mantle.defaultbackend()
 
-sphere(x, r) = normal_mesh(Tessellation(Sphere(Point3f(x, 0, r), r), 96))
+const logo_ball = load(logo_ball_path())
+
+function ball(center, r)
+    positions = [center + r * p for p in coordinates(logo_ball)]
+    return GeometryBasics.Mesh(positions, faces(logo_ball); normal = normals(positions, faces(logo_ball)))
+end
 
 function showcase(materials; resolution = (1200, 360), samples = 256)
     samples = docs_samples(samples) # hide
     scene = Hikari.Scene(; backend)
     n = length(materials)
     for (i, material) in enumerate(materials)
-        push!(scene, sphere(i - (n + 1) / 2, 0.42f0), material)
+        push!(scene, ball(Point3f(i - (n + 1) / 2, 0, 0.42), 0.42f0), material)
     end
     tiles = checker(xyz(); scale = 1, color1 = (0.5, 0.5, 0.5), color2 = (0.38, 0.38, 0.38))
     ground = normal_mesh(Rect3f(Vec3f(-50, -50, -0.01), Vec3f(100, 100, 0.01)))
@@ -42,20 +47,28 @@ end
 p = xyz()
 ```
 
-All recipes use the world position `p = xyz()` as texture coordinate.
+The recipes other than the wood use the world position `p = xyz()` as texture coordinate.
 
 ## Varnished wood
 
-Distorted bands give the growth rings, and noise stretched along one axis gives fibres. The fibres
-also roughen the base through a faint bump. A clear coat with its own smooth normal is the varnish.
+The growth rings are cylinders around the pith of a log, which leans and wanders a little.
+`texture_coordinate().generated` puts the log through every object, wherever it is. Noise makes the
+rings uneven in shape and spacing, each ring turns abruptly from light earlywood to darker
+latewood, and broad noise mottles the tone. A clear coat is the varnish.
 
 ```@example recipes
-fibres = noise(mapping(p; scale = (60, 2, 2)); detail = 4).fac
-grain = wave(p; type = :bands, direction = :z, scale = 6, distortion = 7, detail = 4, detail_scale = 2).fac
-wood = color_ramp(grain + 0.2 * fibres,
-                  0.0 => (0.62, 0.38, 0.18), 0.55 => (0.48, 0.27, 0.11), 1.0 => (0.24, 0.12, 0.05))
-varnished_wood = Hikari.Principled(base_color = wood, roughness = 0.5,
-                                   normal = bump(fibres; distance = 0.002),
+grain_noise(x, y, z = 0; detail = 2) = 2 * noise(combine(x, y, z); detail) - 1
+q = texture_coordinate().generated
+along = q.z - 0.5
+x = q.x - 0.54 + 0.01 * along + 0.02 * grain_noise(along / 0.9, 0; detail = 3)
+y = q.y - 0.44 + 0.05 * along + 0.045 * grain_noise(along / 2.2, 3.1)
+r = norm(combine(x, y, 0)) + 0.013 * grain_noise(1.3 * atan(x, y), 3 * along; detail = 4)
+years = r / 0.02
+years = years + 0.6 * grain_noise(0.35 * years, 7.7) + 0.07 * grain_noise(280x, 4along, 280y)
+f = fract(years)
+late = smoothstep(0.64, 0.73, f)
+tone = mix(1 - 0.25 * f * f, 0.8, late) * (1 + 0.1 * grain_noise(5x, 1.2along, 5y; detail = 4))
+varnished_wood = Hikari.Principled(base_color = combine(0.66, 0.43, 0.2) * tone, roughness = 0.5,
                                    coat_weight = 1, coat_roughness = 0.03, coat_normal = normal())
 nothing # hide
 ```
@@ -97,7 +110,7 @@ a low roughness polishes it.
 ```@example recipes
 veins = wave(p; scale = 2, distortion = 10, detail = 6).fac
 marble = Hikari.Principled(base_color = color_ramp(veins, 0.0 => (0.92, 0.91, 0.88),
-                                                   0.8 => (0.85, 0.84, 0.82), 1.0 => (0.25, 0.25, 0.3)),
+                                                   0.8 => (0.85, 0.84, 0.82), 1.0 => (0.55, 0.55, 0.58)),
                            roughness = 0.08, subsurface_weight = 0.5,
                            subsurface_radius = (1, 0.9, 0.8), subsurface_scale = 0.05)
 docs_image("recipes-wood-rust-paint-marble", # hide
@@ -121,7 +134,7 @@ nothing # hide
 
 The distance to the nearest Voronoi edge finds the cracks, and an emission strength that is only
 non-zero near them makes them glow. The emission lights the ground, but only along the paths that
-hit the sphere; for a light source, use `Hikari.Emission`.
+hit the ball; for a light source, use `Hikari.Emission`.
 
 ```@example recipes
 cracks = voronoi(p; scale = 5, feature = :distance_to_edge)

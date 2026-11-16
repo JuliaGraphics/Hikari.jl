@@ -2,42 +2,47 @@
 
 Hikari supports delta lights (point, directional, spot), area lights created from emissive geometry, and infinite lights (ambient, environment map).
 
+A delta light shines from a single point or along a single direction. It has no size, so it casts
+shadows with sharp edges and is invisible to the camera and in mirror reflections: it lights
+surfaces but cannot itself be seen. For soft shadows and a visible light source, use an area light.
+
 All lights are added to the scene with `push!(scene, light)`.
 
 ```@setup lights
-using GeometryBasics, LinearAlgebra, Hikari, Mantle, ImageShow
-using Main: docs_image, docs_samples
+using GeometryBasics, LinearAlgebra, Hikari, Mantle, ImageShow, FileIO
+using Main: docs_image, docs_samples, logo_ball_path
 backend = Mantle.defaultbackend()
-to_mesh(prim) = normal_mesh(prim isa Sphere ? Tessellation(prim, 64) : prim)
 
-function render_light(lights; res=512, spp=256, eye=Point3f(0f0, 1.5f0, -3f0), lookat=Point3f(0f0, 0.4f0, 0f0))
+const logo_ball = load(logo_ball_path())
+
+function ball(center, r)
+    positions = [center + r * p for p in coordinates(logo_ball)]
+    return GeometryBasics.Mesh(positions, faces(logo_ball); normal = normals(positions, faces(logo_ball)))
+end
+
+const ground_plane = normal_mesh(Rect3f(Vec3f(-5000, -5000, -0.01), Vec3f(10000, 10000, 0.01)))
+
+function render_light(lights; ground = ground_plane, exposure = 1f0, res = 512, spp = 256,
+                      eye = Point3f(0, -4.2, 2), lookat = Point3f(0, 0, 0.4))
     scene = Hikari.Scene(; backend)
-    # Three spheres: matte, mirror, glass
-    push!(scene, to_mesh(Sphere(Point3f(-0.8f0, 0.3f0, 0.2f0), 0.3f0)),
-          Hikari.Diffuse(color = Hikari.RGBSpectrum(0.8f0, 0.3f0, 0.2f0)))
-    push!(scene, to_mesh(Sphere(Point3f(0f0, 0.5f0, 0f0), 0.5f0)),
-          Hikari.Glossy(roughness = 0, color = Hikari.RGBSpectrum(0.93f0)))
-    push!(scene, to_mesh(Sphere(Point3f(0.8f0, 0.3f0, 0.2f0), 0.3f0)),
-          Hikari.Glass(ior = 1.5f0))
-    # Room
-    push!(scene, to_mesh(Rect3f(Vec3f(-2, 0, -2), Vec3f(4, 0.01, 4))),
-          Hikari.Diffuse(color = Hikari.RGBSpectrum(0.88f0)))
-    push!(scene, to_mesh(Rect3f(Vec3f(-2, 0, 2-0.01f0), Vec3f(4, 3, 0.01f0))),
-          Hikari.Diffuse(color = Hikari.RGBSpectrum(0.85f0)))
-    push!(scene, to_mesh(Rect3f(Vec3f(-2, 0, -2), Vec3f(0.01f0, 3, 4))),
-          Hikari.Diffuse(color = Hikari.RGBSpectrum(0.7f0, 0.15f0, 0.15f0)))
-    push!(scene, to_mesh(Rect3f(Vec3f(2-0.01f0, 0, -2), Vec3f(0.01f0, 3, 4))),
-          Hikari.Diffuse(color = Hikari.RGBSpectrum(0.15f0, 0.6f0, 0.15f0)))
-    for l in lights; push!(scene, l); end
+    push!(scene, ball(Point3f(-0.6, 0, 0.5), 0.5f0), Hikari.Diffuse(color = (0.85, 0.83, 0.78)))
+    push!(scene, ball(Point3f(0.6, 0, 0.5), 0.5f0), Hikari.Metallic(base_color = (0.9, 0.9, 0.9), roughness = 0.12))
+
+    push!(scene, ground, Hikari.Diffuse(color = (0.2, 0.2, 0.2)))
+
+    for light in lights
+        light isa Pair ? push!(scene, light...) : push!(scene, light)
+    end
     Hikari.sync!(scene)
-    film   = Hikari.Film(backend, Hikari.Film(Point2f(res, res)))
-    camera = Hikari.PerspectiveCamera(eye, lookat, film; fov=50f0)
+
+    film = Hikari.Film(backend, Hikari.Film(Point2f(res, res)))
+    camera = Hikari.PerspectiveCamera(eye, lookat, film; up = Vec3f(0, 0, 1), fov = 50f0)
     Hikari.clear!(film)
-    integrator = Hikari.VolPath(samples=docs_samples(spp), max_depth=10)
+    integrator = Hikari.VolPath(samples = docs_samples(spp), max_depth = 10)
     integrator(scene, film, camera)
-    Hikari.fill_aux_buffers!(film, scene, camera)
+    Hikari.fill_aux_buffers!(film, scene, camera; has_infinite_lights = any(l -> l isa Hikari.EnvironmentLight, lights))
     Hikari.denoise!(film; config = Hikari.OIDN())
-    image = Array(Hikari.postprocess!(film; tonemap=:aces, exposure=1.0f0, gamma=2.2f0))
+    image = Array(Hikari.postprocess!(film; tonemap = :aces, exposure, gamma = 2.2f0))
     close(integrator)
     return image
 end
@@ -45,7 +50,8 @@ end
 
 ## PointLight
 
-An omnidirectional point source. Intensity falls off as 1/r².
+An omnidirectional point source. Intensity falls off as 1/r². A point light has no size, so the
+shadows it casts always have sharp edges, however near to or far from the objects it is.
 
 ```julia
 Hikari.PointLight(position, intensity)
@@ -54,10 +60,22 @@ Hikari.PointLight(Point3f(0f0, 2.5f0, 0f0), Hikari.RGBSpectrum(6f0))
 
 ```@example lights
 docs_image("lights-point", # hide
-render_light([
-    Hikari.PointLight(Point3f(0f0, 2.4f0, 0f0), Hikari.RGBSpectrum(6f0)),
-    Hikari.PointLight(Point3f(-1f0, 1.5f0, -1.5f0), Hikari.RGBSpectrum(2.5f0)),
-])
+render_light([Hikari.PointLight(Point3f(1.2, -0.8, 1.5), Hikari.RGBSpectrum(4f0))])
+) # hide
+```
+
+Moved twice as far from the balls, a light needs four times the intensity to light them as
+brightly. The further away it is, the less the ground falls off across the scene, because its
+near and far parts differ less in their distance to the light. Here each light is three times as far as
+the one before, and nine times as strong:
+
+```@example lights
+balls = Point3f(0, 0, 0.5)
+offset = Vec3f(1.2, -0.8, 1)
+renders = [render_light([Hikari.PointLight(balls + f * offset, Hikari.RGBSpectrum(4f0 * f^2))])
+           for f in 0.75f0 .* (1, 3, 9, 27)]
+docs_image("lights-point-distance", # hide
+[renders[1] renders[2]; renders[3] renders[4]]
 ) # hide
 ```
 
@@ -72,10 +90,7 @@ Hikari.DirectionalLight(Hikari.RGBSpectrum(3f0), Vec3f(0.5f0, -1f0, 0.3f0))
 
 ```@example lights
 docs_image("lights-directional", # hide
-render_light([
-    Hikari.DirectionalLight(Hikari.RGBSpectrum(3f0), normalize(Vec3f(1f0, -1f0, 0.5f0))),
-    Hikari.AmbientLight(Hikari.RGBSpectrum(0.5f0)),
-])
+render_light([Hikari.DirectionalLight(Hikari.RGBSpectrum(1.5f0), normalize(Vec3f(-1, 0.5, -1)))])
 ) # hide
 ```
 
@@ -91,11 +106,7 @@ Hikari.SpotLight(Point3f(0f0, 3f0, 0f0), Point3f(0f0, 0f0, 0f0),
 
 ```@example lights
 docs_image("lights-spot", # hide
-render_light([
-    Hikari.SpotLight(Point3f(0f0, 3f0, -0.5f0), Point3f(0f0, 0f0, 0f0),
-                     Hikari.RGBSpectrum(80f0), 30f0, 20f0),
-    Hikari.AmbientLight(Hikari.RGBSpectrum(0.5f0)),
-])
+render_light([Hikari.SpotLight(Point3f(1.5, -1, 3), Point3f(0.25, 0.3, 0), Hikari.RGBSpectrum(15f0), 25f0, 15f0)])
 ) # hide
 ```
 
@@ -117,38 +128,45 @@ push!(scene, panel_mesh, emissive_panel)
 ```
 
 ```@example lights
-docs_image("lights-area", # hide
-let
-    scene = Hikari.Scene(; backend)
-    push!(scene, to_mesh(Sphere(Point3f(-0.8f0, 0.3f0, 0.2f0), 0.3f0)),
-          Hikari.Diffuse(color = Hikari.RGBSpectrum(0.8f0, 0.3f0, 0.2f0)))
-    push!(scene, to_mesh(Sphere(Point3f(0f0, 0.5f0, 0f0), 0.5f0)),
-          Hikari.Glossy(roughness = 0, color = Hikari.RGBSpectrum(0.93f0)))
-    push!(scene, to_mesh(Sphere(Point3f(0.8f0, 0.3f0, 0.2f0), 0.3f0)),
-          Hikari.Glass(ior = 1.5f0))
-    push!(scene, to_mesh(Rect3f(Vec3f(-2, 0, -2), Vec3f(4, 0.01, 4))),
-          Hikari.Diffuse(color = Hikari.RGBSpectrum(0.88f0)))
-    push!(scene, to_mesh(Rect3f(Vec3f(-2, 0, 2-0.01f0), Vec3f(4, 3, 0.01f0))),
-          Hikari.Diffuse(color = Hikari.RGBSpectrum(0.85f0)))
-    push!(scene, to_mesh(Rect3f(Vec3f(-2, 0, -2), Vec3f(0.01f0, 3, 4))),
-          Hikari.Diffuse(color = Hikari.RGBSpectrum(0.7f0, 0.15f0, 0.15f0)))
-    push!(scene, to_mesh(Rect3f(Vec3f(2-0.01f0, 0, -2), Vec3f(0.01f0, 3, 4))),
-          Hikari.Diffuse(color = Hikari.RGBSpectrum(0.15f0, 0.6f0, 0.15f0)))
-    # Ceiling area light panel
-    panel = to_mesh(Rect3f(Vec3f(-0.5f0, 2.9f0, -0.5f0), Vec3f(1f0, 0.01f0, 1f0)))
-    push!(scene, panel, Hikari.Emission(color = (3.0, 3.0, 2.85), strength = 1f0, two_sided=true))
-    Hikari.sync!(scene)
-    film   = Hikari.Film(backend, Hikari.Film(Point2f(512, 512)))
-    camera = Hikari.PerspectiveCamera(
-        Point3f(0f0, 1.5f0, -3f0), Point3f(0f0, 0.4f0, 0f0), film; fov=50f0)
-    Hikari.clear!(film)
-    samples = 256
-    samples = docs_samples(samples) # hide
-    Hikari.VolPath(; samples, max_depth=10)(scene, film, camera)
-    Hikari.fill_aux_buffers!(film, scene, camera)
-    Hikari.denoise!(film; config = Hikari.OIDN())
-    Array(Hikari.postprocess!(film; tonemap=:aces, exposure=1.5f0, gamma=2.2f0))
+function softbox(scale)
+    up = scale * Vec3f(-sind(40), 0, cosd(40))
+    side = scale * Vec3f(0, 1.2, 0)
+    center = Point3f(1.7, 0, 1.6)
+    corners = [center - up - side, center - up + side, center + up + side, center + up - side]
+    return normal_mesh(GeometryBasics.Mesh(corners, [TriangleFace(1, 2, 3), TriangleFace(1, 3, 4)]))
 end
+glow(strength) = Hikari.Emission(; color = (1, 1, 0.95), strength, two_sided = true)
+docs_image("lights-area", # hide
+render_light([softbox(1) => glow(4)])
+) # hide
+```
+
+The larger an area light, the softer the shadows it casts. Here the panel's area doubles from
+image to image, at half the strength, so the light it gives off stays the same:
+
+```@example lights
+renders = [render_light([softbox(sqrt(area)) => glow(4 / area)]) for area in (0.5f0, 1f0, 2f0, 4f0)]
+docs_image("lights-area-size", # hide
+[renders[1] renders[2]; renders[3] renders[4]]
+) # hide
+```
+
+Any mesh can be an area light, not only a panel. Unlike a delta light, it is visible, so its shape
+shows in the camera and in reflections. A flat ring hanging over the balls appears as a loop on
+the metal ball:
+
+```@example lights
+function ring(center, inner, outer; n = 128)
+    angles = range(0, 2π; length = n + 1)[1:n]
+    positions = [center + r * Point3f(cos(a), sin(a), 0) for a in angles for r in (inner, outer)]
+    index(i, k) = 2 * mod(i, n) + k
+    triangles = [face for i in 0:n-1
+                 for face in (TriangleFace(index(i, 1), index(i, 2), index(i + 1, 2)),
+                              TriangleFace(index(i, 1), index(i + 1, 2), index(i + 1, 1)))]
+    return normal_mesh(GeometryBasics.Mesh(positions, triangles))
+end
+docs_image("lights-area-ring", # hide
+render_light([ring(Point3f(0, 0, 1.85), 0.9f0, 1.1f0) => glow(8)])
 ) # hide
 ```
 
@@ -162,6 +180,23 @@ Hikari.EnvironmentLight("sky.exr"; scale = Hikari.RGBSpectrum(2f0), rotation = M
 ```
 
 `rotation` turns the map: a `Mat3f`, applied to the directions it is looked up by.
+
+The map lights the scene with the colours of its surroundings. Here the balls stand on a disc in a
+room, a forest and a quarry, from [Poly Haven](https://polyhaven.com/hdris)'s free HDRIs:
+
+```@example lights
+using Downloads
+function hdri(name)
+    path = joinpath(tempdir(), "$name.exr")
+    isfile(path) || Downloads.download("https://dl.polyhaven.org/file/ph-assets/HDRIs/exr/1k/$(name)_1k.exr", path)
+    return path
+end
+disc = normal_mesh(Tessellation(Cylinder(Point3f(0, 0.3, -0.01), Point3f(0, 0.3, 0), 1.5f0), 128))
+docs_image("lights-environment", # hide
+hcat((render_light([Hikari.EnvironmentLight(hdri(name))]; ground = disc)
+      for name in ("small_empty_room_1", "rainforest_trail", "minedump_flats"))...)
+) # hide
+```
 
 ## Sun and sky
 
@@ -181,29 +216,9 @@ push!(scene, sun)
 `ground_enabled = false` leaves the lower half of the sky black, for scenes that model their own ground.
 
 ```@example lights
-function render_sky(direction; turbidity = 3f0, samples = 256)
-    samples = docs_samples(samples) # hide
-    scene = Hikari.Scene(; backend)
-    for (i, material) in enumerate((Hikari.Diffuse(color = (0.8, 0.8, 0.8)), Hikari.Gold(roughness = 0.1),
-                                    Hikari.Glass()))
-        push!(scene, normal_mesh(Tessellation(Sphere(Point3f(i - 2, 0, 0.42), 0.42f0), 64)), material)
-    end
-    push!(scene, normal_mesh(Rect3f(Vec3f(-50, -50, -0.01), Vec3f(100, 100, 0.01))),
-          Hikari.Diffuse(color = (0.5, 0.5, 0.5)))
+function render_sky(direction; turbidity = 3f0)
     sky, sun = Hikari.sunsky_to_envlight(; direction = normalize(direction), turbidity)
-    push!(scene, sky)
-    push!(scene, sun)
-    Hikari.sync!(scene)
-    film = Hikari.Film(backend, Hikari.Film(Point2f(600, 300)))
-    camera = Hikari.PerspectiveCamera(Point3f(0, -4.5, 1.4), Point3f(0, 0, 0.6), film; up = Vec3f(0, 0, 1), fov = 30)
-    Hikari.clear!(film)
-    integrator = Hikari.VolPath(; samples, max_depth = 10)
-    integrator(scene, film, camera)
-    Hikari.fill_aux_buffers!(film, scene, camera; has_infinite_lights = true)
-    Hikari.denoise!(film; config = Hikari.OIDN())
-    image = Array(Hikari.postprocess!(film; tonemap = :aces, gamma = 2.2))
-    close(integrator)
-    return image
+    return render_light([sky, sun])
 end
 docs_image("lights-sun-and-sky", # hide
 hcat(render_sky(Vec3f(-0.4, -0.6, 1.0)), render_sky(Vec3f(-1, 0.3, 0.3); turbidity = 5f0))

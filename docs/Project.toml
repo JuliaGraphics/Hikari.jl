@@ -7,6 +7,8 @@ GeometryBasics = "5c1252a2-5f33-56bf-86c9-59e7332b4326"
 FileIO = "5789e2e9-d7fb-5bc7-8068-2c6fae9b9549"
 ImageIO = "82e4d734-157c-48bb-816b-45c225c6df19"
 ImageShow = "4e3cecfd-b093-5904-9786-8bbb286a6a31"
+MeshIO = "7269a6da-0436-5bbc-96c2-40638cbb6118"
+OpenEXR = "52e1d378-f018-4a11-a4be-720524705ac7"
 Hikari = "afc56b53-c9a9-482a-a956-d1d800e05558"
 Raycore = "afc56b53-c9a9-482a-a956-d1d800e05559"
 
