@@ -5,19 +5,15 @@ using Hikari.TextureNodes: magic   # FileIO, which the suite loads, exports a `m
 using Hikari: TextureFilterContext, TexKind, RGBSpectrum, device_param, eval_handle, eval_handle_spectrum
 using GeometryBasics
 using GeometryBasics: Point2f, Point3f, Vec3f
-using KernelAbstractions: CPU
 import KernelAbstractions as KA
 using LinearAlgebra
 using Raycore
 using Mantle
 using Statistics: mean
-
-"""The store's texture table on the host: adapting to `CPU()` would give POCL device arrays."""
-host_static(store) =
-    Raycore.StaticMultiTypeSet((), Tuple(filter(a -> typeof(a) === T, store.texture_gpu_arrays) for T in store.texture_order))
+include("host_materials.jl")
 
 function evaluate(graph; uv = Point2f(0), p = Point3f(0), n = Vec3f(0, 0, 1))
-    store = Raycore.MultiTypeSet(CPU())
+    store = Raycore.MultiTypeSet(Mantle.Device())
     handle = device_param(store, graph)
     tfc = TextureFilterContext(uv, p, n)
     rgb = eval_handle_spectrum(host_static(store), handle, tfc)
@@ -276,7 +272,7 @@ end
     end
 
     @testset "scalar parameters read the first component" begin
-        store = Raycore.MultiTypeSet(CPU())
+        store = Raycore.MultiTypeSet(Mantle.Device())
         handle = device_param(store, xyz().z * 2)
         @test handle.kind == TexKind.NODES
         @test eval_handle(host_static(store), handle, TextureFilterContext(Point2f(0), Point3f(0, 0, 0.25))) == 0.5f0
@@ -316,13 +312,13 @@ end
     end
 
     @testset "alpha does not run a node program" begin
-        store = Raycore.MultiTypeSet(CPU())
+        store = Raycore.MultiTypeSet(Mantle.Device())
         handle = device_param(store, xyz().x * 0)
         @test Hikari.eval_handle_alpha(host_static(store), handle, TextureFilterContext(Point2f(0), Point3f(1, 0, 0))) == 1f0
     end
 
     @testset "bump mapping moves the position" begin
-        store = Raycore.MultiTypeSet(CPU())
+        store = Raycore.MultiTypeSet(Mantle.Device())
         slope = 0.5f0
         height = device_param(store, xyz().x * slope)
         tfc = TextureFilterContext(Point2f(0.3, 0.3), 0.01f0, 0f0, 0f0, 0.01f0, Point3f(0.3, 0.3, 0), Vec3f(0, 0, 1))
@@ -332,7 +328,7 @@ end
     end
 
     @testset "updating a graph reuses its slot" begin
-        store = Raycore.MultiTypeSet(CPU())
+        store = Raycore.MultiTypeSet(Mantle.Device())
         handle = device_param(store, xyz().x * 2)
         updated = Raycore.update_item(store, handle, xyz().x * 3)
         @test updated == handle
@@ -348,7 +344,7 @@ end
     # took a new array per image, kept the one it replaced, and changed the store's layout, which
     # drops every plan recorded against it. The images go where the old program's are.
     @testset "updating a graph keeps the images it reads where they are" begin
-        store = Raycore.MultiTypeSet(CPU())
+        store = Raycore.MultiTypeSet(Mantle.Device())
         image(c, n = 4) = fill(RGBSpectrum(c...), n, n)
         handle = device_param(store, image_texture(image((1, 0, 0))) * 0.5)
         arrays, layout = length(store.texture_gpu_arrays), store.layout

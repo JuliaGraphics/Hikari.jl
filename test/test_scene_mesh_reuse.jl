@@ -1,6 +1,5 @@
 using Test, Hikari, GeometryBasics
 import Mantle
-import KernelAbstractions as KA
 
 function test_scene_mesh_texture_reuse(backend; hw_accel = false)
     scene = Hikari.Scene(; backend, hw_accel)
@@ -22,8 +21,8 @@ function test_scene_mesh_texture_reuse(backend; hw_accel = false)
 end
 
 @testset "Geometry replacement reuses material textures" begin
-    test_scene_mesh_texture_reuse(KA.CPU())
     backend = Mantle.defaultbackend()
+    test_scene_mesh_texture_reuse(backend)
     if !Mantle.supports_hwtlas(backend)
         @test_skip false
     else

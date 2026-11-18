@@ -3,6 +3,7 @@ module SharedBSDFDifferentialTests
     using Hikari, Mantle, Raycore, KernelAbstractions, Test, GeometryBasics, LinearAlgebra
     using Hikari.TextureNodes
     using GeometryBasics: Point2f, Point3f, Vec3f
+    include("host_materials.jl")
     walk_close(a, b) = isapprox(a, b)
     walk_close(a::Hikari.SpectralRadiance, b::Hikari.SpectralRadiance) = all(isapprox.(a.data, b.data))
     function run(; selected = nothing)
@@ -46,9 +47,9 @@ module SharedBSDFDifferentialTests
         selected === nothing || (materials = materials[selected])
         for (index, m) in enumerate(materials)
             println("Surface program case ", index, "/", length(materials), ": ", nameof(typeof(m)));flush(stdout)
-            store = Raycore.MultiTypeSet(KernelAbstractions.CPU())
+            store = Raycore.MultiTypeSet(Mantle.Device())
             mat = Hikari.to_device_material(store, Hikari.ShaderMaterial(Hikari.shader_node(m)))
-            textures = Raycore.StaticMultiTypeSet((), Tuple(T[a for a in store.texture_gpu_arrays if typeof(a) === T] for T in store.texture_order))
+            textures = host_static(store)
             prog = Hikari.shader_programs(textures, mat.program)[mat.program.idx]
             M = typeof(mat).parameters[3]
             produced = Hikari.shader_lobes(M, prog, textures, sc, false)

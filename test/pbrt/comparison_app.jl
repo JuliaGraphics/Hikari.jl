@@ -15,7 +15,7 @@
 
 using Hikari, Lava, GeometryBasics, LinearAlgebra
 using FileIO, Statistics, Colors, DelimitedFiles, Bonito, ImageFiltering
-import KernelAbstractions as KA
+import Mantle
 import Bonito: DOM
 
 include(joinpath(@__DIR__, "references.jl"))
@@ -91,7 +91,7 @@ end
 # ============================================================================
 
 function render_missing_hikari(; spp=SPP)
-    backend = KA.CPU()
+    backend = Mantle.defaultbackend()
 
     scene_files = sort(filter(f -> endswith(f, ".pbrt"), readdir(SCENES_DIR)))
     n_rendered = 0

@@ -23,9 +23,9 @@ function context(j)
     return Hikari.ShaderContext(tfc, wo, Vec3f(1.0f-3, 0, 0), Vec3f(0, 1.0f-3, 0), Vec3f(1, 0, 0), Vec3f(0, 0, 1), 1.0f0, Vec3f(0), Point2f(0))
 end
 function reference(material)
-    store = Raycore.MultiTypeSet(KernelAbstractions.CPU())
+    store = Raycore.MultiTypeSet(Mantle.Device())
     mat = Hikari.to_device_material(store, Hikari.ShaderMaterial(Hikari.shader_node(material)))
-    textures = Raycore.StaticMultiTypeSet((), Tuple(T[a for a in store.texture_gpu_arrays if typeof(a) === T] for T in store.texture_order))
+    textures = Raycore.StaticMultiTypeSet((), Tuple([Array(a) for a in store.texture_gpu_arrays if typeof(a) === T] for T in store.texture_order))
     prog = Hikari.closure_programs(textures)[mat.closures]
     expected = zeros(Float32, 32, 218)
     evaluated = zeros(Float32, 32, 6)

@@ -1,11 +1,12 @@
 module ShaderGuideTests
 using Test, Hikari, Mantle, Raycore, GeometryBasics, KernelAbstractions
 using GeometryBasics: Point2f, Point3f, Vec3f
+include("host_materials.jl")
 
 function reference(description)
-    store = Raycore.MultiTypeSet(KernelAbstractions.CPU())
+    store = Raycore.MultiTypeSet(Mantle.Device())
     material = Hikari.to_device_material(store, Hikari.surface_material(description))
-    textures = Raycore.StaticMultiTypeSet((), Tuple(T[a for a in store.texture_gpu_arrays if typeof(a) === T] for T in store.texture_order))
+    textures = host_static(store)
     program = Hikari.shader_programs(textures, material.program)[material.program.idx]
     n = Vec3f(0, 0, 1)
     tfc = Hikari.TextureFilterContext(Point2f(0), Point3f(0), n)

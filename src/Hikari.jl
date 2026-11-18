@@ -18,6 +18,8 @@ using LazyArtifacts
 using KernelAbstractions: @kernel, @index, @Const
 import KernelAbstractions as KA
 using GPUArraysCore: @allowscalar
+# the native minimum/maximum for per-step loops whose operands are finite (`@fastmath max`)
+using Base.FastMath: min_fast, max_fast
 # Mantle is a hard dependency: `hw-rt.jl` below imports it unconditionally.
 import Mantle
 

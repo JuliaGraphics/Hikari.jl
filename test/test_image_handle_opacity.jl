@@ -3,7 +3,7 @@
 # so every image-textured Diffuse carried an alpha program it never needed: on an
 # RTX 4000 Ada that cost killeroo-gold's floor 21% of a frame.
 using Test, Hikari, Raycore, Colors
-using KernelAbstractions: CPU
+import Mantle
 
 opaque_image() = [RGBA{Float32}(0.5, 0.25, 0.75, 1) for _ in 1:4, _ in 1:4]
 function holey_image()
@@ -14,7 +14,7 @@ end
 alpha_program(material) = Hikari.surface_material(material).alpha
 
 @testset "an image handle knows whether its image is opaque" begin
-    store = Raycore.MultiTypeSet(CPU())
+    store = Raycore.MultiTypeSet(Mantle.Device())
     solid = Hikari.device_param(store, opaque_image())
     holey = Hikari.device_param(store, holey_image())
     @test solid.kind == Hikari.TexKind.IMAGE && holey.kind == Hikari.TexKind.IMAGE

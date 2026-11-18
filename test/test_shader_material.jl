@@ -7,11 +7,11 @@ using GeometryBasics
 using GeometryBasics: Point2f, Point3f, Vec3f, Vec2f, GLTriangleFace, QuadFace
 using Hikari: SVector
 using Colors: RGB
-using KernelAbstractions: CPU
 using LinearAlgebra
 using Raycore
 using Mantle
 using Statistics: mean
+include("host_materials.jl")
 
 # Keep an actual direct-material reference after public Diffuse starts using
 # the graph. Comparing two public descriptions would exercise the same path.
@@ -27,12 +27,9 @@ end
 """A description's shader, whatever `surface_material` would render it with."""
 shader_material(description) = Hikari.ShaderMaterial(Hikari.shader_node(description))
 
-static_textures(store) =
-    Raycore.StaticMultiTypeSet((), Tuple(T[a for a in store.texture_gpu_arrays if typeof(a) === T] for T in store.texture_order))
-
 """What the shader program of the stored material `mat` produces at `sc`: its lobes, transparency and emission."""
 function produced(store, mat::Hikari.ShaderMaterial{P, A, M}, sc) where {P, A, M}
-    textures = static_textures(store)
+    textures = host_static(store)
     return Hikari.shader_lobes(M, Hikari.shader_programs(textures, mat.program)[mat.program.idx], textures, sc, false)
 end
 
@@ -41,7 +38,7 @@ present(lobes) = [w for w in lobes if w.sample_weight > 0]
 
 function shade(shader; p = Point3f(0), n = Vec3f(0, 0, 1), wo = Vec3f(0, 0, 1),
                dpdx = Vec3f(1f-3, 0, 0), dpdy = Vec3f(0, 1f-3, 0), tangent_sign = 1f0)
-    store = Raycore.MultiTypeSet(CPU())
+    store = Raycore.MultiTypeSet(Mantle.Device())
     mat = Hikari.to_device_material(store, shader_material(shader))
     sc = Hikari.ShaderContext(TextureFilterContext(Point2f(0), p, n), wo, dpdx, dpdy, Vec3f(1, 0, 0), n, tangent_sign,
                               Vec3f(0), Point2f(0))
@@ -52,7 +49,7 @@ lobes(shader; kw...) = present(first(shade(shader; kw...)))
 """The lobes of `shader` bound to `mesh`, at face `face` and barycentrics `bary`, the uv there moving by `duv` per pixel."""
 function lobes_on(mesh, shader; face = 1, bary = (1 / 3, 1 / 3, 1 / 3), n = Vec3f(0, 0, 1), wo = Vec3f(0, 0, 1),
                   uv = Point2f(0), duv = (0f0, 0f0, 0f0, 0f0), dpdx = Vec3f(1f-3, 0, 0), dpdy = Vec3f(0, 1f-3, 0))
-    store = Raycore.MultiTypeSet(CPU())
+    store = Raycore.MultiTypeSet(Mantle.Device())
     _, material = Hikari.bind_mesh(mesh, shader_material(shader))
     mat = Hikari.to_device_material(store, material)
     tfc = TextureFilterContext(uv, duv..., UInt32(face), SVector{3, Float32}(bary), Point3f(0), n)
@@ -61,15 +58,15 @@ function lobes_on(mesh, shader; face = 1, bary = (1 / 3, 1 / 3, 1 / 3), n = Vec3
 end
 
 function program(shader)
-    store = Raycore.MultiTypeSet(CPU())
+    store = Raycore.MultiTypeSet(Mantle.Device())
     mat = Hikari.to_device_material(store, shader_material(shader))
-    return Hikari.shader_programs(static_textures(store), mat.program)[mat.program.idx]
+    return Hikari.shader_programs(host_static(store), mat.program)[mat.program.idx]
 end
 
 features(::Hikari.ShaderProgram{F}) where {F} = F & ~(UInt32(3) << Hikari.STACK_SHIFT)
 
 @testset "shader program lookup belongs to materials, not hits" begin
-    store = Raycore.MultiTypeSet(CPU())
+    store = Raycore.MultiTypeSet(Mantle.Device())
     push!(store, 7f0) # A non-shader slot must not shift the shader keys.
     a = push!(store, shader_material(Hikari.Diffuse(color = (0.2, 0.4, 0.6))))
     b = push!(store, shader_material(Hikari.Diffuse(color = (0.6, 0.4, 0.2))))
@@ -143,10 +140,10 @@ end
                                     radius = (1, 0.5, 0.25), roughness = 0.3, normal = bump(noise(xyz()).fac)),
     ]
     for shader in split_shaders
-        store = Raycore.MultiTypeSet(CPU())
+        store = Raycore.MultiTypeSet(Mantle.Device())
         mat = Hikari.to_device_material(store, shader_material(shader))
         M = typeof(mat).parameters[3]
-        textures = static_textures(store)
+        textures = host_static(store)
         sc = Hikari.ShaderContext(TextureFilterContext(Point2f(0.3, 0.6), Point3f(0.3, -0.2, 0.7), Vec3f(0, 0, 1)),
                                   normalize(Vec3f(0.2, 0.1, 1)), Vec3f(1f-3, 0, 0), Vec3f(0, 1f-3, 0), Vec3f(1, 0, 0),
                                   Vec3f(0, 0, 1), 1f0, Vec3f(0), Point2f(0))
@@ -236,10 +233,10 @@ end
         end
         # Physical Metallic and pbrt's Conductor interpret the same RGB complex IOR identically.
         eta, k = (0.2, 0.9, 1.1), (3.9, 2.45, 2.14)
-        store = Raycore.MultiTypeSet(CPU())
+        store = Raycore.MultiTypeSet(Mantle.Device())
         mat = Hikari.to_device_material(store, Hikari.Conductor(; ior = eta, extinction = k))
         n = Vec3f(0, 0, 1)
-        pbrt = Hikari.get_bxdf(mat, Hikari.get_srgb_table(), static_textures(store), TextureFilterContext(Point2f(0)),
+        pbrt = Hikari.get_bxdf(mat, Hikari.get_srgb_table(), host_static(store), TextureFilterContext(Point2f(0)),
                                lambda, false, n, n, Vec3f(1, 0, 0))
         f = Hikari.lift(Hikari.PhysicalConductorFresnel(Vec3f(eta), Vec3f(k), 0f0, 1f0), Hikari.get_srgb_table(), lambda)
         @test f.eta == only(pbrt.lobes).lobe.fresnel.eta
@@ -527,7 +524,7 @@ end
     end
 
     @testset "a device shader reads only programs of its own type" begin
-        store = Raycore.MultiTypeSet(CPU())
+        store = Raycore.MultiTypeSet(Mantle.Device())
         plain = Hikari.to_device_material(store, shader_material(Hikari.Diffuse(color = (0.2, 0.4, 0.6))))
         noisy = Hikari.to_device_material(store, shader_material(Hikari.Diffuse(color = noise(xyz()).color)))
         @test features(plain.program) == 0
@@ -539,7 +536,7 @@ end
     end
 
     @testset "a shader program holds only the shader code it runs" begin
-        store = Raycore.MultiTypeSet(CPU())
+        store = Raycore.MultiTypeSet(Mantle.Device())
         shiny = Hikari.Principled(base_color = noise(xyz()).color, coat_weight = 1, normal = bump(noise(xyz()).fac))
         mat = Hikari.to_device_material(store, shader_material(shiny))
         N = Hikari.NodeFeature
@@ -628,7 +625,7 @@ end
     # bumped, coated sheet ran its noise, the bump's three evaluations and every layer
     # of the Principled BSDF at each shadow ray crossing it.
     @testset "an alpha test runs only the shader's transparency" begin
-        store = Raycore.MultiTypeSet(CPU())
+        store = Raycore.MultiTypeSet(Mantle.Device())
         leaf = image_texture(fill(RGB{Float32}(0.3, 0.6, 0.2), 4, 4))
         sheet = Hikari.Principled(base_color = leaf, coat_weight = 1, normal = bump(noise(xyz()).fac),
                                 alpha = xyz().x * leaf.y)
@@ -638,7 +635,7 @@ end
         @test features(mat.alpha) & (N.NOISE | N.BUMP) == 0
         # The image both programs read is stored once.
         @test count(a -> eltype(a) === RGBSpectrum && ndims(a) == 2, store.texture_gpu_arrays) == 1
-        textures = static_textures(store)
+        textures = host_static(store)
         for (x, y) in ((0.25, 0.5), (0.75, 0.1), (-0.5, 0.9), (1.5, 0.3))
             p = Point3f(x, y, 0)
             tfc = TextureFilterContext(Point2f(0.5), p, Vec3f(0, 0, 1))
@@ -681,7 +678,7 @@ end
     end
 
     @testset "a texture cannot use a bump" begin
-        @test_throws "a texture cannot use `bump`" device_param(Raycore.MultiTypeSet(CPU()), bump(xyz().x))
+        @test_throws "a texture cannot use `bump`" device_param(Raycore.MultiTypeSet(Mantle.Device()), bump(xyz().x))
     end
 
     @testset "renders as the Diffuse material ($(hw ? "hardware" : "software") tracing)" for hw in (false, true)

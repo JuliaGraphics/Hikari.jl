@@ -1,6 +1,7 @@
 using Test, Hikari, Raycore, KernelAbstractions, GeometryBasics, LinearAlgebra
 using Hikari.TextureNodes
 using Mantle
+include("host_materials.jl")
 
 function read_packed_principled!(out, values, program, start, sc, capacity, hit)
     KernelInterface.get_global_id().x == 1 || return nothing
@@ -60,9 +61,9 @@ Base.pointer(p::LLVMPtrProgram{T}, i::Integer) where {T} = reinterpret(Core.LLVM
         Hikari.Add(Hikari.Principled(roughness = signal.fac), Hikari.Sheen(color = signal.color)),
     )
     for description in descriptions, normal in (Vec3f(0, 0, 1), normalize(Vec3f(0.2, -0.3, 1)))
-        store = Raycore.MultiTypeSet(KernelAbstractions.CPU())
+        store = Raycore.MultiTypeSet(Mantle.Device())
         material = Hikari.to_device_material(store, Hikari.surface_material(description))
-        textures = Raycore.StaticMultiTypeSet((), Tuple(T[a for a in store.texture_gpu_arrays if typeof(a) === T] for T in store.texture_order))
+        textures = host_static(store)
         sc = Hikari.ShaderContext(Hikari.TextureFilterContext(Point2f(0.3, 0.6), Point3f(0.3, -0.2, 0.7), normal),
             normalize(Vec3f(0.2, 0.1, 1)), Vec3f(1f-3, 0, 0), Vec3f(0, 1f-3, 0), Vec3f(1, 0, 0),
             normal, 1f0, Vec3f(0), Point2f(0))

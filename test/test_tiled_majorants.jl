@@ -1,7 +1,8 @@
 using Test,Hikari,GeometryBasics,Random,LinearAlgebra
+import Mantle
 
 @testset "Converted auxiliary bounds remain printable in error reports" begin
-    set=Hikari.Raycore.MultiTypeSet(Hikari.KA.CPU())
+    set=Hikari.Raycore.MultiTypeSet(Mantle.Device())
     grid=Hikari.tiledmajorants(Hikari.MajorantGrid(ones(Float32,512),Vec{3,Int32}(8)))
     stored=set[push!(set,grid)]
     @test occursin("TiledMajorantValues",repr(stored))

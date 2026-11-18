@@ -1,10 +1,5 @@
 using GeometryBasics: normal_mesh, Tesselation
 import Adapt
-# `KA.CPU()` arrived with 6ea9555 but nothing ever bound `KA`: Hikari imports
-# KernelAbstractions under that alias internally without exporting it, and no
-# file earlier in runtests.jl binds it either, so every testset below has been
-# erroring with UndefVarError since 2026-08-19.
-import KernelAbstractions as KA
 include("software_backend.jl")
 
 @testset "Denoising" begin

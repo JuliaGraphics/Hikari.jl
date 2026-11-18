@@ -17,9 +17,7 @@ Raycore = "afc56b53-c9a9-482a-a956-d1d800e05559"
 [sources]
 CompilerCaching = {url = "https://github.com/maleadt/CompilerCaching.jl", rev = "bae1df4d098a62905496ee7afd95ce00d937ec6b"}
 Hikari = {path = ".."}
-KernelAbstractions = {url = "https://github.com/SimonDanisch/KernelAbstractions.jl", rev = "sd/lava-refactor"}
-KernelInterface = {url = "https://github.com/SimonDanisch/KernelAbstractions.jl", rev = "sd/lava-refactor", subdir = "lib/KernelInterface"}
-Lava = {url = "https://github.com/SimonDanisch/Lava.jl", rev = "sd/lava-refactor"}
+Lava = {url = "https://github.com/SimonDanisch/Lava.jl", rev = "main"}
 Mantle = {url = "https://github.com/SimonDanisch/Mantle.jl", rev = "sd/lava-refactor"}
 Metal = {url = "https://github.com/SimonDanisch/Metal.jl", rev = "sd/lava-refactor"}
 Raycore = {url = "https://github.com/JuliaGeometry/Raycore.jl", rev = "sd/with-texture"}

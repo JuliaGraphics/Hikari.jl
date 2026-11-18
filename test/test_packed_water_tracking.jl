@@ -3,6 +3,7 @@ import KernelAbstractions as KA
 import Hikari.Raycore as RC
 import Hikari.Adapt as Adapt
 using KernelAbstractions: @kernel,@index
+include("nanotrees.jl")
 
 @inline function packed_water_probe(m,media,origin,direction)
     enter,leave=Hikari.ray_bounds_intersect(origin,direction,m.bounds)
@@ -25,7 +26,7 @@ function test_packed_water_tracking(;backend=nothing,packed_layout=true)
     function field(centre,scale)
         values=Float32[scale*exp(-40f0*(norm(lo+(Vec3f(o+Vec{3,Int32}(x,y,z)).+.5f0)*.1f0-centre)-.6f0)^2)
             for o in origins for x in 0:7 for y in 0:7 for z in 0:7]
-        Hikari.NanoTree(origins,values,lo,.1f0;backend=KA.CPU())
+        hosttree(origins,values,lo,.1f0)
     end
     a,b=field(Point3f(0),.005f0),field(Point3f(.2,0,0),.007f0)
     c,d=field(Point3f(0,0,-.1),.001f0),field(Point3f(.2,0,-.1),.002f0)
@@ -37,10 +38,10 @@ function test_packed_water_tracking(;backend=nothing,packed_layout=true)
             blend=Hikari.NanoBlend(a,b,weight)
             other=Hikari.NanoBlend(c,d,weight)
             media=(Hikari.WaterMedium(Hikari.Seawater();air=((other,.001f0,.85f0),(blend,.001f0,.85f0)),
-                    bounds,cell=.4f0,majorants=:tiled,backend=KA.CPU()),
+                    bounds,cell=.4f0,majorants=:tiled,backend=Mantle.Device()),
                 Hikari.WaterMedium(nothing;air=((blend,.001f0,.85f0),(other,.0002f0,.87f0)),
-                    bounds,cell=.4f0,ior=1f0,majorants=:tiled,backend=KA.CPU()),
-                Hikari.WaterMedium(Hikari.Seawater();bounds,cell=1000f0,backend=KA.CPU()))
+                    bounds,cell=.4f0,ior=1f0,majorants=:tiled,backend=Mantle.Device()),
+                Hikari.WaterMedium(Hikari.Seawater();bounds,cell=1000f0,backend=Mantle.Device()))
             packed=map(media) do m
                 Hikari.WaterMedium(m.spectra,m.from,m.step,m.n,m.g,m.base,m.air,m.ior,m.bounds,
                     Hikari.packmajorants(m.majorant_grid))

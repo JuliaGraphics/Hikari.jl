@@ -59,9 +59,8 @@ Using Hikari through RayMakie:
 ```julia
 using GLMakie, RayMakie, Hikari
 
-# Activate the ray tracing backend
-backend = Hikari.KernelAbstractions.CPU() # Or e.g. CUDA.CUDABackend() or AMDGPU.ROCBackend()
-RayMakie.activate!(; device=backend)
+# Activate the ray tracing backend: it renders on Mantle's default device
+RayMakie.activate!()
 
 # Build a scene with Makie
 scene = Scene(; size=(800, 800), lights=[Makie.SunSkyLight(Vec3f(1, 2, 9); intensity=1f0, turbidity=3f0, ground_enabled=false)])

@@ -1,4 +1,6 @@
 using Test, Hikari, GeometryBasics, LinearAlgebra, Raycore, KernelAbstractions
+import Mantle
+include("host_materials.jl")
 
 @testset "direct shader evaluation uses shared storage" begin
     table = Hikari.get_srgb_table()
@@ -14,9 +16,9 @@ using Test, Hikari, GeometryBasics, LinearAlgebra, Raycore, KernelAbstractions
             Hikari.Mix(Hikari.Glass(roughness = 0.3, distribution = :beckmann), Hikari.Metallic(distribution = :ggx); factor = 0.4),
             Hikari.Add(Hikari.Glossy(distribution = :beckmann), Hikari.Glass(roughness = 0.3, distribution = :ggx)),
         )
-        store = Raycore.MultiTypeSet(KernelAbstractions.CPU())
+        store = Raycore.MultiTypeSet(Mantle.Device())
         mat = Hikari.to_device_material(store, Hikari.surface_material(desc))
-        textures = Raycore.StaticMultiTypeSet((), Tuple(T[a for a in store.texture_gpu_arrays if typeof(a) === T] for T in store.texture_order))
+        textures = host_static(store)
         program = Hikari.shader_programs(textures, mat.program)[mat.program.idx]
         m = typeof(mat).parameters[3]
         actual = @inferred Hikari.shader_bsdf(m, program, textures, sc, false, table, lambda)

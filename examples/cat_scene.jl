@@ -36,7 +36,7 @@ function to_mesh(prim)
     Raycore.TriangleMesh(normal_mesh(prim))
 end
 
-function create_scene(; glass_cat=false, backend=Raycore.KA.CPU())
+function create_scene(; glass_cat=false, backend=Hikari.Mantle.defaultbackend())
     scene = Hikari.Scene(; backend)
 
     # === Add lights ===

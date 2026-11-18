@@ -45,9 +45,9 @@ function run(; selected = nothing)
     selected === nothing || (materials = materials[selected])
     for (index, m) in enumerate(materials)
         println("Surface program case ", index, "/", length(materials), ": ", nameof(typeof(m)));flush(stdout)
-        store = Raycore.MultiTypeSet(KernelAbstractions.CPU())
+        store = Raycore.MultiTypeSet(Mantle.Device())
         mat = Hikari.to_device_material(store, Hikari.ShaderMaterial(Hikari.shader_node(m)))
-        textures = Raycore.StaticMultiTypeSet((), Tuple(T[a for a in store.texture_gpu_arrays if typeof(a) === T] for T in store.texture_order))
+        textures = Raycore.StaticMultiTypeSet((), Tuple([Array(a) for a in store.texture_gpu_arrays if typeof(a) === T] for T in store.texture_order))
         prog = Hikari.shader_programs(textures, mat.program)[mat.program.idx]
         M = typeof(mat).parameters[3]
         produced = Hikari.shader_lobes(M, prog, textures, sc, false)

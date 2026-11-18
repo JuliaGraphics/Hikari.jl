@@ -3,6 +3,7 @@ import KernelAbstractions as KA
 using KernelAbstractions: @kernel, @index
 import Hikari.Raycore as RC
 import Hikari.Adapt as Adapt
+include("nanotrees.jl")
 
 @kernel function nanofield_samples!(out, field, points)
     i = @index(Global)
@@ -12,7 +13,7 @@ end
 @testset "Surface file nodes decode on demand and reject changed revisions" begin
     mktempdir() do directory
         path=joinpath(directory,"surface.nvdb")
-        tree=Hikari.NanoTree([Vec{3,Int32}(0)],ones(Float32,512),Point3f(0),.1f0;backend=KA.CPU())
+        tree=hosttree([Vec{3,Int32}(0)],ones(Float32,512),Point3f(0),.1f0)
         Hikari.save_nanovdb(path,tree)
         input=Hikari.defer_nanotree(path)
         @test input.tree===nothing
@@ -57,10 +58,8 @@ function test_nanofield(; backend=nothing)
         rng = MersenneTwister(20261021)
         origins = Vec{3,Int32}[Vec{3,Int32}(-8,0,0),Vec{3,Int32}(8,0,0)]
         values = rand(rng,Float32,1024)
-        a = Hikari.NanoTree(origins,values,Point3f(-.23,.17,-.51),.1f0;
-            background=.125f0,backend=KA.CPU())
-        b = Hikari.NanoTree(origins,2f0 .* values,Point3f(.41,-.13,.07),.15f0;
-            background=.25f0,backend=KA.CPU())
+        a = hosttree(origins,values,Point3f(-.23,.17,-.51),.1f0;background=.125f0)
+        b = hosttree(origins,2f0 .* values,Point3f(.41,-.13,.07),.15f0;background=.25f0)
         points = [Point3f(-2f0 .+ 5f0 .* rand(rng,Float32,3)) for _ in 1:1000]
         mktempdir() do dir
             path = joinpath(dir,"density.nvdb")
@@ -159,7 +158,7 @@ function test_nanoregion(; backend=nothing)
     @testset "NanoVDB fields limited to a round region" begin
         rng = MersenneTwister(20261023)
         origins = Vec{3,Int32}[Vec{3,Int32}(i,j,0) for i in -16:8:8 for j in -16:8:8]
-        tree = Hikari.NanoTree(origins,rand(rng,Float32,512*length(origins)),Point3f(0),.1f0;backend=KA.CPU())
+        tree = hosttree(origins,rand(rng,Float32,512*length(origins)),Point3f(0),.1f0)
         centre = Point2f(.3,-.2)
         @test_throws ArgumentError Hikari.NanoRegion(tree,centre,1,1)
         @test_throws ArgumentError Hikari.NanoRegion(tree,centre,-.1,1)

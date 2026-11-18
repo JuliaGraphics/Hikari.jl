@@ -1,9 +1,8 @@
-using Test, Hikari, GeometryBasics
-import KernelAbstractions as KA
+using Test, Hikari, GeometryBasics, Mantle
 import Raycore
 
 @testset "retained mesh emission follows its material" begin
-    scene = Hikari.Scene(; backend = KA.CPU())
+    scene = Hikari.Scene(; backend = Mantle.Device())
     mesh = GeometryBasics.Mesh(Point3f[(0,0,0),(1,0,0),(1,1,0),(0,1,0)],
         GLTriangleFace[(1,2,3),(1,3,4)])
     emission(v; strength=1f0) = Hikari.MediumInterface(Hikari.NullMaterial();
@@ -22,7 +21,7 @@ import Raycore
         lights = [scene.lights[key] for key in keys]
         @test all(l -> l.scale == 2f0 / Hikari.D65_PHOTOMETRIC && l.two_sided, lights)
         @test lights[1].Le === lights[2].Le
-        @test all(c -> c == Hikari.RGBSpectrum(v), only(scene.lights.texture_gpu_arrays))
+        @test all(c -> c == Hikari.RGBSpectrum(v), Array(only(scene.lights.texture_gpu_arrays)))
     end
     Hikari.update_material!(scene, handle, Hikari.NullMaterial())
     @test all(key -> scene.lights[key].scale == 0f0, keys)

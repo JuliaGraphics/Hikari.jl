@@ -3,14 +3,16 @@
 if !@isdefined(host_materials)
     # Download texture owners, not the device pointer table: Array(static.textures)
     # copies handles whose payloads still name device memory.
+    host_textures(mats) = Tuple(
+        [Array(a) for a in mats.texture_gpu_arrays if typeof(a) === T]
+            for T in mats.texture_order
+    )
     function host_materials(mats)
         data = Tuple(copy(mats.data_vectors[T]) for T in mats.data_order)
-        textures = Tuple(
-            [Array(a) for a in mats.texture_gpu_arrays if typeof(a) === T]
-                for T in mats.texture_order
-        )
-        return Raycore.StaticMultiTypeSet(data, textures)
+        return Raycore.StaticMultiTypeSet(data, host_textures(mats))
     end
+    # The store's texture table alone, for evaluating its programs and images on the host.
+    host_static(mats) = Raycore.StaticMultiTypeSet((), host_textures(mats))
 end
 
 if !@isdefined(host_bxdf)

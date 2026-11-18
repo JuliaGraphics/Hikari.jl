@@ -64,7 +64,7 @@ end
 ShaderContext(tfc, wo, dpdx, dpdy, dpdus, ng, sign, p_camera, window) =
     ShaderContext(tfc, wo, dpdx, dpdy, dpdus, ng, sign, p_camera, window, nothing)
 
-@inline _max(v::Vec3f) = max(v[1], v[2], v[3])
+@inline _max(v::Vec3f) = max_fast(max_fast(v[1], v[2]), v[3])   # see `max_component`
 @inline _pow3(v::Vec3f, e::Float32) = Vec3f(v[1]^e, v[2]^e, v[3]^e)
 
 """The specular layer's reflectance at normal incidence and IOR, as the Principled BSDF's `specular_ior_level` sets them."""

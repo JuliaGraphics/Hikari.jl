@@ -3,6 +3,7 @@ using Hikari
 using GeometryBasics
 using LinearAlgebra
 using FileIO
+import Mantle
 
 const SCENES_DIR = joinpath(@__DIR__, "scenes")
 
@@ -224,11 +225,7 @@ end
 # Full scene rendering tests (GPU)
 # ============================================================================
 @testset "PBRT Scene Rendering" begin
-    backend = if isdefined(Main, :Lava) && isdefined(Lava, :LavaBackend)
-        Mantle.defaultbackend()
-    else
-        KernelAbstractions.CPU()
-    end
+    backend = Mantle.defaultbackend()
 
     function render_and_check(pbrt_file; samples=4, max_depth=5, min_nonzero_frac=0.01)
         path = joinpath(SCENES_DIR, pbrt_file)

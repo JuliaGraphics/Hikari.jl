@@ -159,7 +159,7 @@ end
     h = local_to_world(local_h, n, t, b)
     cos_hi = dot(h, wo)
     neta = 1f0 / p.ior
-    dnp = max(sqrt(max(1f0 - neta^2 * (1f0 - cos_hi^2), 0f0)), 1f-7)
+    dnp = max_fast(sqrt(max_fast(1f0 - neta^2 * (1f0 - cos_hi^2), 0f0)), 1f-7)
     return (true, normalize(-(neta * wo) + (neta * cos_hi - dnp) * h))
 end
 
@@ -172,15 +172,15 @@ end
 
 @inline _map4(f, a::SpectralRadiance) = SpectralRadiance(ntuple(k -> f(a.data[k]), Val(4)))
 @inline _map4(f, a::SpectralRadiance, b::SpectralRadiance) = SpectralRadiance(ntuple(k -> f(a.data[k], b.data[k]), Val(4)))
-@inline _maximum(a::SpectralRadiance) = max(a.data...)
-@inline _minimum(a::SpectralRadiance) = min(a.data...)
+@inline _maximum(a::SpectralRadiance) = reduce(max_fast, a.data)   # see `max_component`
+@inline _minimum(a::SpectralRadiance) = reduce(min_fast, a.data)
 @inline _dot4(a::SpectralRadiance, b::SpectralRadiance) = sum(ntuple(k -> a.data[k] * b.data[k], Val(4)))
 
 @inline _phase_dwivedi(v::Float32, phase_log::Float32, cos_theta::Float32) = 1f0 / ((v - cos_theta) * phase_log)
 @inline _sample_dwivedi(v::Float32, phase_log::Float32, u::Float32) = v - (v + 1f0) * exp(-u * phase_log)
 
 @inline function _direction_from_cosine(d::Vec3f, cos_theta::Float32, u::Float32)
-    sin_theta = sqrt(max(1f0 - cos_theta^2, 0f0))
+    sin_theta = sqrt(max_fast(1f0 - cos_theta^2, 0f0))   # per walk step, on a finite cosine
     s, c = sincos(2f0 * Float32(π) * u)
     t, b = coordinate_system(d)
     return sin_theta * c * t + sin_theta * s * b + cos_theta * d

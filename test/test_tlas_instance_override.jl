@@ -60,6 +60,19 @@ _channel_maxes(img) = (
     b = maximum(p.b for p in img),
 )
 
+# Trace `rays` against `tlas` on its device and map each closest hit to `f(hit, tri, id)`.
+@kernel function traced!(out, f, tlas, @Const(rays))
+    i = @index(Global)
+    hit, tri, _, _, id = Raycore.closest_hit(tlas, rays[i])
+    out[i] = f(hit, tri, id)
+end
+function traced(f, ::Type{T}, tlas, rays) where {T}
+    backend = tlas.backend
+    out = KernelAbstractions.allocate(backend, T, length(rays))
+    traced!(backend, 64)(out, f, Adapt.adapt(backend, tlas), Mantle.devicearray(backend, rays); ndrange = length(rays))
+    return Array(out)
+end
+
 # ── Test Suite ──────────────────────────────────────────────────────────────
 
 @testset "TLAS instance override — both SW and HW paths" begin
@@ -67,7 +80,7 @@ _channel_maxes(img) = (
     # ── 1. InstanceDescriptor.instance_id semantics ─────────────────────────
     @testset "InstanceDescriptor.instance_id round-trip" begin
         cube = _cube_mesh()
-        tlas = Raycore.TLAS(CPU())
+        tlas = Raycore.TLAS(Mantle.Device())
 
         # Default: no override (0 = inherit)
         h1 = push!(tlas, cube)
@@ -98,20 +111,17 @@ _channel_maxes(img) = (
     # ── 2. closest_hit forwards the override ────────────────────────────────
     @testset "closest_hit returns the instance's custom index" begin
         cube = _cube_mesh()
-        tlas = Raycore.TLAS(CPU())
+        tlas = Raycore.TLAS(Mantle.Device())
         h1 = push!(tlas, cube)                             # override 0
         h2 = push!(tlas, cube, _shift_mat(2,0); instance_id=UInt32(99))  # override 99
         Raycore.sync!(tlas)
-        static = Adapt.adapt(CPU(), tlas)
 
-        ray1 = Raycore.Ray(Raycore.Point3f(0, 0, 2), Raycore.Vec3f(0, 0, -1), 0f0, 100f0, 0f0)
-        hit, _, _, _, id1 = Raycore.closest_hit(static, ray1)
-        @test hit
+        rays = [Raycore.Ray(Raycore.Point3f(0, 0, 2), Raycore.Vec3f(0, 0, -1), 0f0, 100f0, 0f0),
+                Raycore.Ray(Raycore.Point3f(2, 0, 2), Raycore.Vec3f(0, 0, -1), 0f0, 100f0, 0f0)]
+        (hit1, id1), (hit2, id2) = traced((hit, tri, id) -> Vec{2,UInt32}(hit, id), Vec{2,UInt32}, tlas, rays)
+        @test hit1 == 1
         @test id1 == UInt32(0)  # inherit
-
-        ray2 = Raycore.Ray(Raycore.Point3f(2, 0, 2), Raycore.Vec3f(0, 0, -1), 0f0, 100f0, 0f0)
-        hit, _, _, _, id2 = Raycore.closest_hit(static, ray2)
-        @test hit
+        @test hit2 == 1
         @test id2 == UInt32(99)
     end
 
@@ -286,7 +296,7 @@ _channel_maxes(img) = (
     end
 
     # ── 8. instance_id 0 ↔ per-triangle fallback ────────────────────────────
-    @testset "override=0 → per-triangle medium_interface_idx fallback (CPU-side)" begin
+    @testset "override=0 → per-triangle medium_interface_idx fallback" begin
         # Build a scene via the legacy (non-scattering) push! — every instance
         # gets instance_id=0.
         scene = Hikari.Scene()
@@ -300,14 +310,15 @@ _channel_maxes(img) = (
         # All instances have instance_id == 0 → fallback path taken
         @test all(d.instance_id == UInt32(0) for d in Array(scene.accel.instances))
 
-        # Trace a ray directly against the CPU TLAS: the hit's custom index is
-        # 0, so resolve_mi_idx falls through to `tri.metadata.medium_interface_idx`.
-        static = Adapt.adapt(CPU(), scene.accel)
+        # Trace a ray against the scene's TLAS: the hit's custom index is 0, so
+        # resolve_mi_idx falls through to `tri.metadata.medium_interface_idx`.
         ray = Raycore.Ray(Raycore.Point3f(0, 0, 3), Raycore.Vec3f(0, 0, -1), 0f0, 100f0, 0f0)
-        hit, tri, _, _, id = Raycore.closest_hit(static, ray)
-        @test hit
+        hit, id, mi, resolved = only(traced(Vec{4,UInt32}, scene.accel, [ray]) do hit, tri, id
+            Vec{4,UInt32}(hit, id, tri.metadata.medium_interface_idx, Hikari.resolve_mi_idx(id, tri))
+        end)
+        @test hit == 1
         @test id == UInt32(0)
-        @test tri.metadata.medium_interface_idx != UInt32(0)   # triangle carries material
-        @test Hikari.resolve_mi_idx(id, tri) == tri.metadata.medium_interface_idx
+        @test mi != UInt32(0)   # triangle carries material
+        @test resolved == mi
     end
 end

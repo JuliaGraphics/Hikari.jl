@@ -36,7 +36,8 @@ p(cos θ) = (1 - g²) / [4π(1 + g² - 2g cos θ)^(3/2)]
     # cos θ, so it reaches zero for strongly forward- or back-scattering
     # media and goes slightly negative in Float32; `sqrt` of that is a
     # `DomainError`, which on a GPU is a device-side throw, not a NaN.
-    return (1f0 - g2) / (4f0 * Float32(π) * denom * sqrt(max(1f-10, denom)))
+    # `max_fast`: once per scattering event of a walk, on a finite `denom`
+    return (1f0 - g2) / (4f0 * Float32(π) * denom * sqrt(max_fast(1f-10, denom)))
 end
 
 @propagate_inbounds hg_p(phase::HGPhaseFunction, cos_θ::Float32) = hg_p(phase.g, cos_θ)
@@ -61,7 +62,7 @@ Returns sampled direction and PDF.
     end
 
     # Compute sin_θ
-    sin_θ = sqrt(max(0f0, 1f0 - cos_θ * cos_θ))
+    sin_θ = sqrt(max_fast(0f0, 1f0 - cos_θ * cos_θ))   # per scattering event, see `hg_p`
 
     # Sample azimuthal angle
     ϕ = 2f0 * Float32(π) * u[2]

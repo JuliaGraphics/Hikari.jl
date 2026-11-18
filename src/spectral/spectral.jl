@@ -101,12 +101,14 @@ end
     return sum(s.data) / N
 end
 
+# Per bounce (Russian roulette, throughput tests) on finite spectra: the native
+# minimum/maximum (`@fastmath`), not Julia's NaN- and signed-zero-aware one.
 @propagate_inbounds function max_component(s::SampledSpectrum{N}) where {N}
-    return maximum(s.data)
+    return reduce(max_fast, s.data)
 end
 
 @propagate_inbounds function min_component(s::SampledSpectrum{N}) where {N}
-    return minimum(s.data)
+    return reduce(min_fast, s.data)
 end
 
 @propagate_inbounds is_black(s::SampledSpectrum{N}) where {N} = all(x -> x == 0.0f0, s.data)

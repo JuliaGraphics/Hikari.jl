@@ -3,6 +3,7 @@ import Hikari.Raycore as RC
 import Hikari.Adapt as Adapt
 import KernelAbstractions as KA
 using KernelAbstractions: @kernel,@index
+include("nanotrees.jl")
 
 @kernel function packed_bound_values!(out,media,grid,coordinates)
     i=@index(Global)
@@ -101,8 +102,8 @@ test_packed_majorants()
     origins=Vec{3,Int32}[Vec{3,Int32}(0),Vec{3,Int32}(8,0,0),Vec{3,Int32}(-8,8,0)]
     values=rand(rng,Float32,512length(origins))
     values[1:3:end].=0f0
-    a=Hikari.NanoTree(origins,values,Point3f(-.2),.07f0;backend=KA.CPU())
-    b=Hikari.NanoTree(origins,reverse(values),Point3f(-.1),.07f0;backend=KA.CPU())
+    a=hosttree(origins,values,Point3f(-.2),.07f0)
+    b=hosttree(origins,reverse(values),Point3f(-.1),.07f0)
     box=Hikari.Bounds3(Point3f(-1),Point3f(2))
     for dims in ((33,17,9),(32,24,16)),tight in (false,true)
         res=Vec{3,Int32}(dims)
@@ -115,7 +116,7 @@ test_packed_majorants()
     cache=IdDict{Any,Any}()
     for water in (nothing,Hikari.Seawater())
         kwargs=(;air=((a,.001f0,.85f0),(b,.002f0,.8f0)),bounds=box,
-            cell=.3f0,majorant_factor=2,backend=KA.CPU())
+            cell=.3f0,majorant_factor=2,backend=Mantle.Device())
         dense=Hikari.WaterMedium(water;kwargs...,majorants=:dense)
         packed=Hikari.WaterMedium(water;kwargs...,majorants=:packed,field_majorants=cache)
         @test collect(packed.majorant_grid.voxels)==dense.majorant_grid.voxels

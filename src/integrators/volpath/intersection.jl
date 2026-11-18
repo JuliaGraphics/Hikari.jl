@@ -691,8 +691,9 @@ Iterates over per-voxel majorant bounds, doing ratio tracking within each segmen
         current_iter = new_iter
 
         # Only the residual is tracked; the control was integrated above.
-        σ_maj = SpectralRadiance(max(seg.σ_maj[1] - c0, 0f0), max(seg.σ_maj[2] - c0, 0f0),
-                                 max(seg.σ_maj[3] - c0, 0f0), max(seg.σ_maj[4] - c0, 0f0))
+        # `max_fast`: per segment and per step below, on finite coefficients
+        σ_maj = SpectralRadiance(max_fast(seg.σ_maj[1] - c0, 0f0), max_fast(seg.σ_maj[2] - c0, 0f0),
+                                 max_fast(seg.σ_maj[3] - c0, 0f0), max_fast(seg.σ_maj[4] - c0, 0f0))
         σ_maj_0 = σ_maj[1]
 
         # No residual in this voxel — nothing to track
@@ -706,7 +707,7 @@ Iterates over per-voxel majorant bounds, doing ratio tracking within each segmen
         # Ratio tracking within this DDA segment
         while t < t_max_seg
             u, rng = pcg32_uniform_f32(rng)
-            dt = -log(max(1f-10, 1f0 - u)) / σ_maj_0
+            dt = -log(max_fast(1f-10, 1f0 - u)) / σ_maj_0
             t_sample = t + dt
 
             if t_sample >= t_max_seg
@@ -728,7 +729,7 @@ Iterates over per-voxel majorant bounds, doing ratio tracking within each segmen
 
             # Null-scattering coefficient (clamped non-negative)
             σ_n = σ_maj - mp.σ_a - mp.σ_s
-            σ_n = SpectralRadiance(max(σ_n[1], 0f0), max(σ_n[2], 0f0), max(σ_n[3], 0f0), max(σ_n[4], 0f0))
+            σ_n = SpectralRadiance(max_fast(σ_n[1], 0f0), max_fast(σ_n[2], 0f0), max_fast(σ_n[3], 0f0), max_fast(σ_n[4], 0f0))
 
             T_maj = fast_exp(-dt * σ_maj)
 

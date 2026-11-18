@@ -56,8 +56,7 @@ const NativeNanoWords=Base.ReinterpretArray{UInt32,1,UInt8,
 function Raycore.maybe_convert_field(set::Raycore.MultiTypeSet,words::NativeNanoWords)
     # Texture tables require a dense device pointer, not an adapted host-view
     # wrapper. The upload reads this contiguous host span without collecting it.
-    data=set.backend isa KA.CPU ? words : Mantle.devicearray(set.backend,words)
-    return Raycore.store_texture(set,data)
+    return Raycore.store_texture(set,Mantle.devicearray(set.backend,words))
 end
 
 """

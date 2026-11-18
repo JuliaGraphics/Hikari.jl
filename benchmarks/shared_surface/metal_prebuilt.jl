@@ -3,9 +3,9 @@ using Hikari, Mantle, Metal, KernelAbstractions, Raycore, Test, Statistics, JSON
 using ..MetalBSDFStageProbe: context, metrics
 
 function prebuilt(material)
-    store = Raycore.MultiTypeSet(KernelAbstractions.CPU())
+    store = Raycore.MultiTypeSet(Mantle.Device())
     mat = Hikari.to_device_material(store, Hikari.surface_material(material))
-    textures = Raycore.StaticMultiTypeSet((), Tuple(T[a for a in store.texture_gpu_arrays if typeof(a) === T] for T in store.texture_order))
+    textures = Raycore.StaticMultiTypeSet((), Tuple([Array(a) for a in store.texture_gpu_arrays if typeof(a) === T] for T in store.texture_order))
     prog = Hikari.shader_programs(textures, mat.program)[mat.program.idx]
     M = typeof(mat).parameters[3]
     P = Hikari.surface_program_class(M, Mantle.MetalAPI())

@@ -2,9 +2,9 @@ module SurfaceProgramKernelMWE
 using Hikari, Mantle, KernelAbstractions, Raycore, GeometryBasics, LinearAlgebra, Test, JSON3
 using GeometryBasics: Point2f, Point3f, Vec3f
 function reference()
-    store = Raycore.MultiTypeSet(KernelAbstractions.CPU())
+    store = Raycore.MultiTypeSet(Mantle.Device())
     mat = Hikari.to_device_material(store, Hikari.surface_material(Hikari.Principled()))
-    textures = Raycore.StaticMultiTypeSet((), Tuple(T[a for a in store.texture_gpu_arrays if typeof(a) === T] for T in store.texture_order))
+    textures = Raycore.StaticMultiTypeSet((), Tuple([Array(a) for a in store.texture_gpu_arrays if typeof(a) === T] for T in store.texture_order))
     prog = Hikari.shader_programs(textures, mat.program)[mat.program.idx]
     lambda = Hikari.Wavelengths((450.0f0, 510.0f0, 570.0f0, 630.0f0), (0.25f0, 0.25f0, 0.25f0, 0.25f0))
     wo = normalize(Vec3f(0.2, 0.1, 1))

@@ -54,7 +54,7 @@ end
     for m in (Hikari.Diffuse(), Hikari.Principled(subsurface_weight = 0.5))
         @test length(capacity_queues(m)) == 1
     end
-    store = Raycore.MultiTypeSet(KernelAbstractions.CPU())
+    store = Raycore.MultiTypeSet(Mantle.Device())
     key = push!(store, Hikari.surface_material(Hikari.Glass(roughness = 0.2)))
     old = store[key]
     layout = store.layout

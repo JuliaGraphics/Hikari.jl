@@ -1,5 +1,6 @@
 using Test, Hikari, Mantle, GeometryBasics, LinearAlgebra, Raycore, KernelAbstractions
 using Hikari.TextureNodes
+include("host_materials.jl")
 
 @testset "opaque Principled layout preserves counted storage" begin
     table=Hikari.get_srgb_table()
@@ -20,9 +21,9 @@ using Hikari.TextureNodes
     )
     for distribution in (:multi_ggx,:ggx,:beckmann), inputs in variants
         material=Hikari.Principled(;inputs...,distribution)
-        store=Raycore.MultiTypeSet(KernelAbstractions.CPU())
+        store=Raycore.MultiTypeSet(Mantle.Device())
         mat=Hikari.to_device_material(store,Hikari.surface_material(material))
-        textures=Raycore.StaticMultiTypeSet((),Tuple(T[a for a in store.texture_gpu_arrays if typeof(a)===T] for T in store.texture_order))
+        textures=host_static(store)
         prog=Hikari.shader_programs(textures,mat.program)[mat.program.idx]
         M=Hikari.bsdf_nodes(typeof(mat))
         generic=Hikari.bsdf_kernel_nodes(M,Mantle.VulkanAPI())

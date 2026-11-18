@@ -67,12 +67,8 @@ end
 end
 
 function Raycore.maybe_convert_field(set::Raycore.MultiTypeSet,v::PackedMajorantValues)
-    if !(set.backend isa KA.CPU)
-        tiled=device_tiledmajorants(MajorantGrid(v,v.res),set.backend)
-        return Raycore.maybe_convert_field(set,tiled.voxels)
-    end
-    PackedMajorantValues(Raycore.maybe_convert_field(set,v.fine),
-        Raycore.maybe_convert_field(set,v.tiles),Raycore.maybe_convert_field(set,v.offsets),v.res,v.tile_res)
+    tiled=device_tiledmajorants(MajorantGrid(v,v.res),set.backend)
+    return Raycore.maybe_convert_field(set,tiled.voxels)
 end
 
 @kernel inbounds=true function unpack_majorant_cells!(destination,source,first::Int32,n::Int32)

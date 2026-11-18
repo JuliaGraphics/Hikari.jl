@@ -28,9 +28,9 @@ using ..SurfaceProgramCountProbe: P, context, wavelengths, sample_values
     end
 end
 function expected(material, k)
-    store = Raycore.MultiTypeSet(KernelAbstractions.CPU())
+    store = Raycore.MultiTypeSet(Mantle.Device())
     mat = Hikari.to_device_material(store, Hikari.ShaderMaterial(Hikari.shader_node(material)))
-    textures = Raycore.StaticMultiTypeSet((), Tuple(T[a for a in store.texture_gpu_arrays if typeof(a) === T] for T in store.texture_order))
+    textures = Raycore.StaticMultiTypeSet((), Tuple([Array(a) for a in store.texture_gpu_arrays if typeof(a) === T] for T in store.texture_order))
     prog = Hikari.closure_programs(textures)[mat.closures]
     values = sample_values()
     result = zeros(Float32, 32, 5)

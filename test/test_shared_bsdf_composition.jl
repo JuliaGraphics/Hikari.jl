@@ -1,4 +1,5 @@
 using Test, Hikari, Mantle, Raycore, KernelAbstractions, GeometryBasics, LinearAlgebra
+include("host_materials.jl")
 
 @testset "Cycles terms retain shared storage in native compositions" begin
     lambda = Hikari.sample_wavelengths_stratified((0.11f0, 0.27f0, 0.53f0, 0.79f0))
@@ -7,9 +8,9 @@ using Test, Hikari, Mantle, Raycore, KernelAbstractions, GeometryBasics, LinearA
     sc = Hikari.ShaderContext(Hikari.TextureFilterContext(Point2f(0.5), Point3f(0), n), wo, Vec3f(0), Vec3f(0), Vec3f(1, 0, 0), n, 1.0f0, Vec3f(0), Point2f(0))
     for (native, layered) in ((Hikari.Conductor(roughness = 0.2), false), (Hikari.CoatedDiffuse(roughness = 0.2), true))
         description = Hikari.Add(Hikari.Diffuse(color = (0.2, 0.4, 0.7)), native)
-        store = Raycore.MultiTypeSet(KernelAbstractions.CPU())
+        store = Raycore.MultiTypeSet(Mantle.Device())
         mat = Hikari.to_device_material(store, Hikari.surface_material(description))
-        textures = Raycore.StaticMultiTypeSet((), Tuple(T[a for a in store.texture_gpu_arrays if typeof(a) === T] for T in store.texture_order))
+        textures = host_static(store)
         program = Hikari.shader_programs(textures, mat.program)[mat.program.idx]
         bsdf = Hikari.shader_bsdf(typeof(mat).parameters[3], program, textures, sc, false, Hikari.get_srgb_table(), lambda)
         if layered
@@ -28,9 +29,9 @@ end
     wo = normalize(Vec3f(0.3, 0.2, 1))
     sc = Hikari.ShaderContext(Hikari.TextureFilterContext(Point2f(0.5), Point3f(0), n), wo, Vec3f(0), Vec3f(0), Vec3f(1, 0, 0), n, 1.0f0, Vec3f(0), Point2f(0))
     description = Hikari.Add(Hikari.Principled(subsurface_weight = 0.6), Hikari.Conductor(roughness = 0.2))
-    store = Raycore.MultiTypeSet(KernelAbstractions.CPU())
+    store = Raycore.MultiTypeSet(Mantle.Device())
     mat = Hikari.to_device_material(store, Hikari.surface_material(description))
-    textures = Raycore.StaticMultiTypeSet((), Tuple(T[a for a in store.texture_gpu_arrays if typeof(a) === T] for T in store.texture_order))
+    textures = host_static(store)
     program = Hikari.shader_programs(textures, mat.program)[mat.program.idx]
     m = typeof(mat).parameters[3]
     table = Hikari.get_srgb_table()
@@ -60,9 +61,9 @@ end
     sc = Hikari.ShaderContext(Hikari.TextureFilterContext(Point2f(0.5), Point3f(0), n), n, Vec3f(0), Vec3f(0), Vec3f(1, 0, 0), n, 1.0f0, Vec3f(0), Point2f(0))
     emission = Hikari.Emission(color = (0.2, 0.4, 0.6), strength = 2)
     results = map((emission, Hikari.Add(Hikari.Conductor(), emission))) do description
-        store = Raycore.MultiTypeSet(KernelAbstractions.CPU())
+        store = Raycore.MultiTypeSet(Mantle.Device())
         mat = Hikari.to_device_material(store, Hikari.ShaderMaterial(Hikari.shader_node(description)))
-        textures = Raycore.StaticMultiTypeSet((), Tuple(T[a for a in store.texture_gpu_arrays if typeof(a) === T] for T in store.texture_order))
+        textures = host_static(store)
         program = Hikari.shader_programs(textures, mat.program)[mat.program.idx]
         Hikari.shader_bsdf(typeof(mat).parameters[3], program, textures, sc, false, table, lambda).emission
     end

@@ -1,6 +1,7 @@
 using Test, Hikari, GeometryBasics, Random, Mantle
 import KernelAbstractions as KA
 using KernelAbstractions: @kernel, @index
+include("nanotrees.jl")
 
 # Independent eight-corner lookup, including missing leaves and the grid halo.
 function nanoleaf_reference(t,p)
@@ -27,7 +28,7 @@ function test_nanoleaf_faces(;backend=nothing)
         origins=Vec{3,Int32}[Vec{3,Int32}(8x,8y,8z) for x in -1:1 for y in -1:1 for z in -1:1
             if (x,y,z)!=(0,0,0) && (x,y,z)!=(1,-1,0)]
         values=rand(rng,Float32,512length(origins)).-.25f0
-        host=Hikari.NanoTree(origins,values,Point3f(-.23,.17,-.51),.1f0;background=.125f0,backend=KA.CPU())
+        host=hosttree(origins,values,Point3f(-.23,.17,-.51),.1f0;background=.125f0)
         points=Point3f[]
         # All leaf-boundary combinations, including negative coordinates, corners,
         # absent leaves, and the interpolation halo at the grid's outer edges.

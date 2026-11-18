@@ -570,7 +570,7 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
     while t < t_max_seg
         # Sample exponential distance using LCG
         current_rng, u = lcg_next(current_rng)
-        dt = -log(max(1f-10, 1f0 - u)) / σ_maj_0
+        dt = -log(max_fast(1f-10, 1f0 - u)) / σ_maj_0   # per step: the native maximum
         t_sample = t + dt
 
         if t_sample >= t_max_seg
@@ -673,7 +673,7 @@ Uses deterministic LCG RNG for medium sampling (pbrt-v4 pattern).
         else
             # === NULL SCATTERING ===
             σ_n = σ_maj - σ_known
-            σ_n = SpectralRadiance(max(σ_n[1], 0f0), max(σ_n[2], 0f0), max(σ_n[3], 0f0), max(σ_n[4], 0f0))
+            σ_n = SpectralRadiance(max_fast(σ_n[1], 0f0), max_fast(σ_n[2], 0f0), max_fast(σ_n[3], 0f0), max_fast(σ_n[4], 0f0))
 
             pdf = T_maj[1] * σ_n[1]
             if pdf > 1f-10

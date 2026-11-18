@@ -1,8 +1,8 @@
 module PbrtGraphTests
 using Hikari, Raycore, Test, Mantle, GeometryBasics
 using GeometryBasics: Point2f, Point3f, Vec3f
-using KernelAbstractions: CPU
 using LinearAlgebra: normalize
+include("host_materials.jl")
 function run_exact()
     table = Hikari.get_srgb_table()
     wavelengths = Hikari.sample_wavelengths_stratified((0.11f0, 0.27f0, 0.53f0, 0.79f0))
@@ -26,10 +26,10 @@ function run_exact()
     ]
     return @testset "native graph program preserves pbrt BSDFs" begin
         for m in models
-            store = Raycore.MultiTypeSet(CPU())
+            store = Raycore.MultiTypeSet(Mantle.Device())
             original = Hikari.to_device_material(store, m)
             graph = Hikari.to_device_material(store, Hikari.surface_material(m))
-            textures = Raycore.StaticMultiTypeSet((), Tuple(T[a for a in store.texture_gpu_arrays if typeof(a) === T] for T in store.texture_order))
+            textures = host_static(store)
             M = typeof(graph).parameters[3]
             prog = Hikari.shader_programs(textures, graph.program)[graph.program.idx]
             for side in (-1.0f0, 1.0f0), regularize in (false, true)
@@ -51,10 +51,10 @@ function run_exact()
         end
     end
 end
-function stored(m, store = Raycore.MultiTypeSet(CPU()))
+function stored(m, store = Raycore.MultiTypeSet(Mantle.Device()))
     original = Hikari.to_device_material(store, m)
     graph = Hikari.to_device_material(store, Hikari.surface_material(m))
-    textures = Raycore.StaticMultiTypeSet((), Tuple(T[a for a in store.texture_gpu_arrays if typeof(a) === T] for T in store.texture_order))
+    textures = host_static(store)
     return store, original, graph, textures
 end
 function evaluate_graph(mat, textures, sc, lambda; regularize = false)
@@ -77,7 +77,7 @@ function run_bump()
             fill(0.02f0, 4, 4), Hikari.CheckerboardTexture(2.0f0, 3.0f0, 0.0f0, 0.0f0, Hikari.to_texture(0.01f0), Hikari.to_texture(0.03f0)),
         )
         for height in heights, model in (Hikari.Dielectric, Hikari.CoatedDiffuse, Hikari.Conductor), mode in (:constant, :graph_normal, :stored_normal)
-            store = Raycore.MultiTypeSet(CPU())
+            store = Raycore.MultiTypeSet(Mantle.Device())
             roughness = mode === :constant ? 0.2f0 : Hikari.TextureNodes.normal().x * 0.1f0 + 0.2f0
             mode === :stored_normal && (roughness = Hikari.device_param(store, roughness))
             m = model(roughness = roughness, displacement = height)
@@ -165,7 +165,7 @@ function run_composition()
     end
 end
 function run_updates()
-    store = Raycore.MultiTypeSet(CPU())
+    store = Raycore.MultiTypeSet(Mantle.Device())
     material(x) = Hikari.surface_material(Hikari.Conductor(roughness = Hikari.CheckerboardTexture(5.0f0, 5.0f0, 0.0f0, 0.0f0, Float32(x), 0.3f0)))
     key = push!(store, material(0.1))
     original = store[key]
@@ -180,7 +180,7 @@ function run_updates()
     end
 end
 function run_parameter_features()
-    store = Raycore.MultiTypeSet(CPU())
+    store = Raycore.MultiTypeSet(Mantle.Device())
     original = Hikari.Conductor(roughness = Hikari.CheckerboardTexture(5.0f0, 5.0f0, 0.0f0, 0.0f0, 0.1f0, 0.3f0))
     shader = Hikari.surface_material(Hikari.Mix(original, Hikari.Glass(); factor = 0.3))
     compiled = Hikari.compiled(shader.program)
@@ -188,7 +188,7 @@ function run_parameter_features()
         @test typeof(first(compiled.instructions)).parameters[1] & Hikari.NodeFeature.IMAGE != 0
         native = Hikari.to_device_material(store, original)
         mat = Hikari.to_device_material(store, shader)
-        textures = Raycore.StaticMultiTypeSet((), Tuple(T[a for a in store.texture_gpu_arrays if typeof(a) === T] for T in store.texture_order))
+        textures = host_static(store)
         tfc = Hikari.TextureFilterContext(Point2f(0.3, 0.4), 0.02f0, 0.01f0, 0.01f0, 0.02f0)
         n, t = Vec3f(0, 0, 1), Vec3f(1, 0, 0)
         wo = normalize(Vec3f(0.1, 0.2, 1))
@@ -245,10 +245,10 @@ function run_pbrt_mix_selection()
         a = Hikari.Diffuse(color = (0.8f0, 0.1f0, 0.1f0), roughness = 0.2f0)
         b = Hikari.Conductor(reflectance = (0.9f0, 0.7f0, 0.2f0), roughness = 0.2f0)
         description = Hikari.pbrt_mix_material(a, b, 0.5f0)
-        store = Raycore.MultiTypeSet(CPU())
+        store = Raycore.MultiTypeSet(Mantle.Device())
         aa, bb = Hikari.to_device_material(store, a), Hikari.to_device_material(store, b)
         graph = Hikari.to_device_material(store, description)
-        textures = Raycore.StaticMultiTypeSet((), Tuple(T[x for x in store.texture_gpu_arrays if typeof(x) === T] for T in store.texture_order))
+        textures = host_static(store)
         table = Hikari.get_srgb_table()
         lambda = Hikari.sample_wavelengths_stratified((0.11f0, 0.27f0, 0.53f0, 0.79f0))
         n, t = Vec3f(0, 0, 1), Vec3f(1, 0, 0)
