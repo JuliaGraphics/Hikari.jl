@@ -53,6 +53,7 @@ function fill_aux_buffers!(film::Film, scene::Scene{<:AdaptedAccel}, camera;
         accel, camera, film.filter_params, film.filter_sampler, miss_depth, Int32(grid),
         scene.materials, scene.media_interfaces; ndrange = length(film.albedo))
     Mantle.waitidle(mantle_device(backend))
+    film.clean_guides[] = !camera_uses_lens(camera)
     return film
 end
 

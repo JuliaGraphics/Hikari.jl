@@ -62,12 +62,15 @@ function defocused_beauty_and_guide(; kw...)
     luminance = map(c -> c.r + c.g + c.b, Array(film.framebuffer))
     albedo = map(c -> c.g, Array(film.albedo))
     close(integrator)
-    return luminance ./ maximum(luminance), albedo
+    return luminance ./ maximum(luminance), albedo, film.clean_guides[]
 end
 
 @testset "Guides are defocused like the image" begin
     for aperture_blades in (0, 6)
-        coverage, albedo = defocused_beauty_and_guide(; fstop = 1, focus = 0.2, aperture_blades)
+        coverage, albedo, clean = defocused_beauty_and_guide(; fstop = 1, focus = 0.2, aperture_blades)
         @test sum(abs, albedo .- coverage) / length(coverage) < 0.02f0
+        @test !clean
     end
+    _, _, clean = defocused_beauty_and_guide()
+    @test clean
 end

@@ -55,6 +55,9 @@ struct Film{
     albedo::AB
     normal::NB
     depth::DB
+    # Whether the guides are noise-free: not when they are spread over a lens,
+    # whose `grid`² samples leave noise where the defocus is strong.
+    clean_guides::Base.RefValue{Bool}
 
     # Display-ready output (written by postprocess!)
     postprocess::PP
@@ -128,6 +131,7 @@ function Film(
         albedo,
         normal,
         depth,
+        Ref(true),
         postprocess,
         Ref(Int32(0)),
         Ref{Any}(nothing),
@@ -165,6 +169,7 @@ function Film(backend, film::Film)
         upload!(mem, film.albedo),
         upload!(mem, film.normal),
         upload!(mem, film.depth),
+        Ref(film.clean_guides[]),
         upload!(mem, film.postprocess),
         film.iteration_index,
         # A fresh slot, not the source film's: the plan names the buffers it
@@ -235,6 +240,7 @@ function fill_aux_buffers!(film::Film, scene, camera; has_infinite_lights::Bool=
         ndrange = length(albedo)
     )
     Mantle.waitidle(mantle_device(backend))
+    film.clean_guides[] = !camera_uses_lens(camera)
     return film
 end
 
