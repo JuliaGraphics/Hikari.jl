@@ -48,3 +48,26 @@ end
     @test abs(render_dot_out_of_focus(fstop = 1, focus = 4) - sharp) <= sharp ÷ 4
     @test render_dot_out_of_focus(fstop = 1, focus = 1) > 4sharp
 end
+
+function defocused_beauty_and_guide(; kw...)
+    backend = Mantle.defaultbackend()
+    scene = Hikari.Scene(; backend)
+    push!(scene, normal_mesh(Tessellation(Sphere(Point3f(0), 0.6f0), 64)), Hikari.Emission(color = (1, 1, 1), strength = 1, two_sided = true))
+    Hikari.sync!(scene)
+    film = Hikari.Film(backend, Hikari.Film(Point2f(32, 32)))
+    camera = Hikari.PerspectiveCamera(Point3f(0, 0, 3), Point3f(0), film; fov = 45, kw...)
+    integrator = Hikari.VolPath(; samples = 256, max_depth = 1)
+    integrator(scene, film, camera)
+    Hikari.fill_aux_buffers!(film, scene, camera)
+    luminance = map(c -> c.r + c.g + c.b, Array(film.framebuffer))
+    albedo = map(c -> c.g, Array(film.albedo))
+    close(integrator)
+    return luminance ./ maximum(luminance), albedo
+end
+
+@testset "Guides are defocused like the image" begin
+    for aperture_blades in (0, 6)
+        coverage, albedo = defocused_beauty_and_guide(; fstop = 1, focus = 0.2, aperture_blades)
+        @test sum(abs, albedo .- coverage) / length(coverage) < 0.02f0
+    end
+end

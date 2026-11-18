@@ -81,11 +81,22 @@ end
 const GUIDE_GRID = Int32(9)
 
 """
+    guide_lens_sample(n) -> Point2f
+
+The lens sample of guide ray `n`: the R2 sequence offset so that ray `0` gets the
+`(0.5, 0.5)` sample, spreading the rays over the aperture with no pattern shared with
+the filter grid.
+"""
+@inline guide_lens_sample(n::Int32) =
+    Point2f(mod(0.5f0 + n * 0.7548777f0, 1.0f0), mod(0.5f0 + n * 0.5698403f0, 1.0f0))
+
+"""
     pixel_guides(accel, materials, interfaces, camera, filter, filter_data, centre, miss_depth, grid) -> (albedo, normal, depth)
 
 The guides of the pixel at raster position `centre`: albedo and normal over a `grid`²
-stratified set of rays through `filter`'s samples, weighted as the image weights them, since
-OIDN wants the guides filtered like the image, and the depth of the middle ray.
+stratified set of rays through `filter`'s samples and spread over the camera's aperture,
+weighted as the image weights them, since OIDN wants the guides filtered and defocused like
+the image, and the depth of the middle ray.
 """
 @inline function pixel_guides(accel, materials, interfaces, camera, filter, filter_data, centre::Point2f,
                               miss_depth::Float32, grid::Int32)
@@ -96,7 +107,8 @@ OIDN wants the guides filtered like the image, and the depth of the middle ray.
     for j in Int32(1):grid, i in Int32(1):grid
         u = Point2f((i - 0.5f0) / grid, (j - 0.5f0) / grid)
         fs = filter_sample(filter, filter_data, u)
-        ray, ω = generate_ray(camera, CameraSample(centre + fs.p, Point2f(0.5f0, 0.5f0), 0.0f0))
+        lens = guide_lens_sample((j - middle) * grid + (i - middle))
+        ray, ω = generate_ray(camera, CameraSample(centre + fs.p, lens, 0.0f0))
         ω > 0.0f0 || continue
         a, n, d = guide_hit(accel, materials, interfaces, ray, miss_depth)
         w = fs.weight
