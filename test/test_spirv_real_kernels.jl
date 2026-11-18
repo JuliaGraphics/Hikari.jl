@@ -278,8 +278,11 @@ import .SPIRVTestUtils: check, check_not, check_vendor_safety, spirv_opt_roundtr
         Hikari.clear!(film)
 
         # Every compile job of the render, as GPUCompiler's reflection sees them.
+        # Mantle compiles a graph's kernels on parallel tasks, so the hook takes a lock.
         jobs = Any[]
-        Base.ScopedValues.with(Lava.GPUCompiler.compile_hook => job -> push!(jobs, job)) do
+        jobslock = ReentrantLock()
+        hook(job) = @lock jobslock push!(jobs, job)
+        Base.ScopedValues.with(Lava.GPUCompiler.compile_hook => hook) do
             Hikari.VolPath(samples = 1, max_depth = 2)(scene, film, camera)
             KA.synchronize(backend)
         end
