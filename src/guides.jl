@@ -81,11 +81,33 @@ end
 const GUIDE_GRID = Int32(9)
 
 """
+    guide_lens_shift(centre) -> Point2f
+
+A pseudo-random offset per pixel, so that neighbouring pixels spread their guide rays
+over different points of the aperture. Shared points would show a strong defocus as
+`grid`² shifted copies of the sharp image.
+"""
+@inline function guide_lens_shift(centre::Point2f)
+    h = mix_bits((UInt64(reinterpret(UInt32, centre[1])) << 32) | UInt64(reinterpret(UInt32, centre[2])))
+    return Point2f(Float32(h >> 40) / 16777216.0f0, Float32((h >> 16) & 0xffffff) / 16777216.0f0)
+end
+
+"""
+    guide_lens_sample(n, shift) -> Point2f
+
+The lens sample of guide ray `n`: the R2 sequence shifted by `shift`, spreading the rays
+over the aperture with no pattern shared with the filter grid.
+"""
+@inline guide_lens_sample(n::Int32, shift::Point2f) =
+    Point2f(mod(shift[1] + n * 0.7548777f0, 1.0f0), mod(shift[2] + n * 0.5698403f0, 1.0f0))
+
+"""
     pixel_guides(accel, materials, interfaces, camera, filter, filter_data, centre, miss_depth, grid) -> (albedo, normal, depth)
 
 The guides of the pixel at raster position `centre`: albedo and normal over a `grid`²
-stratified set of rays through `filter`'s samples, weighted as the image weights them, since
-OIDN wants the guides filtered like the image, and the depth of the middle ray.
+stratified set of rays through `filter`'s samples and spread over the camera's aperture,
+weighted as the image weights them, since OIDN wants the guides filtered and defocused like
+the image, and the depth of the middle ray.
 """
 @inline function pixel_guides(accel, materials, interfaces, camera, filter, filter_data, centre::Point2f,
                               miss_depth::Float32, grid::Int32)
@@ -93,10 +115,12 @@ OIDN wants the guides filtered like the image, and the depth of the middle ray.
     normal = Vec3f(0)
     depth = miss_depth
     middle = (grid + Int32(1)) ÷ Int32(2)
+    shift = guide_lens_shift(centre)
     for j in Int32(1):grid, i in Int32(1):grid
         u = Point2f((i - 0.5f0) / grid, (j - 0.5f0) / grid)
         fs = filter_sample(filter, filter_data, u)
-        ray, ω = generate_ray(camera, CameraSample(centre + fs.p, Point2f(0.5f0, 0.5f0), 0.0f0))
+        lens = i == j == middle ? Point2f(0.5f0, 0.5f0) : guide_lens_sample(j * grid + i, shift)
+        ray, ω = generate_ray(camera, CameraSample(centre + fs.p, lens, 0.0f0))
         ω > 0.0f0 || continue
         a, n, d = guide_hit(accel, materials, interfaces, ray, miss_depth)
         w = fs.weight
