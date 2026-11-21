@@ -33,12 +33,20 @@ GRMHDSnapshots = "0.2"
 SpecialFunctions = "2"
 Unitful = "1"
 Adapt = "4.4.0"
+Atomix = "1.5"
 FileIO = "1.16"
 GPUArraysCore = "0.2.0"
 GeometryBasics = "0.4, 0.5"
 ImageCore = "0.10"
 ImageIO = "0.6"
+KernelAbstractions = "0.10.7"
+LazyArtifacts = "1"
+LinearAlgebra = "1"
+Mantle = "0.1"
 ProgressMeter = "1"
+Raycore = "0.3"
+Random = "1"
+Serialization = "1"
 RandomNumbers = "1.6.0"
 StaticArrays = "1.9.7"
 StructArrays = "0.6.18, 0.7"
@@ -52,7 +60,7 @@ HikariGRMHDSnapshotsExt = "GRMHDSnapshots"
 
 [sources]
 Mantle = {url = "https://github.com/SimonDanisch/Mantle.jl", rev = "sd/lava-refactor"}
-Raycore = {url = "https://github.com/JuliaGeometry/Raycore.jl", rev = "sd/with-texture"}
+Raycore = {url = "https://github.com/JuliaGeometry/Raycore.jl", rev = "master"}
 
 [extras]
 Lava = "3a680b1f-cb25-4bee-9cf7-bc880b76dc8c"

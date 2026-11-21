@@ -13,9 +13,8 @@ Metal = "dde4c033-4e86-420c-a63e-0dd931031962"
 Raycore = "afc56b53-c9a9-482a-a956-d1d800e05559"
 
 # These packages are not all registered yet. Keep the test environment explicit:
-# transitive [sources] do not supply the matrix vocabulary in KernelInterface.
+# Pkg does not follow a dependency's [sources].
 [sources]
-CompilerCaching = {url = "https://github.com/maleadt/CompilerCaching.jl", rev = "bae1df4d098a62905496ee7afd95ce00d937ec6b"}
 Hikari = {path = ".."}
 Lava = {url = "https://github.com/SimonDanisch/Lava.jl", rev = "main"}
 Mantle = {url = "https://github.com/SimonDanisch/Mantle.jl", rev = "sd/lava-refactor"}
@@ -23,6 +22,8 @@ Metal = {url = "https://github.com/SimonDanisch/Metal.jl", rev = "sd/lava-refact
 Raycore = {url = "https://github.com/JuliaGeometry/Raycore.jl", rev = "sd/with-texture"}
 
 [compat]
+# the release with the persistent `ObjCache` Lava uses
+CompilerCaching = "0.5.3"
 julia = "1.12"
 Vulkan = "0.7"
 VulkanCore = "2"

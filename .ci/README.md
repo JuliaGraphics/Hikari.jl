@@ -41,7 +41,7 @@ keeps Julia's default bounds checking (`auto`): forced bounds checks, the
 `Pkg.test` default, inject device exception paths unsupported by the GPU stack.
 All test files, including subsurface rendering, run under this policy.
 
-CompilerCaching is pinned to the published revision providing `ObjCache`.
+CompilerCaching's compat is the release with the persistent `ObjCache`, 0.5.3.
 The Lavapipe device checks also require that persistent cache to be enabled,
 so CI cannot silently exercise only the session cache.
 
