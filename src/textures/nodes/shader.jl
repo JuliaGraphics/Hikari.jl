@@ -183,10 +183,13 @@ complex division widens to `Complex{Float64}` and its square root rescales with 
 this function a fifth of every Principled shading kernel, in `Float64` code that Apple GPUs cannot
 compile at all.
 """
-# Let the device compiler choose inlining: a forced call boundary penalizes
-# shared BSDF shading even when the material has no film. A caller that wants
-# the boundary says so at its call.
-function _thin_film_reflectance(cos_i::Float32, thickness::Float32, eta2::Float32, eta3::Float32,
+# One copy on the device, out of line. Inlined, the 16-node closure shading kernel
+# held it 48 times, and NVIDIA's compiler made that kernel's hardware-traversal
+# build a 12.5 MB binary (233 s to compile) that shaded 17x slower than its
+# software-traversal build: RayDemo's materials 1.32 s against 0.63 s, RTX 4000
+# Ada, driver 595.112.07. Lava emits a `@noinline` function `DontInline`, which
+# spirv-opt keeps; a call-site `@noinline` does not reach the SPIR-V.
+@noinline function _thin_film_reflectance(cos_i::Float32, thickness::Float32, eta2::Float32, eta3::Float32,
                                         k3::Float32, lambda::Float32, f82::Float32 = -1f0)
     if thickness < 1f0
         t = clamp(thickness, 0f0, 1f0)
