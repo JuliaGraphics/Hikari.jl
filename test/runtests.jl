@@ -21,20 +21,10 @@ if get(ENV, "HIKARI_TEST_LAVAPIPE", "false") == "true"
     end
 end
 
-# The Vulkan backend module, for the test files that name backend internals.
-#
-# Hikari's own source does not, and must not — it goes through Mantle's portable
-# API. Its TESTS do: `Mantle.LavaBackend`, `Mantle.vk_flush!` and friends, which
-# since the 2026-08-27 split live in `MantleVulkanExt` rather than in Mantle. A
-# `Main`-level binding serves every file, since they are all `include`d here.
-#
-# Phase 1.5 deleted this binding and did NOT migrate the nineteen files that
-# name it, so the whole GPU half of this suite died on `UndefVarError: MVE` —
-# 23 errors that read as "Hikari is broken". It is back, and it is DEBT: the
-# names still reached for are `vk_context`, `LavaBackend`, `vk_flush!`,
-# `live_buffer_count`, `drain_deferred_frees!`, `device_lost`, `gpu_live_bytes`,
-# and each needs either a portable spelling or a deliberate decision that a
-# backend-internals test belongs in the backend's own suite.
+# Hikari's source and its tests go through Mantle's portable API only: the leak and
+# device checks (`live_buffer_count`, `gpu_live_bytes`, `retired`) answer on every
+# device. The one exception is `test_spirv_real_kernels.jl`, Lava's compiler on
+# Hikari's types.
 # NOT `using JET` here. Only `gpu_compat.jl` needs it, and it is a test-target
 # dependency, so an environment without it made this line throw before the first
 # testset and took all 24 files down with it. That file imports it itself; if JET

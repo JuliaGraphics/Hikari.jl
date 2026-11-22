@@ -1,12 +1,11 @@
 # Hikari Caching, GC, and Correctness Tests
 #
 # Tests VolPath integrator caching (adapted scene, filter sampler, initial medium),
-# VolPathState allocation/free lifecycle, WorkQueue GPU operations on Lava,
+# VolPathState allocation/free lifecycle, WorkQueue GPU operations on the device,
 # close() cleanup, and rendering correctness across multiple renders.
 
 using Test
 using Hikari
-using Lava, Mantle
 using Mantle
 using KernelAbstractions
 import KernelAbstractions as KA
@@ -121,7 +120,7 @@ end
                 #
                 # `live_buffer_count` is checked alongside the pool because the two
                 # catch different mistakes. The pool number stays flat if an
-                # allocation never reached the pool at all; Lava's count is what
+                # allocation never reached the pool at all; the device's count is what
                 # notices a `KA.allocate` that crept back into the constructor and
                 # was never given back. Everything the state owns — the queues, the
                 # accumulators, the light BVH, the Sobol matrices and both spectral
@@ -206,8 +205,8 @@ end
         end
     end
 
-    # ── 3. WorkQueue on Lava backend ──
-    @testset "WorkQueue on LavaBackend" begin
+    # ── 3. WorkQueue on the device ──
+    @testset "WorkQueue on the device" begin
         backend = Mantle.defaultbackend()
 
         @testset "push and read on GPU" begin
@@ -440,22 +439,17 @@ end
         end
     end
 
-    # ── 9. LavaArray resize! does not leak ──
+    # ── 9. resize! does not leak ──
     @testset "resize! does not leak buffers" begin
         GC.gc(true)
         Mantle.flush!(Mantle.Device())
         Mantle.waitidle(Mantle.Device())
         baseline = Mantle.live_buffer_count()
 
-        # Pre-pool-block test bookkeeping: a tiny LavaArray comes out of an
-        # existing 64-MiB pool block (no new `VkManagedBuffer`) — only allocs
-        # larger than `Mantle.POOL_LARGE_THRESHOLD` (= POOL_BLOCK_SIZE = 64 MiB)
-        # bypass the pool. So `live_buffer_count` may stay flat or grow by at most
-        # one (if the pool runs out and a new block is allocated). The test
-        # invariant is "no leak": the count must NEVER grow past `baseline +
-        # 1` no matter how many resize!s we do.
-
-        a = Mantle.LavaArray{Int32}(undef, 10)
+        # A device array is a region of a pool block or a buffer of its own, by
+        # device and size, so the count grows by at most one while it lives. It must
+        # not grow with every `resize!`, and freeing the array gives it back.
+        a = KA.allocate(Mantle.defaultbackend(), Int32, 10)
         Mantle.flush!(Mantle.Device())
         after_alloc = Mantle.live_buffer_count()
         @test after_alloc <= baseline + 1
@@ -480,7 +474,7 @@ end
         Mantle.flush!(Mantle.Device())
         Mantle.waitidle(Mantle.Device())
         after_free = Mantle.live_buffer_count()
-        @test after_free <= baseline + 1
+        @test after_free == baseline
     end
 
     # ── 10. Film lifecycle ──

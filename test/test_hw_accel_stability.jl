@@ -95,7 +95,7 @@ const CTX = Mantle.Device()
         img = _render_once(scene, BACKEND; samples=4, depth=2)
         @test size(img) == (48, 48)
         @test _nondegenerate(img)
-        @test !Mantle.device_lost(CTX)
+        @test !Mantle.retired(CTX)
         last_img = img
     end
     GC.gc(true); GC.gc(true)
@@ -138,7 +138,7 @@ end
 
         img = _render_once(scene, BACKEND; samples=4, depth=2)
         @test _nondegenerate(img)
-        @test !Mantle.device_lost(CTX)
+        @test !Mantle.retired(CTX)
     end
     GC.gc(true); GC.gc(true)
     final = _snapshot()
@@ -154,7 +154,7 @@ end
         scene_k, _ = _make_scene(BACKEND; n_spheres=2 + k)
         img_k = _render_once(scene_k, BACKEND; samples=4, depth=2)
         @test _nondegenerate(img_k)
-        @test !Mantle.device_lost(CTX)
+        @test !Mantle.retired(CTX)
         scene_k = nothing  # drop ref so the VulkanTLAS can be finalized
     end
     GC.gc(true); GC.gc(true)

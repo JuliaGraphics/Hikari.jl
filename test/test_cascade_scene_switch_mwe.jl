@@ -71,7 +71,7 @@ if get(ENV, "LAVA_RUN_CASCADE_REPRO", "0") == "1"
     @testset "MWE-7: A→B scene switch (cascade fix regression)" begin
         sa = _build_a(_BE_M7)
         _render_one(sa)
-        @test !Mantle.device_lost(_CTX_M7)  # A render must be clean
+        @test !Mantle.retired(_CTX_M7)  # A render must be clean
 
         sb = _build_b(_BE_M7)
         crashed = false
@@ -81,7 +81,7 @@ if get(ENV, "LAVA_RUN_CASCADE_REPRO", "0") == "1"
             crashed = true
             @info "MWE-7 caught exception: $(typeof(e))"
         end
-        crashed = crashed || Mantle.device_lost(_CTX_M7)
+        crashed = crashed || Mantle.retired(_CTX_M7)
         @test !crashed   # was @test_broken before the pin!/pin_leaves! fix.
     end
 end
