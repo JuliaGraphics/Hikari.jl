@@ -24,6 +24,8 @@ Raycore = {url = "https://github.com/JuliaGeometry/Raycore.jl", rev = "master"}
 [compat]
 # the release with the persistent `ObjCache` Lava uses
 CompilerCaching = "0.5.3"
+# the first release that backs device memory with memfd, not $XDG_RUNTIME_DIR files
+Lavapipe_jll = "26.2.4"
 julia = "1.12"
 Vulkan = "0.7"
 VulkanCore = "2"

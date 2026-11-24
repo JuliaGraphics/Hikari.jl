@@ -11,10 +11,6 @@ using Hikari
 using Lava, Mantle
 include(joinpath(@__DIR__, "suite.jl"))
 
-# Force lavapipe for deterministic software rendering. Callers that want the
-# real device should override `LAVA_ICD` before `using Lava`.
-get!(ENV, "VK_ICD_FILENAMES", "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json")
-
 # ── One-shot comparison helper ──────────────────────────────────────────────
 
 function compare_scene(scene_name; backend, samples, hw_accel,
@@ -59,8 +55,11 @@ function run_pbrt_comparison(; backend=Mantle.defaultbackend(),
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
-    run_pbrt_comparison(; hw_accel=false)
+    # Lavapipe, for deterministic software rendering. Pass another device's
+    # backend to `run_pbrt_comparison` to compare on that device.
+    backend = Mantle.defaultdevice!("lavapipe")
+    run_pbrt_comparison(; backend, hw_accel=false)
     if hw_rt_available()
-        run_pbrt_comparison(; hw_accel=true)
+        run_pbrt_comparison(; backend, hw_accel=true)
     end
 end

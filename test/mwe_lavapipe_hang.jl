@@ -15,11 +15,10 @@
 #
 # With the Gram-Schmidt version, both scenes complete in ~5s each.
 
-using Hikari, Lava, GeometryBasics, FileIO
+using Hikari, Lava, Mantle, GeometryBasics, FileIO
 import KernelAbstractions as KA
 
-ENV["VK_ICD_FILENAMES"] = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"
-backend = Mantle.defaultbackend()
+backend = Mantle.defaultdevice!("lavapipe")
 
 # This works (diffuse doesn't use shading tangents for specular reflection)
 println("Rendering diffuse...")

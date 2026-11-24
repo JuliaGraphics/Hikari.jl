@@ -4,12 +4,11 @@
 #
 # Run: julia --project=. dev/Hikari/test/mwe_lava_crash.jl
 
-ENV["VK_ICD_FILENAMES"] = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"
-using Hikari, Lava, GeometryBasics, FileIO
+using Hikari, Lava, Mantle, GeometryBasics, FileIO
 import KernelAbstractions as KA
 using KernelAbstractions: @kernel, @index, synchronize, allocate
 
-backend = Mantle.defaultbackend()
+backend = Mantle.defaultdevice!("lavapipe")
 
 # Minimal kernel that mimics the crashing pattern
 @kernel function crash_kernel!(output, @Const(input), @Const(cos_vals), @Const(R_vals))

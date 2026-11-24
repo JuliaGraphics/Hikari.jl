@@ -1,9 +1,7 @@
 # MWE: dump SPIR-V for the crashing 3-material kernel
 # Run: julia --project=. dev/Hikari/test/mwe_dump_spirv.jl
 
-ENV["VK_ICD_FILENAMES"] = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"
-
-using Hikari, Lava, GeometryBasics, FileIO
+using Hikari, Lava, Mantle, GeometryBasics, FileIO
 
 # Monkey-patch Lava to dump SPIR-V before creating pipeline
 # `_validate_spirv` was renamed to `validate_spirv` and is the compiler's.
@@ -19,7 +17,7 @@ let dump_counter = Ref(0)
     end
 end
 
-backend = Mantle.defaultbackend()
+backend = Mantle.defaultdevice!("lavapipe")
 println("Backend ready")
 flush(stdout)
 

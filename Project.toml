@@ -40,6 +40,8 @@ GeometryBasics = "0.4, 0.5"
 ImageCore = "0.10"
 ImageIO = "0.6"
 KernelAbstractions = "0.10.7"
+# the first release that backs device memory with memfd, not $XDG_RUNTIME_DIR files
+Lavapipe_jll = "26.2.4"
 LazyArtifacts = "1"
 LinearAlgebra = "1"
 Mantle = "0.1"
