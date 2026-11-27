@@ -59,7 +59,7 @@ GRMHDSnapshots = "01234567-89ab-cdef-fedc-ba9876543210"
 HikariGRMHDSnapshotsExt = "GRMHDSnapshots"
 
 [sources]
-Mantle = {url = "https://github.com/SimonDanisch/Mantle.jl", rev = "sd/lava-refactor"}
+Mantle = {url = "https://github.com/SimonDanisch/Mantle.jl", rev = "sd/webgpu"}
 Raycore = {url = "https://github.com/JuliaGeometry/Raycore.jl", rev = "master"}
 
 [extras]
