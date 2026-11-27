@@ -194,11 +194,8 @@ end
 # Buffer reading utilities (works for both CPU Ptr and GPU LLVMPtr)
 # ============================================================================
 
-# Reinterpret pointer to different element type - works for both CPU and GPU
-@inline as_pointer(::Type{T}, ptr::Core.LLVMPtr{T2, AS}) where {T, T2, AS} =
-    reinterpret(Core.LLVMPtr{T, AS}, ptr)
-@inline as_pointer(::Type{T}, ptr::Ptr) where {T} =
-    reinterpret(Ptr{T}, ptr)
+# Reinterpret the pointer while keeping its address on the owning device.
+@inline as_pointer(::Type{T}, ptr) where {T} = Mantle.retype_pointer(T, ptr)
 
 # Unified read functions using pointer + reinterpret (CPU and GPU)
 # ptr is a UInt8 pointer, byte_offset is 1-indexed Julia offset

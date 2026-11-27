@@ -103,17 +103,13 @@ function capacity_reference_draw(f)
     end
 end
 
-@testset "storage capacities and in-place transitions keep recorded plans (single=$single)" for single in (false,true)
+@testset "storage capacity transitions refresh the recorded plan as needed (single=$single)" for single in (false,true)
     material = Hikari.Glass(roughness = 0.2)
     f = capacity_fixture(material; single)
     try
         capacity_draw(f)
         plans = f.vp.state.plans
-        partition = f.vp.state.shader_partition
-        partition_allocations = length(f.vp.state.per_material_memory.owned)
-        @test partition isa Hikari.ShaderCapacityPartition
-        @test length(partition.items) == (single ? 1 : 4 * f.vp.state.material_queues.capacity)
-        @test length(partition.sizes) == 4
+        masks = Hikari.shader_input_layout(f.scene.materials).capacity_masks
         arrays = length(f.scene.materials.texture_gpu_arrays)
         layout = f.scene.materials.layout
         for (name,m) in (("opaque", Hikari.Principled(roughness = 0.3)),
@@ -128,9 +124,18 @@ end
                 actual = capacity_image(f) # Keep the first post-update frame.
                 capacity_draw(f)
                 @test capacity_image(f) ≈ actual rtol = 5f-5 atol = 2f-5
-                @test f.vp.state.plans === plans
-                @test f.vp.state.shader_partition === partition
-                @test length(f.vp.state.per_material_memory.owned) == partition_allocations
+                next_masks = Hikari.shader_input_layout(f.scene.materials).capacity_masks
+                @test f.vp.state.material_queues_signature.capacity_masks == next_masks
+                @test (f.vp.state.plans === plans) == (next_masks == masks)
+                plans, masks = f.vp.state.plans, next_masks
+                partition = f.vp.state.shader_partition
+                if any(mask -> count_ones(mask) > 1, masks)
+                    @test partition isa Hikari.ShaderCapacityPartition
+                    @test length(partition.items) == 4 * f.vp.state.material_queues.capacity
+                    @test length(partition.sizes) == 4
+                else
+                    @test partition === nothing
+                end
                 @test length(f.scene.materials.texture_gpu_arrays) == arrays
                 @test f.scene.materials.layout == layout
                 expected = capacity_fixture(m; single)

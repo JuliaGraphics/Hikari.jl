@@ -113,6 +113,8 @@ end
     @test Hikari.wave_lanes(1, 64) == 1
     @test Hikari.wave_lanes(64, 512 * 512) == 8
     @test Hikari.wave_lanes(64, 3840 * 2160) == 1
+    @test Hikari.wave_path_limit(128 << 20) == 1 << 15
+    @test Hikari.wave_path_limit(1 << 30) == 1 << 18
     @test Hikari.wave_path_limit(8 << 30) == 1 << 21
     @test Hikari.wave_path_limit(11 << 30) == 1 << 21
     @test Hikari.wave_path_limit(12 << 30) == 1 << 22

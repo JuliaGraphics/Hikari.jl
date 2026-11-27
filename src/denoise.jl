@@ -21,6 +21,13 @@ filter on the GPU, or [`OIDN`](@ref), Intel Open Image Denoise's network.
 """
 abstract type Denoiser end
 
+"""Guide grid for this denoising pass. Zero requests depth only."""
+denoise_guide_grid(::Denoiser, ::Film, grid::Int) = grid
+
+function fill_denoise_guides!(::Denoiser, film::Film, scene, camera; has_infinite_lights, grid)
+    return fill_aux_buffers!(film, scene, camera; has_infinite_lights, grid)
+end
+
 """
     DenoiseConfig
 

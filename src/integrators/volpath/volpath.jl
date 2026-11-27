@@ -704,12 +704,18 @@ end
 
 """The most paths a wave holds: what its queues and buffers are sized for."""
 # Larger waves amortize fixed wavefront dispatch costs. Keep the conservative
-# bound on smaller/unknown devices; a reported budget of at least 12 GiB leaves
-# room for four-million-path state, medium queues and scene assets together.
+# bound on unknown devices. Scale smaller reported budgets to leave room for
+# scene assets and temporary allocations; an estimated four KiB per path
+# includes that headroom. A reported budget of at least 12 GiB supports the
+# larger wave with four million paths.
 # Full-resolution films retain at least one lane even beyond the path bound.
 const WAVE_PATHS = 1 << 21
 wave_path_limit(dev) = wave_path_limit(Mantle.capacity(dev))
-wave_path_limit(budget::Integer) = budget != typemax(Int) && budget >= (12 << 30) ? 2 * WAVE_PATHS : WAVE_PATHS
+function wave_path_limit(budget::Integer)
+    budget == typemax(Int) && return WAVE_PATHS
+    budget >= (12 << 30) && return 2 * WAVE_PATHS
+    return clamp(budget ÷ 4096, 1, WAVE_PATHS)
+end
 # Other GPU allocations can change the reported budget between frames. Keep
 # the original bound for this state instead of repeatedly rebuilding its plans.
 wave_path_limit(vp::VolPath, dev) = vp.state === nothing ? wave_path_limit(dev) : vp.path_limit

@@ -291,31 +291,16 @@ struct ShaderCapacityPartition{V <: AbstractVector{Int32}}
     sizes::V
     capacity::Int32
 end
-ShaderCapacityPartition(capacity::Integer, mem::DeviceMemory; indices::Bool=true) =
-    ShaderCapacityPartition(alloc!(mem, Int32, indices ? 4 * capacity : 1), alloc!(mem, Int32, 4), Int32(capacity))
+ShaderCapacityPartition(capacity::Integer, mem::DeviceMemory) =
+    ShaderCapacityPartition(alloc!(mem, Int32, 4 * capacity), alloc!(mem, Int32, 4), Int32(capacity))
 
-function partition_queue(q::CapacityQueue, bin::Integer, p::ShaderCapacityPartition; uniform::Bool=false)
+function partition_queue(q::CapacityQueue, bin::Integer, p::ShaderCapacityPartition)
     original = q.queue
-    items = uniform ? original.items : p.items
-    offset = uniform ? original.offset : Int32((bin - 1) * p.capacity)
-    base = typeof(original)(items, p.sizes, Int32(bin), offset,
+    offset = Int32((bin - 1) * p.capacity)
+    base = typeof(original)(p.items, p.sizes, Int32(bin), offset,
                             original.inputs, original.program_offset)
     # Keep the existing queue/ref type and all its compiled shading kernels.
     return typeof(q)(base)
-end
-
-# A slot with one material program has one class for every hit. Read its
-# current hint on the GPU so edits keep the recorded plan and queue types.
-@kernel inbounds=true function vp_shader_capacity_counts_kernel!(sizes, q, programs)
-    if @index(Global) == 1
-        program = q.inputs.program[q.program_offset + Int32(1)]
-        hint = closure_capacity_hint(programs[program][Int32(1)])
-        n = q.sizes[q.slot]
-        bin = capacity_bin(hint)
-        for k in 1:4
-            sizes[k] = bin == k ? n : Int32(0)
-        end
-    end
 end
 
 @inline function store_capacity_index!(::Val{false}, items, sizes, capacity::Int32, idx::Int32, target::Int32)

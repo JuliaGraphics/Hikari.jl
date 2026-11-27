@@ -20,9 +20,13 @@ function test_aux_alignment(backend; hw_accel = false)
     Hikari.clear!(film)
     integrator = Hikari.VolPath(; samples = 64, max_depth = 2, hw_accel)
     integrator(scene, film, camera)
-    Hikari.fill_aux_buffers!(film, Adapt.adapt(backend, scene), camera)
+    adapted = Adapt.adapt(backend, scene)
+    Hikari.fill_aux_buffers!(film, adapted, camera)
     radiance = Array(film.framebuffer)
     depth = Array(film.depth)
+    fill!(film.depth, 0f0)
+    Hikari.fill_aux_buffers!(film, adapted, camera; guides = false)
+    @test all(isapprox.(Array(film.depth), depth))
     luminance = map(c -> c.r + c.g + c.b, radiance)
     # Half intensity measures the silhouette rather than the reconstruction
     # filter's low-energy fringe around it.
@@ -117,6 +121,30 @@ end
     for hw_accel in (Mantle.supports_hwtlas(backend) ? (false, true) : (false,))
         _, albedo, hits = emitter_beauty_and_guide(backend; hw_accel, grid = 1)
         @test albedo == hits
+    end
+end
+
+@testset "Separate material guide passes match the single dispatch" begin
+    backend = Mantle.defaultbackend()
+    scene = Hikari.Scene(; backend, hw_accel=false)
+    sphere(x) = normal_mesh(GeometryBasics.Tessellation(Sphere(Point3f(x, 0, 0), 0.45f0), 24))
+    push!(scene, sphere(-0.5f0), Hikari.Diffuse(color=(0.25, 0.5, 0.75)))
+    push!(scene, sphere(0.5f0), Hikari.Emission(color=(1, 1, 1), strength=1, two_sided=true))
+    Hikari.sync!(scene)
+    host_film = Hikari.Film(Point2f(40, 32); filter=Hikari.GaussianFilter())
+    camera = Hikari.PerspectiveCamera(Point3f(0, 0, 3), Point3f(0), host_film; fov=45f0)
+    film = Hikari.Film(backend, host_film)
+    try
+        adapted = Adapt.adapt(backend, scene)
+        Hikari.fill_aux_buffers!(film, adapted, camera; grid=1)
+        albedo, normal, depth = Array(film.albedo), Array(film.normal), Array(film.depth)
+        Hikari.launch_single_ray_guides!(film, adapted, camera; has_infinite_lights=false)
+        @test Array(film.albedo) ≈ albedo
+        @test Array(film.normal) ≈ normal
+        @test all(isapprox.(Array(film.depth), depth))
+        @test any(isinf, depth) && any(isfinite, depth)
+    finally
+        Hikari.free!(film)
     end
 end
 

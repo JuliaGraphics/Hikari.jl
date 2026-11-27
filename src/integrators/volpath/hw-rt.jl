@@ -10,12 +10,12 @@
 import Mantle
 import Mantle: HWTLAS, AdaptedAccel
 
-# Any backend with hw_accel=true creates an HWTLAS.  Parametrised on
-# `Raycore.Triangle{TriangleMeta}` because Hikari's scene API pushes meshes
-# with `TriangleMeta` per-face data — `Mantle.HWTLAS(backend)`'s default
-# narrowing to `Triangle{UInt32}` would reject those pushes with a convert
-# error.
-default_accel(backend, ::Val{true}) = HWTLAS{Raycore.Triangle{TriangleMeta}}(backend)
+# Select hardware traversal where the device offers it. Both paths keep the
+# TriangleMeta that Hikari attaches to each face.
+function default_accel(backend, ::Val{true})
+    Mantle.supports_hwtlas(backend) || return default_accel(backend, Val(false))
+    return HWTLAS{Raycore.Triangle{TriangleMeta}}(backend)
+end
 
 # Scene sync! for HWTLAS scenes
 function sync!(scene::Scene{<:HWTLAS})
@@ -38,7 +38,7 @@ end
 # whose `Raycore.closest_hit` lowers to an inline ray query here.
 function fill_aux_buffers!(film::Film, scene::Scene{<:AdaptedAccel}, camera;
                            has_infinite_lights::Bool=false,
-                           cull_mask::UInt32=UInt32(0xFF), grid::Integer=GUIDE_GRID)
+                           cull_mask::UInt32=UInt32(0xFF), grid::Integer=GUIDE_GRID, guides::Bool=true)
     hwtlas = scene.accel.hwtlas
     hwtlas === nothing && return nothing  # Adapt has not run; nothing to trace
     Raycore.n_instances(hwtlas) == 0 && return nothing
@@ -48,6 +48,7 @@ function fill_aux_buffers!(film::Film, scene::Scene{<:AdaptedAccel}, camera;
 
     accel = Adapt.adapt(backend, hwtlas)  # CPU-form AdaptedAccel; LavaAdaptor
                                            # will strip hwtlas at kernel-arg time
+    guides || return fill_depth_buffer!(film, backend, accel, camera, miss_depth)
     aux_buffer_kernel!(backend)(
         film.albedo, film.normal, film.depth,
         accel, camera, film.filter_params, film.filter_sampler, miss_depth, Int32(grid),

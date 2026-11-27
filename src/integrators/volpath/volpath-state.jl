@@ -293,13 +293,12 @@ function ensure_material_queues!(state::VolPathState, materials_static, capacity
         state.material_queues === nothing || free!(state.per_material_memory)
         state.material_queues = MaterialQueues(materials_static, capacity, state.per_material_memory)
         state.shader_inputs = ShaderInputs(state.surface_hits.capacity, layout, state.per_material_memory)
-        bounded = map(slot_types(materials_static)) do T
-            splits(T) && has_capacity_classes(bsdf_kernel_nodes(bsdf_nodes(T), Mantle.syncbackend(state.memory.dev)))
+        backend = Mantle.syncbackend(state.memory.dev)
+        needs_partition = any(enumerate(slot_types(materials_static))) do (slot, T)
+            count_ones(layout.capacity_masks[slot]) > 1 && splits(T) &&
+                has_capacity_classes(bsdf_kernel_nodes(bsdf_nodes(T), backend))
         end
-        needs_indices = any(eachindex(bounded)) do slot
-            bounded[slot] && length(materials_static.data[slot]) > 1
-        end
-        state.shader_partition = any(bounded) ? ShaderCapacityPartition(capacity, state.per_material_memory; indices=needs_indices) : nothing
+        state.shader_partition = needs_partition ? ShaderCapacityPartition(capacity, state.per_material_memory) : nothing
         state.material_queues_signature = sig
     end
     return state.material_queues

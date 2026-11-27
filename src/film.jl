@@ -211,31 +211,56 @@ const MISS_DEPTH = 1.0f30
 missed(depth::Real) = depth >= MISS_DEPTH
 
 """
-    fill_aux_buffers!(film, scene, camera; has_infinite_lights=false, grid=GUIDE_GRID)
+    fill_aux_buffers!(film, scene, camera; has_infinite_lights=false, grid=GUIDE_GRID, guides=true)
 
 Fill auxiliary buffers (albedo, normal, depth) by tracing primary rays.
 These are used by `denoise!` for edge-aware filtering. The albedo and normal are filtered with
 the film's pixel filter, over `grid`² rays per pixel. `grid = 1` is one ray per pixel, for a
-camera that is still moving.
+camera that is still moving. Set `guides=false` to fill only the centre-ray depth.
 """
 function fill_aux_buffers!(film::Film, scene, camera; has_infinite_lights::Bool=false,
-                           grid::Integer=GUIDE_GRID)
-    albedo = film.albedo
-    normal = film.normal
-    depth = film.depth
-    miss_depth = has_infinite_lights ? MISS_DEPTH : Inf32
-
-    backend = KA.get_backend(albedo)
-    # Adapt the acceleration structure for kernel dispatch (TLAS -> StaticTLAS)
+                           grid::Integer=GUIDE_GRID, guides::Bool=true)
+    if guides
+        launch_aux_buffers!(film, scene, camera; has_infinite_lights, grid)
+        Mantle.waitidle(mantle_device(KA.get_backend(film.albedo)))
+        return film
+    end
+    backend = KA.get_backend(film.albedo)
     accel = Adapt.adapt(backend, scene.accel)
-    kernel! = aux_buffer_kernel!(backend)
-    kernel!(
-        albedo, normal, depth,
-        accel, camera, film.filter_params, film.filter_sampler, miss_depth, Int32(grid), Adapt.adapt(backend,scene.materials), Adapt.adapt(backend,scene.media_interfaces);
-        ndrange = length(albedo)
+    miss_depth = has_infinite_lights ? MISS_DEPTH : Inf32
+    return fill_depth_buffer!(film, backend, accel, camera, miss_depth)
+end
+
+function launch_aux_buffers!(film::Film, scene, camera; has_infinite_lights::Bool, grid::Integer)
+    backend = KA.get_backend(film.albedo)
+    accel = Adapt.adapt(backend, scene.accel)
+    miss_depth = has_infinite_lights ? MISS_DEPTH : Inf32
+    aux_buffer_kernel!(backend)(
+        film.albedo, film.normal, film.depth, accel, camera, film.filter_params,
+        film.filter_sampler, miss_depth, Int32(grid), Adapt.adapt(backend, scene.materials),
+        Adapt.adapt(backend, scene.media_interfaces);
+        ndrange = length(film.albedo)
     )
-    Mantle.waitidle(mantle_device(backend))
-    return film
+    return nothing
+end
+
+"""Launch exact one-ray guides, compiling material evaluation independently for each slot."""
+function launch_single_ray_guides!(film::Film, scene, camera; has_infinite_lights::Bool)
+    backend = KA.get_backend(film.albedo)
+    accel = Adapt.adapt(backend, scene.accel)
+    materials = Adapt.adapt(backend, scene.materials)
+    interfaces = Adapt.adapt(backend, scene.media_interfaces)
+    miss_depth = has_infinite_lights ? MISS_DEPTH : Inf32
+    if isempty(materials.data)
+        return launch_aux_buffers!(film, scene, camera; has_infinite_lights, grid=1)
+    end
+    kernel! = single_ray_guide_kernel!(backend)
+    for slot in eachindex(materials.data)
+        kernel!(film.albedo, film.normal, film.depth, accel, camera, film.filter_params,
+                film.filter_sampler, miss_depth, materials, interfaces, Val(slot);
+                ndrange=length(film.albedo))
+    end
+    return nothing
 end
 
 """
@@ -245,14 +270,56 @@ from the radiance leave the denoiser a halo on one side of every edge.
 """
 @inline pixel_centre(row, col, height) = Point2f(Float32(col) - 0.5f0, Float32(height - row) + 0.5f0)
 
+function fill_depth_buffer!(film, backend, accel, camera, miss_depth)
+    primary_depth_kernel!(backend)(film.depth, accel, camera, film.filter_params,
+        film.filter_sampler, miss_depth; ndrange = length(film.depth))
+    Mantle.waitidle(mantle_device(backend))
+    return film
+end
+
+@kernel inbounds=true function primary_depth_kernel!(depth, accel, camera, filter, filter_data, miss_depth)
+    idx = @index(Global)
+    h = size(depth, 1)
+    row = ((idx - 1) % h) + 1
+    col = ((idx - 1) ÷ h) + 1
+    midpoint = Point2f(0.5f0, 0.5f0)
+    offset = filter_sample(filter, filter_data, midpoint).p
+    ray, weight = generate_ray(camera, CameraSample(pixel_centre(row, col, h) + offset, midpoint, 0.0f0))
+    value = miss_depth
+    if weight > 0.0f0
+        hit, _, distance, _, _ = Raycore.closest_hit(accel, ray, CAMERA_RAYS)
+        value = hit ? distance : miss_depth
+    end
+    depth[idx] = value
+end
+
 @kernel inbounds=true function aux_buffer_kernel!(albedo, normal, depth, accel, camera, filter, filter_data, miss_depth::Float32, grid::Int32, materials, interfaces)
     idx = @index(Global)
 
     h, _ = size(albedo)
     row = ((idx - 1) % h) + 1
     col = ((idx - 1) ÷ h) + 1
-    albedo[idx], normal[idx], depth[idx] =
-        pixel_guides(accel, materials, interfaces, camera, filter, filter_data, pixel_centre(row, col, h), miss_depth, grid)
+    a, n, d, _ = pixel_guides(accel, materials, interfaces, camera, filter, filter_data,
+                               pixel_centre(row, col, h), miss_depth, grid)
+    albedo[idx], normal[idx], depth[idx] = a, n, d
+end
+
+@kernel inbounds=true function single_ray_guide_kernel!(albedo, normal, depth, accel, camera, filter, filter_data,
+                                                       miss_depth::Float32, materials, interfaces, slot::Val{S}) where {S}
+    idx = @index(Global)
+    h = size(albedo, 1)
+    row = ((idx - 1) % h) + 1
+    col = ((idx - 1) ÷ h) + 1
+    a, n, d, matched = pixel_guides(accel, materials, interfaces, camera, filter, filter_data,
+                                    pixel_centre(row, col, h), miss_depth, Int32(1), slot)
+    # The first slot supplies depth and initializes misses. The others only
+    # replace guides for pixels whose accepted hit belongs to them.
+    if S == 1 || matched
+        albedo[idx], normal[idx] = a, n
+    end
+    if S == 1
+        depth[idx] = d
+    end
 end
 
 # ============================================================================

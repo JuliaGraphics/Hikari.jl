@@ -64,15 +64,11 @@ function pack_principled_inputs(instructions)
     return result
 end
 
-# The packed record is read in bytes of instruction `i`, through the pointer kind the
-# program array has: a `Ptr` on Lava, an address-space `LLVMPtr` on Metal, which has
-# no conversion to `Ptr` (a `MethodError` left in every Principled shading kernel).
-@inline recordbytes(prog, i) = bytepointer(pointer(prog, i))
-@inline bytepointer(p::Ptr) = Ptr{UInt8}(p)
-@inline bytepointer(p::Core.LLVMPtr{T, A}) where {T, A} = reinterpret(Core.LLVMPtr{UInt8, A}, p)
-@inline loadat(::Type{T}, p::Ptr{UInt8}, offset) where {T} = unsafe_load(Ptr{T}(p + offset))
-@inline loadat(::Type{T}, p::Core.LLVMPtr{UInt8, A}, offset) where {T, A} =
-    unsafe_load(reinterpret(Core.LLVMPtr{T, A}, p + offset))
+# The packed record is read in bytes of instruction `i`. Preserve the program
+# array's pointer type when changing the element type.
+@inline recordbytes(prog, i) = Mantle.retype_pointer(UInt8, pointer(prog, i))
+@inline loadat(::Type{T}, p, offset) where {T} =
+    unsafe_load(Mantle.retype_pointer(T, p + offset))
 
 @inline function packed_principled_code(prog, i, ::Val{J}) where {J}
     if J <= NODE_ARGS

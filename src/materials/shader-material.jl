@@ -32,13 +32,14 @@ struct ShaderMaterial{ProgT, AlphaT, Nodes} <: Material
     alpha::AlphaT
     closures::Int32
     inputs::Int32
+    capacity_hint::UInt8
 end
 
 ShaderMaterial(shader::ShaderNode) = ShaderMaterial(ShaderGraph(shader))
 
 function ShaderMaterial(graph::ShaderGraph)
     alpha = has_transparency(graph) ? transparency_graph(graph) : nothing
-    return ShaderMaterial{ShaderGraph, typeof(alpha), bsdf_nodes(graph)}(graph, alpha, Int32(0), Int32(0))
+    return ShaderMaterial{ShaderGraph, typeof(alpha), bsdf_nodes(graph)}(graph, alpha, Int32(0), Int32(0), 0x00)
 end
 
 """
@@ -76,7 +77,7 @@ function to_device_material(dhv, mat::ShaderMaterial{ShaderGraph, A, M}) where {
     closures, inputs = closure_program(c)
     return ShaderMaterial{typeof(program), typeof(alpha), M}(
         program, alpha, Int32(last(stored!(dhv, closures))),
-        Int32(inputs)
+        Int32(inputs), UInt8(closure_capacity_hint(first(closures)))
     )
 end
 
@@ -103,25 +104,31 @@ function Raycore.update_item(
     return ShaderMaterial{P, A, M}(
         updated_program!(dhv, old.program, program, placed),
         updated_program!(dhv, old.alpha, alpha, placed),
-        updated_closures!(dhv, old.closures, closures), Int32(inputs)
+        updated_closures!(dhv, old.closures, closures), Int32(inputs),
+        UInt8(closure_capacity_hint(first(closures)))
     )
 end
 
-"""The computed-input width, values passes and per-material BSDF programs of a material set."""
+"""The shader inputs and closure programs a render plan must account for."""
 function shader_input_layout(materials::Raycore.MultiTypeSet)
     width = 0
     programs = zeros(Int32, length(materials.data_order))
     values_required = fill(false, length(materials.data_order))
+    capacity_masks = zeros(UInt8, length(materials.data_order))
     for (slot, T) in enumerate(materials.data_order)
         T <: ShaderMaterial{<:ShaderProgram} || continue
         programs[slot] = Int32(length(programs))
-        for m in materials.data_vectors[T]
+        vacant = get(materials.vacant, T, nothing)
+        for (index, m) in enumerate(materials.data_vectors[T])
             push!(programs, m.closures)
             width = max(width, Int(m.inputs))
             values_required[slot] |= m.inputs > 0
+            if vacant === nothing || !(index in vacant)
+                capacity_masks[slot] |= 0x01 << (capacity_bin(m.capacity_hint) - 1)
+            end
         end
     end
-    return (; width, programs, values_required)
+    return (; width, programs, values_required, capacity_masks)
 end
 
 """The most floats any stored shader's BSDF nodes read of computed values."""

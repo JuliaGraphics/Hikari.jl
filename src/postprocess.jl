@@ -202,7 +202,7 @@ end
 # ============================================================================
 
 """
-    postprocess!(film; exposure=1.0, tonemap=:aces, gamma=2.2, white_point=4.0, background=nothing)
+    postprocess!(film; exposure=1.0, tonemap=:aces, gamma=2.2, white_point=4.0, background=nothing, wait=true)
 
 Convert the HDR framebuffer to a display-ready image.
 
@@ -232,6 +232,8 @@ parameters without re-rendering.
   gave it instead of the background's — but its alpha still comes from the
   background, so a caller asking for a transparent background still gets coverage
   and not a sky.
+- `wait`: Wait for completion before returning. Pass `false` to feed the result
+  into subsequent device work or an ordered readback.
 """
 function postprocess!(film::Film;
     exposure::Real = 1.0,
@@ -240,6 +242,7 @@ function postprocess!(film::Film;
     white_point::Real = 4.0,
     background::Union{RGB{Float32}, RGBA{Float32}, Nothing} = nothing,
     sky::Bool = false,
+    wait::Bool = true,
 )
     src = film.framebuffer
     dst = film.postprocess
@@ -263,7 +266,7 @@ function postprocess!(film::Film;
             mask_escaped, sky, bg_r, bg_g, bg_b, bg_a,
             Int32(size(src, 1)), Int32(size(src, 2));
             ndrange=length(src))
-    Mantle.waitidle(mantle_device(backend))
+    wait && Mantle.waitidle(mantle_device(backend))
 
     return film.postprocess
 end

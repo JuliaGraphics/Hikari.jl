@@ -220,22 +220,19 @@ end
 function partitioned_shade_queues!(g, state::VolPathState, @nospecialize(refs), q)
     choices = shade_queues(q)
     length(choices) == 1 && return choices
+    mask = state.material_queues_signature.capacity_masks[q.slot]
+    iszero(mask) && return ()
+    # Every hit in a single-class slot can use the original queue directly.
+    count_ones(mask) == 1 && return (choices[trailing_zeros(mask) + 1],)
+    bins = filter(pair -> !iszero(mask & (0x01 << (first(pair) - 1))), Tuple(enumerate(choices)))
     p = state.shader_partition::ShaderCapacityPartition
-    uniform = length(refs.materials.data[q.slot]) == 1
-    if uniform
-        Mantle.dispatch!(g, vp_shader_capacity_counts_kernel!,
-            (p.sizes, q, closure_programs(refs.materials)), 1; group = 1, name = "capacity-counts")
-        return map(enumerate(choices) |> Tuple) do (bin, choice)
-            partition_queue(choice, bin, p; uniform=true)
-        end
-    end
     Mantle.dispatch!(g, zero_size_counters_kernel!, ((p.sizes,),), 1; group = 1, name = "partition-reset")
     Mantle.dispatch!(g, vp_partition_shader_capacity_kernel!,
         (q, state.surface_hits, refs.accel, refs.media_interfaces, closure_programs(refs.materials),
          p.items, p.sizes, p.capacity, Val(capacity_group_reservation(state.backend))),
         Mantle.DeviceRange(q.sizes; max = Int(p.capacity), at = q.slot);
         group = 128, name = "partition")
-    return map(enumerate(choices) |> Tuple) do (bin, choice)
+    return map(bins) do (bin, choice)
         partition_queue(choice, bin, p)
     end
 end
@@ -261,6 +258,7 @@ function shade_pass!(g, state::VolPathState, @nospecialize(refs), cur::WorkQueue
     queues = state.material_queues
     inputs = state.shader_inputs
     types = slot_types(refs.materials)
+    backend = Mantle.syncbackend(state.memory.dev)
     for (slot, T) in enumerate(types)
         splits(T) || continue
         state.material_queues_signature.values_required[slot] || continue
@@ -273,7 +271,7 @@ function shade_pass!(g, state::VolPathState, @nospecialize(refs), cur::WorkQueue
     end
     for (slot, T) in enumerate(types)
         if splits(T)
-            M = bsdf_kernel_nodes(bsdf_nodes(T), Mantle.syncbackend(state.memory.dev))
+            M = bsdf_kernel_nodes(bsdf_nodes(T), backend)
             q = ClosureQueue{M}(queues, slot, inputs, state.material_queues_signature.programs[slot])
             view = closure_set(refs.materials)
         else
