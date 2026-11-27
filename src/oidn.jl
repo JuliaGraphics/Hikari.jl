@@ -7,8 +7,8 @@
 
 Denoise with Intel Open Image Denoise's ray tracing filter, on the CPU. `quality` is
 `:fast`, `:balanced` or `:high`. With `guides` the filter also gets the film's albedo
-and normal (see [`fill_aux_buffers!`](@ref)), noise-free, which keep the edges and
-textures of what the camera sees first.
+and normal (see [`fill_aux_buffers!`](@ref)), which keep the edges and textures of what
+the camera sees first. Through a lens they carry some noise, which the filter removes first.
 """
 struct OIDN <: Denoiser
     quality::Int32
@@ -31,6 +31,7 @@ mutable struct OIDNPlan
     lib::Ptr{Cvoid}
     device::Ptr{Cvoid}
     filter::Ptr{Cvoid}
+    clean_aux::Bool
     staging::Matrix{RGB{Float32}}    # the film's layout, `(height, width)`
     color::Matrix{RGB{Float32}}
     albedo::Matrix{RGB{Float32}}
@@ -77,7 +78,7 @@ function denoise_plan!(film::Film, config::OIDN)
     lib = Libc.Libdl.dlopen(joinpath(artifact"oidn", "oidn-2.5.1.x86_64.linux", "lib", "libOpenImageDenoise.so.2"))
     height, width = size(film.framebuffer)
     device = ccall(Libc.Libdl.dlsym(lib, :oidnNewDevice), Ptr{Cvoid}, (Cint,), 1)   # 1: OIDN_DEVICE_TYPE_CPU
-    plan = OIDNPlan(film.framebuffer, config, lib, device, C_NULL,
+    plan = OIDNPlan(film.framebuffer, config, lib, device, C_NULL, false,
                     Matrix{RGB{Float32}}(undef, height, width),
                     Matrix{RGB{Float32}}(undef, width, height), Matrix{RGB{Float32}}(undef, width, height),
                     Matrix{Vec3f}(undef, width, height), Matrix{RGB{Float32}}(undef, width, height))
@@ -96,8 +97,7 @@ function denoise_plan!(film::Film, config::OIDN)
     if config.guides
         oidnimage!(plan, "albedo", plan.albedo)
         oidnimage!(plan, "normal", plan.normal)
-        # The guides are traced through each pixel's centre, without noise.
-        ccall(oidnfunction(lib, :oidnSetFilterBool), Cvoid, (Ptr{Cvoid}, Cstring, Bool), plan.filter, "cleanAux", true)
+        set_clean_aux!(plan, film.clean_guides[])
     end
     # The framebuffer is radiance, before exposure and tone mapping.
     ccall(oidnfunction(lib, :oidnSetFilterBool), Cvoid, (Ptr{Cvoid}, Cstring, Bool), plan.filter, "hdr", true)
@@ -105,6 +105,13 @@ function denoise_plan!(film::Film, config::OIDN)
     ccall(oidnfunction(lib, :oidnCommitFilter), Cvoid, (Ptr{Cvoid},), plan.filter)
     oidncheck(plan)
     film.denoise_plan[] = plan
+    return plan
+end
+
+"""Tell the filter whether the guides are noise-free, else it prefilters them first."""
+function set_clean_aux!(plan::OIDNPlan, clean::Bool)
+    ccall(oidnfunction(plan.lib, :oidnSetFilterBool), Cvoid, (Ptr{Cvoid}, Cstring, Bool), plan.filter, "cleanAux", clean)
+    plan.clean_aux = clean
     return plan
 end
 
@@ -122,6 +129,10 @@ function denoise!(film::Film, config::OIDN)
     if config.guides
         permutedims!(plan.albedo, Array(film.albedo), (2, 1))
         permutedims!(plan.normal, Array(film.normal), (2, 1))
+        if plan.clean_aux != film.clean_guides[]
+            set_clean_aux!(plan, film.clean_guides[])
+            ccall(oidnfunction(plan.lib, :oidnCommitFilter), Cvoid, (Ptr{Cvoid},), plan.filter)
+        end
     end
     ccall(oidnfunction(plan.lib, :oidnExecuteFilter), Cvoid, (Ptr{Cvoid},), plan.filter)
     oidncheck(plan)
