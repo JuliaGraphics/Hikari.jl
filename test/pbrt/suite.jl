@@ -231,20 +231,20 @@ record_scores(hw_accel::Bool, root = RECORD_DIR) = joinpath(root, hw_accel ? "sc
 # are unconditional for exactly that reason.
 
 """Start a fresh record for one backend, discarding the previous run's scores."""
-function begin_record!(hw_accel::Bool)
-    mkpath(record_dir(hw_accel))
-    open(record_scores(hw_accel), "w") do io
+function begin_record!(hw_accel::Bool, root=RECORD_DIR)
+    mkpath(record_dir(hw_accel, root))
+    open(record_scores(hw_accel, root), "w") do io
         println(io, "name,samples,tile,energy,mean_diff,median_diff,max_diff")
     end
     return nothing
 end
 
 """Record one scene's render and the metrics the suite just checked."""
-function record_scene!(scene_name::AbstractString, fb, m; hw_accel::Bool, samples::Int)
-    dir = record_dir(hw_accel)
+function record_scene!(scene_name::AbstractString, fb, m; hw_accel::Bool, samples::Int, root=RECORD_DIR)
+    dir = record_dir(hw_accel, root)
     mkpath(dir)
     FileIO.save(joinpath(dir, "$(scene_name).exr"), fb)
-    open(record_scores(hw_accel), "a") do io
+    open(record_scores(hw_accel, root), "a") do io
         println(io, join((scene_name, samples, m.tile, m.energy_ratio,
                           m.mean_diff, m.median_diff, m.max_diff), ","))
     end

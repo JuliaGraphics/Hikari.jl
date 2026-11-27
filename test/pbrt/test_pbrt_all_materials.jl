@@ -35,7 +35,7 @@ const BASE_LIGHTS = ["point", "distant", "spot", "area", "ambient"]
 
 # ── Test helpers (parametrized) ─────────────────────────────────────────────
 
-function test_scene(scene_name; backend, samples, hw_accel)
+function test_scene(scene_name; backend, samples, hw_accel, record_root=RECORD_DIR)
     scene_file = joinpath(SCENES_DIR, "$(scene_name).pbrt")
     isfile(scene_file) || return nothing
 
@@ -49,7 +49,7 @@ function test_scene(scene_name; backend, samples, hw_accel)
 
     # Record before asserting, so a failing scene is still in the gallery — that
     # is the one you most want to look at.
-    record_scene!(scene_name, fb, m; hw_accel, samples)
+    record_scene!(scene_name, fb, m; hw_accel, samples, root=record_root)
 
     println("  $(scene_name): tile=$(round(m.tile, digits = 4)) energy=$(round(m.energy_ratio, digits = 3))")
     @test m.tile < TILE_THRESHOLD
@@ -58,10 +58,10 @@ function test_scene(scene_name; backend, samples, hw_accel)
     return m
 end
 
-function test_scenes_matching(prefix; backend, samples, hw_accel)
+function test_scenes_matching(prefix; backend, samples, hw_accel, record_root)
     for name in list_scenes(prefix)
         @testset "$name" begin
-            test_scene(name; backend, samples, hw_accel)
+            test_scene(name; backend, samples, hw_accel, record_root)
         end
     end
     return
@@ -71,7 +71,8 @@ end
 
 """
     run_pbrt_suite(; backend=Mantle.defaultbackend(), samples=DEFAULT_SPP,
-                     hw_accel=false, categories=(:materials, :textures, :other))
+                     hw_accel=false, categories=(:materials, :textures, :other),
+                     record_root=RECORD_DIR)
 
 Run the full pbrt reference comparison under `@testset`s. All parameters are
 explicit — callers (runtests.jl, standalone invocation) pick the backend and
@@ -83,7 +84,8 @@ function run_pbrt_suite(;
         backend = Mantle.defaultbackend(),
         samples::Int = DEFAULT_SPP,
         hw_accel::Bool = false,
-        categories = (:materials, :textures, :other)
+        categories = (:materials, :textures, :other),
+        record_root = RECORD_DIR
     )
     all(in((:materials, :textures, :other)), categories) ||
         throw(ArgumentError("unknown pbrt test category in $categories"))
@@ -93,7 +95,7 @@ function run_pbrt_suite(;
         The two sides now have different noise floors and the difference is
         scored against Hikari. Results are indicative, not a pass/fail signal."""
     end
-    begin_record!(hw_accel)
+    begin_record!(hw_accel, record_root)
     return @testset "pbrt reference ($label, $samples spp)" begin
         if :materials in categories
             @testset "Materials × Lights" begin
@@ -102,13 +104,13 @@ function run_pbrt_suite(;
                         for light in BASE_LIGHTS
                             scene = "mat_$(mat)_light_$(light)"
                             @testset "$light" begin
-                                test_scene(scene; backend, samples, hw_accel)
+                                test_scene(scene; backend, samples, hw_accel, record_root)
                             end
                         end
                     end
                 end
                 @testset "mix" begin
-                    test_scene("mat_mix_light_point"; backend, samples, hw_accel)
+                    test_scene("mat_mix_light_point"; backend, samples, hw_accel, record_root)
                 end
             end
         end
@@ -122,7 +124,7 @@ function run_pbrt_suite(;
                 ("Sensors", "sensor_", :other), ("Media", "medium_", :other),
             )
             category in categories || continue
-            @testset "$name" test_scenes_matching(prefix; backend, samples, hw_accel)
+            @testset "$name" test_scenes_matching(prefix; backend, samples, hw_accel, record_root)
         end
 
     end
